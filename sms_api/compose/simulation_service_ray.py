@@ -162,7 +162,7 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         batch_job_id = self._ray._submit_mnp(
             job_name=f"compose-{experiment_id}"[:128],
             job_definition=job_def,
-            num_nodes=1,
+            num_nodes=get_settings().compose_ray_num_nodes,
             ray_job_cmd=self._compose_command(doc_s3_uri, runner_s3_uri, steps),
             out_s3=data_layout.RayLayout.results_uri(experiment_id),
             out_dir=COMPOSE_OUT_DIR,
