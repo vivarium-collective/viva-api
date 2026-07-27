@@ -44,14 +44,16 @@ class BiGraphStep:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({
-            "module": module,
-            "name": name,
-            "compute_type": compute_type,
-            "inputs": inputs,
-            "outputs": outputs,
-            "database_id": database_id,
-        })
+        field_dict.update(
+            {
+                "module": module,
+                "name": name,
+                "compute_type": compute_type,
+                "inputs": inputs,
+                "outputs": outputs,
+                "database_id": database_id,
+            }
+        )
 
         return field_dict
 

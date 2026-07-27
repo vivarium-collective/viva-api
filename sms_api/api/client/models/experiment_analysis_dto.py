@@ -125,12 +125,14 @@ class ExperimentAnalysisDTO:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({
-            "database_id": database_id,
-            "name": name,
-            "config": config,
-            "last_updated": last_updated,
-        })
+        field_dict.update(
+            {
+                "database_id": database_id,
+                "name": name,
+                "config": config,
+                "last_updated": last_updated,
+            }
+        )
         if job_name is not UNSET:
             field_dict["job_name"] = job_name
         if job_id is not UNSET:

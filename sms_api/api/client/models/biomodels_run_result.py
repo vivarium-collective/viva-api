@@ -37,9 +37,11 @@ class BiomodelsRunResult:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({
-            "submitted": submitted,
-        })
+        field_dict.update(
+            {
+                "submitted": submitted,
+            }
+        )
         if failed is not UNSET:
             field_dict["failed"] = failed
 

@@ -1,6 +1,7 @@
 """Request handlers for the compose simulation subsystem."""
 
 import asyncio
+import datetime
 import json
 import logging
 import random
@@ -11,11 +12,15 @@ from pathlib import Path
 
 from fastapi import BackgroundTasks, HTTPException
 
+from sms_api.common.storage.data_layout import RayLayout
+from sms_api.common.storage.file_paths import S3FilePath
+from sms_api.common.storage.file_service import FileService
 from sms_api.compose.container_def import build_pbg_def
 from sms_api.compose.database_service import ComposeDatabaseService
 from sms_api.compose.hpc_utils import get_compose_correlation_id, get_compose_experiment_id
 from sms_api.compose.job_monitor import ComposeJobMonitor
 from sms_api.compose.models import (
+    BatchProgress,
     ComposeHpcRun,
     ComposeJobStatus,
     ComposeJobType,
@@ -279,4 +284,196 @@ async def _dispatch_compose_job(
         job_id_ext=sim_job_id_ext,
         backend=simulation_service.backend,
         status=ComposeJobStatus.RUNNING,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Batch progress (live, computed from the S3 hive-partitioned output)
+# ---------------------------------------------------------------------------
+
+# The generation-depth probe samples this many lineages so the endpoint's S3 cost is
+# constant regardless of sweep size (a 1000-seed run must not cost 1000 listings).
+_PROGRESS_SAMPLE_LINEAGES = 8
+# The emitter nests output a couple of levels under the experiment prefix; bound the
+# descent that locates the parquet history hive so a malformed tree can't loop.
+_HIVE_LOCATE_MAX_DEPTH = 8
+
+
+def _leaf(prefix: str) -> str:
+    """Last path segment of a bucket-relative ``.../foo/`` prefix (trailing ``/`` ignored)."""
+    return prefix.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _find_first_int(obj: object, key: str) -> int:
+    """First int-coercible value stored under ``key`` anywhere in a nested dict/list."""
+    stack: list[object] = [obj]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            if key in current:
+                try:
+                    return int(current[key])
+                except (TypeError, ValueError):
+                    pass
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+    return 0
+
+
+def _extract_batch_dims(document: str | None) -> tuple[int, int]:
+    """Parse ``(n_seeds, n_generations)`` from a stored PBG document.
+
+    Prefers the canonical composite keys ``n_seeds``/``n_generations`` and falls back
+    to the vEcoli aliases ``n_init_sims``/``generations``. Returns ``(0, 0)`` when
+    absent so the endpoint still reports live counts (with unknown totals) instead of
+    failing on a non-batch document.
+    """
+    if not document:
+        return 0, 0
+    try:
+        data = json.loads(document)
+    except (json.JSONDecodeError, ValueError):
+        return 0, 0
+    seeds = _find_first_int(data, "n_seeds") or _find_first_int(data, "n_init_sims")
+    generations = _find_first_int(data, "n_generations") or _find_first_int(data, "generations")
+    return seeds, generations
+
+
+async def _find_variant_prefix(file_service: FileService, root_key: str) -> str | None:
+    """Descend to the parquet history hive's ``…/variant=<V>/`` level under a run.
+
+    The emitter nests output under the composite/experiment name (e.g.
+    ``{exp}/{runner}/{runner}/history/experiment_id=…/variant=…/``), so rather than
+    hard-code a depth we walk toward ``history`` → ``experiment_id=`` → ``variant=``,
+    stepping over per-lineage ``*.zarr`` stores. Bounded by ``_HIVE_LOCATE_MAX_DEPTH``.
+    Returns ``None`` when no output has landed yet.
+    """
+    frontier = root_key.rstrip("/") + "/"
+    for _ in range(_HIVE_LOCATE_MAX_DEPTH):
+        children = await file_service.list_prefixes(S3FilePath(s3_path=Path(frontier)))
+        if not children:
+            return None
+        variant = next((c for c in children if _leaf(c).startswith("variant=")), None)
+        if variant is not None:
+            return variant
+        # Advance one level: prefer a 'history'/'experiment_id=' child, else the single
+        # non-zarr, non-partition nesting dir (the runner name the emitter injects).
+        nxt = next(
+            (c for c in children if _leaf(c) == "history" or _leaf(c).startswith("experiment_id=")),
+            None,
+        )
+        if nxt is None:
+            dirs = [c for c in children if not _leaf(c).endswith(".zarr") and "=" not in _leaf(c)]
+            if not dirs:
+                return None
+            nxt = dirs[0]
+        frontier = nxt
+    return None
+
+
+def _generation_indices(prefixes: list[str]) -> list[int]:
+    """Numeric ``G`` of every ``generation=<G>/`` entry in a prefix listing."""
+    out: list[int] = []
+    for prefix in prefixes:
+        leaf = _leaf(prefix)
+        if leaf.startswith("generation=") and leaf.split("=", 1)[1].isdigit():
+            out.append(int(leaf.split("=", 1)[1]))
+    return out
+
+
+async def _max_generation(file_service: FileService, lineage_prefix: str) -> int:
+    """Generations *reached* by one lineage = ``max(generation index) + 1`` beneath it.
+
+    Handles both observed hive shapes: ``generation=<G>/`` sitting directly under
+    ``lineage_seed=<N>/`` (this run), and the column-nested
+    ``lineage_seed=<N>/<column>/generation=<G>/`` (a column carries the same
+    generation partitions, so the first with any suffices). ``generation=0..k``
+    present ⟹ ``k + 1`` generations done.
+    """
+    children = await file_service.list_prefixes(S3FilePath(s3_path=Path(lineage_prefix)))
+    direct = _generation_indices(children)
+    if direct:
+        return max(direct) + 1
+    for column in children:
+        indices = _generation_indices(await file_service.list_prefixes(S3FilePath(s3_path=Path(column))))
+        if indices:
+            return max(indices) + 1
+    return 0
+
+
+async def _scan_batch_output(
+    file_service: FileService, experiment_id: str, sample_size: int = _PROGRESS_SAMPLE_LINEAGES
+) -> tuple[int, int, float]:
+    """Return ``(started_lineages, deepest_generation, mean_generations)`` for a run.
+
+    ``started`` (lineage seeds that have emitted) and ``deepest`` are cheap; the
+    per-lineage ``mean`` used for the whole-sweep percent is estimated from an evenly
+    spaced sample so the call stays O(1) in listings no matter how large the sweep.
+    """
+    root_key = RayLayout.experiment_prefix(experiment_id)
+    variant_prefix = await _find_variant_prefix(file_service, root_key)
+    if variant_prefix is None:
+        return 0, 0, 0.0
+    lineage_prefixes = [
+        c
+        for c in await file_service.list_prefixes(S3FilePath(s3_path=Path(variant_prefix)))
+        if _leaf(c).startswith("lineage_seed=")
+    ]
+    started = len(lineage_prefixes)
+    if started == 0:
+        return 0, 0, 0.0
+    # Evenly spaced sample so both early (deep) and late (shallow) lineages are represented.
+    step = max(1, started // max(1, sample_size))
+    sample = lineage_prefixes[::step][:sample_size]
+    generations = [await _max_generation(file_service, lineage) for lineage in sample]
+    deepest = max(generations) if generations else 0
+    mean_generations = (sum(generations) / len(generations)) if generations else 0.0
+    return started, deepest, mean_generations
+
+
+async def get_batch_progress(
+    simulation_id: int,
+    db_service: ComposeDatabaseService,
+    file_service: FileService,
+) -> BatchProgress:
+    """Compute live :class:`BatchProgress` for a compose batch from its S3 output.
+
+    Totals (``n_seeds`` x ``n_generations``) come from the stored PBG document; live
+    counts come from a bounded, delimited walk of the hive-partitioned output the
+    Ray/Batch entrypoint syncs to S3 as the run proceeds. Purely additive and
+    read-only, so it is safe to poll against a run in flight.
+    """
+    try:
+        experiment_id = await db_service.get_simulator_db().get_simulations_experiment_id(simulation_id)
+    except LookupError:
+        raise HTTPException(404, f"Compose simulation {simulation_id} not found")
+
+    hpc_run = await db_service.get_hpc_db().get_hpcrun_by_ref(ref_id=simulation_id, job_type=ComposeJobType.SIMULATION)
+    document = await db_service.get_simulator_db().get_simulation_document(simulation_id)
+    n_seeds, n_generations = _extract_batch_dims(document)
+
+    started, deepest, mean_generations = await _scan_batch_output(file_service, experiment_id)
+
+    total_cell_generations = n_seeds * n_generations
+    overall = (
+        round(min(100.0, started * mean_generations / total_cell_generations * 100.0), 2)
+        if total_cell_generations
+        else 0.0
+    )
+
+    elapsed = 0.0
+    if hpc_run is not None and hpc_run.start_time:
+        try:
+            started_at = datetime.datetime.fromisoformat(hpc_run.start_time)
+            elapsed = max(0.0, (datetime.datetime.now() - started_at).total_seconds())
+        except ValueError:
+            elapsed = 0.0
+
+    return BatchProgress(
+        lineages=f"{started}:{n_seeds}",
+        generations=f"{deepest}:{n_generations}",
+        overall=overall,
+        time_elapsed=round(elapsed, 1),
+        status=hpc_run.status if hpc_run is not None else None,
     )

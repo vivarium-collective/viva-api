@@ -185,9 +185,11 @@ class ExperimentAnalysisRequest:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({
-            "experiment_id": experiment_id,
-        })
+        field_dict.update(
+            {
+                "experiment_id": experiment_id,
+            }
+        )
         if generation_start is not UNSET:
             field_dict["generation_start"] = generation_start
         if generation_end is not UNSET:

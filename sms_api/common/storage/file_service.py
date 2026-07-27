@@ -35,6 +35,17 @@ class FileService(ABC):
     async def get_listing(self, s3_path: S3FilePath) -> list[ListingItem]:
         pass
 
+    async def list_prefixes(self, s3_path: S3FilePath) -> list[str]:
+        """List only the immediate child "directory" prefixes under ``s3_path``.
+
+        The cheap, bounded counterpart to ``get_listing`` (which paginates every
+        object): this returns one level of ``CommonPrefixes`` (delimiter ``/``), so a
+        caller can walk a large hive-partitioned tree without listing millions of
+        chunk keys. Only the S3 backend (the compose Ray/Batch output store)
+        implements it; other backends have no such consumer.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement list_prefixes")
+
     @abstractmethod
     async def get_file_contents(self, s3_path: S3FilePath) -> bytes | None:
         pass

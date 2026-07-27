@@ -30,11 +30,13 @@ class ObservableInfoModel:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({
-            "name": name,
-            "dims": dims,
-            "shape": shape,
-        })
+        field_dict.update(
+            {
+                "name": name,
+                "dims": dims,
+                "shape": shape,
+            }
+        )
 
         return field_dict
 
