@@ -24,7 +24,7 @@ class Simulation:
         config (SimulationConfig):
         simulation_config_filename (str):
         experiment_id (str):
-        last_updated (Union[Unset, str]):  Default: '2026-07-14 10:34:21.082112'.
+        last_updated (Union[Unset, str]):  Default: '2026-07-27 09:48:26.410017'.
         job_id (Union[None, Unset, str]):
         num_seeds (Union[None, Unset, int]):
         tags (Union[Unset, list[str]]):
@@ -36,7 +36,7 @@ class Simulation:
     config: "SimulationConfig"
     simulation_config_filename: str
     experiment_id: str
-    last_updated: Union[Unset, str] = "2026-07-14 10:34:21.082112"
+    last_updated: Union[Unset, str] = "2026-07-27 09:48:26.410017"
     job_id: Union[None, Unset, str] = UNSET
     num_seeds: Union[None, Unset, int] = UNSET
     tags: Union[Unset, list[str]] = UNSET
@@ -75,14 +75,16 @@ class Simulation:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({
-            "database_id": database_id,
-            "simulator_id": simulator_id,
-            "parca_dataset_id": parca_dataset_id,
-            "config": config,
-            "simulation_config_filename": simulation_config_filename,
-            "experiment_id": experiment_id,
-        })
+        field_dict.update(
+            {
+                "database_id": database_id,
+                "simulator_id": simulator_id,
+                "parca_dataset_id": parca_dataset_id,
+                "config": config,
+                "simulation_config_filename": simulation_config_filename,
+                "experiment_id": experiment_id,
+            }
+        )
         if last_updated is not UNSET:
             field_dict["last_updated"] = last_updated
         if job_id is not UNSET:

@@ -1,16 +1,23 @@
 """Compose (process-bigraph) simulation router — mounted at /compose/v1/."""
 
+import asyncio
 import logging
 import os
 import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, UploadFile
 from jinja2 import Template
-from starlette.responses import FileResponse
+from starlette.responses import FileResponse, StreamingResponse
+
+if TYPE_CHECKING:
+    from sms_api.common.storage.file_service import FileService
 
 from sms_api.compose.database_service import ComposeDatabaseService
 from sms_api.compose.handlers import (
+    get_batch_progress,
     get_compose_simulator_versions,
     run_compose_curated,
     run_compose_simulation,
@@ -18,6 +25,7 @@ from sms_api.compose.handlers import (
 from sms_api.compose.job_monitor import ComposeJobMonitor
 from sms_api.compose.models import (
     DEFAULT_COMPOSE_ALLOW_LIST,
+    BatchProgress,
     BiGraphComputeType,
     BiGraphProcess,
     BiGraphStep,
@@ -29,6 +37,7 @@ from sms_api.compose.models import (
     BiomodelsRunRequest,
     BiomodelsRunResult,
     ComposeHpcRun,
+    ComposeJobStatus,
     ComposeJobType,
     ComposeRegisteredSimulators,
     ComposeSimulationExperiment,
@@ -164,6 +173,69 @@ async def get_simulation_status(simulation_id: int) -> ComposeHpcRun:
 )
 async def get_simulations_status_batch(ids: list[int] = Query()) -> list[ComposeHpcRun]:
     return await _require_db().get_hpc_db().get_hpcruns_by_refs(ref_ids=ids, job_type=ComposeJobType.SIMULATION)
+
+
+# Terminal states — the progress stream stops emitting once the run reaches one of these.
+_TERMINAL_STATUSES = frozenset(
+    {
+        ComposeJobStatus.COMPLETED,
+        ComposeJobStatus.FAILED,
+        ComposeJobStatus.CANCELLED,
+        ComposeJobStatus.OUT_OF_MEMORY,
+        ComposeJobStatus.TIMEOUT,
+    }
+)
+
+
+def _require_file_service() -> "FileService":
+    # Lazy import mirrors the other dependency accessors here and avoids a circular
+    # import with sms_api.dependencies (which imports the routers at startup).
+    from sms_api.dependencies import get_file_service
+
+    file_service = get_file_service()
+    if file_service is None:
+        raise HTTPException(500, "File service not initialized")
+    return file_service
+
+
+@router.get(
+    path="/simulation/{simulation_id}/progress",
+    operation_id="compose-get-simulation-progress",
+    response_model=BatchProgress,
+    tags=["Compose Results"],
+    summary="Live progress of a batch (multiseed x multigeneration) compose run",
+)
+async def get_simulation_progress(simulation_id: int) -> BatchProgress:
+    """Compute live :class:`BatchProgress` (lineages, generations, overall %, elapsed)
+    from the hive-partitioned output the run syncs to S3 as it proceeds. Read-only and
+    additive — safe to poll against a run in flight."""
+    return await get_batch_progress(simulation_id, _require_db(), _require_file_service())
+
+
+@router.get(
+    path="/simulation/{simulation_id}/progress/stream",
+    operation_id="compose-stream-simulation-progress",
+    tags=["Compose Results"],
+    summary="Server-sent stream of BatchProgress for a running compose batch",
+    responses={200: {"content": {"text/event-stream": {}}, "description": "SSE stream of BatchProgress JSON"}},
+)
+async def stream_simulation_progress(simulation_id: int, interval_seconds: float = 30.0) -> StreamingResponse:
+    """Stream :class:`BatchProgress` as ``text/event-stream``, recomputing every
+    ``interval_seconds`` (clamped to a ≥5 s floor) until the run reaches a terminal
+    state. Thin wrapper over the same computation as the polling endpoint."""
+    db = _require_db()
+    file_service = _require_file_service()
+    interval = max(5.0, interval_seconds)
+
+    async def event_generator() -> "AsyncIterator[str]":
+        while True:
+            progress = await get_batch_progress(simulation_id, db, file_service)
+            yield f"data: {progress.model_dump_json()}\n\n"
+            if progress.status in _TERMINAL_STATUSES:
+                break
+            await asyncio.sleep(interval)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @router.get(

@@ -160,6 +160,33 @@ class FileServiceS3(FileService):
                 raise
 
     @override
+    async def list_prefixes(self, s3_path: S3FilePath) -> list[str]:
+        """List immediate child "directory" prefixes under a key (``Delimiter='/'``).
+
+        Unlike ``get_listing`` (which paginates every object under the prefix — far
+        too expensive for a large hive-partitioned zarr/parquet sweep), this returns
+        only the ``CommonPrefixes`` one level down. It is the bounded primitive the
+        batch-progress walk uses to count lineage/generation partitions cheaply.
+        Returned prefixes are bucket-relative and keep their trailing ``/``.
+        """
+        logger.info(f"Listing prefixes under S3 path: {s3_path}")
+        bucket, prefix = get_settings().storage_s3_bucket, str(s3_path.s3_path)
+        if prefix and not prefix.endswith("/"):
+            prefix = prefix + "/"
+
+        async with self.session.client("s3") as s3_client:
+            try:
+                prefixes: list[str] = []
+                paginator = s3_client.get_paginator("list_objects_v2")
+                async for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
+                    for common_prefix in page.get("CommonPrefixes", []):
+                        prefixes.append(common_prefix["Prefix"])
+                return prefixes
+            except ClientError:
+                logger.exception(f"Failed to list prefixes in {bucket}/{prefix}")
+                raise
+
+    @override
     async def get_file_contents(self, s3_path: S3FilePath) -> bytes | None:
         """Download and return the contents of an S3 object as bytes."""
         logger.info(f"Getting contents of S3 object: {s3_path}")

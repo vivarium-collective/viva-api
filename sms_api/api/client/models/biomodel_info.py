@@ -30,10 +30,12 @@ class BiomodelInfo:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({
-            "biomodel_id": biomodel_id,
-            "metadata": metadata,
-        })
+        field_dict.update(
+            {
+                "biomodel_id": biomodel_id,
+                "metadata": metadata,
+            }
+        )
 
         return field_dict
 

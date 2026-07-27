@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.20
+  version: 0.9.26
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -1121,7 +1121,7 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-07-14T16:12:39.019002'
+                  created_at: '2026-07-27T09:48:26.471083'
                 parca_config:
                   outdir: /projects/SMS/sms_api/prod/sims
       responses:
@@ -1280,6 +1280,72 @@ paths:
                 items:
                   $ref: '#/components/schemas/ComposeHpcRun'
                 title: Response Compose-Get-Simulations-Status-Batch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/simulation/{simulation_id}/progress:
+    get:
+      tags:
+      - Compose Results
+      summary: Live progress of a batch (multiseed x multigeneration) compose run
+      description: "Compute live :class:`BatchProgress` (lineages, generations, overall\
+        \ %, elapsed)\nfrom the hive-partitioned output the run syncs to S3 as it\
+        \ proceeds. Read-only and\nadditive \u2014 safe to poll against a run in flight."
+      operationId: compose-get-simulation-progress
+      parameters:
+      - name: simulation_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Simulation Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchProgress'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/simulation/{simulation_id}/progress/stream:
+    get:
+      tags:
+      - Compose Results
+      summary: Server-sent stream of BatchProgress for a running compose batch
+      description: "Stream :class:`BatchProgress` as ``text/event-stream``, recomputing\
+        \ every\n``interval_seconds`` (clamped to a \u22655 s floor) until the run\
+        \ reaches a terminal\nstate. Thin wrapper over the same computation as the\
+        \ polling endpoint."
+      operationId: compose-stream-simulation-progress
+      parameters:
+      - name: simulation_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Simulation Id
+      - name: interval_seconds
+        in: query
+        required: false
+        schema:
+          type: number
+          default: 30.0
+          title: Interval Seconds
+      responses:
+        '200':
+          description: SSE stream of BatchProgress JSON
+          content:
+            application/json:
+              schema: {}
+            text/event-stream: {}
         '422':
           description: Validation Error
           content:
@@ -1883,6 +1949,41 @@ components:
       - id
       - status
       title: AnalysisRun
+    BatchProgress:
+      properties:
+        lineages:
+          type: string
+          title: Lineages
+        generations:
+          type: string
+          title: Generations
+        overall:
+          type: number
+          title: Overall
+        time_elapsed:
+          type: number
+          title: Time Elapsed
+        status:
+          anyOf:
+          - $ref: '#/components/schemas/ComposeJobStatus'
+          - type: 'null'
+      type: object
+      required:
+      - lineages
+      - generations
+      - overall
+      - time_elapsed
+      title: BatchProgress
+      description: "Live progress of a batch (multiseed x multigeneration) compose\
+        \ run.\n\nDerived purely from the hive-partitioned output the Ray/Batch entrypoint\
+        \ syncs\nto S3 *as the run proceeds* (``\u2026/lineage_seed=<N>/\u2026/generation=<G>/``\
+        \ partitions,\nwritten incrementally and s3-synced every ~30 s) \u2014 so\
+        \ it needs NO new writer in\nthe workload and works for any running compose\
+        \ batch, not just one composite.\n\n``lineages``/``generations`` are ``\"\
+        current:total\"`` strings a client renders\nverbatim; ``overall`` is the whole-sweep\
+        \ percent complete\n(``sum(generations_reached) / (n_seeds x n_generations)``),\
+        \ estimated from a bounded\nsample of lineages so the cost is constant regardless\
+        \ of sweep size."
     BiGraphComputeType:
       type: string
       enum:
@@ -2116,6 +2217,15 @@ components:
         slurmjobid:
           type: integer
           title: Slurmjobid
+        job_id_ext:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Job Id Ext
+        job_backend:
+          type: string
+          title: Job Backend
+          default: slurm
         correlation_id:
           type: string
           title: Correlation Id
@@ -2774,7 +2884,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-07-14 16:12:38.947722'
+          default: '2026-07-27 09:48:26.410017'
         job_id:
           anyOf:
           - type: string

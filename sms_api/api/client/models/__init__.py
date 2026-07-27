@@ -5,6 +5,7 @@ from .analysis_config_options import AnalysisConfigOptions
 from .analysis_module_config import AnalysisModuleConfig
 from .analysis_options import AnalysisOptions
 from .analysis_run import AnalysisRun
+from .batch_progress import BatchProgress
 from .bi_graph_compute_type import BiGraphComputeType
 from .bi_graph_process import BiGraphProcess
 from .bi_graph_step import BiGraphStep
@@ -78,6 +79,7 @@ __all__ = (
     "AnalysisModuleConfig",
     "AnalysisOptions",
     "AnalysisRun",
+    "BatchProgress",
     "BiGraphComputeType",
     "BiGraphProcess",
     "BiGraphStep",

@@ -41,10 +41,12 @@ class BiomodelsRegressionResult:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({
-            "submitted": submitted,
-            "total_requested": total_requested,
-        })
+        field_dict.update(
+            {
+                "submitted": submitted,
+                "total_requested": total_requested,
+            }
+        )
         if failed is not UNSET:
             field_dict["failed"] = failed
 

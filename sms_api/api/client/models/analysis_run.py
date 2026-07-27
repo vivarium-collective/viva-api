@@ -45,10 +45,12 @@ class AnalysisRun:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({
-            "id": id,
-            "status": status,
-        })
+        field_dict.update(
+            {
+                "id": id,
+                "status": status,
+            }
+        )
         if job_id is not UNSET:
             field_dict["job_id"] = job_id
         if error_log is not UNSET:

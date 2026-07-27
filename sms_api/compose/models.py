@@ -105,6 +105,27 @@ class ComposeHpcRun(BaseModel):
     error_message: str | None = None
 
 
+class BatchProgress(BaseModel):
+    """Live progress of a batch (multiseed x multigeneration) compose run.
+
+    Derived purely from the hive-partitioned output the Ray/Batch entrypoint syncs
+    to S3 *as the run proceeds* (``…/lineage_seed=<N>/…/generation=<G>/`` partitions,
+    written incrementally and s3-synced every ~30 s) — so it needs NO new writer in
+    the workload and works for any running compose batch, not just one composite.
+
+    ``lineages``/``generations`` are ``"current:total"`` strings a client renders
+    verbatim; ``overall`` is the whole-sweep percent complete
+    (``sum(generations_reached) / (n_seeds x n_generations)``), estimated from a bounded
+    sample of lineages so the cost is constant regardless of sweep size.
+    """
+
+    lineages: str  # "started:total" — lineage seeds that have produced output
+    generations: str  # "deepest:total" — max generation reached across lineages
+    overall: float  # 0..100 — whole-sweep percent complete (cell-generations)
+    time_elapsed: float  # seconds since the run's start_time
+    status: ComposeJobStatus | None = None  # coarse job state, for client convenience
+
+
 # ---------------------------------------------------------------------------
 # BiGraph compute registry
 # ---------------------------------------------------------------------------
