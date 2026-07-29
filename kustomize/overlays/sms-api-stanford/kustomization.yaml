@@ -55,9 +55,17 @@ images:
   # honored only under investigations/<name>/). Every blank study created via
   # the "+ Study" modal returned 200 yet was permanently invisible to
   # /api/investigations and /api/study/{slug} — found live on this deployment
-  # while trying to author a study to attach analyses config to.
+  # while trying to author a study to attach analyses config to. 0.3.22
+  # (workbench #666) fixes a stale vw_session cookie: it was only ever set
+  # when absent, so a browser that already had a cookie from an earlier,
+  # different session never converged to a later bind — fetch() calls
+  # (session.js's X-VW-Session header) resolved correctly, but any plain
+  # navigation (iframe, typed URL) fell back to the stale cookie and
+  # silently loaded the wrong workspace. Found opening the study created
+  # while fixing 0.3.21: the JSON API returned it, but the UI still said
+  # "Study not found."
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.21
+    newTag: 0.3.22
 
 replicas:
   - count: 1
