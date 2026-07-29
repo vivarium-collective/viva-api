@@ -29,9 +29,13 @@ images:
   # of the same class of bug: the Viz/Report/Analyses/Results buttons and
   # study export/analysis-zip/audit-report links all build plain <a href>/
   # window.open()/window.location targets, which the base-path shim (patches
-  # only fetch/XHR/EventSource) never sees.
+  # only fetch/XHR/EventSource) never sees. 0.3.16 (workbench #660) closes a
+  # separate, non-transport gap: Results download now falls back to sms-api's
+  # existing S3-streaming /data endpoint when a run's local materialization
+  # is gone (the normal state for a GovCloud-dispatched run after a pod
+  # restart, or one recorded via the sms-api-backed remote-simulations list).
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.15
+    newTag: 0.3.16
 
 replicas:
   - count: 1
