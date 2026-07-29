@@ -63,9 +63,12 @@ images:
   # navigation (iframe, typed URL) fell back to the stale cookie and
   # silently loaded the wrong workspace. Found opening the study created
   # while fixing 0.3.21: the JSON API returned it, but the UI still said
-  # "Study not found."
+  # "Study not found." 0.3.23 (workbench #667) moves the study-analyses
+  # authoring control (from 0.3.20) off a legacy panel that no navigation
+  # path actually opened — dead UI — onto the Study page's Model tab,
+  # reachable for every study, grouped or ungrouped.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.22
+    newTag: 0.3.23
 
 replicas:
   - count: 1
