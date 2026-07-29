@@ -38,8 +38,14 @@ images:
   # analysis_options always came out empty: remote_run_submit() never read
   # spec.analyses at all, for any run, ever — now threads
   # build_analysis_options(spec.analyses) into the dispatch payload.
+  # 0.3.18 (workbench #662) adds zarr-native default Viz/Report rendering:
+  # every GovCloud/Ray run's data lives in a zarr store, but neither the
+  # framework's own render pipeline nor the external
+  # viva_superpowers.TimeSeriesFromObservables class has ever had a
+  # non-SQLite code path — new lib.zarr_default_viz renders real charts
+  # directly from a run's zarr store instead.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.17
+    newTag: 0.3.18
 
 replicas:
   - count: 1
