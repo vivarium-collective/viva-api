@@ -23,7 +23,7 @@ images:
   # root-absolute /api/composite-test-run, which escaped the /workbench prefix and
   # matched the ALB's /api/* rule -> routed to sms-api, 404. (matches stanford-test).
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.12
+    newTag: 0.3.13
 
 replicas:
   - count: 1
@@ -140,6 +140,13 @@ patches:
   # workspace changes (e.g. a newly-authored study.yaml) without a human
   # clicking "Sign in with GitHub" first. Lowest-priority resolution path —
   # an interactive session still always wins if one is present.
+  #
+  # VIVARIUM_WORKBENCH_REMOTE_DEPLOYMENT: remote_pinned.remote_deployment_name()
+  # stamps this into every dispatched run's recorded Origin. Unset, it silently
+  # falls back to the historical hardcoded default "smsvpctest" — every run
+  # dispatched from THIS (smscdk) deployment has been mislabeling its own
+  # Origin since the pinned-dispatch feature shipped. Found while verifying
+  # the first landed sms-ecoli pilot run.
   - patch: |-
       apiVersion: apps/v1
       kind: Deployment
@@ -156,6 +163,8 @@ patches:
                       secretKeyRef:
                         name: workbench-gh-token
                         key: VIVARIUM_WORKBENCH_GH_TOKEN
+                  - name: VIVARIUM_WORKBENCH_REMOTE_DEPLOYMENT
+                    value: "smscdk"
     target:
       kind: Deployment
       name: workbench
