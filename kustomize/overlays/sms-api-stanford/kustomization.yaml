@@ -49,8 +49,15 @@ images:
   # (workbench #664) adds the study-analyses UI control + backend endpoint
   # that was still missing after 0.3.17: nothing could author spec.analyses
   # at all, even though the remote dispatch path already reads it correctly.
+  # 0.3.21 (workbench #665) fixes study_create()'s no-source ("blank study")
+  # branch: it scaffolded spec.yaml under studies/<name>/, but
+  # iter_study_dirs() only recognizes study.yaml there (spec.yaml is legacy,
+  # honored only under investigations/<name>/). Every blank study created via
+  # the "+ Study" modal returned 200 yet was permanently invisible to
+  # /api/investigations and /api/study/{slug} — found live on this deployment
+  # while trying to author a study to attach analyses config to.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.20
+    newTag: 0.3.21
 
 replicas:
   - count: 1
