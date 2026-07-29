@@ -23,7 +23,7 @@ images:
   # root-absolute /api/composite-test-run, which escaped the /workbench prefix and
   # matched the ALB's /api/* rule -> routed to sms-api, 404. (matches stanford-test).
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.9
+    newTag: 0.3.10
 
 replicas:
   - count: 1
