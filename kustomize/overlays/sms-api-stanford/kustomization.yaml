@@ -22,8 +22,12 @@ images:
   # base-path fix (workbench #476): the wiring explorer's "test run" posted a
   # root-absolute /api/composite-test-run, which escaped the /workbench prefix and
   # matched the ALB's /api/* rule -> routed to sms-api, 404. (matches stanford-test).
+  # 0.3.14 (workbench #658) applies the same fix to the main dashboard page's
+  # session.js spawn-bind (the Source panel's "Open" button), which had the
+  # identical late-shim-injection bug — found while trying to bind a session to
+  # the sms-ecoli pilot build.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.13
+    newTag: 0.3.14
 
 replicas:
   - count: 1
