@@ -66,9 +66,14 @@ images:
   # "Study not found." 0.3.23 (workbench #667) moves the study-analyses
   # authoring control (from 0.3.20) off a legacy panel that no navigation
   # path actually opened — dead UI — onto the Study page's Model tab,
-  # reachable for every study, grouped or ungrouped.
+  # reachable for every study, grouped or ungrouped. 0.3.24 (workbench #669)
+  # restores a UI path to set/replace a study's baseline composite ref —
+  # the pre-unification "+ Add baseline" form was removed from the template
+  # during the Model/Build panel merge, orphaning its JS handler and the
+  # study-baseline-add/-remove endpoints; there was no way to fix a
+  # "+ Study" blank scaffold's placeholder composite ref through the UI.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.23
+    newTag: 0.3.24
 
 replicas:
   - count: 1
