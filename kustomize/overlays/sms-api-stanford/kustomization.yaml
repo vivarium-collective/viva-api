@@ -34,8 +34,12 @@ images:
   # existing S3-streaming /data endpoint when a run's local materialization
   # is gone (the normal state for a GovCloud-dispatched run after a pod
   # restart, or one recorded via the sms-api-backed remote-simulations list).
+  # 0.3.17 (workbench #661) fixes the reason a remote-dispatched run's
+  # analysis_options always came out empty: remote_run_submit() never read
+  # spec.analyses at all, for any run, ever — now threads
+  # build_analysis_options(spec.analyses) into the dispatch payload.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.16
+    newTag: 0.3.17
 
 replicas:
   - count: 1
