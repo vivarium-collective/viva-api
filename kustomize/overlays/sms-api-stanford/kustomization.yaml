@@ -25,9 +25,13 @@ images:
   # 0.3.14 (workbench #658) applies the same fix to the main dashboard page's
   # session.js spawn-bind (the Source panel's "Open" button), which had the
   # identical late-shim-injection bug — found while trying to bind a session to
-  # the sms-ecoli pilot build.
+  # the sms-ecoli pilot build. 0.3.15 (workbench #659) fixes six more instances
+  # of the same class of bug: the Viz/Report/Analyses/Results buttons and
+  # study export/analysis-zip/audit-report links all build plain <a href>/
+  # window.open()/window.location targets, which the base-path shim (patches
+  # only fetch/XHR/EventSource) never sees.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.14
+    newTag: 0.3.15
 
 replicas:
   - count: 1
