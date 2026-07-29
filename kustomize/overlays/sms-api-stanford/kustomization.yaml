@@ -45,9 +45,12 @@ images:
   # non-SQLite code path — new lib.zarr_default_viz renders real charts
   # directly from a run's zarr store instead. 0.3.19 (workbench #663) merges
   # remote sms-api builds into the top-left workspace-switcher dropdown
-  # (previously reachable only through the separate Source panel).
+  # (previously reachable only through the separate Source panel). 0.3.20
+  # (workbench #664) adds the study-analyses UI control + backend endpoint
+  # that was still missing after 0.3.17: nothing could author spec.analyses
+  # at all, even though the remote dispatch path already reads it correctly.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.19
+    newTag: 0.3.20
 
 replicas:
   - count: 1
