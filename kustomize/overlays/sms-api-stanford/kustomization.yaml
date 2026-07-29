@@ -23,7 +23,7 @@ images:
   # root-absolute /api/composite-test-run, which escaped the /workbench prefix and
   # matched the ALB's /api/* rule -> routed to sms-api, 404. (matches stanford-test).
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.10
+    newTag: 0.3.11
 
 replicas:
   - count: 1
@@ -45,6 +45,11 @@ resources:
   - target-group-binding.yaml
   - secret-ghcr.yaml
   - secret-shared.yaml
+  # Fine-grained PAT (push-only, CovertLabEcoli/sms-ecoli) for the workbench's
+  # non-interactive GitHub auth path (github_auth.py's VIVARIUM_WORKBENCH_GH_TOKEN
+  # resolution, vivarium-workbench#652) — dispatch/study-authoring push access
+  # without a human clicking "Sign in with GitHub" each session.
+  - secret-workbench-gh-token.yaml
   # vivarium-workbench: peer Deployment+Service (base/workbench referenced directly,
   # NOT via base/kustomization.yaml, so it deploys ONLY on Stanford) + its EBS PVC.
   # Its TargetGroupBinding (workbench-binding) is in target-group-binding.yaml above.
@@ -127,6 +132,30 @@ patches:
                   # The seed also clears ui.ptools_data_dir so HTTP delivery is used.
                   - name: DASHBOARD_PUBLIC_BASE_URL
                     value: "http://workbench.sms-api-stanford.svc.cluster.local:8000/workbench"
+    target:
+      kind: Deployment
+      name: workbench
+  # Non-interactive GitHub auth (vivarium-workbench#652): a scoped, push-only
+  # machine credential so POST /api/remote-run-start can push a session's
+  # workspace changes (e.g. a newly-authored study.yaml) without a human
+  # clicking "Sign in with GitHub" first. Lowest-priority resolution path —
+  # an interactive session still always wins if one is present.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: workbench
+      spec:
+        template:
+          spec:
+            containers:
+              - name: workbench
+                env:
+                  - name: VIVARIUM_WORKBENCH_GH_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: workbench-gh-token
+                        key: VIVARIUM_WORKBENCH_GH_TOKEN
     target:
       kind: Deployment
       name: workbench
