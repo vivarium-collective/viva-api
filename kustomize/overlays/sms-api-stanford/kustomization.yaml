@@ -72,8 +72,13 @@ images:
   # during the Model/Build panel merge, orphaning its JS handler and the
   # study-baseline-add/-remove endpoints; there was no way to fix a
   # "+ Study" blank scaffold's placeholder composite ref through the UI.
+  # 0.3.25 (workbench #670) fixes the 0.3.24 control itself: it called
+  # remove-then-add, but study_baseline_remove refuses to leave baseline[]
+  # empty (400) — every single-entry study (any fresh blank scaffold) hit
+  # that guard on the first call. Now adds the replacement under a new name
+  # first, then removes the old one.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.24
+    newTag: 0.3.25
 
 replicas:
   - count: 1
