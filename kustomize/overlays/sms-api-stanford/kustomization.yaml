@@ -43,9 +43,11 @@ images:
   # framework's own render pipeline nor the external
   # viva_superpowers.TimeSeriesFromObservables class has ever had a
   # non-SQLite code path — new lib.zarr_default_viz renders real charts
-  # directly from a run's zarr store instead.
+  # directly from a run's zarr store instead. 0.3.19 (workbench #663) merges
+  # remote sms-api builds into the top-left workspace-switcher dropdown
+  # (previously reachable only through the separate Source panel).
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.18
+    newTag: 0.3.19
 
 replicas:
   - count: 1
