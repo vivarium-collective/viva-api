@@ -112,4 +112,4 @@
 #          stuck at QUEUED forever even after the Batch job SUCCEEDED and results
 #          landed in S3. Now polls every NON-TERMINAL state so a job traverses
 #          queued->running->completed. Found by the same stanford-test smoke test.
-__version__ = "0.9.28"
+__version__ = "0.9.29"
