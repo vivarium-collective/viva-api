@@ -86,9 +86,15 @@ images:
   # self-healing on every switch since build-cache lives on ephemeral pod
   # storage. Also bumps the git-push timeout 120s -> 600s: a switched
   # build's first push carries the whole materialized tree as one
-  # brand-new commit with no shared history with origin.
+  # brand-new commit with no shared history with origin. 0.3.27
+  # (workbench #674) fixes landing a multi-seed remote run: land_remote_run()
+  # defaulted seed=0 and no caller ever overrode it, so every multi-seed
+  # GovCloud run silently kept only its first seed on landing — found live
+  # backlog-verifying a real dispatch (S3 confirmed both seeds computed
+  # correctly and in parallel; only the local landing step dropped one).
+  # Now unions every seed_NN/store.zarr found in the tar into one destination.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.26
+    newTag: 0.3.27
 
 replicas:
   - count: 1
