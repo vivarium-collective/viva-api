@@ -414,6 +414,87 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ecr_repository}:{image_tag}-s
         logger.info(f"Created K8s analysis Job {job_name} for experiment {experiment_id}")
         return JobId.k8s(job_name)
 
+    async def submit_ray_native_analysis(
+        self,
+        experiment_id: str,
+        params: dict,  # type: ignore[type-arg]
+        commit: str,
+    ) -> JobId:
+        """Create a K8s Job running v2ecoli's standalone analysis entrypoint.
+
+        For simulations dispatched via the Ray/xarray pipeline (v2ecoli/sms-ecoli):
+        submit_standalone_analysis above targets the legacy vEcoli-private/Nextflow
+        image (vecoli:<commit>-amd64-submit), which is never produced for this
+        pipeline -- confirmed live via ImagePullBackOff. This targets the
+        already-built v2ecoli:<commit> Ray image and its own
+        scripts/run_standalone_analysis.py instead.
+        """
+        settings = get_settings()
+        safe_id = experiment_id.replace("_", "-").lower()
+        job_name = f"ana-{safe_id}"[:63]
+        registry = f"{settings.ecr_account_id}.dkr.ecr.{settings.batch_region}.amazonaws.com"
+        submit_image = f"{registry}/{settings.ray_ecr_repository}:{commit}"
+
+        configmap_name = f"{job_name}-config"
+        configmap = k8s_client.V1ConfigMap(
+            metadata=k8s_client.V1ObjectMeta(
+                name=configmap_name,
+                labels={"app": "sms-api", "job-type": "analysis", "experiment-id": experiment_id},
+            ),
+            data={"params.json": json.dumps(params)},
+        )
+        self._k8s.create_configmap(configmap)
+
+        command = "cd /app/v2ecoli && python scripts/run_standalone_analysis.py --config-file /config/params.json"
+
+        job = k8s_client.V1Job(
+            metadata=k8s_client.V1ObjectMeta(
+                name=job_name,
+                labels={"app": "sms-api", "job-type": "analysis", "experiment-id": experiment_id},
+            ),
+            spec=k8s_client.V1JobSpec(
+                backoff_limit=0,
+                ttl_seconds_after_finished=86400,
+                template=k8s_client.V1PodTemplateSpec(
+                    spec=k8s_client.V1PodSpec(
+                        service_account_name="batch-submit",
+                        restart_policy="Never",
+                        containers=[
+                            k8s_client.V1Container(
+                                name="analysis",
+                                image=submit_image,
+                                command=["/bin/bash", "-c", command],
+                                env=[
+                                    k8s_client.V1EnvVar(name="AWS_DEFAULT_REGION", value=settings.batch_region),
+                                    k8s_client.V1EnvVar(name="AWS_REGION", value=settings.batch_region),
+                                    k8s_client.V1EnvVar(name="AWS_STS_REGIONAL_ENDPOINTS", value="regional"),
+                                    k8s_client.V1EnvVar(name="USER", value="sms-api"),
+                                ],
+                                volume_mounts=[
+                                    k8s_client.V1VolumeMount(name="config", mount_path="/config"),
+                                ],
+                                resources=k8s_client.V1ResourceRequirements(
+                                    # v2ecoli's full import surface (pandas/scipy/cvxpy/numba)
+                                    # is heavier than the legacy analysis script's.
+                                    requests={"cpu": "500m", "memory": "2Gi"},
+                                    limits={"cpu": "1", "memory": "4Gi"},
+                                ),
+                            ),
+                        ],
+                        volumes=[
+                            k8s_client.V1Volume(
+                                name="config",
+                                config_map=k8s_client.V1ConfigMapVolumeSource(name=configmap_name),
+                            ),
+                        ],
+                    ),
+                ),
+            ),
+        )
+        self._k8s.create_job(job)
+        logger.info(f"Created K8s Ray-native analysis Job {job_name} for experiment {experiment_id}")
+        return JobId.k8s(job_name)
+
     @override
     async def read_config_template(
         self,

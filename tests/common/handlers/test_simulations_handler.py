@@ -3,6 +3,7 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -12,14 +13,18 @@ from sms_api.common.handlers.simulations import (
     _S3_DOWNLOAD_CONCURRENCY,
     SimulationAnalysisResponseType,
     _download_outputs_from_s3,
+    _run_standalone_analysis_ray_native,
     fetch_omics_outputs,
     get_available_omics_output_paths,
 )
+from sms_api.common.simulator_defaults import RepoUrl
 from sms_api.common.ssh.ssh_service import SSHSessionService
 from sms_api.common.storage.file_paths import HPCFilePath, S3FilePath
 from sms_api.common.storage.file_service import FileService, ListingItem
 from sms_api.config import get_settings
 from sms_api.dependencies import get_file_service, set_file_service
+from sms_api.simulation.models import Simulation, SimulationConfig, SimulatorVersion
+from sms_api.simulation.simulation_service_k8s import SimulationServiceK8s
 
 
 @pytest.mark.integration
@@ -245,3 +250,62 @@ async def test_download_outputs_from_s3_skips_cached_files(tmp_path: Path, _swap
     downloaded_tsvs = [k for k in fake.downloads if k.endswith(".tsv")]
     assert len(downloaded_tsvs) == 5 - len(cached_keys)
     assert all(k not in cached_keys for k in downloaded_tsvs)
+
+
+def _make_ray_simulation(out_uri: str = "s3://bucket/vecoli-output/exp123", n_seeds: int = 2) -> Simulation:
+    # emitter_arg/n_init_sims are extra="allow" fields, not in the strict model
+    config = SimulationConfig(experiment_id="exp123", emitter_arg={"out_uri": out_uri}, n_init_sims=n_seeds)  # type: ignore[call-arg]
+    return Simulation(
+        database_id=115,
+        simulator_id=53,
+        parca_dataset_id=63,
+        config=config,
+        simulation_config_filename="api_simulation_default.json",
+        experiment_id="exp123",
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_standalone_analysis_ray_native_routes_to_v2ecoli_job() -> None:
+    """A simulator on sms-ecoli/v2ecoli must submit via submit_ray_native_analysis
+    (the v2ecoli:<commit> image), never the legacy vecoli:<commit>-amd64-submit path
+    that is confirmed to never work for this pipeline (ImagePullBackOff, live-verified)."""
+    simulation = _make_ray_simulation()
+    simulator = SimulatorVersion(
+        database_id=53, git_commit_hash="deadbeef",
+        git_repo_url=RepoUrl.SMS_ECOLI_REPO_URL, git_branch="main",
+    )
+
+    mock_k8s_service = AsyncMock(spec=SimulationServiceK8s)
+    mock_k8s_service.submit_ray_native_analysis.return_value = "ana-exp123"
+
+    with patch("sms_api.common.handlers.simulations.get_simulation_service", return_value=mock_k8s_service):
+        result = await _run_standalone_analysis_ray_native(
+            simulation=simulation, simulator=simulator,
+            modules={"multiseed": {"doubling_time_distribution": {}}},
+        )
+
+    mock_k8s_service.submit_ray_native_analysis.assert_called_once()
+    call_kwargs = mock_k8s_service.submit_ray_native_analysis.call_args.kwargs
+    assert call_kwargs["experiment_id"] == "exp123"
+    assert call_kwargs["commit"] == "deadbeef"
+    assert call_kwargs["params"]["out_uri"] == "s3://bucket/vecoli-output/exp123"
+    assert call_kwargs["params"]["n_seeds"] == 2
+    assert call_kwargs["params"]["modules"] == {"multiseed": {"doubling_time_distribution": {}}}
+    assert result["config"] == call_kwargs["params"]
+
+
+@pytest.mark.asyncio
+async def test_run_standalone_analysis_ray_native_requires_out_uri() -> None:
+    """A simulation with no emitter_arg.out_uri was never dispatched via the Ray/xarray
+    pipeline -- fail loudly rather than submit a job with nowhere to read data from."""
+    simulation = _make_ray_simulation(out_uri="")
+    simulator = SimulatorVersion(
+        database_id=53, git_commit_hash="deadbeef",
+        git_repo_url=RepoUrl.V2ECOLI_REPO_URL, git_branch="main",
+    )
+
+    with pytest.raises(ValueError, match="emitter_arg.out_uri"):
+        await _run_standalone_analysis_ray_native(
+            simulation=simulation, simulator=simulator, modules={},
+        )
