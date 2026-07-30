@@ -17,9 +17,14 @@ from sms_api.simulation.tables_orm import AnalysisStatusDB
 def _make_record(*, status: JobStatus = JobStatus.RUNNING) -> ExperimentAnalysisDTO:
     config = AnalysisConfig(analysis_options=AnalysisConfigOptions(experiment_id=["exp1"]))
     return ExperimentAnalysisDTO(
-        database_id=1, name="analysis-exp1-ab12", config=config, last_updated="now",
-        backend="ray", result_uri="s3://bucket/exp/analyses/analysis-exp1-ab12",
-        job_id_ext="ana-exp1-ab12", status=status,
+        database_id=1,
+        name="analysis-exp1-ab12",
+        config=config,
+        last_updated="now",
+        backend="ray",
+        result_uri="s3://bucket/exp/analyses/analysis-exp1-ab12",
+        job_id_ext="ana-exp1-ab12",
+        status=status,
     )
 
 
@@ -41,8 +46,7 @@ async def test_manifest_present_with_output_marks_ready() -> None:
     record = _make_record()
     db_service = AsyncMock()
     manifest = (
-        b'{"written": ["s3://bucket/exp/analyses/analysis-exp1-ab12/doubling_time_distribution.json"],'
-        b' "errors": []}'
+        b'{"written": ["s3://bucket/exp/analyses/analysis-exp1-ab12/doubling_time_distribution.json"], "errors": []}'
     )
     fake_file_service = AsyncMock()
     fake_file_service.get_file_contents.return_value = manifest
@@ -52,7 +56,9 @@ async def test_manifest_present_with_output_marks_ready() -> None:
 
     assert result.status == JobStatus.COMPLETED
     db_service.update_analysis_status.assert_called_once_with(
-        1, AnalysisStatusDB.READY, result_uri=record.result_uri,
+        1,
+        AnalysisStatusDB.READY,
+        result_uri=record.result_uri,
     )
 
 
@@ -82,8 +88,10 @@ async def test_no_manifest_yet_and_job_still_running_stays_computing() -> None:
     fake_sim_service = AsyncMock()
     fake_sim_service.get_job_status.return_value = None  # job vanished/still scheduling
 
-    with patch("sms_api.common.handlers.analyses.get_file_service", return_value=fake_file_service), \
-         patch("sms_api.common.handlers.analyses.get_simulation_service", return_value=fake_sim_service):
+    with (
+        patch("sms_api.common.handlers.analyses.get_file_service", return_value=fake_file_service),
+        patch("sms_api.common.handlers.analyses.get_simulation_service", return_value=fake_sim_service),
+    ):
         result = await handle_get_ray_analysis_status(db_service=db_service, record=record)
 
     assert result.status == JobStatus.RUNNING
@@ -103,15 +111,21 @@ async def test_no_manifest_but_k8s_job_failed_marks_failed_early() -> None:
     fake_file_service.get_file_contents.return_value = None
     fake_sim_service = AsyncMock()
     fake_sim_service.get_job_status.return_value = JobStatusInfo(
-        job_id=JobId.k8s("ana-exp1-ab12"), status=JobStatus.FAILED, error_message="ImagePullBackOff",
+        job_id=JobId.k8s("ana-exp1-ab12"),
+        status=JobStatus.FAILED,
+        error_message="ImagePullBackOff",
     )
 
-    with patch("sms_api.common.handlers.analyses.get_file_service", return_value=fake_file_service), \
-         patch("sms_api.common.handlers.analyses.get_simulation_service", return_value=fake_sim_service):
+    with (
+        patch("sms_api.common.handlers.analyses.get_file_service", return_value=fake_file_service),
+        patch("sms_api.common.handlers.analyses.get_simulation_service", return_value=fake_sim_service),
+    ):
         result = await handle_get_ray_analysis_status(db_service=db_service, record=record)
 
     assert result.status == JobStatus.FAILED
     assert result.error_log == "ImagePullBackOff"
     db_service.update_analysis_status.assert_called_once_with(
-        1, AnalysisStatusDB.FAILED, error_message="ImagePullBackOff",
+        1,
+        AnalysisStatusDB.FAILED,
+        error_message="ImagePullBackOff",
     )
