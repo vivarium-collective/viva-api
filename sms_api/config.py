@@ -238,7 +238,10 @@ class Settings(BaseSettings):
     ray_mnp_queue: str = ""  # Batch MNP job queue (e.g. "smscdk-ray-mnp")
     ray_mnp_job_definition: str = ""  # Batch MNP job definition (e.g. "smscdk-ray-mnp")
     ray_num_nodes: int = 3  # MNP node count for the simulation job (1 head + N-1 workers)
-    compose_ray_num_nodes: int = 1  # MNP node count for COMPOSE runs; 1 = single node (head is also worker, per the ray-batch-entrypoint --num-cpus conditional). Raise to fan seed lineages across N worker nodes for large sweeps (must be <= CDK rayBatch.numNodes).
+    # MNP node count for COMPOSE runs; 1 = single node (head is also worker, per the
+    # ray-batch-entrypoint --num-cpus conditional). Raise to fan seed lineages across
+    # N worker nodes for large sweeps (must be <= CDK rayBatch.numNodes).
+    compose_ray_num_nodes: int = 1
     ray_ecr_repository: str = "v2ecoli"  # ECR repo for the workload-owned Ray image (built by submit_build_image_job)
     ray_parca_mode: str = "full"  # v2ecoli-parca --mode (fast for debug, full for production)
     ray_parca_cpus: int = 8  # v2ecoli-parca --cpus

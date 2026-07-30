@@ -272,8 +272,10 @@ async def test_run_standalone_analysis_ray_native_routes_to_v2ecoli_job() -> Non
     that is confirmed to never work for this pipeline (ImagePullBackOff, live-verified)."""
     simulation = _make_ray_simulation()
     simulator = SimulatorVersion(
-        database_id=53, git_commit_hash="deadbeef",
-        git_repo_url=RepoUrl.SMS_ECOLI_REPO_URL, git_branch="main",
+        database_id=53,
+        git_commit_hash="deadbeef",
+        git_repo_url=RepoUrl.SMS_ECOLI_REPO_URL,
+        git_branch="main",
     )
 
     mock_k8s_service = AsyncMock(spec=SimulationServiceK8s)
@@ -281,7 +283,8 @@ async def test_run_standalone_analysis_ray_native_routes_to_v2ecoli_job() -> Non
 
     with patch("sms_api.common.handlers.simulations.get_simulation_service", return_value=mock_k8s_service):
         result = await _run_standalone_analysis_ray_native(
-            simulation=simulation, simulator=simulator,
+            simulation=simulation,
+            simulator=simulator,
             modules={"multiseed": {"doubling_time_distribution": {}}},
         )
 
@@ -301,11 +304,15 @@ async def test_run_standalone_analysis_ray_native_requires_out_uri() -> None:
     pipeline -- fail loudly rather than submit a job with nowhere to read data from."""
     simulation = _make_ray_simulation(out_uri="")
     simulator = SimulatorVersion(
-        database_id=53, git_commit_hash="deadbeef",
-        git_repo_url=RepoUrl.V2ECOLI_REPO_URL, git_branch="main",
+        database_id=53,
+        git_commit_hash="deadbeef",
+        git_repo_url=RepoUrl.V2ECOLI_REPO_URL,
+        git_branch="main",
     )
 
     with pytest.raises(ValueError, match="emitter_arg.out_uri"):
         await _run_standalone_analysis_ray_native(
-            simulation=simulation, simulator=simulator, modules={},
+            simulation=simulation,
+            simulator=simulator,
+            modules={},
         )

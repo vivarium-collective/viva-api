@@ -520,7 +520,9 @@ class TestSimulationServiceK8s:
         }
 
         job_id = await simulation_service_k8s_mock.submit_ray_native_analysis(
-            experiment_id="exp123", params=params, commit="deadbeef",
+            experiment_id="exp123",
+            params=params,
+            commit="deadbeef",
         )
 
         assert job_id.backend == JobBackend.K8S

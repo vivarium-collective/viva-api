@@ -1490,7 +1490,10 @@ async def _run_standalone_analysis_ray_native(
         raise ValueError("Standalone Ray-native analysis requires K8s backend")  # noqa: TRY004
 
     params: dict[str, Any] = {
-        "out_uri": out_uri, "n_seeds": n_seeds, "modules": modules, "analysis_name": analysis_name,
+        "out_uri": out_uri,
+        "n_seeds": n_seeds,
+        "modules": modules,
+        "analysis_name": analysis_name,
     }
     job_id = await sim_service.submit_ray_native_analysis(
         experiment_id=experiment_id,
