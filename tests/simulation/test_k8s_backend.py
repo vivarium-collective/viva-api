@@ -10,7 +10,7 @@ import pytest
 from sms_api.common.hpc.k8s_job_service import K8sJobService, _job_to_status
 from sms_api.common.hpc.local_task_service import LocalTaskService
 from sms_api.common.models import JobBackend, JobId, JobStatus
-from sms_api.config import ComputeBackend
+from sms_api.config import ComputeBackend, get_settings
 from sms_api.simulation.simulation_service_k8s import SimulationServiceK8s
 
 if TYPE_CHECKING:
@@ -500,3 +500,73 @@ class TestSimulationServiceK8s:
         assert "Dockerfile-submit" in script_submit
         assert "default-jre-headless" in script_submit
         assert "nextflow" in script_submit
+
+    async def test_submit_ray_native_analysis_targets_v2ecoli_image(
+        self,
+        simulation_service_k8s_mock: SimulationServiceK8s,
+        mock_k8s_job_service: MagicMock,
+    ) -> None:
+        """submit_standalone_analysis's legacy job template pulls vecoli:<commit>-amd64-submit
+        (ECR repo "vecoli"), an image never produced for Ray-backend (v2ecoli/sms-ecoli)
+        builds -- confirmed live via ImagePullBackOff on a real trigger. This must instead
+        target the v2ecoli:<commit> image (ECR repo "v2ecoli", no arch/submit suffix) that
+        Ray-backend simulation dispatch actually builds and pushes."""
+        settings = get_settings()
+        params = {
+            "out_uri": "s3://bucket/vecoli-output/exp123",
+            "n_seeds": 2,
+            "modules": {"multiseed": {"doubling_time_distribution": {}}},
+            "analysis_name": "analysis-exp123-ab12",
+        }
+
+        job_id = await simulation_service_k8s_mock.submit_ray_native_analysis(
+            experiment_id="exp123",
+            params=params,
+            commit="deadbeef",
+        )
+
+        assert job_id.backend == JobBackend.K8S
+        mock_k8s_job_service.create_job.assert_called_once()
+        mock_k8s_job_service.create_configmap.assert_called_once()
+
+        job_arg = mock_k8s_job_service.create_job.call_args[0][0]
+        container = job_arg.spec.template.spec.containers[0]
+        assert container.image == (
+            f"{settings.ecr_account_id}.dkr.ecr.{settings.batch_region}.amazonaws.com"
+            f"/{settings.ray_ecr_repository}:deadbeef"
+        )
+        assert "vecoli-amd64-submit" not in container.image
+        assert "run_standalone_analysis.py" in container.command[2]
+        assert "--config-file /config/params.json" in container.command[2]
+
+        configmap_arg = mock_k8s_job_service.create_configmap.call_args[0][0]
+        written_params = json.loads(configmap_arg.data["params.json"])
+        assert written_params == params
+
+    async def test_submit_ray_native_analysis_job_name_unique_per_trigger(
+        self,
+        simulation_service_k8s_mock: SimulationServiceK8s,
+        mock_k8s_job_service: MagicMock,
+    ) -> None:
+        """Two triggers for the SAME simulation must produce distinct K8s Job
+        names -- job_name derived from bare experiment_id (the legacy
+        submit_standalone_analysis's pattern) collides on repeat triggers,
+        since K8s Job names must be unique. Deriving from the already-unique
+        analysis_name (one per trigger, uuid-suffixed) avoids this."""
+        base = {"out_uri": "s3://bucket/exp", "n_seeds": 1, "modules": {}}
+
+        job_id_1 = await simulation_service_k8s_mock.submit_ray_native_analysis(
+            experiment_id="exp123",
+            params={**base, "analysis_name": "analysis-exp123-aaaa"},
+            commit="deadbeef",
+        )
+        job_id_2 = await simulation_service_k8s_mock.submit_ray_native_analysis(
+            experiment_id="exp123",
+            params={**base, "analysis_name": "analysis-exp123-bbbb"},
+            commit="deadbeef",
+        )
+
+        assert str(job_id_1) != str(job_id_2)
+        assert mock_k8s_job_service.create_job.call_count == 2
+        names = [c.args[0].metadata.name for c in mock_k8s_job_service.create_job.call_args_list]
+        assert len(set(names)) == 2

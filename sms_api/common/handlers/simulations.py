@@ -50,6 +50,7 @@ from sms_api.simulation.models import (
     VecoliSource,
 )
 from sms_api.simulation.simulation_service import SimulationService
+from sms_api.simulation.tables_orm import AnalysisStatusDB
 
 logger = logging.getLogger(__name__)
 
@@ -1456,6 +1457,75 @@ def workflow_log(simulation_id: int, base_url: str = "http://localhost:8080", ti
     )
 
 
+async def _run_standalone_analysis_ray_native(
+    database_service: DatabaseService,
+    simulation: Simulation,
+    simulator: SimulatorVersion,
+    modules: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Standalone analysis for a Ray/xarray-dispatched simulation (v2ecoli/sms-ecoli).
+
+    Submits a K8s Job running scripts/run_standalone_analysis.py inside the
+    already-built v2ecoli:<commit> image, rather than the legacy
+    submit_standalone_analysis path (vecoli:<commit>-amd64-submit, an image
+    never produced for this pipeline). Records a COMPUTING row via the
+    existing analysis-tracking DB layer (analysis-results-design.md's schema
+    -- already migrated, just never wired into a K8s submission path before
+    this) so GET /analyses/{id}/status can resolve real progress instead of
+    callers having no way to know when the job is done.
+    """
+    config = simulation.config
+    out_uri = getattr(config, "emitter_arg", None)
+    out_uri = (out_uri or {}).get("out_uri") if isinstance(out_uri, dict) else None
+    if not out_uri:
+        raise ValueError(
+            f"Simulation {simulation.database_id} has no config.emitter_arg.out_uri "
+            "-- not a Ray/xarray dispatch, cannot run standalone analysis"
+        )
+    n_seeds = simulation.num_seeds or 1
+    experiment_id = simulation.experiment_id
+    analysis_name = f"analysis-{experiment_id[:20]}-{str(uuid.uuid4())[:4]}"
+    result_uri = f"{out_uri.rstrip('/')}/analyses/{analysis_name}"
+
+    sim_service = get_simulation_service()
+    if sim_service is None:
+        raise ValueError("Simulation service not initialized")
+
+    from sms_api.simulation.simulation_service_k8s import SimulationServiceK8s
+
+    if not isinstance(sim_service, SimulationServiceK8s):
+        raise ValueError("Standalone Ray-native analysis requires K8s backend")  # noqa: TRY004
+
+    params: dict[str, Any] = {
+        "out_uri": out_uri,
+        "n_seeds": n_seeds,
+        "modules": modules,
+        "analysis_name": analysis_name,
+    }
+    job_id = await sim_service.submit_ray_native_analysis(
+        experiment_id=experiment_id,
+        params=params,
+        commit=simulator.git_commit_hash,
+    )
+    record = await database_service.record_analysis(
+        experiment_id=experiment_id,
+        n_tp=None,
+        status=AnalysisStatusDB.COMPUTING,
+        config=params,
+        name=analysis_name,
+        simulation_id=simulation.database_id,
+        backend="ray",
+        job_id_ext=str(job_id),
+        result_uri=result_uri,
+    )
+    return {
+        "job_id": str(job_id),
+        "analysis_name": analysis_name,
+        "config": params,
+        "database_id": record.database_id,
+    }
+
+
 async def run_standalone_analysis(
     database_service: DatabaseService,
     simulation_id: int,
@@ -1493,6 +1563,19 @@ async def run_standalone_analysis(
     # Build analysis config — path patterns match vEcoli conventions
     backend = get_job_backend()
     if backend == ComputeBackend.BATCH:
+        simulator = await database_service.get_simulator(simulator_id=simulation.simulator_id)
+        if simulator is not None and compute_backend_for_repo(simulator.git_repo_url) == ComputeBackend.RAY:
+            # This simulation was dispatched via the Ray/xarray pipeline (v2ecoli/sms-ecoli),
+            # which shares no build artifacts or output shape with the legacy vEcoli-private/
+            # Nextflow path below (variant_sim_data, parca/kb/*, a different ECR image entirely
+            # -- confirmed live via ImagePullBackOff, see v2ecoli#426). Route to the
+            # v2ecoli-native entrypoint instead.
+            return await _run_standalone_analysis_ray_native(
+                database_service=database_service,
+                simulation=simulation,
+                simulator=simulator,
+                modules=modules,
+            )
         s3_output = data_layout.NextflowLayout.output_uri(experiment_id)
         analysis_name = f"analysis-{experiment_id[:20]}-{str(uuid.uuid4())[:4]}"
         analysis_config: dict[str, Any] = {

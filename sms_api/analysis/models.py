@@ -293,6 +293,7 @@ class ExperimentAnalysisDTO(BaseModel):
     simulation_id: int | None = None
     backend: str | None = None
     error_message: str | None = None
+    job_id_ext: str | None = None  # K8s job name (Ray-native standalone analysis)
 
 
 class AnalysisRun(BaseModel):
