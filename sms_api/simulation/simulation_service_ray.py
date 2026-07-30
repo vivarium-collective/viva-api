@@ -295,11 +295,14 @@ class SimulationServiceRay(SimulationService):
         condition: str | None = None,
         max_generations: int | None = None,
         vecoli_source: VecoliSource | None = None,
+        n_generations: int = 1,
     ) -> str:
         # When ``composite`` is set, run the two-engine comparison driver — both
         # engines (v2ecoli port + vEcoli imported via build_composite_native)
         # as bigraph composites on Ray, emitting only the compact XArray view →
-        # zarr/S3. Otherwise the original phase0 single-generation ensemble.
+        # zarr/S3. Otherwise: single-generation phase0 by default, or the real
+        # multi-generation LineageProcess/batch_baseline_runner pipeline when
+        # the caller actually requested more than one generation.
         #
         # Engine selection is decoupled from generation count: ``max_generations``
         # defaults to 1 (the phase0 single-gen baseline), so picking an engine
@@ -317,6 +320,14 @@ class SimulationServiceRay(SimulationService):
                 f" --composite {composite} --condition {condition or 'basal'}"
                 f" --n-seeds {n_seeds} --max-generations {int(max_generations or 1)}"
                 f" --chunk {chunk} --out-root {SIM_OUT_DIR} --mode ray{src}"
+            )
+        if int(n_generations) > 1:
+            # Real multi-generation lineage (cell division across generations) --
+            # scripts/run_phase0_xarray_ensemble.py below silently ignores this
+            # entirely and only ever runs one generation per seed.
+            return (
+                f"cd {V2ECOLI_DIR} && python scripts/run_batch_baseline_ray.py"
+                f" --n-seeds {n_seeds} --n-generations {int(n_generations)}"
             )
         return (
             f"cd {V2ECOLI_DIR} && python scripts/run_phase0_xarray_ensemble.py"
@@ -452,6 +463,10 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         condition = getattr(config, "condition", None)
         max_generations = getattr(config, "max_generations", None)
         vecoli_source = getattr(config, "vecoli_source", None)
+        # config.generations is a real (non-"extra") SimulationConfig field, unlike
+        # the comparison knobs above -- read directly, not via getattr. Only the
+        # non-composite path branches on it (see _sim_command).
+        n_generations = int(config.generations or 1)
 
         # Engine-specific ParCa source: the pristine upstream wrapper (--composite
         # vecoli) stages an UPSTREAM-built simData (separate cache + build cmd);
@@ -497,6 +512,7 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
                 condition=condition,
                 max_generations=max_generations,
                 vecoli_source=vecoli_source,
+                n_generations=n_generations,
             ),
             out_s3=self._results_s3_uri(experiment_id),
             out_dir=SIM_OUT_DIR,
