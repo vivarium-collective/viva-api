@@ -76,9 +76,19 @@ images:
   # remove-then-add, but study_baseline_remove refuses to leave baseline[]
   # empty (400) — every single-entry study (any fresh blank scaffold) hit
   # that guard on the first call. Now adds the replacement under a new name
-  # first, then removes the old one.
+  # first, then removes the old one. 0.3.26 (workbench #671) fixes a
+  # switched/materialized sms-api build (switch_build()'s tarball
+  # extraction, deliberately not a git repo) never being able to dispatch:
+  # the non-pinned "Run on remote" push-based path requires a real git
+  # working copy with an origin remote. New ensure_git_workspace() makes
+  # every switched build push-ready (git init + remote add + a commit
+  # under a new workbench/sim<id>-<commit> branch) right at switch time,
+  # self-healing on every switch since build-cache lives on ephemeral pod
+  # storage. Also bumps the git-push timeout 120s -> 600s: a switched
+  # build's first push carries the whole materialized tree as one
+  # brand-new commit with no shared history with origin.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.25
+    newTag: 0.3.26
 
 replicas:
   - count: 1
