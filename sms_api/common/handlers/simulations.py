@@ -50,6 +50,7 @@ from sms_api.simulation.models import (
     VecoliSource,
 )
 from sms_api.simulation.simulation_service import SimulationService
+from sms_api.simulation.tables_orm import AnalysisStatusDB
 
 logger = logging.getLogger(__name__)
 
@@ -1457,6 +1458,7 @@ def workflow_log(simulation_id: int, base_url: str = "http://localhost:8080", ti
 
 
 async def _run_standalone_analysis_ray_native(
+    database_service: DatabaseService,
     simulation: Simulation,
     simulator: SimulatorVersion,
     modules: dict[str, dict[str, Any]],
@@ -1466,7 +1468,11 @@ async def _run_standalone_analysis_ray_native(
     Submits a K8s Job running scripts/run_standalone_analysis.py inside the
     already-built v2ecoli:<commit> image, rather than the legacy
     submit_standalone_analysis path (vecoli:<commit>-amd64-submit, an image
-    never produced for this pipeline).
+    never produced for this pipeline). Records a COMPUTING row via the
+    existing analysis-tracking DB layer (analysis-results-design.md's schema
+    -- already migrated, just never wired into a K8s submission path before
+    this) so GET /analyses/{id}/status can resolve real progress instead of
+    callers having no way to know when the job is done.
     """
     config = simulation.config
     out_uri = getattr(config, "emitter_arg", None)
@@ -1479,6 +1485,7 @@ async def _run_standalone_analysis_ray_native(
     n_seeds = simulation.num_seeds or 1
     experiment_id = simulation.experiment_id
     analysis_name = f"analysis-{experiment_id[:20]}-{str(uuid.uuid4())[:4]}"
+    result_uri = f"{out_uri.rstrip('/')}/analyses/{analysis_name}"
 
     sim_service = get_simulation_service()
     if sim_service is None:
@@ -1500,7 +1507,23 @@ async def _run_standalone_analysis_ray_native(
         params=params,
         commit=simulator.git_commit_hash,
     )
-    return {"job_id": str(job_id), "analysis_name": analysis_name, "config": params}
+    record = await database_service.record_analysis(
+        experiment_id=experiment_id,
+        n_tp=None,
+        status=AnalysisStatusDB.COMPUTING,
+        config=params,
+        name=analysis_name,
+        simulation_id=simulation.database_id,
+        backend="ray",
+        job_id_ext=str(job_id),
+        result_uri=result_uri,
+    )
+    return {
+        "job_id": str(job_id),
+        "analysis_name": analysis_name,
+        "config": params,
+        "database_id": record.database_id,
+    }
 
 
 async def run_standalone_analysis(
@@ -1548,6 +1571,7 @@ async def run_standalone_analysis(
             # -- confirmed live via ImagePullBackOff, see v2ecoli#426). Route to the
             # v2ecoli-native entrypoint instead.
             return await _run_standalone_analysis_ray_native(
+                database_service=database_service,
                 simulation=simulation,
                 simulator=simulator,
                 modules=modules,

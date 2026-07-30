@@ -542,3 +542,31 @@ class TestSimulationServiceK8s:
         configmap_arg = mock_k8s_job_service.create_configmap.call_args[0][0]
         written_params = json.loads(configmap_arg.data["params.json"])
         assert written_params == params
+
+    async def test_submit_ray_native_analysis_job_name_unique_per_trigger(
+        self,
+        simulation_service_k8s_mock: SimulationServiceK8s,
+        mock_k8s_job_service: MagicMock,
+    ) -> None:
+        """Two triggers for the SAME simulation must produce distinct K8s Job
+        names -- job_name derived from bare experiment_id (the legacy
+        submit_standalone_analysis's pattern) collides on repeat triggers,
+        since K8s Job names must be unique. Deriving from the already-unique
+        analysis_name (one per trigger, uuid-suffixed) avoids this."""
+        base = {"out_uri": "s3://bucket/exp", "n_seeds": 1, "modules": {}}
+
+        job_id_1 = await simulation_service_k8s_mock.submit_ray_native_analysis(
+            experiment_id="exp123",
+            params={**base, "analysis_name": "analysis-exp123-aaaa"},
+            commit="deadbeef",
+        )
+        job_id_2 = await simulation_service_k8s_mock.submit_ray_native_analysis(
+            experiment_id="exp123",
+            params={**base, "analysis_name": "analysis-exp123-bbbb"},
+            commit="deadbeef",
+        )
+
+        assert str(job_id_1) != str(job_id_2)
+        assert mock_k8s_job_service.create_job.call_count == 2
+        names = [c.args[0].metadata.name for c in mock_k8s_job_service.create_job.call_args_list]
+        assert len(set(names)) == 2

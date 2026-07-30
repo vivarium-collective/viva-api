@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -280,9 +281,12 @@ async def test_run_standalone_analysis_ray_native_routes_to_v2ecoli_job() -> Non
 
     mock_k8s_service = AsyncMock(spec=SimulationServiceK8s)
     mock_k8s_service.submit_ray_native_analysis.return_value = "ana-exp123"
+    mock_db_service = AsyncMock()
+    mock_db_service.record_analysis.return_value = SimpleNamespace(database_id=42)
 
     with patch("sms_api.common.handlers.simulations.get_simulation_service", return_value=mock_k8s_service):
         result = await _run_standalone_analysis_ray_native(
+            database_service=mock_db_service,
             simulation=simulation,
             simulator=simulator,
             modules={"multiseed": {"doubling_time_distribution": {}}},
@@ -296,6 +300,15 @@ async def test_run_standalone_analysis_ray_native_routes_to_v2ecoli_job() -> Non
     assert call_kwargs["params"]["n_seeds"] == 2
     assert call_kwargs["params"]["modules"] == {"multiseed": {"doubling_time_distribution": {}}}
     assert result["config"] == call_kwargs["params"]
+    assert result["database_id"] == 42
+
+    mock_db_service.record_analysis.assert_called_once()
+    record_kwargs = mock_db_service.record_analysis.call_args.kwargs
+    assert record_kwargs["experiment_id"] == "exp123"
+    assert record_kwargs["simulation_id"] == 115
+    assert record_kwargs["backend"] == "ray"
+    assert record_kwargs["job_id_ext"] == "ana-exp123"
+    assert record_kwargs["result_uri"].startswith("s3://bucket/vecoli-output/exp123/analyses/")
 
 
 @pytest.mark.asyncio
@@ -312,6 +325,7 @@ async def test_run_standalone_analysis_ray_native_requires_out_uri() -> None:
 
     with pytest.raises(ValueError, match="emitter_arg.out_uri"):
         await _run_standalone_analysis_ray_native(
+            database_service=AsyncMock(),
             simulation=simulation,
             simulator=simulator,
             modules={},

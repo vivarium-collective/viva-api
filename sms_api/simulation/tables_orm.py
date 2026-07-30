@@ -279,6 +279,7 @@ class ORMAnalysis(Base):
             simulation_id=self.simulation_id,
             backend=self.backend,
             error_message=self.error_message,
+            job_id_ext=self.job_id_ext,
         )
 
 

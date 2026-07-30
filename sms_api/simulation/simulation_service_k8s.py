@@ -428,9 +428,16 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ecr_repository}:{image_tag}-s
         pipeline -- confirmed live via ImagePullBackOff. This targets the
         already-built v2ecoli:<commit> Ray image and its own
         scripts/run_standalone_analysis.py instead.
+
+        job_name is derived from ``params["analysis_name"]`` (unique per trigger --
+        see _run_standalone_analysis_ray_native), not bare experiment_id: the legacy
+        submit_standalone_analysis's ``ana-{safe_id}`` naming collides across repeat
+        triggers for the same simulation (a real, separate gap in that path), and
+        this path must not repeat it.
         """
         settings = get_settings()
-        safe_id = experiment_id.replace("_", "-").lower()
+        analysis_name = params.get("analysis_name") or experiment_id
+        safe_id = analysis_name.replace("_", "-").lower()
         job_name = f"ana-{safe_id}"[:63]
         registry = f"{settings.ecr_account_id}.dkr.ecr.{settings.batch_region}.amazonaws.com"
         submit_image = f"{registry}/{settings.ray_ecr_repository}:{commit}"
