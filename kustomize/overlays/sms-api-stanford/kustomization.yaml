@@ -108,8 +108,13 @@ images:
   # 0.9.28's new endpoint) instead of a blind sleep, and folds the completed
   # result into .pbg/runs/<run_id>/analyses.json -- closing the loop through
   # the existing Analyses button with no frontend changes needed.
+  # 0.3.29 (workbench #710): pinned remote-run dispatch ("Run on remote
+  # (pinned)") now follows the session's own switched workspace instead of
+  # always targeting the deployment-wide REMOTE_REPO_URL/_BRANCH env vars --
+  # found live verifying sms-ecoli dispatch, where the panel kept resolving
+  # v2ecoli's pinned build regardless of which workspace was switched in.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.28
+    newTag: 0.3.29
 
 replicas:
   - count: 1
