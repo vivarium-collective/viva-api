@@ -170,7 +170,7 @@ spec:
             - name: VIVARIUM_WORKBENCH_REMOTE_PINNED
               value: "1"
             - name: VIVARIUM_WORKBENCH_REMOTE_REPO_URL
-              value: "https://github.com/vivarium-collective/v2ecoli"
+              value: "https://github.com/CovertLabEcoli/sms-ecoli"
             - name: VIVARIUM_WORKBENCH_REMOTE_BRANCH
               value: "main"
             # The init container's chown only runs on FIRST seed (it's guarded by
