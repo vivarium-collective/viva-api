@@ -112,4 +112,10 @@
 #          stuck at QUEUED forever even after the Batch job SUCCEEDED and results
 #          landed in S3. Now polls every NON-TERMINAL state so a job traverses
 #          queued->running->completed. Found by the same stanford-test smoke test.
-__version__ = "0.9.29"
+# 0.9.30 — set V2ECOLI_SIM_DATA on submit_ray_native_analysis()'s K8s Job spec
+#          (gap #1) so the DuckDB/cd1 analysis suite can resolve sim_data for an
+#          S3 sweep (resolve_sim_data only globs a co-located pickle for LOCAL
+#          sweep paths). Closes the deploy gap on this branch specifically —
+#          main already had this fix (PR #207); this branch (the real Stanford
+#          deploy trunk) did not.
+__version__ = "0.9.30"
