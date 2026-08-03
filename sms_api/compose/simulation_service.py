@@ -11,7 +11,7 @@ from textwrap import dedent
 from typing import override
 
 from sms_api.common.hpc.slurm_service import SlurmService
-from sms_api.common.models import SSHTarget
+from sms_api.common.models import JobBackend, SSHTarget
 from sms_api.common.storage.file_paths import HPCFilePath
 from sms_api.compose.database_service import ComposeDatabaseService
 from sms_api.compose.hpc_utils import (
@@ -23,7 +23,13 @@ from sms_api.compose.hpc_utils import (
     get_compose_slurm_log_file,
     get_compose_slurm_submit_file,
 )
-from sms_api.compose.models import ComposeHpcRun, ComposeJobType, ComposeSimulation, ComposeSimulatorVersion
+from sms_api.compose.models import (
+    ComposeHpcRun,
+    ComposeJobStatus,
+    ComposeJobType,
+    ComposeSimulation,
+    ComposeSimulatorVersion,
+)
 from sms_api.config import Settings, get_settings
 from sms_api.dependencies import get_ssh_session_service
 
@@ -31,11 +37,18 @@ logger = logging.getLogger(__name__)
 
 
 class ComposeSimulationService(ABC):
+    # Which JobBackend this service submits to — tags the ComposeHpcRun so status
+    # polling knows whether to query SLURM (via SSH) or AWS Batch (describe_jobs).
+    backend: "JobBackend"
+    # SLURM builds a per-def Singularity container before the run; prebuilt-image
+    # backends (Ray/Batch) skip that build-and-wait step in _dispatch_compose_job.
+    requires_container_build: bool = True
+
     @abstractmethod
     async def submit_simulation_job(
         self, simulation: ComposeSimulation, experiment_id: str, override_command: str | None = None
-    ) -> int:
-        pass
+    ) -> str:
+        """Submit the run; return the backend job id as a string (SLURM int-as-str or Batch UUID)."""
 
     @abstractmethod
     async def build_container(
@@ -43,9 +56,14 @@ class ComposeSimulationService(ABC):
     ) -> ComposeHpcRun:
         pass
 
+    async def get_job_status(self, job_id_ext: str) -> ComposeJobStatus | None:
+        """Poll this backend for a run's status. Default None = 'use the SLURM monitor path'."""
+        return None
+
 
 class ComposeSimulationServiceHpc(ComposeSimulationService):
     env: Settings
+    backend = JobBackend.SLURM
 
     def __init__(self, env: Settings | None = None) -> None:
         self.env = env or get_settings()
@@ -110,7 +128,7 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
     @override
     async def submit_simulation_job(
         self, simulation: ComposeSimulation, experiment_id: str, override_command: str | None = None
-    ) -> int:
+    ) -> str:
         if simulation.sim_request.request_file_path is None:
             raise RuntimeError("Simulation request file path is not available.")
 
@@ -186,7 +204,7 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
                     local_sbatch_file=local_submit_file,
                     remote_sbatch_file=remote_sbatch,
                 )
-                return slurm_jobid
+                return str(slurm_jobid)
 
     @override
     async def build_container(

@@ -238,6 +238,10 @@ class Settings(BaseSettings):
     ray_mnp_queue: str = ""  # Batch MNP job queue (e.g. "smscdk-ray-mnp")
     ray_mnp_job_definition: str = ""  # Batch MNP job definition (e.g. "smscdk-ray-mnp")
     ray_num_nodes: int = 3  # MNP node count for the simulation job (1 head + N-1 workers)
+    # MNP node count for COMPOSE runs; 1 = single node (head is also worker, per the
+    # ray-batch-entrypoint --num-cpus conditional). Raise to fan seed lineages across
+    # N worker nodes for large sweeps (must be <= CDK rayBatch.numNodes).
+    compose_ray_num_nodes: int = 1
     ray_ecr_repository: str = "v2ecoli"  # ECR repo for the workload-owned Ray image (built by submit_build_image_job)
     ray_parca_mode: str = "full"  # v2ecoli-parca --mode (fast for debug, full for production)
     ray_parca_cpus: int = 8  # v2ecoli-parca --cpus
@@ -255,6 +259,29 @@ class Settings(BaseSettings):
     compose_sim_base_path: str = ""  # HPC path for compose simulation outputs
     compose_cache_base_path: str = ""  # HPC path for compose ParCa cache (bind-mounted into containers)
     compose_containers_output_dir: str = "/output"  # Container-internal output dir
+    # Ray/Batch compose runner image (prebuilt, carries process-bigraph + pbg-emitters).
+    # `<ray_ecr_repository>:<compose_ray_image_tag>` — the deploy points this at the served
+    # workspace's image. Generic run_pbg.py runs inside it.
+    #
+    # Deliberately NOT defaulted to "latest": that repo is populated per-commit by
+    # submit_build_image_job and has no "latest" tag, so the old default could only
+    # ever resolve to an image that does not exist — a pull failure at job start
+    # rather than a clear error at submit. Empty means "unset"; the compose Ray
+    # service raises with the setting name instead of submitting a doomed job.
+    # The tag is a workspace COMMIT, and it is also what keys the ParCa cache below.
+    compose_ray_image_tag: str = ""
+    # Container dir the commit-keyed ParCa cache is staged into before the run, e.g.
+    # "/app/v2ecoli/out/cache" (v2ecoli's baseline resolves a relative "out/cache"
+    # against the image's WORKDIR). Empty disables staging — correct for any
+    # workspace whose composites don't need a prebuilt cache. Staging reuses the
+    # ensemble path's existing RAY_STAGE_S3/RAY_STAGE_DIR entrypoint mechanism.
+    compose_parca_cache_dir: str = ""
+    # "module:callable" naming the WORKSPACE's own core builder, e.g.
+    # "v2ecoli.core:build_core". run_pbg.py's generic core registers only
+    # process-bigraph's base types plus the pbg-emitters links; a workspace that
+    # registers its own types (v2ecoli's ECOLI_TYPES) needs its own builder or its
+    # documents won't resolve. Empty = use the generic core.
+    compose_pbg_core_builder: str = ""
     compose_nats_url: str = ""  # NATS server URL (optional)
     compose_nats_worker_event_subject: str = "compose.worker.events"
     compose_has_messaging: bool = False  # Enable NATS messaging

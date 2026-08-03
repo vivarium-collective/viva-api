@@ -92,6 +92,9 @@ class ComposeJobStatus(StrEnum):
 class ComposeHpcRun(BaseModel):
     database_id: int
     slurmjobid: int
+    # Backend-agnostic job id (AWS Batch/Ray UUIDs); ``job_backend`` tags which backend owns it.
+    job_id_ext: str | None = None
+    job_backend: str = "slurm"
     correlation_id: str
     job_type: ComposeJobType
     sim_id: int | None
@@ -225,6 +228,34 @@ class ComposeSubmittedSimulation(BaseModel):
 
 class PBAllowList(BaseModel):
     allow_list: list[str]
+
+
+# Bootstrap rows for a fresh deployment's ``compose_allow_list`` table (seeded once,
+# at startup, iff the table is empty — see ``AllowListDatabaseService.seed_if_empty``).
+# Operators curate the table thereafter; this list is not re-applied on restart.
+DEFAULT_COMPOSE_ALLOW_LIST: list[str] = [
+    "pypi::git+https://github.com/biosimulators/bspil-basico.git@initial_work",
+    "pypi::cobra",
+    "pypi::tellurium",
+    "pypi::copasi-basico",
+    "pypi::smoldyn",
+    "pypi::numpy",
+    "pypi::matplotlib",
+    "pypi::scipy",
+    "pypi::pb_multiscale_actin",
+    "conda::readdy",
+    # vivarium-collective git origins — the framework + workspace deps the
+    # vivarium-workbench pinned-run path ships as extra_pip_deps for a v2ecoli
+    # composite (v2ecoli itself + its process-bigraph stack, pinned per the
+    # workspace uv.lock). Base URLs (no @commit): the allow-list check is a
+    # substring match, so these cover any pinned commit. Without them the
+    # workbench's POST /compose/v1/simulation/run is rejected 403.
+    "pypi::git+https://github.com/vivarium-collective/v2ecoli.git",
+    "pypi::git+https://github.com/vivarium-collective/bigraph-schema.git",
+    "pypi::git+https://github.com/vivarium-collective/pbg-emitters.git",
+    "pypi::git+https://github.com/vivarium-collective/pbg-superpowers.git",
+    "pypi::git+https://github.com/vivarium-collective/process-bigraph.git",
+]
 
 
 class ComposeSimulationExperiment(BaseModel):

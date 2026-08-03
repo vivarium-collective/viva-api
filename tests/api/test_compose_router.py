@@ -19,11 +19,16 @@ async def test_submit_simulation_threads_extra_pip_deps(fastapi_app: object) -> 
         captured.update(kwargs)
         return ComposeSimulationExperiment(simulation_database_id=1, simulator_database_id=1)
 
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    fake_db = MagicMock()
+    fake_db.get_allow_list_db.return_value.list_allow_list = AsyncMock(
+        return_value=["pypi::git+https://github.com/x/y.git@abc", "pypi::cobra"]
+    )
 
     with ExitStack() as stack:
         stack.enter_context(patch("sms_api.api.routers.compose.run_compose_simulation", _fake_run))
-        stack.enter_context(patch("sms_api.api.routers.compose._require_db", return_value=MagicMock()))
+        stack.enter_context(patch("sms_api.api.routers.compose._require_db", return_value=fake_db))
         stack.enter_context(patch("sms_api.api.routers.compose._require_sim", return_value=MagicMock()))
         stack.enter_context(patch("sms_api.api.routers.compose._require_monitor", return_value=MagicMock()))
         async with AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://testserver") as client:  # type: ignore[arg-type]

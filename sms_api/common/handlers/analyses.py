@@ -22,13 +22,14 @@ from sms_api.analysis.models import (
     OutputFileMetadata,
     TsvOutputFile,
 )
-from sms_api.common.models import JobStatus, SSHTarget
+from sms_api.common.models import JobId, JobStatus, SSHTarget
 from sms_api.common.storage.file_paths import HPCFilePath, S3FilePath
 from sms_api.common.utils import get_data_id, timestamp
 from sms_api.config import get_settings
-from sms_api.dependencies import get_file_service, get_ssh_session_service
+from sms_api.dependencies import get_file_service, get_simulation_service, get_ssh_session_service
 from sms_api.simulation.database_service import DatabaseService
 from sms_api.simulation.models import SimulatorVersion
+from sms_api.simulation.tables_orm import AnalysisStatusDB
 
 # Text output extensions the analysis data endpoint returns (mirrors the legacy
 # SLURM path's get_available_output_paths).
@@ -192,6 +193,53 @@ def _parse_cached_filename_metadata(filename: str) -> dict[str, int]:
         if m.group(3) is not None:
             metadata["generation"] = int(m.group(3))
     return metadata
+
+
+async def handle_get_ray_analysis_status(
+    db_service: DatabaseService,
+    record: ExperimentAnalysisDTO,
+) -> AnalysisRun:
+    """Resolve a Ray-native standalone analysis's status (submit_ray_native_analysis).
+
+    There is no persistent job-status API for the backing K8s Job (it has
+    ttl_seconds_after_finished=86400, so get_job_status returns None once that
+    expires) -- S3-exists is the durable, authoritative READY signal, matching
+    analysis-results-design.md's own status-resolution plan. Falls back to a
+    live K8s job-status check only to catch an early, hard failure (image pull
+    error, scheduling failure) before the manifest could ever be written.
+    """
+    if record.status in (JobStatus.COMPLETED, JobStatus.FAILED):
+        return AnalysisRun(id=record.database_id, status=record.status, error_log=record.error_message)
+
+    file_service = get_file_service()
+    manifest_bytes = None
+    if file_service is not None and record.result_uri:
+        manifest_bytes = await file_service.get_file_contents(
+            S3FilePath(s3_path=Path(f"{record.result_uri}/_manifest.json"))
+        )
+    if manifest_bytes is not None:
+        manifest = json.loads(manifest_bytes)
+        if manifest.get("written"):
+            await db_service.update_analysis_status(
+                record.database_id, AnalysisStatusDB.READY, result_uri=record.result_uri
+            )
+            return AnalysisRun(id=record.database_id, status=JobStatus.COMPLETED)
+        error_message = "; ".join(e.get("error", "") for e in manifest.get("errors", [])) or "analysis failed"
+        await db_service.update_analysis_status(
+            record.database_id, AnalysisStatusDB.FAILED, error_message=error_message
+        )
+        return AnalysisRun(id=record.database_id, status=JobStatus.FAILED, error_log=error_message)
+
+    sim_service = get_simulation_service()
+    if sim_service is not None and record.job_id_ext:
+        job_status_info = await sim_service.get_job_status(JobId.k8s(record.job_id_ext))
+        if job_status_info is not None and job_status_info.status == JobStatus.FAILED:
+            await db_service.update_analysis_status(
+                record.database_id, AnalysisStatusDB.FAILED, error_message=job_status_info.error_message
+            )
+            return AnalysisRun(id=record.database_id, status=JobStatus.FAILED, error_log=job_status_info.error_message)
+
+    return AnalysisRun(id=record.database_id, status=JobStatus.RUNNING)
 
 
 async def handle_get_analysis_status(

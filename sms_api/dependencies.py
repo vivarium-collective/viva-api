@@ -393,7 +393,8 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         from sms_api.api.routers.compose import set_compose_services
         from sms_api.compose.database_service import ComposeDatabaseService
         from sms_api.compose.job_monitor import ComposeJobMonitor
-        from sms_api.compose.simulation_service import ComposeSimulationServiceHpc
+        from sms_api.compose.models import DEFAULT_COMPOSE_ALLOW_LIST
+        from sms_api.compose.simulation_service import ComposeSimulationService, ComposeSimulationServiceHpc
         from sms_api.compose.tables_orm import create_compose_db
 
         logger.info("Initializing compose subsystem tables...")
@@ -401,8 +402,34 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
 
         session_maker = async_sessionmaker(engine, expire_on_commit=True)
         compose_db = ComposeDatabaseService(session_maker)
-        compose_sim = ComposeSimulationServiceHpc()
-        compose_monitor = ComposeJobMonitor(nats_client=None, database_service=compose_db)
+
+        # Per-backend compose service registry, mirroring _init_simulation_service: the
+        # deployment default (COMPUTE_BACKEND) is what the compose router uses, and the Ray
+        # backend is registered when the MNP queue is configured (Stanford). SLURM has no
+        # separate enable flag — it's the default when COMPUTE_BACKEND=slurm (UCONN).
+        settings = get_settings()
+        default_backend = get_job_backend()
+        compose_registry: dict[ComputeBackend, ComposeSimulationService] = {}
+        if settings.ray_mnp_queue:
+            from sms_api.compose.simulation_service_ray import ComposeSimulationServiceRay
+
+            compose_registry[ComputeBackend.RAY] = ComposeSimulationServiceRay()
+            logger.info("✓ Compose backend registered: ray (AWS Batch MNP)")
+        if default_backend == ComputeBackend.SLURM:
+            compose_registry[ComputeBackend.SLURM] = ComposeSimulationServiceHpc()
+            logger.info("✓ Compose backend registered: slurm (HPC)")
+        # Default: the deployment's compute backend if built, else whatever's available
+        # (Stanford runs COMPUTE_BACKEND=ray → Ray; UCONN → SLURM).
+        compose_sim = compose_registry.get(default_backend) or next(
+            iter(compose_registry.values()), ComposeSimulationServiceHpc()
+        )
+        compose_monitor = ComposeJobMonitor(
+            nats_client=None, database_service=compose_db, sim_registry=compose_registry
+        )
+
+        # Bootstrap compose_allow_list on a fresh deployment only — never overwrites an
+        # operator-curated table (see AllowListDatabaseService.seed_if_empty).
+        await compose_db.get_allow_list_db().seed_if_empty(DEFAULT_COMPOSE_ALLOW_LIST)
 
         set_compose_services(db=compose_db, sim=compose_sim, monitor=compose_monitor)
 

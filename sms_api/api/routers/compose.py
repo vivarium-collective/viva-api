@@ -17,6 +17,7 @@ from sms_api.compose.handlers import (
 )
 from sms_api.compose.job_monitor import ComposeJobMonitor
 from sms_api.compose.models import (
+    DEFAULT_COMPOSE_ALLOW_LIST,
     BiGraphComputeType,
     BiGraphProcess,
     BiGraphStep,
@@ -48,19 +49,6 @@ router = APIRouter()
 _compose_db_service: ComposeDatabaseService | None = None
 _compose_sim_service: ComposeSimulationService | None = None
 _compose_job_monitor: ComposeJobMonitor | None = None
-
-COMPOSE_ALLOW_LIST = [
-    "pypi::git+https://github.com/biosimulators/bspil-basico.git@initial_work",
-    "pypi::cobra",
-    "pypi::tellurium",
-    "pypi::copasi-basico",
-    "pypi::smoldyn",
-    "pypi::numpy",
-    "pypi::matplotlib",
-    "pypi::scipy",
-    "pypi::pb_multiscale_actin",
-    "conda::readdy",
-]
 
 
 def set_compose_services(
@@ -134,12 +122,14 @@ async def submit_simulation(
         raise HTTPException(400, "interval_time must be between 0 and 1000")
     simulation_request = await _parse_upload(uploaded_file, batch_submission)
     simulation_request.end_time_point = interval_time
+    db = _require_db()
+    allow_list = await db.get_allow_list_db().list_allow_list() or DEFAULT_COMPOSE_ALLOW_LIST
     return await run_compose_simulation(
         simulation_request=simulation_request,
-        database_service=_require_db(),
+        database_service=db,
         simulation_service=_require_sim(),
         job_monitor=_require_monitor(),
-        pb_allow_list=PBAllowList(allow_list=COMPOSE_ALLOW_LIST),
+        pb_allow_list=PBAllowList(allow_list=allow_list),
         background_tasks=background_tasks,
         extra_pip_deps=extra_pip_deps,
     )

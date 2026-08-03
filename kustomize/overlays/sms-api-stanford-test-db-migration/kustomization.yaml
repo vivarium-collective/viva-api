@@ -7,7 +7,10 @@ images:
   - name: ghcr.io/vivarium-collective/sms-api
     # Must contain sms_api/simulation/db_reconcile.py (the Job runs it). Keep in
     # sync with the app overlay's sms-api tag; do not lower below 0.9.19.
-    newTag: 0.9.23
+    # 0.9.24 carries migration e5a7c9d10f21 (compose_hpcrun.job_id_ext/job_backend)
+    # and its db_reconcile fingerprint marker — the Job only applies what THIS tag
+    # contains, so a stale tag here silently skips the migration.
+    newTag: 0.9.26
 
 resources:
   - alembic-job.yaml

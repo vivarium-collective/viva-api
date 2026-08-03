@@ -183,7 +183,15 @@ async def home(request: Request) -> templating._TemplateResponse:
 
 @app.get("/health", tags=["SMS API"])
 async def check_health() -> dict[str, str]:
-    return {"docs": f"{ACTIVE_URL}{app.docs_url}", "version": APP_VERSION}
+    from sms_api.config import get_settings
+
+    settings = get_settings()
+    return {
+        "docs": f"{ACTIVE_URL}{app.docs_url}",
+        "version": APP_VERSION,
+        "deployment_namespace": settings.deployment_namespace,
+        "compute_backend": settings.compute_backend,
+    }
 
 
 @app.get("/version", tags=["SMS API"])

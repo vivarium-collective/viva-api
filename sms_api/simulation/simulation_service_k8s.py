@@ -16,6 +16,7 @@ from sms_api.common.hpc.k8s_job_service import K8sJobService
 from sms_api.common.hpc.local_task_service import LocalTaskService
 from sms_api.common.models import JobBackend, JobId
 from sms_api.common.simulator_defaults import DEFAULT_BRANCH, DEFAULT_REPO
+from sms_api.common.storage import data_layout
 from sms_api.config import get_settings
 from sms_api.simulation import batch_build
 from sms_api.simulation.database_service import DatabaseService
@@ -412,6 +413,105 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ecr_repository}:{image_tag}-s
         )
         self._k8s.create_job(job)
         logger.info(f"Created K8s analysis Job {job_name} for experiment {experiment_id}")
+        return JobId.k8s(job_name)
+
+    async def submit_ray_native_analysis(
+        self,
+        experiment_id: str,
+        params: dict,  # type: ignore[type-arg]
+        commit: str,
+    ) -> JobId:
+        """Create a K8s Job running v2ecoli's standalone analysis entrypoint.
+
+        For simulations dispatched via the Ray/xarray pipeline (v2ecoli/sms-ecoli):
+        submit_standalone_analysis above targets the legacy vEcoli-private/Nextflow
+        image (vecoli:<commit>-amd64-submit), which is never produced for this
+        pipeline -- confirmed live via ImagePullBackOff. This targets the
+        already-built v2ecoli:<commit> Ray image and its own
+        scripts/run_standalone_analysis.py instead.
+
+        job_name is derived from ``params["analysis_name"]`` (unique per trigger --
+        see _run_standalone_analysis_ray_native), not bare experiment_id: the legacy
+        submit_standalone_analysis's ``ana-{safe_id}`` naming collides across repeat
+        triggers for the same simulation (a real, separate gap in that path), and
+        this path must not repeat it.
+        """
+        settings = get_settings()
+        analysis_name = params.get("analysis_name") or experiment_id
+        safe_id = analysis_name.replace("_", "-").lower()
+        job_name = f"ana-{safe_id}"[:63]
+        registry = f"{settings.ecr_account_id}.dkr.ecr.{settings.batch_region}.amazonaws.com"
+        submit_image = f"{registry}/{settings.ray_ecr_repository}:{commit}"
+
+        configmap_name = f"{job_name}-config"
+        configmap = k8s_client.V1ConfigMap(
+            metadata=k8s_client.V1ObjectMeta(
+                name=configmap_name,
+                labels={"app": "sms-api", "job-type": "analysis", "experiment-id": experiment_id},
+            ),
+            data={"params.json": json.dumps(params)},
+        )
+        self._k8s.create_configmap(configmap)
+
+        command = "cd /app/v2ecoli && python scripts/run_standalone_analysis.py --config-file /config/params.json"
+
+        job = k8s_client.V1Job(
+            metadata=k8s_client.V1ObjectMeta(
+                name=job_name,
+                labels={"app": "sms-api", "job-type": "analysis", "experiment-id": experiment_id},
+            ),
+            spec=k8s_client.V1JobSpec(
+                backoff_limit=0,
+                ttl_seconds_after_finished=86400,
+                template=k8s_client.V1PodTemplateSpec(
+                    spec=k8s_client.V1PodSpec(
+                        service_account_name="batch-submit",
+                        restart_policy="Never",
+                        containers=[
+                            k8s_client.V1Container(
+                                name="analysis",
+                                image=submit_image,
+                                command=["/bin/bash", "-c", command],
+                                env=[
+                                    k8s_client.V1EnvVar(name="AWS_DEFAULT_REGION", value=settings.batch_region),
+                                    k8s_client.V1EnvVar(name="AWS_REGION", value=settings.batch_region),
+                                    k8s_client.V1EnvVar(name="AWS_STS_REGIONAL_ENDPOINTS", value="regional"),
+                                    k8s_client.V1EnvVar(name="USER", value="sms-api"),
+                                    # Lets run_standalone_analysis.py's DuckDB/cd1 analyses
+                                    # (v2ecoli.workflow.analysis.Analysis subclasses) resolve
+                                    # sim_data without a sweep-local pickle -- an S3 sweep has
+                                    # none to glob (analysis_runner.resolve_sim_data only globs
+                                    # local paths). The ParCa job and this analysis job derive
+                                    # the same commit-keyed cache URI independently, so this
+                                    # needs no new hand-off plumbing.
+                                    k8s_client.V1EnvVar(
+                                        name="V2ECOLI_SIM_DATA",
+                                        value=f"{data_layout.RayLayout.parca_cache_uri(commit)}simData.cPickle",
+                                    ),
+                                ],
+                                volume_mounts=[
+                                    k8s_client.V1VolumeMount(name="config", mount_path="/config"),
+                                ],
+                                resources=k8s_client.V1ResourceRequirements(
+                                    # v2ecoli's full import surface (pandas/scipy/cvxpy/numba)
+                                    # is heavier than the legacy analysis script's.
+                                    requests={"cpu": "500m", "memory": "2Gi"},
+                                    limits={"cpu": "1", "memory": "4Gi"},
+                                ),
+                            ),
+                        ],
+                        volumes=[
+                            k8s_client.V1Volume(
+                                name="config",
+                                config_map=k8s_client.V1ConfigMapVolumeSource(name=configmap_name),
+                            ),
+                        ],
+                    ),
+                ),
+            ),
+        )
+        self._k8s.create_job(job)
+        logger.info(f"Created K8s Ray-native analysis Job {job_name} for experiment {experiment_id}")
         return JobId.k8s(job_name)
 
     @override

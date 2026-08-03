@@ -23,6 +23,14 @@ spec:
   # Single replica: the workbench holds a git working copy + SQLite on an RWO EBS
   # volume, so exactly one writer.
   replicas: 1
+  # Recreate (not RollingUpdate): a rollout must NOT surge a second pod. The default
+  # RollingUpdate maxSurge=25% rounds up to 1 for a single replica, so it briefly runs
+  # two pods — both trying to mount the ReadWriteOnce EBS volume. If the new pod lands
+  # on a different node it wedges on a Multi-Attach error until the old one dies.
+  # Recreate terminates the old pod fully before starting the new one: never two pods,
+  # never a volume conflict.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: vivarium-workbench
@@ -56,6 +64,13 @@ spec:
               if [ ! -f /workspace/workspace.yaml ]; then
                 echo "seeding /workspace from baked-in /app/v2ecoli";
                 cp -a /app/v2ecoli/. /workspace/;
+                # `cp -a` preserves the IMAGE LAYER's ownership — a build-time uid
+                # that doesn't exist in this container (observed: .git owned by
+                # 17163:0). The pod runs as root, so git then refuses every command
+                # with "fatal: detected dubious ownership", which is why in-pod git
+                # has been unusable (see REMOTE_PINNED's "unwritable git remote"
+                # note below). Normalize ownership so git works on the seeded repo.
+                chown -R 0:0 /workspace;
               else
                 echo "/workspace already seeded (workspace.yaml present); skipping";
               fi
@@ -158,6 +173,19 @@ spec:
               value: "https://github.com/vivarium-collective/v2ecoli"
             - name: VIVARIUM_WORKBENCH_REMOTE_BRANCH
               value: "main"
+            # The init container's chown only runs on FIRST seed (it's guarded by
+            # the workspace.yaml marker), so a volume seeded before that fix keeps
+            # its foreign ownership forever — and any workspace staged by other
+            # means later (the /workbench-root/<org__repo> multi-workspace design)
+            # may too. Declare the safe.directory exception globally via git's
+            # env-config form: no image rebuild, no .gitconfig to manage, and it
+            # covers every checkout on the volume rather than one hardcoded path.
+            - name: GIT_CONFIG_COUNT
+              value: "1"
+            - name: GIT_CONFIG_KEY_0
+              value: "safe.directory"
+            - name: GIT_CONFIG_VALUE_0
+              value: "*"
           resources:
             requests:
               cpu: "500m"

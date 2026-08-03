@@ -8,8 +8,18 @@ namespace: sms-api-stanford
 #   newTag: 0.4.5
 
 images:
+  # 0.9.28: routes standalone analysis to a v2ecoli-native K8s job for
+  # Ray-backend simulators (v2ecoli/sms-ecoli) instead of the legacy
+  # vEcoli-private/Nextflow path, which pulled an image never produced for
+  # this pipeline (confirmed live via ImagePullBackOff) -- the 14th-bug fix.
+  # Also fixes a K8s job-name collision on repeat analysis triggers and wires
+  # real DB-tracked status (GET /analyses/{id}/status) for these jobs.
+  # 0.9.29: routes to a real multi-generation LineageProcess/batch_baseline_runner
+  # dispatch (scripts/run_batch_baseline_ray.py) when a simulation requests
+  # generations > 1 -- the default single-generation script silently ignored
+  # this entirely. First real dispatch of this pipeline on any infrastructure.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.23
+    newTag: 0.9.29
   # ptools pinned to last-known-good tag — CI only builds sms-api, so there is
   # no newer sms-ptools:0.6.x image on ghcr.io.  0.5.9 is the tag the live Stanford
   # pod has been running successfully; keeping both namespaces pointing here
@@ -22,14 +32,100 @@ images:
   # base-path fix (workbench #476): the wiring explorer's "test run" posted a
   # root-absolute /api/composite-test-run, which escaped the /workbench prefix and
   # matched the ALB's /api/* rule -> routed to sms-api, 404. (matches stanford-test).
+  # 0.3.14 (workbench #658) applies the same fix to the main dashboard page's
+  # session.js spawn-bind (the Source panel's "Open" button), which had the
+  # identical late-shim-injection bug — found while trying to bind a session to
+  # the sms-ecoli pilot build. 0.3.15 (workbench #659) fixes six more instances
+  # of the same class of bug: the Viz/Report/Analyses/Results buttons and
+  # study export/analysis-zip/audit-report links all build plain <a href>/
+  # window.open()/window.location targets, which the base-path shim (patches
+  # only fetch/XHR/EventSource) never sees. 0.3.16 (workbench #660) closes a
+  # separate, non-transport gap: Results download now falls back to sms-api's
+  # existing S3-streaming /data endpoint when a run's local materialization
+  # is gone (the normal state for a GovCloud-dispatched run after a pod
+  # restart, or one recorded via the sms-api-backed remote-simulations list).
+  # 0.3.17 (workbench #661) fixes the reason a remote-dispatched run's
+  # analysis_options always came out empty: remote_run_submit() never read
+  # spec.analyses at all, for any run, ever — now threads
+  # build_analysis_options(spec.analyses) into the dispatch payload.
+  # 0.3.18 (workbench #662) adds zarr-native default Viz/Report rendering:
+  # every GovCloud/Ray run's data lives in a zarr store, but neither the
+  # framework's own render pipeline nor the external
+  # viva_superpowers.TimeSeriesFromObservables class has ever had a
+  # non-SQLite code path — new lib.zarr_default_viz renders real charts
+  # directly from a run's zarr store instead. 0.3.19 (workbench #663) merges
+  # remote sms-api builds into the top-left workspace-switcher dropdown
+  # (previously reachable only through the separate Source panel). 0.3.20
+  # (workbench #664) adds the study-analyses UI control + backend endpoint
+  # that was still missing after 0.3.17: nothing could author spec.analyses
+  # at all, even though the remote dispatch path already reads it correctly.
+  # 0.3.21 (workbench #665) fixes study_create()'s no-source ("blank study")
+  # branch: it scaffolded spec.yaml under studies/<name>/, but
+  # iter_study_dirs() only recognizes study.yaml there (spec.yaml is legacy,
+  # honored only under investigations/<name>/). Every blank study created via
+  # the "+ Study" modal returned 200 yet was permanently invisible to
+  # /api/investigations and /api/study/{slug} — found live on this deployment
+  # while trying to author a study to attach analyses config to. 0.3.22
+  # (workbench #666) fixes a stale vw_session cookie: it was only ever set
+  # when absent, so a browser that already had a cookie from an earlier,
+  # different session never converged to a later bind — fetch() calls
+  # (session.js's X-VW-Session header) resolved correctly, but any plain
+  # navigation (iframe, typed URL) fell back to the stale cookie and
+  # silently loaded the wrong workspace. Found opening the study created
+  # while fixing 0.3.21: the JSON API returned it, but the UI still said
+  # "Study not found." 0.3.23 (workbench #667) moves the study-analyses
+  # authoring control (from 0.3.20) off a legacy panel that no navigation
+  # path actually opened — dead UI — onto the Study page's Model tab,
+  # reachable for every study, grouped or ungrouped. 0.3.24 (workbench #669)
+  # restores a UI path to set/replace a study's baseline composite ref —
+  # the pre-unification "+ Add baseline" form was removed from the template
+  # during the Model/Build panel merge, orphaning its JS handler and the
+  # study-baseline-add/-remove endpoints; there was no way to fix a
+  # "+ Study" blank scaffold's placeholder composite ref through the UI.
+  # 0.3.25 (workbench #670) fixes the 0.3.24 control itself: it called
+  # remove-then-add, but study_baseline_remove refuses to leave baseline[]
+  # empty (400) — every single-entry study (any fresh blank scaffold) hit
+  # that guard on the first call. Now adds the replacement under a new name
+  # first, then removes the old one. 0.3.26 (workbench #671) fixes a
+  # switched/materialized sms-api build (switch_build()'s tarball
+  # extraction, deliberately not a git repo) never being able to dispatch:
+  # the non-pinned "Run on remote" push-based path requires a real git
+  # working copy with an origin remote. New ensure_git_workspace() makes
+  # every switched build push-ready (git init + remote add + a commit
+  # under a new workbench/sim<id>-<commit> branch) right at switch time,
+  # self-healing on every switch since build-cache lives on ephemeral pod
+  # storage. Also bumps the git-push timeout 120s -> 600s: a switched
+  # build's first push carries the whole materialized tree as one
+  # brand-new commit with no shared history with origin. 0.3.27
+  # (workbench #674) fixes landing a multi-seed remote run: land_remote_run()
+  # defaulted seed=0 and no caller ever overrode it, so every multi-seed
+  # GovCloud run silently kept only its first seed on landing — found live
+  # backlog-verifying a real dispatch (S3 confirmed both seeds computed
+  # correctly and in parallel; only the local landing step dropped one).
+  # Now unions every seed_NN/store.zarr found in the tar into one destination.
+  # 0.3.28 (workbench #675): triggers standalone analysis on "Land Results"
+  # when a study has spec.analyses configured, polls its real status (sms-api
+  # 0.9.28's new endpoint) instead of a blind sleep, and folds the completed
+  # result into .pbg/runs/<run_id>/analyses.json -- closing the loop through
+  # the existing Analyses button with no frontend changes needed.
+  # 0.3.29 (workbench #710): pinned remote-run dispatch ("Run on remote
+  # (pinned)") now follows the session's own switched workspace instead of
+  # always targeting the deployment-wide REMOTE_REPO_URL/_BRANCH env vars --
+  # found live verifying sms-ecoli dispatch, where the panel kept resolving
+  # v2ecoli's pinned build regardless of which workspace was switched in.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.1
+    newTag: 0.3.29
 
 replicas:
   - count: 1
     name: api
   - count: 1
     name: ptools
+  # Single writer: workbench holds a git working copy + SQLite on an RWO EBS volume.
+  # Pinned here explicitly (not just inherited from base/workbench.yaml) so the count
+  # lives alongside every other deployment's.
+  - count: 1
+    name: workbench
   - count: 0
     name: redis
   - count: 0
@@ -40,6 +136,11 @@ resources:
   - target-group-binding.yaml
   - secret-ghcr.yaml
   - secret-shared.yaml
+  # Fine-grained PAT (push-only, CovertLabEcoli/sms-ecoli) for the workbench's
+  # non-interactive GitHub auth path (github_auth.py's VIVARIUM_WORKBENCH_GH_TOKEN
+  # resolution, vivarium-workbench#652) — dispatch/study-authoring push access
+  # without a human clicking "Sign in with GitHub" each session.
+  - secret-workbench-gh-token.yaml
   # vivarium-workbench: peer Deployment+Service (base/workbench referenced directly,
   # NOT via base/kustomization.yaml, so it deploys ONLY on Stanford) + its EBS PVC.
   # Its TargetGroupBinding (workbench-binding) is in target-group-binding.yaml above.
@@ -122,6 +223,39 @@ patches:
                   # The seed also clears ui.ptools_data_dir so HTTP delivery is used.
                   - name: DASHBOARD_PUBLIC_BASE_URL
                     value: "http://workbench.sms-api-stanford.svc.cluster.local:8000/workbench"
+    target:
+      kind: Deployment
+      name: workbench
+  # Non-interactive GitHub auth (vivarium-workbench#652): a scoped, push-only
+  # machine credential so POST /api/remote-run-start can push a session's
+  # workspace changes (e.g. a newly-authored study.yaml) without a human
+  # clicking "Sign in with GitHub" first. Lowest-priority resolution path —
+  # an interactive session still always wins if one is present.
+  #
+  # VIVARIUM_WORKBENCH_REMOTE_DEPLOYMENT: remote_pinned.remote_deployment_name()
+  # stamps this into every dispatched run's recorded Origin. Unset, it silently
+  # falls back to the historical hardcoded default "smsvpctest" — every run
+  # dispatched from THIS (smscdk) deployment has been mislabeling its own
+  # Origin since the pinned-dispatch feature shipped. Found while verifying
+  # the first landed sms-ecoli pilot run.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: workbench
+      spec:
+        template:
+          spec:
+            containers:
+              - name: workbench
+                env:
+                  - name: VIVARIUM_WORKBENCH_GH_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: workbench-gh-token
+                        key: VIVARIUM_WORKBENCH_GH_TOKEN
+                  - name: VIVARIUM_WORKBENCH_REMOTE_DEPLOYMENT
+                    value: "smscdk"
     target:
       kind: Deployment
       name: workbench

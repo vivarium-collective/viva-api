@@ -741,15 +741,28 @@ async def get_analysis_spec(id: int) -> ExperimentAnalysisDTO:
     summary="Get the status of an existing experiment analysis run",
 )
 async def get_analysis_status(id: int = FastAPIPath(..., description="Database ID of the analysis")) -> AnalysisRun:
-    if get_job_backend() != ComputeBackend.SLURM:
-        raise HTTPException(status_code=501, detail="Legacy analysis status not supported for K8s backend")
     db_service = get_database_service()
     if db_service is None:
         raise HTTPException(status_code=404, detail="Database not found")
+
+    try:
+        record = await db_service.get_analysis(database_id=id)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Analysis {id} not found") from e
+
+    if record.backend == "ray":
+        try:
+            return await handlers.analyses.handle_get_ray_analysis_status(db_service=db_service, record=record)
+        except Exception as e:
+            logger.exception("Error resolving Ray-native analysis status.")
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    if get_job_backend() != ComputeBackend.SLURM:
+        raise HTTPException(status_code=501, detail="Legacy analysis status not supported for K8s backend")
     aservice = AnalysisServiceSlurm(env=ENV)
     try:
         return await handlers.analyses.handle_get_analysis_status(
-            db_service=db_service, analysis_service=aservice, ref=id
+            db_service=db_service, analysis_service=aservice, ref=record
         )
     except Exception as e:
         logger.exception(

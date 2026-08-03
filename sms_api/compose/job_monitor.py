@@ -8,10 +8,10 @@ from typing import Any
 from async_lru import alru_cache
 
 from sms_api.common.hpc.slurm_service import SlurmService
-from sms_api.common.models import SSHTarget
+from sms_api.common.models import JobBackend, SSHTarget
 from sms_api.compose.database_service import ComposeDatabaseService
 from sms_api.compose.models import ComposeHpcRun, ComposeJobStatus, ComposeWorkerEvent, ComposeWorkerEventMessagePayload
-from sms_api.config import get_settings
+from sms_api.config import ComputeBackend, get_settings
 from sms_api.dependencies import get_ssh_session_service
 
 logger = logging.getLogger(__name__)
@@ -24,9 +24,17 @@ class ComposeJobMonitor:
     _polling_task: asyncio.Task[None] | None = None
     _stop_event: asyncio.Event
 
-    def __init__(self, nats_client: Any | None, database_service: ComposeDatabaseService) -> None:
+    def __init__(
+        self,
+        nats_client: Any | None,
+        database_service: ComposeDatabaseService,
+        sim_registry: "dict[ComputeBackend, Any] | None" = None,
+    ) -> None:
         self.nats_client = nats_client
         self.database_service = database_service
+        # Per-backend compose services so non-SLURM (Ray/Batch) running jobs can be
+        # polled via their own get_job_status (describe_jobs) instead of squeue.
+        self.sim_registry = sim_registry or {}
         self.internal_listeners = {}
         self._stop_event = asyncio.Event()
 
@@ -75,6 +83,40 @@ class ComposeJobMonitor:
 
     async def update_running_jobs(self) -> None:
         running_jobs = await self.database_service.get_hpc_db().list_running_hpcruns()
+        if not running_jobs:
+            return
+        # Backend split: SLURM runs are polled via squeue over SSH; Ray/Batch runs are
+        # polled via their own service's get_job_status (describe_jobs) — no SSH needed
+        # (and none available on Stanford).
+        slurm_runs = [j for j in running_jobs if j.job_backend == JobBackend.SLURM.value]
+        backend_runs = [j for j in running_jobs if j.job_backend != JobBackend.SLURM.value]
+        await self._update_backend_jobs(backend_runs)
+        await self._update_slurm_jobs(slurm_runs)
+
+    async def _update_backend_jobs(self, running_jobs: list[ComposeHpcRun]) -> None:
+        for hpc_run in running_jobs:
+            service = self.sim_registry.get(ComputeBackend(hpc_run.job_backend)) if hpc_run.job_backend else None
+            if service is None or not hpc_run.job_id_ext:
+                continue
+            try:
+                new_status = await service.get_job_status(hpc_run.job_id_ext)
+            except Exception:
+                logger.exception("Error polling backend status for ComposeHpcRun %s", hpc_run.database_id)
+                continue
+            if new_status is not None and new_status != hpc_run.status:
+                if new_status == ComposeJobStatus.FAILED:
+                    await self.database_service.get_hpc_db().mark_hpcrun_failed(
+                        hpc_run.database_id, "backend job reported FAILED"
+                    )
+                else:
+                    await self.database_service.get_hpc_db().update_hpcrun_dispatch(
+                        hpc_run.database_id,
+                        job_id_ext=hpc_run.job_id_ext,
+                        backend=JobBackend(hpc_run.job_backend),
+                        status=new_status,
+                    )
+
+    async def _update_slurm_jobs(self, running_jobs: list[ComposeHpcRun]) -> None:
         if not running_jobs:
             return
         job_ids = [job.slurmjobid for job in running_jobs if job.slurmjobid]

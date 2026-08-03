@@ -217,6 +217,38 @@ class TestSimulationServiceRaySubmit:
         reg_images = {nr["container"]["image"] for nr in reg.kwargs["nodeProperties"]["nodeRangeProperties"]}
         assert reg_images == {f"476270107793.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:{commit}"}
 
+    async def test_submit_routes_to_batch_baseline_when_generations_requested(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """config.generations > 1 (a real SimulationConfig field, not an "extra"
+        comparison knob) must reach the sim job's command -- previously dropped
+        entirely, so every GovCloud dispatch silently ran one generation only
+        regardless of what was requested."""
+        setattr(experiment_request.config, "n_init_sims", 2)  # noqa: B010
+        experiment_request.config.generations = 3
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        mock_batch = _fake_batch(["parca-123", "sim-456"])
+
+        service = SimulationServiceRay()
+        with (
+            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("sms_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("sms_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-2"
+            )
+
+        _, sim_call = mock_batch.submit_job.call_args_list
+        sim_env = _env_of(sim_call)
+        assert "run_batch_baseline_ray.py" in sim_env["RAY_JOB_CMD"]
+        assert "--n-seeds 2" in sim_env["RAY_JOB_CMD"]
+        assert "--n-generations 3" in sim_env["RAY_JOB_CMD"]
+        assert "run_phase0_xarray_ensemble.py" not in sim_env["RAY_JOB_CMD"]
+
 
 @pytest.mark.asyncio
 class TestSimulationServiceRayStatusCancel:
@@ -303,6 +335,36 @@ class TestSimulationServiceRayBuild:
         with patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings):
             cmd = service._sim_command(n_seeds=1, n_steps=10, chunk=4, composite="v2ecoli", max_generations=5)
         assert "--max-generations 5" in cmd
+
+    def test_sim_command_defaults_to_single_generation_phase0(self) -> None:
+        """No composite, no generations requested: unchanged, verified-working
+        single-generation dispatch -- must not regress by default."""
+        service = SimulationServiceRay()
+        with patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._sim_command(n_seeds=2, n_steps=600, chunk=60)
+        assert "run_phase0_xarray_ensemble.py" in cmd
+        assert "run_batch_baseline_ray.py" not in cmd
+
+    def test_sim_command_routes_to_batch_baseline_when_multi_generation_requested(self) -> None:
+        """config.generations > 1 must route to the real multi-generation
+        LineageProcess/batch_baseline_runner pipeline, not the single-generation
+        script that silently ignores generation count."""
+        service = SimulationServiceRay()
+        with patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._sim_command(n_seeds=2, n_steps=600, chunk=60, n_generations=3)
+        assert "run_batch_baseline_ray.py" in cmd
+        assert "--n-seeds 2" in cmd
+        assert "--n-generations 3" in cmd
+        assert "run_phase0_xarray_ensemble.py" not in cmd
+
+    def test_sim_command_composite_takes_precedence_over_n_generations(self) -> None:
+        """The comparison driver's own --max-generations flag is a separate knob
+        from plain n_generations -- composite selection wins regardless."""
+        service = SimulationServiceRay()
+        with patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._sim_command(n_seeds=1, n_steps=10, chunk=4, composite="v2ecoli", n_generations=3)
+        assert "run_comparison_ensemble.py" in cmd
+        assert "run_batch_baseline_ray.py" not in cmd
 
     def test_sim_command_vecoli_source_only_appended_for_upstream_vecoli(self) -> None:
         """--vecoli-source is meaningful only for --composite vecoli."""
