@@ -16,6 +16,7 @@ from sms_api.common.hpc.k8s_job_service import K8sJobService
 from sms_api.common.hpc.local_task_service import LocalTaskService
 from sms_api.common.models import JobBackend, JobId
 from sms_api.common.simulator_defaults import DEFAULT_BRANCH, DEFAULT_REPO
+from sms_api.common.storage import data_layout
 from sms_api.config import get_settings
 from sms_api.simulation import batch_build
 from sms_api.simulation.database_service import DatabaseService
@@ -476,6 +477,17 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ecr_repository}:{image_tag}-s
                                     k8s_client.V1EnvVar(name="AWS_REGION", value=settings.batch_region),
                                     k8s_client.V1EnvVar(name="AWS_STS_REGIONAL_ENDPOINTS", value="regional"),
                                     k8s_client.V1EnvVar(name="USER", value="sms-api"),
+                                    # Lets run_standalone_analysis.py's DuckDB/cd1 analyses
+                                    # (v2ecoli.workflow.analysis.Analysis subclasses) resolve
+                                    # sim_data without a sweep-local pickle -- an S3 sweep has
+                                    # none to glob (analysis_runner.resolve_sim_data only globs
+                                    # local paths). The ParCa job and this analysis job derive
+                                    # the same commit-keyed cache URI independently, so this
+                                    # needs no new hand-off plumbing.
+                                    k8s_client.V1EnvVar(
+                                        name="V2ECOLI_SIM_DATA",
+                                        value=f"{data_layout.RayLayout.parca_cache_uri(commit)}simData.cPickle",
+                                    ),
                                 ],
                                 volume_mounts=[
                                     k8s_client.V1VolumeMount(name="config", mount_path="/config"),

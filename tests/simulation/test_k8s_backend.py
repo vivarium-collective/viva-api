@@ -543,6 +543,38 @@ class TestSimulationServiceK8s:
         written_params = json.loads(configmap_arg.data["params.json"])
         assert written_params == params
 
+    async def test_submit_ray_native_analysis_sets_sim_data_env_for_duckdb_analyses(
+        self,
+        simulation_service_k8s_mock: SimulationServiceK8s,
+        mock_k8s_job_service: MagicMock,
+    ) -> None:
+        """An S3 sweep has no co-located sim_data pickle to glob (analysis_runner
+        .resolve_sim_data only globs local paths), so the DuckDB-based Analysis
+        family (cd1/ptools) can't resolve sim_data without this env var. The
+        ParCa job and this analysis job derive the same commit-keyed cache URI
+        independently -- no new hand-off plumbing needed."""
+        from sms_api.common.storage import data_layout
+
+        params = {
+            "out_uri": "s3://bucket/vecoli-output/exp123",
+            "n_seeds": 1,
+            "modules": {"single": {"ptools_rna": {}}},
+            "analysis_name": "analysis-exp123-cd1",
+        }
+
+        await simulation_service_k8s_mock.submit_ray_native_analysis(
+            experiment_id="exp123",
+            params=params,
+            commit="deadbeef",
+        )
+
+        job_arg = mock_k8s_job_service.create_job.call_args[0][0]
+        container = job_arg.spec.template.spec.containers[0]
+        env_by_name = {e.name: e.value for e in container.env}
+        assert env_by_name["V2ECOLI_SIM_DATA"] == (
+            f"{data_layout.RayLayout.parca_cache_uri('deadbeef')}simData.cPickle"
+        )
+
     async def test_submit_ray_native_analysis_job_name_unique_per_trigger(
         self,
         simulation_service_k8s_mock: SimulationServiceK8s,
