@@ -563,7 +563,9 @@ class TestSimulationServiceK8s:
         }
 
         await simulation_service_k8s_mock.submit_ray_native_analysis(
-            experiment_id="exp123", params=params, commit="deadbeef",
+            experiment_id="exp123",
+            params=params,
+            commit="deadbeef",
         )
 
         job_arg = mock_k8s_job_service.create_job.call_args[0][0]
