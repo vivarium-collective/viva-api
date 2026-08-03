@@ -62,13 +62,13 @@ def _(mo):
 
 @app.cell
 def _():
-    from sms_api.simulation.config_service import (
+    from viva_api.simulation.config_service import (
         ConfigServiceHpc,
         PARCA_LABEL_MAPPING,
         PARCA_OPTIONS_EXPOSED,
         HPCFilePath,
     )
-    from sms_api.config import get_settings
+    from viva_api.config import get_settings
 
     ENV = get_settings()
     config_service = ConfigServiceHpc(env=ENV)

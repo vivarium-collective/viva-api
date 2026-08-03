@@ -45,7 +45,7 @@ and writes it to `request.json:109`. The UI sends it; **the default is 5, not 27
 ## 2. FROZEN CONTRACT — sms-api ↔ workbench
 
 This is settled; build against it and don't renegotiate. Read off the live code
-(`sms_api/api/routers/compose.py:107-133`, `lib/sms_api_client.py:167-197`).
+(`viva_api/api/routers/compose.py:107-133`, `lib/viva_api_client.py:167-197`).
 
 ```
 POST /compose/v1/simulation/run
@@ -59,7 +59,7 @@ POST /compose/v1/simulation/run
 ```
 
 **`client.compose_submit(...)` already implements exactly this** — you should not
-need to touch `sms_api_client.py`.
+need to touch `viva_api_client.py`.
 
 ### ⚠️ TRAP — `interval_time` IS the steps channel (overloaded name)
 The chain is:

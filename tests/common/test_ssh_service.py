@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sms_api.common.ssh.ssh_service import SSHSession, SSHSessionService
-from sms_api.common.storage.file_paths import HPCFilePath
-from sms_api.config import get_settings
+from viva_api.common.ssh.ssh_service import SSHSession, SSHSessionService
+from viva_api.common.storage.file_paths import HPCFilePath
+from viva_api.config import get_settings
 
 
 @pytest.mark.integration
@@ -87,7 +87,7 @@ async def test_ssh_session_service_context_manager_closes_connection() -> None:
     mock_conn.close = MagicMock()
     mock_conn.wait_closed = AsyncMock()
 
-    with patch("sms_api.common.ssh.ssh_service.asyncssh.connect", new_callable=AsyncMock) as mock_connect:
+    with patch("viva_api.common.ssh.ssh_service.asyncssh.connect", new_callable=AsyncMock) as mock_connect:
         mock_connect.return_value = mock_conn
 
         service = SSHSessionService(
@@ -113,7 +113,7 @@ async def test_ssh_session_service_ping_verification() -> None:
     mock_conn.close = MagicMock()
     mock_conn.wait_closed = AsyncMock()
 
-    with patch("sms_api.common.ssh.ssh_service.asyncssh.connect", new_callable=AsyncMock) as mock_connect:
+    with patch("viva_api.common.ssh.ssh_service.asyncssh.connect", new_callable=AsyncMock) as mock_connect:
         mock_connect.return_value = mock_conn
 
         service = SSHSessionService(
@@ -137,7 +137,7 @@ async def test_ssh_session_service_ping_failure_raises() -> None:
     mock_conn.close = MagicMock()
     mock_conn.wait_closed = AsyncMock()
 
-    with patch("sms_api.common.ssh.ssh_service.asyncssh.connect", new_callable=AsyncMock) as mock_connect:
+    with patch("viva_api.common.ssh.ssh_service.asyncssh.connect", new_callable=AsyncMock) as mock_connect:
         mock_connect.return_value = mock_conn
 
         service = SSHSessionService(
@@ -162,7 +162,7 @@ async def test_ssh_session_service_no_wait_closed() -> None:
     mock_conn.close = MagicMock()
     mock_conn.wait_closed = AsyncMock()
 
-    with patch("sms_api.common.ssh.ssh_service.asyncssh.connect", new_callable=AsyncMock) as mock_connect:
+    with patch("viva_api.common.ssh.ssh_service.asyncssh.connect", new_callable=AsyncMock) as mock_connect:
         mock_connect.return_value = mock_conn
 
         service = SSHSessionService(

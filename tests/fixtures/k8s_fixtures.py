@@ -5,12 +5,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sms_api.common.hpc.job_service import JobStatusInfo
-from sms_api.common.hpc.k8s_job_service import K8sJobService
-from sms_api.common.hpc.local_task_service import LocalTaskService
-from sms_api.common.models import JobId, JobStatus, SSHTarget
-from sms_api.common.storage.file_service import FileService, ListingItem
-from sms_api.dependencies import (
+from tests.fixtures.simulation_service_mocks import MockSSHSessionService
+from viva_api.common.hpc.job_service import JobStatusInfo
+from viva_api.common.hpc.k8s_job_service import K8sJobService
+from viva_api.common.hpc.local_task_service import LocalTaskService
+from viva_api.common.models import JobId, JobStatus, SSHTarget
+from viva_api.common.storage.file_service import FileService, ListingItem
+from viva_api.dependencies import (
     get_file_service,
     get_simulation_service,
     get_ssh_session_service_or_none,
@@ -18,8 +19,7 @@ from sms_api.dependencies import (
     set_simulation_service,
     set_ssh_session_service,
 )
-from sms_api.simulation.simulation_service_k8s import SimulationServiceK8s
-from tests.fixtures.simulation_service_mocks import MockSSHSessionService
+from viva_api.simulation.simulation_service_k8s import SimulationServiceK8s
 
 
 @pytest.fixture(scope="function")

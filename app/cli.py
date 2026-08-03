@@ -10,14 +10,14 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sms_api.common import StrEnumBase
+from viva_api.common import StrEnumBase
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from rich.console import Console
 
-    from sms_api.common.storage.file_service_s3 import FileServiceS3
+    from viva_api.common.storage.file_service_s3 import FileServiceS3
 
 import httpx
 import typer
@@ -510,7 +510,7 @@ def simulation_run(
     ecoli_sources_uri: str | None = None
     ecoli_sources_overlays: str | None = None
     if sources:
-        from sms_api.config import get_settings
+        from viva_api.config import get_settings
 
         settings = get_settings()
         if not settings.storage_s3_bucket:
@@ -699,7 +699,7 @@ def simulation_status(
 ) -> None:
     import time
 
-    from sms_api.common.handlers.simulations import workflow_log
+    from viva_api.common.handlers.simulations import workflow_log
 
     if not poll:
         workflow_log(simulation_id=simulation_id, base_url=base_url)
@@ -1264,8 +1264,8 @@ async def _download_s3_with_progress(
     console: Console,
 ) -> None:
     """List, filter, and download S3 objects with a Rich progress bar."""
-    from sms_api.common.handlers.simulations import _ACCEPTED_ANALYSES_EXTENSIONS, _WORKFLOW_CONFIG_KEY
-    from sms_api.common.storage.file_paths import S3FilePath
+    from viva_api.common.handlers.simulations import _ACCEPTED_ANALYSES_EXTENSIONS, _WORKFLOW_CONFIG_KEY
+    from viva_api.common.storage.file_paths import S3FilePath
 
     # List files in S3
     with console.status("[memphis.spinner]Listing S3 objects..."):
@@ -1338,9 +1338,9 @@ async def _demo_get_data_async(dest: str) -> None:
     console.print(f"[memphis.dim]Source: {test_outdir}[/]\n")
 
     # 2. Initialise FileServiceS3 and wire into global deps
-    from sms_api.common.storage.file_service_s3 import FileServiceS3
-    from sms_api.config import get_settings
-    from sms_api.dependencies import get_file_service, set_file_service
+    from viva_api.common.storage.file_service_s3 import FileServiceS3
+    from viva_api.config import get_settings
+    from viva_api.dependencies import get_file_service, set_file_service
 
     settings = get_settings()
     if not settings.storage_s3_bucket or not settings.storage_s3_region:

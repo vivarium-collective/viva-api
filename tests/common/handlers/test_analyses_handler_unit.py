@@ -1,4 +1,4 @@
-from sms_api.common.handlers.analyses import _parse_cached_filename_metadata
+from viva_api.common.handlers.analyses import _parse_cached_filename_metadata
 
 
 class TestParseCachedFilenameMetadata:

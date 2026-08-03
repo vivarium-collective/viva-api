@@ -32,7 +32,7 @@ You are a senior software architect reviewing the **SMS API (Atlantis)** codebas
 ### Layering
 
 ```
-FastAPI routes (sms_api/api/routers/)
+FastAPI routes (viva_api/api/routers/)
     ↓ depends on
 Services (SimulationService, AnalysisService, SlurmService, DatabaseService, FileService)
     ↓ depends on
@@ -45,18 +45,18 @@ Routes should never directly use infrastructure. Services own the business logic
 
 ### Two subsystems
 
-1. **vEcoli batch** (`sms_api/simulation/`, `/api/v1/`): git repo → Singularity → SLURM multi-step workflow (build → parca → simulate → analysis)
-2. **Compose / process-bigraph** (`sms_api/compose/`, `/compose/v1/`): OMEX/PBG/SBML → pbest container → SLURM job
+1. **vEcoli batch** (`viva_api/simulation/`, `/api/v1/`): git repo → Singularity → SLURM multi-step workflow (build → parca → simulate → analysis)
+2. **Compose / process-bigraph** (`viva_api/compose/`, `/compose/v1/`): OMEX/PBG/SBML → pbest container → SLURM job
 
 These are independent. Don't couple them.
 
 ### Compute backend dispatch
 
-Determined by `deployment_namespace` in `sms_api/config.py` at startup in `dependencies.py`. Never add namespace-specific branches inside service classes — that belongs in `dependencies.py`.
+Determined by `deployment_namespace` in `viva_api/config.py` at startup in `dependencies.py`. Never add namespace-specific branches inside service classes — that belongs in `dependencies.py`.
 
 ### Generated code boundary
 
-`sms_api/api/client/` is completely auto-generated. Never propose changes to files there. Always regenerate with `make api_client`.
+`viva_api/api/client/` is completely auto-generated. Never propose changes to files there. Always regenerate with `make api_client`.
 
 ## Review Checklist
 

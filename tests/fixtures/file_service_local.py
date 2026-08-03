@@ -7,9 +7,9 @@ from typing import override
 
 import aiofiles
 
-from sms_api.common.storage.file_paths import S3FilePath
-from sms_api.common.storage.file_service import FileService, ListingItem
-from sms_api.config import get_local_cache_dir
+from viva_api.common.storage.file_paths import S3FilePath
+from viva_api.common.storage.file_service import FileService, ListingItem
+from viva_api.config import get_local_cache_dir
 
 logger = logging.getLogger(__name__)
 

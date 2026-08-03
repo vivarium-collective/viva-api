@@ -29,15 +29,16 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from sms_api.api.main import app
-from sms_api.common.hpc.job_service import JobStatusInfo
-from sms_api.common.models import JobStatus, SSHTarget
-from sms_api.common.ssh.ssh_service import SSHSessionService
-from sms_api.config import get_settings
-from sms_api.dependencies import get_ssh_session_service
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from sms_api.simulation.hpc_utils import get_apptainer_image_file, get_correlation_id
-from sms_api.simulation.models import (
+from tests.fixtures.api_fixtures import SimulatorRepoInfo
+from viva_api.api.main import app
+from viva_api.common.hpc.job_service import JobStatusInfo
+from viva_api.common.models import JobStatus, SSHTarget
+from viva_api.common.ssh.ssh_service import SSHSessionService
+from viva_api.config import get_settings
+from viva_api.dependencies import get_ssh_session_service
+from viva_api.simulation.database_service import DatabaseServiceSQL
+from viva_api.simulation.hpc_utils import get_apptainer_image_file, get_correlation_id
+from viva_api.simulation.models import (
     JobType,
     ParcaDatasetRequest,
     ParcaOptions,
@@ -45,8 +46,7 @@ from sms_api.simulation.models import (
     SimulationRequest,
     SimulatorVersion,
 )
-from sms_api.simulation.simulation_service import SimulationServiceHpc
-from tests.fixtures.api_fixtures import SimulatorRepoInfo
+from viva_api.simulation.simulation_service import SimulationServiceHpc
 
 TEST_EXPERIMENT_ID = "test_integration"
 
@@ -301,7 +301,7 @@ async def test_4_run_analysis(
         pytest.skip(f"No simulation output found for experiment: {TEST_EXPERIMENT_ID}")
 
     # Create analysis request for TEST_EXPERIMENT_ID
-    from sms_api.analysis.models import ExperimentAnalysisRequest, PtoolsAnalysisConfig, PtoolsAnalysisType
+    from viva_api.analysis.models import ExperimentAnalysisRequest, PtoolsAnalysisConfig, PtoolsAnalysisType
 
     analysis_request = ExperimentAnalysisRequest(
         experiment_id=TEST_EXPERIMENT_ID,

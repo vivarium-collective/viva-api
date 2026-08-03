@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from sms_api.analysis.models import AnalysisConfig, AnalysisConfigOptions, ExperimentAnalysisDTO
-from sms_api.common.handlers.analyses import handle_get_ray_analysis_status
-from sms_api.common.models import JobId, JobStatus
-from sms_api.simulation.tables_orm import AnalysisStatusDB
+from viva_api.analysis.models import AnalysisConfig, AnalysisConfigOptions, ExperimentAnalysisDTO
+from viva_api.common.handlers.analyses import handle_get_ray_analysis_status
+from viva_api.common.models import JobId, JobStatus
+from viva_api.simulation.tables_orm import AnalysisStatusDB
 
 
 def _make_record(*, status: JobStatus = JobStatus.RUNNING) -> ExperimentAnalysisDTO:
@@ -51,7 +51,7 @@ async def test_manifest_present_with_output_marks_ready() -> None:
     fake_file_service = AsyncMock()
     fake_file_service.get_file_contents.return_value = manifest
 
-    with patch("sms_api.common.handlers.analyses.get_file_service", return_value=fake_file_service):
+    with patch("viva_api.common.handlers.analyses.get_file_service", return_value=fake_file_service):
         result = await handle_get_ray_analysis_status(db_service=db_service, record=record)
 
     assert result.status == JobStatus.COMPLETED
@@ -70,7 +70,7 @@ async def test_manifest_present_with_only_errors_marks_failed() -> None:
     fake_file_service = AsyncMock()
     fake_file_service.get_file_contents.return_value = manifest
 
-    with patch("sms_api.common.handlers.analyses.get_file_service", return_value=fake_file_service):
+    with patch("viva_api.common.handlers.analyses.get_file_service", return_value=fake_file_service):
         result = await handle_get_ray_analysis_status(db_service=db_service, record=record)
 
     assert result.status == JobStatus.FAILED
@@ -89,8 +89,8 @@ async def test_no_manifest_yet_and_job_still_running_stays_computing() -> None:
     fake_sim_service.get_job_status.return_value = None  # job vanished/still scheduling
 
     with (
-        patch("sms_api.common.handlers.analyses.get_file_service", return_value=fake_file_service),
-        patch("sms_api.common.handlers.analyses.get_simulation_service", return_value=fake_sim_service),
+        patch("viva_api.common.handlers.analyses.get_file_service", return_value=fake_file_service),
+        patch("viva_api.common.handlers.analyses.get_simulation_service", return_value=fake_sim_service),
     ):
         result = await handle_get_ray_analysis_status(db_service=db_service, record=record)
 
@@ -103,7 +103,7 @@ async def test_no_manifest_but_k8s_job_failed_marks_failed_early() -> None:
     """Catches a hard failure (ImagePullBackOff, scheduling error) before the
     24h TTL would otherwise leave this stuck COMPUTING forever with no
     manifest ever coming."""
-    from sms_api.common.hpc.job_service import JobStatusInfo
+    from viva_api.common.hpc.job_service import JobStatusInfo
 
     record = _make_record()
     db_service = AsyncMock()
@@ -117,8 +117,8 @@ async def test_no_manifest_but_k8s_job_failed_marks_failed_early() -> None:
     )
 
     with (
-        patch("sms_api.common.handlers.analyses.get_file_service", return_value=fake_file_service),
-        patch("sms_api.common.handlers.analyses.get_simulation_service", return_value=fake_sim_service),
+        patch("viva_api.common.handlers.analyses.get_file_service", return_value=fake_file_service),
+        patch("viva_api.common.handlers.analyses.get_simulation_service", return_value=fake_sim_service),
     ):
         result = await handle_get_ray_analysis_status(db_service=db_service, record=record)
 

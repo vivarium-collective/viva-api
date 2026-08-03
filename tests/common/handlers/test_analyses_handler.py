@@ -6,14 +6,14 @@ import pandas as pd
 import pytest
 import pytest_asyncio
 
-from sms_api.analysis.analysis_service import AnalysisServiceSlurm
-from sms_api.analysis.models import ExperimentAnalysisRequest, PtoolsAnalysisConfig
-from sms_api.common.handlers.analyses import handle_run_analysis_slurm
-from sms_api.common.ssh.ssh_service import SSHSessionService
-from sms_api.config import get_settings
-from sms_api.simulation.database_service import DatabaseService
-from sms_api.simulation.models import SimulatorVersion
-from sms_api.simulation.simulation_service import SimulationServiceHpc
+from viva_api.analysis.analysis_service import AnalysisServiceSlurm
+from viva_api.analysis.models import ExperimentAnalysisRequest, PtoolsAnalysisConfig
+from viva_api.common.handlers.analyses import handle_run_analysis_slurm
+from viva_api.common.ssh.ssh_service import SSHSessionService
+from viva_api.config import get_settings
+from viva_api.simulation.database_service import DatabaseService
+from viva_api.simulation.models import SimulatorVersion
+from viva_api.simulation.simulation_service import SimulationServiceHpc
 
 
 @pytest_asyncio.fixture

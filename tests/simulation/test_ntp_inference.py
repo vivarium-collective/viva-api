@@ -1,6 +1,6 @@
 """Unit tests for infer_n_tp_from_tsv (pure, no DB)."""
 
-from sms_api.analysis.models import AVAILABLE_NTP, infer_n_tp_from_tsv
+from viva_api.analysis.models import AVAILABLE_NTP, infer_n_tp_from_tsv
 
 
 def _tsv(n_tp: int) -> str:

@@ -3,21 +3,21 @@ from typing import cast
 
 import pytest
 
-import sms_api
-import sms_api.api
-from sms_api.api.client import Client
-from sms_api.api.client.api.ecoli_sim.get_simulator_status import asyncio as get_simulator_status_async
-from sms_api.api.client.api.ecoli_sim.get_simulator_versions import asyncio as get_simulator_versions_async
-from sms_api.api.client.api.ecoli_sim.insert_simulator_version import asyncio as insert_simulator_version_async
-from sms_api.api.client.models import HpcRun, HTTPValidationError, RegisteredSimulators
-from sms_api.api.client.models.simulator import Simulator as SimulatorDto
-from sms_api.api.client.models.simulator_version import SimulatorVersion as SimulatorVersionDto
-from sms_api.api.client.types import UNSET
-from sms_api.common.handlers.simulators import RepoUrl, verify_simulator_payload
-from sms_api.common.models import JobStatus
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from sms_api.simulation.models import JobType, Simulator, SimulatorVersion
+import viva_api
+import viva_api.api
 from tests.fixtures.simulation_service_mocks import SimulationServiceMockCloneAndBuild
+from viva_api.api.client import Client
+from viva_api.api.client.api.ecoli_sim.get_simulator_status import asyncio as get_simulator_status_async
+from viva_api.api.client.api.ecoli_sim.get_simulator_versions import asyncio as get_simulator_versions_async
+from viva_api.api.client.api.ecoli_sim.insert_simulator_version import asyncio as insert_simulator_version_async
+from viva_api.api.client.models import HpcRun, HTTPValidationError, RegisteredSimulators
+from viva_api.api.client.models.simulator import Simulator as SimulatorDto
+from viva_api.api.client.models.simulator_version import SimulatorVersion as SimulatorVersionDto
+from viva_api.api.client.types import UNSET
+from viva_api.common.handlers.simulators import RepoUrl, verify_simulator_payload
+from viva_api.common.models import JobStatus
+from viva_api.simulation.database_service import DatabaseServiceSQL
+from viva_api.simulation.models import JobType, Simulator, SimulatorVersion
 
 
 @pytest.mark.asyncio
@@ -48,8 +48,8 @@ async def test_insert_simulator_version(
         client=in_memory_api_client, simulator_id=returned_simulator_version_dto.database_id
     )
     assert type(simulator_status) is HpcRun
-    assert simulator_status.status == sms_api.api.client.models.job_status.JobStatus.RUNNING
-    assert simulator_status.job_type == sms_api.api.client.models.job_type.JobType.BUILD_IMAGE
+    assert simulator_status.status == viva_api.api.client.models.job_status.JobStatus.RUNNING
+    assert simulator_status.job_type == viva_api.api.client.models.job_type.JobType.BUILD_IMAGE
     assert simulator_status.ref_id == returned_simulator_version_dto.database_id
 
     # Verify that the build job was submitted (cloning now happens in the SBATCH script)

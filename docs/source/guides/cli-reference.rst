@@ -484,7 +484,7 @@ in the simulation state tree:
 When omitted, the **baseline set** (55 paths) is used automatically. This set
 covers every analysis module shipped with vEcoli (single, multigeneration,
 multiseed, multivariant). The full list is defined in
-``sms_api.common.simulator_defaults.DEFAULT_OBSERVABLES``.
+``viva_api.common.simulator_defaults.DEFAULT_OBSERVABLES``.
 
 To emit **all** simulation data (no filtering), pass an empty string:
 ``--observables ""``.

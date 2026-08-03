@@ -3,10 +3,10 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.abspath("../../sms_api"))
+sys.path.insert(0, os.path.abspath("../../viva_api"))
 sys.path.insert(0, os.path.abspath("../.."))
 
-# Detect ReadTheDocs environment (sms_api not installable due to Python pin)
+# Detect ReadTheDocs environment (viva_api not installable due to Python pin)
 on_rtd = os.environ.get("READTHEDOCS") == "True"
 
 # -- Project information -----------------------------------------------------

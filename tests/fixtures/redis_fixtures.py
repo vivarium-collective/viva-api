@@ -4,8 +4,8 @@ import pytest
 import pytest_asyncio
 from testcontainers.redis import RedisContainer  # type: ignore[import-untyped]
 
-from sms_api.common.messaging.messaging_service_redis import MessagingServiceRedis
 from tests.docker_utils import SKIP_DOCKER_REASON, SKIP_DOCKER_TESTS
+from viva_api.common.messaging.messaging_service_redis import MessagingServiceRedis
 
 
 @pytest_asyncio.fixture(scope="session")

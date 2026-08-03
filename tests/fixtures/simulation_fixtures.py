@@ -4,22 +4,22 @@ from typing import TYPE_CHECKING
 import pytest
 import pytest_asyncio
 
-from sms_api.common.models import JobId, SSHTarget
-from sms_api.dependencies import (
-    get_simulation_service,
-    get_ssh_session_service_or_none,
-    set_simulation_service,
-    set_ssh_session_service,
-)
-from sms_api.simulation.simulation_service import SimulationServiceHpc
 from tests.fixtures.simulation_service_mocks import (
     MockSSHSessionService,
     SimulationServiceMockCloneAndBuild,
     SimulationServiceMockParca,
 )
+from viva_api.common.models import JobId, SSHTarget
+from viva_api.dependencies import (
+    get_simulation_service,
+    get_ssh_session_service_or_none,
+    set_simulation_service,
+    set_ssh_session_service,
+)
+from viva_api.simulation.simulation_service import SimulationServiceHpc
 
 if TYPE_CHECKING:
-    from sms_api.common.ssh.ssh_service import SSHSessionService
+    from viva_api.common.ssh.ssh_service import SSHSessionService
 
 
 @pytest_asyncio.fixture(scope="function")

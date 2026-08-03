@@ -50,12 +50,12 @@ Batch queue names updated to CDK-prefixed versions (e.g., `smsvpctest-vecoli-tas
 ## Phase 3: Code Fixes — DONE
 
 ### 3a. Analysis Endpoint Backend Guard
-**File:** `sms_api/api/routers/sms.py` (renamed from `gateway.py` on `atlantis-cli`)
+**File:** `viva_api/api/routers/sms.py` (renamed from `gateway.py` on `atlantis-cli`)
 
 Added `ComputeBackend.SLURM` check on `POST /analyses` and `GET /analyses/{id}/status`. Returns 501 with message pointing to `POST /api/v1/simulations/{id}/analysis` (the K8s-native alternative).
 
 ### 3b. Parca Endpoint Backend Guard
-**File:** `sms_api/api/routers/core.py`
+**File:** `viva_api/api/routers/core.py`
 
 Added `ComputeBackend.SLURM` check on `POST /simulation/parca`. Returns 501 — parca runs inside the Nextflow workflow on Batch.
 

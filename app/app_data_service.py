@@ -14,9 +14,9 @@ import httpx
 from httpx import AsyncClient
 from tqdm import tqdm
 
-from sms_api.analysis.models import AnalysisRun, ExperimentAnalysisDTO, OutputFile, TsvOutputFile
-from sms_api.common.simulator_defaults import SimulationConfigFilename
-from sms_api.simulation.models import (
+from viva_api.analysis.models import AnalysisRun, ExperimentAnalysisDTO, OutputFile, TsvOutputFile
+from viva_api.common.simulator_defaults import SimulationConfigFilename
+from viva_api.simulation.models import (
     HpcRun,
     ParcaDataset,
     RepoDiscovery,
@@ -238,7 +238,7 @@ class E2EDataService:
 
     def submit_get_latest_simulator(self, repo_url: str | None = None, branch: str | None = None) -> Simulator:
         try:
-            from sms_api.common.simulator_defaults import DEFAULT_BRANCH, DEFAULT_REPO
+            from viva_api.common.simulator_defaults import DEFAULT_BRANCH, DEFAULT_REPO
 
             latest_response = self.client.get(
                 url="/core/v1/simulator/latest",

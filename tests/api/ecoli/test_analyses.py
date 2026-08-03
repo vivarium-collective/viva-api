@@ -7,27 +7,27 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from sms_api.analysis.models import AnalysisConfig, AnalysisConfigOptions, ExperimentAnalysisRequest
-from sms_api.api import request_examples
-from sms_api.api.main import app
-from sms_api.common import handlers
-from sms_api.common.ssh.ssh_service import SSHSessionService
-from sms_api.common.utils import get_uuid, timestamp, unique_id
-from sms_api.config import get_settings
-from sms_api.simulation.database_service import DatabaseService
-from sms_api.simulation.hpc_utils import get_slurmjob_name
-from sms_api.simulation.models import (
+from tests.api.ecoli.test_simulations import CORE_ROUTER
+from tests.fixtures.api_fixtures import (
+    SimulatorRepoInfo,
+)
+from viva_api.analysis.models import AnalysisConfig, AnalysisConfigOptions, ExperimentAnalysisRequest
+from viva_api.api import request_examples
+from viva_api.api.main import app
+from viva_api.common import handlers
+from viva_api.common.ssh.ssh_service import SSHSessionService
+from viva_api.common.utils import get_uuid, timestamp, unique_id
+from viva_api.config import get_settings
+from viva_api.simulation.database_service import DatabaseService
+from viva_api.simulation.hpc_utils import get_slurmjob_name
+from viva_api.simulation.models import (
     ParcaDatasetRequest,
     ParcaOptions,
     SimulationConfig,
     SimulationRequest,
     SimulatorVersion,
 )
-from sms_api.simulation.simulation_service import SimulationServiceHpc
-from tests.api.ecoli.test_simulations import CORE_ROUTER
-from tests.fixtures.api_fixtures import (
-    SimulatorRepoInfo,
-)
+from viva_api.simulation.simulation_service import SimulationServiceHpc
 
 ENV = get_settings()
 
@@ -139,7 +139,7 @@ async def test_run_analysis(
     HPC_EXPERIMENT_ID = "sim3-baseline-ca00"
     N_TP = 22
 
-    from sms_api.analysis.models import PtoolsAnalysisConfig
+    from viva_api.analysis.models import PtoolsAnalysisConfig
 
     analysis_request = ExperimentAnalysisRequest(
         experiment_id=HPC_EXPERIMENT_ID,

@@ -5,10 +5,10 @@ from pathlib import Path
 import pytest
 from gcloud.aio.auth import Token
 
-from sms_api.common.storage.file_paths import S3FilePath
-from sms_api.common.storage.file_service import ListingItem
-from sms_api.common.storage.gcs_aio import download_gcs_file, get_gcs_modified_date, get_listing_of_gcs_path
-from sms_api.config import get_settings
+from viva_api.common.storage.file_paths import S3FilePath
+from viva_api.common.storage.file_service import ListingItem
+from viva_api.common.storage.gcs_aio import download_gcs_file, get_gcs_modified_date, get_listing_of_gcs_path
+from viva_api.config import get_settings
 
 ROOT_DIR = Path(__file__).parent.parent.parent
 

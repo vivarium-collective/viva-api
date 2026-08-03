@@ -8,9 +8,9 @@ from typing import Any
 
 import pytest
 
-from sms_api.common.models import JobStatus
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from sms_api.simulation.tables_orm import AnalysisStatusDB
+from viva_api.common.models import JobStatus
+from viva_api.simulation.database_service import DatabaseServiceSQL
+from viva_api.simulation.tables_orm import AnalysisStatusDB
 
 
 def _config(experiment_id: str, n_tp: int) -> dict[str, Any]:

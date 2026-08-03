@@ -8,21 +8,21 @@ from pathlib import Path
 
 import pytest
 
-from sms_api.common.hpc.models import SlurmJob
-from sms_api.common.hpc.slurm_service import SlurmService
-from sms_api.common.messaging.messaging_service_redis import MessagingServiceRedis
-from sms_api.common.models import JobId, JobStatus, SSHTarget
-from sms_api.common.ssh.ssh_service import SSHSessionService
-from sms_api.common.storage.file_paths import S3FilePath
-from sms_api.common.storage.file_service import FileService
-from sms_api.common.storage.file_service_qumulo_s3 import FileServiceQumuloS3
-from sms_api.common.storage.file_service_s3 import FileServiceS3
-from sms_api.config import get_settings
-from sms_api.dependencies import get_ssh_session_service
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from sms_api.simulation.hpc_utils import get_correlation_id
-from sms_api.simulation.job_scheduler import JobScheduler
-from sms_api.simulation.models import (
+from viva_api.common.hpc.models import SlurmJob
+from viva_api.common.hpc.slurm_service import SlurmService
+from viva_api.common.messaging.messaging_service_redis import MessagingServiceRedis
+from viva_api.common.models import JobId, JobStatus, SSHTarget
+from viva_api.common.ssh.ssh_service import SSHSessionService
+from viva_api.common.storage.file_paths import S3FilePath
+from viva_api.common.storage.file_service import FileService
+from viva_api.common.storage.file_service_qumulo_s3 import FileServiceQumuloS3
+from viva_api.common.storage.file_service_s3 import FileServiceS3
+from viva_api.config import get_settings
+from viva_api.dependencies import get_ssh_session_service
+from viva_api.simulation.database_service import DatabaseServiceSQL
+from viva_api.simulation.hpc_utils import get_correlation_id
+from viva_api.simulation.job_scheduler import JobScheduler
+from viva_api.simulation.models import (
     HpcRun,
     JobType,
     ParcaDatasetRequest,

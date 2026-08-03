@@ -33,7 +33,7 @@ SMS API is an internal scientific platform with:
 
 ### 1. SSH Command Injection (critical)
 
-Check all SSH command construction paths in `sms_api/common/hpc/` and `sms_api/compose/hpc_utils.py`:
+Check all SSH command construction paths in `viva_api/common/hpc/` and `viva_api/compose/hpc_utils.py`:
 
 ```python
 # DANGEROUS: user-controlled string directly in shell command
@@ -87,7 +87,7 @@ Check for secrets in:
 - Config values echoed in API responses
 - Hardcoded credentials or API keys in source
 
-Files to check: `sms_api/config.py`, `sms_api/dependencies.py`, `app/cli.py`
+Files to check: `viva_api/config.py`, `viva_api/dependencies.py`, `app/cli.py`
 
 Patterns to grep: `password`, `secret`, `api_key`, `token`, `private_key`, `AWS_SECRET`
 
@@ -126,14 +126,14 @@ if parsed.hostname not in ALLOWED_HOSTS:
 
 ### 9. Container/Singularity Security
 
-Check `sms_api/compose/hpc_utils.py` and SLURM job generation:
+Check `viva_api/compose/hpc_utils.py` and SLURM job generation:
 - Are Singularity `--bind` mounts restricted to necessary paths?
 - Can user-supplied SBML/OMEX content escape the container?
 - Is `--net` or `--network` used (should not be on HPC)?
 
 ### 10. K8s/AWS Batch Security (GovCloud)
 
-Check `sms_api/simulation/simulation_service_k8s.py`:
+Check `viva_api/simulation/simulation_service_k8s.py`:
 - IAM role minimum privilege?
 - Are S3 bucket names hardcoded or from config?
 - Is there any cross-account data access risk?
@@ -145,7 +145,7 @@ Report findings as:
 ```
 SEVERITY: [CRITICAL|HIGH|MEDIUM|LOW|INFO]
 CATEGORY: [category from checklist above]
-FILE: sms_api/path/to/file.py:line_number
+FILE: viva_api/path/to/file.py:line_number
 FINDING: Concise description of the issue
 EVIDENCE: Exact code snippet
 REMEDIATION: Specific fix with code example
@@ -155,11 +155,11 @@ Group by severity. Always include line numbers. Never speculate — only report 
 
 ## Files to Always Check
 
-- `sms_api/common/hpc/slurm_service.py` — SSH command construction
-- `sms_api/compose/hpc_utils.py` — compose HPC command generation
-- `sms_api/api/routers/compose.py` — upload endpoints
-- `sms_api/api/routers/core.py` — simulator upload
-- `sms_api/api/routers/sms.py` — simulation submit/download
-- `sms_api/config.py` — secrets from env
-- `sms_api/dependencies.py` — service initialization
+- `viva_api/common/hpc/slurm_service.py` — SSH command construction
+- `viva_api/compose/hpc_utils.py` — compose HPC command generation
+- `viva_api/api/routers/compose.py` — upload endpoints
+- `viva_api/api/routers/core.py` — simulator upload
+- `viva_api/api/routers/sms.py` — simulation submit/download
+- `viva_api/config.py` — secrets from env
+- `viva_api/dependencies.py` — service initialization
 - `app/cli.py` — client-side credential handling

@@ -5,10 +5,10 @@ from textwrap import dedent
 import pytest
 import pytest_asyncio
 
-from sms_api.common.hpc.nextflow_weblog import WEBLOG_RECEIVER_SCRIPT
-from sms_api.common.hpc.slurm_service import SlurmService
-from sms_api.common.ssh.ssh_service import SSHSessionService
-from sms_api.config import get_settings
+from viva_api.common.hpc.nextflow_weblog import WEBLOG_RECEIVER_SCRIPT
+from viva_api.common.hpc.slurm_service import SlurmService
+from viva_api.common.ssh.ssh_service import SSHSessionService
+from viva_api.config import get_settings
 
 
 def _build_nextflow_sbatch_template(
@@ -137,13 +137,13 @@ exit $NF_EXIT_CODE
 """
 
 
-# WEBLOG_RECEIVER_SCRIPT is now imported from sms_api.common.hpc.nextflow_weblog
+# WEBLOG_RECEIVER_SCRIPT is now imported from viva_api.common.hpc.nextflow_weblog
 
 
 @pytest_asyncio.fixture(scope="session")
 async def ssh_session_service() -> AsyncGenerator[SSHSessionService]:
-    from sms_api.common.models import SSHTarget
-    from sms_api.dependencies import set_ssh_session_service
+    from viva_api.common.models import SSHTarget
+    from viva_api.dependencies import set_ssh_session_service
 
     settings = get_settings()
     ssh_session_service = SSHSessionService(

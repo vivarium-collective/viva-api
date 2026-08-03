@@ -4,11 +4,11 @@ set -e
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-# version is an optional argument, defaults to the version defined in sms_api/version.py'
+# version is an optional argument, defaults to the version defined in viva_api/version.py'
 #
 # version.py is of form:
 # __version__ = "0.1.0"
-declared_version=$(grep -oE '__version__ = \"[^\"]+\"' "${ROOT_DIR}/sms_api/version.py" | awk -F'"' '{print $2}')
+declared_version=$(grep -oE '__version__ = \"[^\"]+\"' "${ROOT_DIR}/viva_api/version.py" | awk -F'"' '{print $2}')
 version=${1:-${declared_version}}
 
 default_org="vivarium-collective"  # or, "biosimulations"

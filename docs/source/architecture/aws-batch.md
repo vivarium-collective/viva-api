@@ -41,16 +41,16 @@
 
 ### Where workflow submission is initiated
 
-- **API entry point**: `sms_api/api/routers/gateway.py` -- `POST /simulations` calls `run_simulation_workflow()`
-- **Handler orchestration**: `sms_api/common/handlers/simulations.py` -- `run_simulation_workflow()` (line 135) coordinates DB inserts, config resolution, and job submission
-- **Job submission**: `sms_api/simulation/simulation_service.py` -- `SimulationServiceHpc.submit_ecoli_simulation_job()` generates an sbatch script and submits via SSH
+- **API entry point**: `viva_api/api/routers/gateway.py` -- `POST /simulations` calls `run_simulation_workflow()`
+- **Handler orchestration**: `viva_api/common/handlers/simulations.py` -- `run_simulation_workflow()` (line 135) coordinates DB inserts, config resolution, and job submission
+- **Job submission**: `viva_api/simulation/simulation_service.py` -- `SimulationServiceHpc.submit_ecoli_simulation_job()` generates an sbatch script and submits via SSH
 
 ### Where workflow status is tracked
 
-- **Database**: `sms_api/simulation/tables_orm.py` -- `ORMHpcRun` table with `status`, `slurmjobid`, `start_time`, `end_time`, `error_message`
-- **Polling loop**: `sms_api/simulation/job_scheduler.py` -- `JobScheduler.update_running_jobs()` polls SLURM every 5s, updates DB
-- **Status query**: `sms_api/common/hpc/slurm_service.py` -- `SlurmService` wraps `squeue` and `scontrol` over SSH
-- **Event stream**: `sms_api/common/hpc/nextflow_weblog.py` -- embedded HTTP server captures Nextflow events as NDJSON during execution
+- **Database**: `viva_api/simulation/tables_orm.py` -- `ORMHpcRun` table with `status`, `slurmjobid`, `start_time`, `end_time`, `error_message`
+- **Polling loop**: `viva_api/simulation/job_scheduler.py` -- `JobScheduler.update_running_jobs()` polls SLURM every 5s, updates DB
+- **Status query**: `viva_api/common/hpc/slurm_service.py` -- `SlurmService` wraps `squeue` and `scontrol` over SSH
+- **Event stream**: `viva_api/common/hpc/nextflow_weblog.py` -- embedded HTTP server captures Nextflow events as NDJSON during execution
 
 ### Existing interfaces for job execution
 
@@ -99,7 +99,7 @@ Each step is tracked as a separate `HpcRun` record with its own job type (`BUILD
 
 ### Configuration model
 
-- **`sms_api/config.py`**: Pydantic `Settings` with SLURM, Postgres, Redis, S3/GCS/Qumulo, GitHub creds
+- **`viva_api/config.py`**: Pydantic `Settings` with SLURM, Postgres, Redis, S3/GCS/Qumulo, GitHub creds
 - **Deployment namespace**: `deployment_namespace` field maps to kustomize overlays
 - **Backend selection**: `get_job_backend()` returns `"k8s"` for Stanford namespaces, `"slurm"` otherwise
 - **K8s/Batch settings**: `k8s_job_namespace`, `nextflow_container_image`, `batch_job_queue`, `batch_region`, `s3_work_bucket`, `s3_work_prefix`, `s3_output_prefix`, `ecr_repository`, `submit_node_host`/`user`/`key_path`/`ssm_instance_id`
@@ -592,7 +592,7 @@ Completed changes:
 ### Stage 2: K8s Job service implementation [DONE]
 
 Completed changes:
-- `sms_api/simulation/simulation_service_k8s.py` -- `SimulationServiceK8s(SimulationService)`:
+- `viva_api/simulation/simulation_service_k8s.py` -- `SimulationServiceK8s(SimulationService)`:
   - `submit_build_image_job()`: SSH to ARM64 EC2 submit node, Docker build + ECR push
   - `submit_ecoli_simulation_job()`: creates K8s Job + ConfigMap with workflow config (aws section, `build_image: false`, S3 paths)
   - `submit_parca_job()`: placeholder (parca runs within Nextflow workflow)
@@ -600,10 +600,10 @@ Completed changes:
   - `get_job_status()`: delegates to `K8sJobService`
   - `read_config_template()`: GitHub Contents API via httpx
   - `get_latest_commit_hash()`: GitHub API via httpx
-- `sms_api/common/hpc/k8s_job_service.py` -- `K8sJobService`: K8s Job CRUD, ConfigMap management, pod log retrieval, Job condition to `JobStatus` mapping
-- `sms_api/config.py` -- K8s/Batch settings: `k8s_job_namespace`, `nextflow_container_image`, `batch_job_queue`, `batch_region`, `s3_work_bucket`, `s3_work_prefix`, `s3_output_prefix`, `ecr_repository`, `submit_node_*`. `get_job_backend()` function.
-- `sms_api/dependencies.py` -- `init_standalone()` branches on `get_job_backend()`: creates `SimulationServiceK8s` for K8s, `SimulationServiceHpc` for SLURM. SSH targets EC2 submit node (K8s) or SLURM login node. Extracted `_init_simulation_service()` and `_init_ssh_service()` helpers.
-- `sms_api/simulation/job_scheduler.py` -- `slurm_service` now optional; SLURM polling skipped for K8s backend
+- `viva_api/common/hpc/k8s_job_service.py` -- `K8sJobService`: K8s Job CRUD, ConfigMap management, pod log retrieval, Job condition to `JobStatus` mapping
+- `viva_api/config.py` -- K8s/Batch settings: `k8s_job_namespace`, `nextflow_container_image`, `batch_job_queue`, `batch_region`, `s3_work_bucket`, `s3_work_prefix`, `s3_output_prefix`, `ecr_repository`, `submit_node_*`. `get_job_backend()` function.
+- `viva_api/dependencies.py` -- `init_standalone()` branches on `get_job_backend()`: creates `SimulationServiceK8s` for K8s, `SimulationServiceHpc` for SLURM. SSH targets EC2 submit node (K8s) or SLURM login node. Extracted `_init_simulation_service()` and `_init_ssh_service()` helpers.
+- `viva_api/simulation/job_scheduler.py` -- `slurm_service` now optional; SLURM polling skipped for K8s backend
 - `pyproject.toml` -- added `kubernetes>=31.0.0`, `httpx>=0.28.0`
 - `tests/simulation/test_k8s_backend.py` -- 17 unit tests: K8s status mapping, backend selection, `JobId` type safety, `K8sJobService` with mocked K8s client
 
@@ -626,9 +626,9 @@ Completed files:
 - `Dockerfile-nextflow` -- `amazoncorretto:21-al2023` base, Nextflow 25.10.2, Python 3.9 (for weblog)
 - `scripts/entrypoint-nextflow.sh` -- verifies init container output, fixes include paths, optional weblog receiver, runs nextflow
 - `scripts/nextflow-weblog-receiver.py` -- standalone weblog receiver extracted from `nextflow_weblog.py`
-- `sms_api/common/hpc/local_task_service.py` -- in-process async task tracker for build phase
-- `sms_api/simulation/simulation_service_k8s.py` -- init container in Job spec, multi-arch `docker buildx` build
-- `sms_api/common/models.py` -- `JobBackend.LOCAL`, `JobId.local()` factory
+- `viva_api/common/hpc/local_task_service.py` -- in-process async task tracker for build phase
+- `viva_api/simulation/simulation_service_k8s.py` -- init container in Job spec, multi-arch `docker buildx` build
+- `viva_api/common/models.py` -- `JobBackend.LOCAL`, `JobId.local()` factory
 - `alembic/versions/0f991fad32ba_...` -- migration: `slurmjobid` (int) -> `job_id_ext` (str)
 - OpenAPI spec and client regenerated
 
@@ -637,8 +637,8 @@ Completed files:
 **Goal**: End-to-end flow with K8s Jobs + AWS Batch tasks.
 
 Files to modify:
-- `sms_api/common/handlers/simulations.py` -- ensure `get_simulation_outputs()` works with S3 (not SSH/SCP)
-- `sms_api/common/handlers/simulations.py` -- ensure `get_simulation_log()` works with K8s pod logs or S3
+- `viva_api/common/handlers/simulations.py` -- ensure `get_simulation_outputs()` works with S3 (not SSH/SCP)
+- `viva_api/common/handlers/simulations.py` -- ensure `get_simulation_log()` works with K8s pod logs or S3
 - `kustomize/base/` -- add RBAC (ServiceAccount, Role, RoleBinding) for Job management
 - `kustomize/overlays/sms-api-stanford/` -- add K8s backend config
 

@@ -4,9 +4,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import sms_api.dependencies as deps
-from sms_api.common.models import JobId
-from sms_api.config import ComputeBackend, compute_backend_for_repo
+import viva_api.dependencies as deps
+from viva_api.common.models import JobId
+from viva_api.config import ComputeBackend, compute_backend_for_repo
 
 
 class TestComputeBackendForRepo:
@@ -85,7 +85,7 @@ class TestInitRegistry:
     def test_builds_both_when_batch_and_ray_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # K8sJobService loads kube config on construct — stub it.
         monkeypatch.setattr(
-            "sms_api.common.hpc.k8s_job_service.K8sJobService", lambda namespace: MagicMock(name="k8s_job_svc")
+            "viva_api.common.hpc.k8s_job_service.K8sJobService", lambda namespace: MagicMock(name="k8s_job_svc")
         )
         settings = MagicMock(k8s_job_namespace="sms-api-stanford-test", ray_mnp_queue="smsvpctest-ray-mnp")
 
