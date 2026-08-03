@@ -52,6 +52,9 @@ COPY --chown=appuser:appgroup pyproject.toml /app/pyproject.toml
 RUN uv sync --frozen --no-install-project --no-dev
 
 # Copy the rest of the application code
+COPY --chown=appuser:appgroup viva_api /app/viva_api
+# Back-compat shim so deployed Jobs still invoking `python -m sms_api.*` keep
+# working across the sms_api -> viva_api rename (see sms_api/__init__.py).
 COPY --chown=appuser:appgroup sms_api /app/sms_api
 COPY --chown=appuser:appgroup tests /app/tests
 COPY --chown=appuser:appgroup app /app/app
@@ -82,4 +85,4 @@ ENV APP_DIR=/app/app
 ENV ASSETS_DIR=/app/assets
 
 # Command to run the application
-CMD ["uv", "run", "uvicorn", "sms_api.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run", "uvicorn", "viva_api.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

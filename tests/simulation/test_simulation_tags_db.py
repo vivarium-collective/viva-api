@@ -6,8 +6,8 @@ which SQLite cannot emulate).
 
 import pytest
 
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from sms_api.simulation.models import SimulationRequest
+from viva_api.simulation.database_service import DatabaseServiceSQL
+from viva_api.simulation.models import SimulationRequest
 
 
 async def _insert(db: DatabaseServiceSQL, req: SimulationRequest, experiment_id: str, tags: list[str]) -> int:

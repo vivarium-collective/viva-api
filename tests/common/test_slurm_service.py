@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from sms_api.common.hpc.models import SlurmJob
-from sms_api.common.hpc.slurm_service import SlurmService
-from sms_api.common.models import SSHTarget
-from sms_api.common.ssh.ssh_service import SSHSessionService
-from sms_api.common.storage.file_paths import HPCFilePath
-from sms_api.config import get_settings
-from sms_api.dependencies import get_ssh_session_service
+from viva_api.common.hpc.models import SlurmJob
+from viva_api.common.hpc.slurm_service import SlurmService
+from viva_api.common.models import SSHTarget
+from viva_api.common.ssh.ssh_service import SSHSessionService
+from viva_api.common.storage.file_paths import HPCFilePath
+from viva_api.config import get_settings
+from viva_api.dependencies import get_ssh_session_service
 
 # =============================================================================
 # Unit tests for SlurmJob parsing (no SSH required)

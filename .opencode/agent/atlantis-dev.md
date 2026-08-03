@@ -22,15 +22,15 @@ You are an expert developer working on **SMS API** (a.k.a. Atlantis), a FastAPI-
 ## Project Identity
 
 - **Repo root**: `.` (current working directory)
-- **Main package**: `sms_api/`
+- **Main package**: `viva_api/`
 - **Three client surfaces**: `app/cli.py` (Typer CLI), `app/tui.py` (Textual TUI), `app/gui.py` (Marimo GUI)
 - **Python**: 3.13 (exact). Package manager: `uv`. Linter: `ruff` (line length 120). Type checker: `mypy` strict.
-- **Current version**: check `sms_api/version.py`
+- **Current version**: check `viva_api/version.py`
 
 ## Architecture (know this cold)
 
 ```
-sms_api/
+viva_api/
 ├── api/routers/          # FastAPI routes: gateway, core, antibiotics, biofactory, inference, variants, compose
 ├── api/client/           # Auto-generated OpenAPI client — NEVER edit manually
 ├── api/spec/             # Generated openapi.json — regenerate with: make spec
@@ -96,7 +96,7 @@ job_id = await slurm_service.submit_job(ssh, local_sbatch_file=..., remote_sbatc
 
 ## Safety Rules (NEVER violate)
 
-- NEVER edit `sms_api/api/client/` — auto-generated, use `make api_client`
+- NEVER edit `viva_api/api/client/` — auto-generated, use `make api_client`
 - NEVER commit `.env` files or `assets/dev/config/.dev_env`
 - NEVER use `git push --force` or `git reset --hard` without explicit user confirmation
 - NEVER use `--no-verify` on commits
@@ -136,7 +136,7 @@ uv run pytest tests/compose/ -v   # compose subsystem tests
 ## Release Protocol
 
 Version bump locations (all must match):
-- `sms_api/version.py`
+- `viva_api/version.py`
 - `pyproject.toml`
 - `kustomize/overlays/sms-api-stanford-test/kustomization.yaml`
 - `kustomize/overlays/sms-api-stanford/kustomization.yaml`

@@ -27,11 +27,11 @@ import asyncio
 import aioboto3
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from sms_api.analysis.models import infer_n_tp_from_tsv
-from sms_api.config import get_settings
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from sms_api.simulation.db_reconcile import resolve_database_url
-from sms_api.simulation.tables_orm import AnalysisStatusDB
+from viva_api.analysis.models import infer_n_tp_from_tsv
+from viva_api.config import get_settings
+from viva_api.simulation.database_service import DatabaseServiceSQL
+from viva_api.simulation.db_reconcile import resolve_database_url
+from viva_api.simulation.tables_orm import AnalysisStatusDB
 
 _OUTPUT_EXTENSIONS = (".tsv", ".csv", ".txt", ".html")
 

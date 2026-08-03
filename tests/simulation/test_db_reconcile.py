@@ -9,7 +9,7 @@ The fingerprint vectors below are length-6, matching LEGACY_FINGERPRINTS:
      compose_hpcrun.job_id_ext]
 """
 
-from sms_api.simulation.db_reconcile import DbState, classify
+from viva_api.simulation.db_reconcile import DbState, classify
 
 HEAD = "e5a7c9d10f21"
 # Mirrors LEGACY_FINGERPRINTS ordering.

@@ -9,7 +9,7 @@ from textwrap import dedent
 
 import pytest
 
-from sms_api.config import get_settings
+from viva_api.config import get_settings
 
 
 def _build_workflow_sbatch_template(

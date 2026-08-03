@@ -6,8 +6,8 @@ binding (layout_for)."""
 
 import pytest
 
-from sms_api.common.storage.data_layout import NextflowLayout, RayLayout, layout_for
-from sms_api.config import ComputeBackend, get_settings
+from viva_api.common.storage.data_layout import NextflowLayout, RayLayout, layout_for
+from viva_api.config import ComputeBackend, get_settings
 
 
 @pytest.fixture(autouse=True)

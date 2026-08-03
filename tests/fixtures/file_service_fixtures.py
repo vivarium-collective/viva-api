@@ -17,13 +17,13 @@ from pathlib import Path
 import pytest_asyncio
 from gcloud.aio.auth import Token
 
-from sms_api.common.storage.file_service_gcs import FileServiceGCS
-from sms_api.common.storage.file_service_qumulo_s3 import FileServiceQumuloS3
-from sms_api.common.storage.file_service_s3 import FileServiceS3
-from sms_api.common.storage.gcs_aio import create_token
-from sms_api.config import get_local_cache_dir
-from sms_api.dependencies import get_file_service, set_file_service
 from tests.fixtures.file_service_local import FileServiceLocal
+from viva_api.common.storage.file_service_gcs import FileServiceGCS
+from viva_api.common.storage.file_service_qumulo_s3 import FileServiceQumuloS3
+from viva_api.common.storage.file_service_s3 import FileServiceS3
+from viva_api.common.storage.gcs_aio import create_token
+from viva_api.config import get_local_cache_dir
+from viva_api.dependencies import get_file_service, set_file_service
 
 temp_data_dir = get_local_cache_dir() / "test_temp_dir"
 temp_data_dir.mkdir(exist_ok=True)

@@ -1,4 +1,4 @@
-from sms_api.compose.container_def import build_pbg_def
+from viva_api.compose.container_def import build_pbg_def
 
 
 def test_def_installs_process_bigraph_and_embeds_runner() -> None:

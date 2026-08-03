@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT_DIR="${GITHUB_WORKSPACE}"
 
 # Make sure version.py exists
-VERSION_FILE="${ROOT_DIR}/sms_api/version.py"
+VERSION_FILE="${ROOT_DIR}/viva_api/version.py"
 if [[ ! -f "$VERSION_FILE" ]]; then
   echo "ERROR: version.py not found at $VERSION_FILE"
   exit 1

@@ -1,0 +1,3036 @@
+openapi: 3.1.0
+info:
+  title: sms-api
+  version: 0.9.20
+paths:
+  /api/v1/simulations/discovery:
+    get:
+      tags:
+      - Simulations
+      summary: Discover available config files and analysis modules for a simulator
+      description: Enumerate config filenames and analysis modules available in the
+        simulator's repo.
+      operationId: discover-simulator-repo-contents
+      parameters:
+      - name: simulator_id
+        in: query
+        required: true
+        schema:
+          type: integer
+          description: database_id of the simulator to introspect
+          title: Simulator Id
+        description: database_id of the simulator to introspect
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RepoDiscovery'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/simulations/workspace:
+    get:
+      tags:
+      - Simulations
+      summary: Export a simulator's repo@commit workspace as a gzipped tarball
+      description: 'Stream the simulator''s repo@commit as a gzipped tarball (GitHub
+        tarball).
+
+
+        The repo@commit is the dashboard-loadable workspace; streamed so a large
+
+        repo never buffers in memory or on the pod''s ephemeral disk.'
+      operationId: export-simulator-workspace
+      parameters:
+      - name: simulator_id
+        in: query
+        required: true
+        schema:
+          type: integer
+          description: database_id of the simulator to export
+          title: Simulator Id
+        description: database_id of the simulator to export
+      responses:
+        '200':
+          description: A gzipped tarball of the simulator's repo at its commit
+          content:
+            application/json:
+              schema: {}
+            application/gzip: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/simulations/tags:
+    get:
+      tags:
+      - Simulations
+      summary: List the tags present in the database and their experiment IDs
+      description: 'Return every tag carried by a simulation, mapped to the experiment
+        IDs that carry it.
+
+
+        Tags are free-form data on each simulation (set at run time or via
+
+        POST /simulations/{id}/tags), so this reflects the actual database contents
+
+        rather than a predefined registry.'
+      operationId: list-simulation-tags
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  items:
+                    type: string
+                  type: array
+                type: object
+                title: Response List-Simulation-Tags
+  /api/v1/simulations:
+    post:
+      tags:
+      - Simulations
+      summary: '[New] Launch a vEcoli simulation workflow (engine/composite, generations,
+        seeds, condition)'
+      description: 'Run a vEcoli simulation workflow with simplified parameters.
+
+
+        This endpoint reads the workflow configuration from the vEcoli repo on the
+        HPC
+
+        system and allows overriding specific parameters via query params.'
+      operationId: run-ecoli-simulation-new
+      parameters:
+      - name: simulator_id
+        in: query
+        required: true
+        schema:
+          type: integer
+          description: '`database_id` of the simulator object returned by /core/v1/simulator/upload'
+          title: Simulator Id
+        description: '`database_id` of the simulator object returned by /core/v1/simulator/upload'
+      - name: experiment_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Unique experiment identifier
+          title: Experiment Id
+        description: Unique experiment identifier
+      - name: simulation_config_filename
+        in: query
+        required: false
+        schema:
+          type: string
+          description: Config filename in vEcoli/configs/. Use GET /simulations/discovery
+            to list available files.
+          default: api_simulation_default.json
+          title: Simulation Config Filename
+        description: Config filename in vEcoli/configs/. Use GET /simulations/discovery
+          to list available files.
+      - name: num_generations
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: Number of generations to simulate
+          title: Num Generations
+        description: Number of generations to simulate
+      - name: num_seeds
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: Number of initial seeds (lineages)
+          title: Num Seeds
+        description: Number of initial seeds (lineages)
+      - name: composite
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - v2ecoli
+            - vecoli
+            type: string
+          - type: 'null'
+          description: 'Ray two-engine comparison: ''v2ecoli'' (ported) or ''vecoli''
+            (imported via build_composite_native). When set, runs the comparison ensemble
+            driver instead of the phase0 ensemble.'
+          title: Composite
+        description: 'Ray two-engine comparison: ''v2ecoli'' (ported) or ''vecoli''
+          (imported via build_composite_native). When set, runs the comparison ensemble
+          driver instead of the phase0 ensemble.'
+      - name: condition
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Growth condition/media for the comparison run (e.g. basal,
+            acetate).
+          title: Condition
+        description: Growth condition/media for the comparison run (e.g. basal, acetate).
+      - name: max_generations
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: Generations per lineage for the comparison ensemble.
+          title: Max Generations
+        description: Generations per lineage for the comparison ensemble.
+      - name: vecoli_source
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - upstream
+            - vivarium-process
+            type: string
+          - type: 'null'
+          description: 'How the genuine vEcoli side runs (composite=''vecoli'' only):
+            ''upstream'' (default, ~50 pbg steps) or ''vivarium-process'' (vEcoli
+            as one pbg node with vivarium-core''s Engine inside).'
+          title: Vecoli Source
+        description: 'How the genuine vEcoli side runs (composite=''vecoli'' only):
+          ''upstream'' (default, ~50 pbg steps) or ''vivarium-process'' (vEcoli as
+          one pbg node with vivarium-core''s Engine inside).'
+      - name: description
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Description of the simulation
+          title: Description
+        description: Description of the simulation
+      - name: run_parca
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: If true, run the simulation parameter calculator prior to running
+            simulation (re-parameterizes simulation workflow).
+          title: Run Parca
+        description: If true, run the simulation parameter calculator prior to running
+          simulation (re-parameterizes simulation workflow).
+      - name: observables
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          description: Dot-separated vEcoli output paths to observe. E.g. ['bulk',
+            'listeners.mass.cell_mass']. Maps to engine_process_reports in the vEcoli
+            config. If omitted, all outputs are emitted.
+          title: Observables
+        description: Dot-separated vEcoli output paths to observe. E.g. ['bulk', 'listeners.mass.cell_mass'].
+          Maps to engine_process_reports in the vEcoli config. If omitted, all outputs
+          are emitted.
+      - name: ecoli_sources_uri
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: S3 URI for the ECOLI_SOURCES env var on the simulation container.
+            Set automatically when ecoli_sources_repo_url is provided, or manually
+            via the CLI's --sources flag.
+          title: Ecoli Sources Uri
+        description: S3 URI for the ECOLI_SOURCES env var on the simulation container.
+          Set automatically when ecoli_sources_repo_url is provided, or manually via
+          the CLI's --sources flag.
+      - name: ecoli_sources_overlays
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Semicolon-separated overlay manifest URIs for ECOLI_SOURCES_OVERLAYS.
+          title: Ecoli Sources Overlays
+        description: Semicolon-separated overlay manifest URIs for ECOLI_SOURCES_OVERLAYS.
+      - name: ecoli_sources_repo_url
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: GitHub repo URL for ecoli-sources data. The server downloads
+            and syncs to S3 automatically, then injects ECOLI_SOURCES on the container.
+            No AWS CLI needed on the client.
+          title: Ecoli Sources Repo Url
+        description: GitHub repo URL for ecoli-sources data. The server downloads
+          and syncs to S3 automatically, then injects ECOLI_SOURCES on the container.
+          No AWS CLI needed on the client.
+      - name: ecoli_sources_ref
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Git ref (branch/tag/commit) for ecoli_sources_repo_url. Defaults
+            to 'main'.
+          title: Ecoli Sources Ref
+        description: Git ref (branch/tag/commit) for ecoli_sources_repo_url. Defaults
+          to 'main'.
+      - name: tags
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          description: Free-form tags to attach to this simulation for later filtering
+            (e.g. 'cd1'). Repeat the param for multiple tags. Tags can also be added
+            later via POST /simulations/{id}/tags.
+          title: Tags
+        description: Free-form tags to attach to this simulation for later filtering
+          (e.g. 'cd1'). Repeat the param for multiple tags. Tags can also be added
+          later via POST /simulations/{id}/tags.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/AnalysisOptions'
+              - type: 'null'
+              title: Analysis Options
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Simulation'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - Simulations
+      summary: List all simulation specs uploaded to the database
+      operationId: list-ecoli-simulations
+      parameters:
+      - name: experiment_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Comma-separated list of experiment IDs to filter by. Example:
+            ''sim31-baseline-60bb,sim33-violacien-seeds1000-generations10-9617'''
+          title: Experiment Id
+        description: 'Comma-separated list of experiment IDs to filter by. Example:
+          ''sim31-baseline-60bb,sim33-violacien-seeds1000-generations10-9617'''
+      - name: tag
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Comma-separated list of tags to filter by (e.g. 'cd1'). Tags
+            are free-form data on each simulation; an unknown tag simply matches nothing.
+            Use GET /api/v1/simulations/tags to list tags present in the database.
+          title: Tag
+        description: Comma-separated list of tags to filter by (e.g. 'cd1'). Tags
+          are free-form data on each simulation; an unknown tag simply matches nothing.
+          Use GET /api/v1/simulations/tags to list tags present in the database.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Simulation'
+                title: Response List-Ecoli-Simulations
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/simulations/{id}:
+    get:
+      tags:
+      - Simulations
+      summary: Get Simulation
+      operationId: get-ecoli-simulation
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of the simulation
+          title: Id
+        description: Database ID of the simulation
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/Simulation'
+                - type: 'null'
+                title: Response Get-Ecoli-Simulation
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/simulations/{id}/status:
+    get:
+      tags:
+      - Simulations
+      summary: Get the simulation status record by its ID
+      operationId: get-ecoli-simulation-status
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationRun'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/simulations/{id}/cancel:
+    delete:
+      tags:
+      - Simulations
+      summary: Cancel a running simulation
+      description: Cancel a running simulation by killing its backend job.
+      operationId: cancel-ecoli-simulation
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of the simulation
+          title: Id
+        description: Database ID of the simulation
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationRun'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/simulations/{id}/log:
+    get:
+      tags:
+      - Simulations
+      summary: Get the structured output of a given simulation workflow log.
+      operationId: get-ecoli-simulation-log
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Id
+      - name: truncate
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: If true, return only the Nextflow header + final status block
+            (separated by '... truncated ...'). Set to false for the full log.
+          default: true
+          title: Truncate
+        description: If true, return only the Nextflow header + final status block
+          (separated by '... truncated ...'). Set to false for the full log.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/simulations/{id}/analysis:
+    post:
+      tags:
+      - Simulations
+      summary: Run standalone analysis on existing simulation output
+      operationId: run-ecoli-simulation-analysis
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of a completed simulation.
+          title: Id
+        description: Database ID of a completed simulation.
+      - name: modules
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'JSON object mapping analysis domains to module configs. E.g.
+            ''{"multiseed": {"ptools_rna": {"n_tp": 10}}}''. If omitted, runs default
+            ptools modules.'
+          title: Modules
+        description: 'JSON object mapping analysis domains to module configs. E.g.
+          ''{"multiseed": {"ptools_rna": {"n_tp": 10}}}''. If omitted, runs default
+          ptools modules.'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Run-Ecoli-Simulation-Analysis
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/simulations/{id}/analyses:
+    get:
+      tags:
+      - Analyses
+      summary: List the existing (pre-run) analyses for a simulation
+      operationId: list-simulation-analyses
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of the simulation
+          title: Id
+        description: Database ID of the simulation
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ExperimentAnalysisDTO'
+                title: Response List-Simulation-Analyses
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/simulations/{id}/tags:
+    post:
+      tags:
+      - Simulations
+      summary: Attach one or more free-form tags to an existing simulation
+      operationId: add-simulation-tags
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of the simulation
+          title: Id
+        description: Database ID of the simulation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Body_add-simulation-tags'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Simulation'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/simulations/{id}/data:
+    post:
+      tags:
+      - Simulations
+      summary: Get simulation omics data as a downloadable tar.gz archive
+      description: "Get simulation outputs as a tar.gz archive.\n\nChoose response_type\
+        \ based on your use case:\n- **file**: Creates the archive and returns it\
+        \ as a downloadable file.\n  Best for browser downloads and Swagger UI - shows\
+        \ a \"Download\" button.\n- **streaming**: Streams the archive in chunks as\
+        \ it's created.\n  Better for very large files or when you want to start processing\
+        \ before download completes."
+      operationId: get-ecoli-simulation-data
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of the simulation.
+          title: Id
+        description: Database ID of the simulation.
+      - name: response_type
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/SimulationAnalysisDataResponseType'
+          description: 'Response type: ''file'' for direct download (recommended for
+            browsers/Swagger UI), ''streaming'' for chunked streaming response (better
+            for large files or programmatic access)'
+          default: file
+        description: 'Response type: ''file'' for direct download (recommended for
+          browsers/Swagger UI), ''streaming'' for chunked streaming response (better
+          for large files or programmatic access)'
+      responses:
+        '200':
+          description: A tar.gz archive containing simulation output files
+          content:
+            application/json:
+              schema: {}
+            application/gzip: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/simulations/{id}/observables/index:
+    get:
+      tags:
+      - Simulations
+      summary: List observables available in a simulation's emitter store (S3)
+      operationId: get-simulation-observables-index
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of the simulation
+          title: Id
+        description: Database ID of the simulation
+      - name: seed
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Seed
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationObservableIndex'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/simulations/{id}/observables:
+    get:
+      tags:
+      - Simulations
+      summary: Read observable timeseries from a simulation's emitter store (S3)
+      operationId: get-simulation-observables
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of the simulation
+          title: Id
+        description: Database ID of the simulation
+      - name: names
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Names
+      - name: seed
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Seed
+      - name: stride
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          description: Return every Nth point (decimation). 1 = full resolution.
+          default: 1
+          title: Stride
+        description: Return every Nth point (decimation). 1 = full resolution.
+      - name: max_points
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          description: Cap the number of points returned; overrides `stride` if it
+            implies a coarser step.
+          title: Max Points
+        description: Cap the number of points returned; overrides `stride` if it implies
+          a coarser step.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationObservables'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analyses:
+    post:
+      tags:
+      - Analyses
+      summary: Run an analysis
+      operationId: run-ecoli-simulation-analysis
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExperimentAnalysisRequest'
+              default:
+                experiment_id: sim3-baseline-ca00
+                multiseed:
+                - name: ptools_rna
+                  n_tp: 8
+                  variant: 0
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  anyOf:
+                  - $ref: '#/components/schemas/TsvOutputFile'
+                  - $ref: '#/components/schemas/OutputFileMetadata'
+                title: Response Run-Ecoli-Simulation-Analysis
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - Analyses
+      summary: List all analyses across all simulations (exhaustive; filtering/paging
+        to come)
+      operationId: list-analyses
+      parameters:
+      - name: experiment_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Optional: filter by experiment_id.'
+          title: Experiment Id
+        description: 'Optional: filter by experiment_id.'
+      - name: simulation_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'Optional: filter by simulation database id.'
+          title: Simulation Id
+        description: 'Optional: filter by simulation database id.'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ExperimentAnalysisDTO'
+                title: Response List-Analyses
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analyses/{id}:
+    get:
+      tags:
+      - Analyses
+      summary: Retrieve an experiment analysis spec from the database
+      operationId: get-analysis
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExperimentAnalysisDTO'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analyses/{id}/status:
+    get:
+      tags:
+      - Analyses
+      summary: Get the status of an existing experiment analysis run
+      operationId: get-analysis-status
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of the analysis
+          title: Id
+        description: Database ID of the analysis
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalysisRun'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analyses/{id}/log:
+    get:
+      tags:
+      - Analyses
+      summary: Get the log of an existing experiment analysis run
+      operationId: get-analysis-log
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of the analysis
+          title: Id
+        description: Database ID of the analysis
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: string
+                title: Response Get-Analysis-Log
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analyses/{id}/plots:
+    get:
+      tags:
+      - Analyses
+      summary: Get an array of HTML files representing all plot outputs of a given
+        analysis.
+      operationId: get-analysis-plots
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of the analysis
+          title: Id
+        description: Database ID of the analysis
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OutputFile'
+                title: Response Get-Analysis-Plots
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analyses/{id}/data:
+    get:
+      tags:
+      - Analyses
+      summary: Retrieve the output files (TSV/CSV/TXT/HTML) of an existing analysis
+        by id
+      description: 'Pure retrieval of a pre-computed analysis''s files by id (never
+        computes).
+
+
+        Returns the same ``list[TsvOutputFile]`` shape as the legacy ``POST /analyses``.
+
+        409 if the analysis is not READY; 404 if the analysis id is unknown.'
+      operationId: get-analysis-data
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of the analysis
+          title: Id
+        description: Database ID of the analysis
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TsvOutputFile'
+                title: Response Get-Analysis-Data
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /core/v1/simulator/latest:
+    get:
+      tags:
+      - EcoliSim
+      summary: Get the latest simulator version
+      operationId: get-latest-simulator
+      parameters:
+      - name: git_repo_url
+        in: query
+        required: false
+        schema:
+          type: string
+          default: https://github.com/CovertLabEcoli/vEcoli-private
+          title: Git Repo Url
+      - name: git_branch
+        in: query
+        required: false
+        schema:
+          type: string
+          default: master
+          title: Git Branch
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Simulator'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /core/v1/simulator/versions:
+    get:
+      tags:
+      - EcoliSim
+      summary: get the list of available simulator versions
+      operationId: get-simulator-versions
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisteredSimulators'
+  /core/v1/simulator/status:
+    get:
+      tags:
+      - EcoliSim
+      summary: Get simulator container build status by its ID
+      operationId: get-simulator-status
+      parameters:
+      - name: simulator_id
+        in: query
+        required: true
+        schema:
+          type: integer
+          title: Simulator Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HpcRun'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /core/v1/simulator/upload:
+    post:
+      tags:
+      - EcoliSim
+      summary: Upload a new simulator (vEcoli) version.
+      operationId: insert-simulator-version
+      parameters:
+      - name: force
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Force
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Simulator'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatorVersion'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /core/v1/simulation/parca:
+    post:
+      tags:
+      - EcoliSim
+      summary: Run a parameter calculation
+      operationId: run-parca
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ParcaDatasetRequest'
+              default:
+                simulator_version:
+                  git_commit_hash: 2f3ead
+                  git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
+                  git_branch: master
+                  database_id: 25
+                  created_at: '2026-07-14T16:12:39.019002'
+                parca_config:
+                  outdir: /projects/SMS/viva_api/prod/sims
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParcaDataset'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /core/v1/simulation/parca/versions:
+    get:
+      tags:
+      - EcoliSim
+      summary: Get list of parca calculations
+      operationId: get-parca-versions
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/ParcaDataset'
+                type: array
+                title: Response Get-Parca-Versions
+  /core/v1/simulation/parca/status:
+    get:
+      tags:
+      - EcoliSim
+      summary: Get parca calculation status by its ID
+      operationId: get-parca-status
+      parameters:
+      - name: parca_id
+        in: query
+        required: true
+        schema:
+          type: integer
+          title: Parca Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HpcRun'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/simulation/run:
+    post:
+      tags:
+      - Compose Simulation
+      summary: Run a process-bigraph simulation (OMEX/PBG/SBML upload)
+      operationId: compose-run-simulation
+      parameters:
+      - name: interval_time
+        in: query
+        required: false
+        schema:
+          type: number
+          default: 1.0
+          title: Interval Time
+      - name: batch_submission
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Batch Submission
+      - name: extra_pip_deps
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          title: Extra Pip Deps
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_compose-run-simulation'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeSimulationExperiment'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/simulation/{simulation_id}/status:
+    get:
+      tags:
+      - Compose Results
+      summary: Get compose simulation job status
+      operationId: compose-get-simulation-status
+      parameters:
+      - name: simulation_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Simulation Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeHpcRun'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/simulations/status/batch:
+    get:
+      tags:
+      - Compose Results
+      summary: Batch status lookup for compose simulations
+      operationId: compose-get-simulations-status-batch
+      parameters:
+      - name: ids
+        in: query
+        required: true
+        schema:
+          type: array
+          items:
+            type: integer
+          title: Ids
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ComposeHpcRun'
+                title: Response Compose-Get-Simulations-Status-Batch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/simulation/{simulation_id}/results:
+    get:
+      tags:
+      - Compose Results
+      summary: Download compose simulation results as zip
+      operationId: compose-get-simulation-results
+      parameters:
+      - name: simulation_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Simulation Id
+      responses:
+        '200':
+          description: Results zip file
+          content:
+            application/zip: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/simulator/{simulator_id}/build/status:
+    get:
+      tags:
+      - Compose Results
+      summary: Get compose container build status
+      operationId: compose-get-simulator-build-status
+      parameters:
+      - name: simulator_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Simulator Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeHpcRun'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/simulation/{simulation_id}/document:
+    get:
+      tags:
+      - Compose Results
+      summary: Retrieve the process-bigraph document used for a compose simulation
+      description: 'Return the process-bigraph document (PBG JSON, SBML XML, or OMEX
+        manifest)
+
+        that was uploaded when this simulation was submitted.'
+      operationId: compose-get-simulation-document
+      parameters:
+      - name: simulation_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Simulation Id
+      responses:
+        '200':
+          description: PBG/SBML document content
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Compose-Get-Simulation-Document
+        '404':
+          description: Simulation not found or no document stored
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/simulators:
+    get:
+      tags:
+      - Compose Compute
+      summary: List registered compose simulators
+      operationId: compose-list-simulators
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeRegisteredSimulators'
+  /compose/v1/processes:
+    get:
+      tags:
+      - Compose Compute
+      summary: List registered process-bigraph processes
+      operationId: compose-list-processes
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/BiGraphProcess'
+                type: array
+                title: Response Compose-List-Processes
+  /compose/v1/steps:
+    get:
+      tags:
+      - Compose Compute
+      summary: List registered process-bigraph steps
+      operationId: compose-list-steps
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/BiGraphStep'
+                type: array
+                title: Response Compose-List-Steps
+  /compose/v1/curated/copasi:
+    post:
+      tags:
+      - Compose Curated
+      summary: Run COPASI simulation from SBML
+      operationId: compose-run-copasi
+      parameters:
+      - name: start_time
+        in: query
+        required: true
+        schema:
+          type: number
+          title: Start Time
+      - name: duration
+        in: query
+        required: true
+        schema:
+          type: number
+          title: Duration
+      - name: num_data_points
+        in: query
+        required: true
+        schema:
+          type: number
+          title: Num Data Points
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_compose-run-copasi'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeSimulationExperiment'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/curated/tellurium:
+    post:
+      tags:
+      - Compose Curated
+      summary: Run Tellurium simulation from SBML
+      operationId: compose-run-tellurium
+      parameters:
+      - name: start_time
+        in: query
+        required: true
+        schema:
+          type: number
+          title: Start Time
+      - name: end_time
+        in: query
+        required: true
+        schema:
+          type: number
+          title: End Time
+      - name: num_data_points
+        in: query
+        required: true
+        schema:
+          type: number
+          title: Num Data Points
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_compose-run-tellurium'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeSimulationExperiment'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/curated/ecoli:
+    post:
+      tags:
+      - Compose Curated
+      summary: Run a v2ecoli whole-cell simulation via process-bigraph
+      description: 'Run a v2ecoli whole-cell E. coli simulation.
+
+
+        Unlike Copasi/Tellurium, v2ecoli does not require an SBML upload.
+
+        The biological model is pre-computed in the ParCa cache and the
+
+        55 biological processes are composed at runtime via process-bigraph.'
+      operationId: compose-run-v2ecoli
+      parameters:
+      - name: duration
+        in: query
+        required: false
+        schema:
+          type: number
+          description: Simulation duration in seconds.
+          default: 60.0
+          title: Duration
+        description: Simulation duration in seconds.
+      - name: seed
+        in: query
+        required: false
+        schema:
+          type: integer
+          description: Random seed for stochastic processes.
+          default: 0
+          title: Seed
+        description: Random seed for stochastic processes.
+      - name: interval
+        in: query
+        required: false
+        schema:
+          type: number
+          description: Execution interval (timestep) in seconds.
+          default: 1.0
+          title: Interval
+        description: Execution interval (timestep) in seconds.
+      - name: features
+        in: query
+        required: false
+        schema:
+          type: string
+          description: JSON list of feature modules, e.g. '["ppgpp_regulation"]'
+          default: '[]'
+          title: Features
+        description: JSON list of feature modules, e.g. '["ppgpp_regulation"]'
+      - name: cache_dir
+        in: query
+        required: false
+        schema:
+          type: string
+          description: Absolute path to pre-computed ParCa cache inside container.
+          default: /out/cache
+          title: Cache Dir
+        description: Absolute path to pre-computed ParCa cache inside container.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeSimulationExperiment'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/biomodels/identifiers:
+    get:
+      tags:
+      - Compose BioModels
+      summary: List BioModels database identifiers
+      operationId: compose-list-biomodel-identifiers
+      parameters:
+      - name: n
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          description: Max number of identifiers to return.
+          default: 20
+          title: N
+        description: Max number of identifiers to return.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+                title: Response Compose-List-Biomodel-Identifiers
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/biomodels/{biomodel_id}/metadata:
+    get:
+      tags:
+      - Compose BioModels
+      summary: Get metadata for a BioModels database entry
+      operationId: compose-get-biomodel-metadata
+      parameters:
+      - name: biomodel_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Biomodel Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BiomodelInfo'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/biomodels/{biomodel_id}/run:
+    post:
+      tags:
+      - Compose BioModels
+      summary: Run a BioModels database model through Copasi or Tellurium
+      operationId: compose-run-biomodel
+      parameters:
+      - name: biomodel_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Biomodel Id
+      - name: simulator
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/BiomodelSimulator'
+          description: Simulator to use.
+          default: copasi
+        description: Simulator to use.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeSimulationExperiment'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/biomodels/batch:
+    post:
+      tags:
+      - Compose BioModels
+      summary: Run a batch of BioModels database models
+      operationId: compose-run-biomodels-batch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BiomodelsRunRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BiomodelsRunResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/biomodels/{biomodel_id}/audit:
+    post:
+      tags:
+      - Compose BioModels
+      summary: Run a BioModel on multiple simulators for cross-validation
+      operationId: compose-audit-biomodel
+      parameters:
+      - name: biomodel_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Biomodel Id
+      - name: simulators
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/BiomodelSimulator'
+          description: Simulators to run. Both are wired into a single PB document.
+          default:
+          - copasi
+          - tellurium
+          title: Simulators
+        description: Simulators to run. Both are wired into a single PB document.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BiomodelsAuditResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/biomodels/regression:
+    post:
+      tags:
+      - Compose BioModels
+      summary: "Run a BioModels regression suite \u2014 submit N models, collect results"
+      operationId: compose-biomodels-regression
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BiomodelsRegressionRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BiomodelsRegressionResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /:
+    get:
+      summary: Redirect Old Path
+      operationId: redirect_old_path__get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /home:
+    get:
+      tags:
+      - SMS API
+      summary: Home
+      operationId: home_home_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /health:
+    get:
+      tags:
+      - SMS API
+      summary: Check Health
+      operationId: check_health_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+                title: Response Check Health Health Get
+  /version:
+    get:
+      tags:
+      - SMS API
+      summary: Get Version
+      operationId: get_version_version_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: string
+                title: Response Get Version Version Get
+components:
+  schemas:
+    AnalysisConfig:
+      properties:
+        analysis_options:
+          $ref: '#/components/schemas/AnalysisConfigOptions'
+      additionalProperties: true
+      type: object
+      required:
+      - analysis_options
+      title: AnalysisConfig
+    AnalysisConfigOptions:
+      properties:
+        experiment_id:
+          items:
+            type: string
+          type: array
+          title: Experiment Id
+      additionalProperties: true
+      type: object
+      required:
+      - experiment_id
+      title: AnalysisConfigOptions
+    AnalysisModuleConfig:
+      properties:
+        name:
+          type: string
+          title: Name
+        files:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/OutputFileMetadata'
+            type: array
+          - type: 'null'
+          title: Files
+      additionalProperties: true
+      type: object
+      required:
+      - name
+      title: AnalysisModuleConfig
+    AnalysisOptions:
+      properties:
+        cpus:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cpus
+      additionalProperties: true
+      type: object
+      title: AnalysisOptions
+    AnalysisRun:
+      properties:
+        id:
+          type: integer
+          title: Id
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        job_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Job Id
+        error_log:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Log
+      type: object
+      required:
+      - id
+      - status
+      title: AnalysisRun
+    BiGraphComputeType:
+      type: string
+      enum:
+      - process
+      - step
+      title: BiGraphComputeType
+    BiGraphProcess:
+      properties:
+        module:
+          type: string
+          title: Module
+        name:
+          type: string
+          title: Name
+        compute_type:
+          $ref: '#/components/schemas/BiGraphComputeType'
+        inputs:
+          type: string
+          title: Inputs
+        outputs:
+          type: string
+          title: Outputs
+        database_id:
+          type: integer
+          title: Database Id
+      type: object
+      required:
+      - module
+      - name
+      - compute_type
+      - inputs
+      - outputs
+      - database_id
+      title: BiGraphProcess
+    BiGraphStep:
+      properties:
+        module:
+          type: string
+          title: Module
+        name:
+          type: string
+          title: Name
+        compute_type:
+          $ref: '#/components/schemas/BiGraphComputeType'
+        inputs:
+          type: string
+          title: Inputs
+        outputs:
+          type: string
+          title: Outputs
+        database_id:
+          type: integer
+          title: Database Id
+      type: object
+      required:
+      - module
+      - name
+      - compute_type
+      - inputs
+      - outputs
+      - database_id
+      title: BiGraphStep
+    BiomodelInfo:
+      properties:
+        biomodel_id:
+          type: string
+          title: Biomodel Id
+        metadata:
+          additionalProperties: true
+          type: object
+          title: Metadata
+      type: object
+      required:
+      - biomodel_id
+      - metadata
+      title: BiomodelInfo
+    BiomodelSimulator:
+      type: string
+      enum:
+      - copasi
+      - tellurium
+      title: BiomodelSimulator
+    BiomodelsAuditResult:
+      properties:
+        experiment:
+          $ref: '#/components/schemas/ComposeSimulationExperiment'
+        simulators_used:
+          items:
+            $ref: '#/components/schemas/BiomodelSimulator'
+          type: array
+          title: Simulators Used
+      type: object
+      required:
+      - experiment
+      - simulators_used
+      title: BiomodelsAuditResult
+    BiomodelsRegressionRequest:
+      properties:
+        n_models:
+          type: integer
+          maximum: 1000.0
+          minimum: 1.0
+          title: N Models
+          description: Number of models to run. Ignored if model_ids set.
+          default: 10
+        model_ids:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Model Ids
+          description: Specific BioModel IDs to run. Overrides n_models.
+        simulators:
+          items:
+            $ref: '#/components/schemas/BiomodelSimulator'
+          type: array
+          title: Simulators
+          description: Simulators to wire into each model's PB document.
+      type: object
+      title: BiomodelsRegressionRequest
+    BiomodelsRegressionResult:
+      properties:
+        submitted:
+          items:
+            $ref: '#/components/schemas/ComposeSimulationExperiment'
+          type: array
+          title: Submitted
+        failed:
+          items:
+            type: string
+          type: array
+          title: Failed
+          description: BioModel IDs that failed to submit.
+        total_requested:
+          type: integer
+          title: Total Requested
+      type: object
+      required:
+      - submitted
+      - total_requested
+      title: BiomodelsRegressionResult
+    BiomodelsRunRequest:
+      properties:
+        model_ids:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Model Ids
+          description: Specific BioModel IDs to run. Mutually exclusive with n_models.
+        n_models:
+          anyOf:
+          - type: integer
+            maximum: 50.0
+            minimum: 1.0
+          - type: 'null'
+          title: N Models
+          description: Run the first N BioModels. Ignored if model_ids is set.
+        simulator:
+          $ref: '#/components/schemas/BiomodelSimulator'
+          description: Simulator to use for each model.
+          default: copasi
+      type: object
+      title: BiomodelsRunRequest
+    BiomodelsRunResult:
+      properties:
+        submitted:
+          items:
+            $ref: '#/components/schemas/ComposeSimulationExperiment'
+          type: array
+          title: Submitted
+        failed:
+          items:
+            type: string
+          type: array
+          title: Failed
+          description: BioModel IDs that failed to submit.
+      type: object
+      required:
+      - submitted
+      title: BiomodelsRunResult
+    Body_add-simulation-tags:
+      properties:
+        tags:
+          items:
+            type: string
+          type: array
+          title: Tags
+          description: 'Tags to add (union-merged with existing tags). Example: [''cd1''].'
+      type: object
+      required:
+      - tags
+      title: Body_add-simulation-tags
+    Body_compose-run-copasi:
+      properties:
+        sbml:
+          type: string
+          contentMediaType: application/octet-stream
+          title: Sbml
+      type: object
+      required:
+      - sbml
+      title: Body_compose-run-copasi
+    Body_compose-run-simulation:
+      properties:
+        uploaded_file:
+          type: string
+          contentMediaType: application/octet-stream
+          title: Uploaded File
+      type: object
+      required:
+      - uploaded_file
+      title: Body_compose-run-simulation
+    Body_compose-run-tellurium:
+      properties:
+        sbml:
+          type: string
+          contentMediaType: application/octet-stream
+          title: Sbml
+      type: object
+      required:
+      - sbml
+      title: Body_compose-run-tellurium
+    ComposeHpcRun:
+      properties:
+        database_id:
+          type: integer
+          title: Database Id
+        slurmjobid:
+          type: integer
+          title: Slurmjobid
+        correlation_id:
+          type: string
+          title: Correlation Id
+        job_type:
+          $ref: '#/components/schemas/ComposeJobType'
+        sim_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Sim Id
+        simulator_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Simulator Id
+        status:
+          anyOf:
+          - $ref: '#/components/schemas/ComposeJobStatus'
+          - type: 'null'
+        start_time:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Start Time
+        end_time:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: End Time
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+      type: object
+      required:
+      - database_id
+      - slurmjobid
+      - correlation_id
+      - job_type
+      - sim_id
+      - simulator_id
+      title: ComposeHpcRun
+    ComposeJobStatus:
+      type: string
+      enum:
+      - waiting
+      - queued
+      - running
+      - completed
+      - failed
+      - pending
+      - cancelled
+      - out_of_memory
+      - suspended
+      - timeout
+      - unknown
+      title: ComposeJobStatus
+    ComposeJobType:
+      type: string
+      enum:
+      - simulation
+      - build_container
+      title: ComposeJobType
+    ComposeRegisteredSimulators:
+      properties:
+        versions:
+          items:
+            $ref: '#/components/schemas/ComposeSimulatorVersion'
+          type: array
+          title: Versions
+        timestamp:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Timestamp
+      type: object
+      required:
+      - versions
+      title: ComposeRegisteredSimulators
+    ComposeSimulationExperiment:
+      properties:
+        simulation_database_id:
+          type: integer
+          title: Simulation Database Id
+        simulator_database_id:
+          type: integer
+          title: Simulator Database Id
+        last_updated:
+          type: string
+          title: Last Updated
+        metadata:
+          additionalProperties:
+            type: string
+          type: object
+          title: Metadata
+      type: object
+      required:
+      - simulation_database_id
+      - simulator_database_id
+      title: ComposeSimulationExperiment
+    ComposeSimulatorVersion:
+      properties:
+        singularity_def:
+          $ref: '#/components/schemas/ContainerizationFileRepr'
+        singularity_def_hash:
+          type: string
+          title: Singularity Def Hash
+        packages:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/RegisteredPackage'
+            type: array
+          - type: 'null'
+          title: Packages
+        database_id:
+          type: integer
+          title: Database Id
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+      type: object
+      required:
+      - singularity_def
+      - singularity_def_hash
+      - packages
+      - database_id
+      title: ComposeSimulatorVersion
+    ContainerizationEngine:
+      type: integer
+      enum:
+      - 0
+      - 1
+      - 2
+      - 3
+      title: ContainerizationEngine
+      description: The container engine a definition targets.
+    ContainerizationFileRepr:
+      properties:
+        representation:
+          type: string
+          title: Representation
+        containerization_engine:
+          $ref: '#/components/schemas/ContainerizationEngine'
+          default: 2
+      type: object
+      required:
+      - representation
+      title: ContainerizationFileRepr
+      description: A textual container-definition file (e.g. a Singularity/apptainer
+        def).
+    ExperimentAnalysisDTO:
+      properties:
+        database_id:
+          type: integer
+          title: Database Id
+        name:
+          type: string
+          title: Name
+        config:
+          $ref: '#/components/schemas/AnalysisConfig'
+        last_updated:
+          type: string
+          title: Last Updated
+        job_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Job Name
+        job_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Job Id
+        experiment_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Experiment Id
+        n_tp:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: N Tp
+        status:
+          anyOf:
+          - $ref: '#/components/schemas/JobStatus'
+          - type: 'null'
+        result_uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Result Uri
+        simulation_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Simulation Id
+        backend:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Backend
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+      type: object
+      required:
+      - database_id
+      - name
+      - config
+      - last_updated
+      title: ExperimentAnalysisDTO
+      description: "DTO returned by /analyses .. endpoints\n\nAttributes:\n    database_id:\
+        \ (``int``) unique identifier of analysis record.\n    name: (``str``) analysis\
+        \ name.\n    config: (``AnalysisConfig``) data model whose serialized format\n\
+        \        represents a valid analysis config ingestible by vEcoli.\n    job_name:\
+        \ (``str | None``) SLURM analysis job name referenced by sbatch directives.\n\
+        \    job_id: (``int | None``) SLURM analysis job id generated by the ``sbatch``\
+        \ evocation.\n        Defaults to ``None`` (such that this object can be partially\
+        \ instantiated)."
+    ExperimentAnalysisRequest:
+      properties:
+        experiment_id:
+          type: string
+          title: Experiment Id
+        generation_start:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Generation Start
+        generation_end:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Generation End
+        seeds:
+          anyOf:
+          - items:
+              type: integer
+            type: array
+          - type: 'null'
+          title: Seeds
+        single:
+          anyOf:
+          - items:
+              anyOf:
+              - $ref: '#/components/schemas/AnalysisModuleConfig'
+              - $ref: '#/components/schemas/PtoolsAnalysisConfig'
+            type: array
+          - type: 'null'
+          title: Single
+        multidaughter:
+          anyOf:
+          - items:
+              anyOf:
+              - $ref: '#/components/schemas/AnalysisModuleConfig'
+              - $ref: '#/components/schemas/PtoolsAnalysisConfig'
+            type: array
+          - type: 'null'
+          title: Multidaughter
+        multigeneration:
+          anyOf:
+          - items:
+              anyOf:
+              - $ref: '#/components/schemas/AnalysisModuleConfig'
+              - $ref: '#/components/schemas/PtoolsAnalysisConfig'
+            type: array
+          - type: 'null'
+          title: Multigeneration
+        multiseed:
+          anyOf:
+          - items:
+              anyOf:
+              - $ref: '#/components/schemas/AnalysisModuleConfig'
+              - $ref: '#/components/schemas/PtoolsAnalysisConfig'
+            type: array
+          - type: 'null'
+          title: Multiseed
+        multivariant:
+          anyOf:
+          - items:
+              anyOf:
+              - $ref: '#/components/schemas/AnalysisModuleConfig'
+              - $ref: '#/components/schemas/PtoolsAnalysisConfig'
+            type: array
+          - type: 'null'
+          title: Multivariant
+        multiexperiment:
+          anyOf:
+          - items:
+              anyOf:
+              - $ref: '#/components/schemas/AnalysisModuleConfig'
+              - $ref: '#/components/schemas/PtoolsAnalysisConfig'
+            type: array
+          - type: 'null'
+          title: Multiexperiment
+      type: object
+      required:
+      - experiment_id
+      title: ExperimentAnalysisRequest
+      description: "Request body for the ``POST /analyses`` (ptools) endpoint.\n\n\
+        Top-level ``generation_start``, ``generation_end``, and ``seeds`` are\nfully\
+        \ supported for ``single`` analyses \u2014 they restrict which simulation\n\
+        data rows are returned, with metadata identifying each partition.\n\nFor aggregated\
+        \ types (``multigeneration``, ``multiseed``), the filters are\npassed to vEcoli\
+        \ but not currently applied to the per-subset data query\n(known vEcoli limitation).\
+        \  Use ``single`` with filters and aggregate\nclient-side as a workaround.\n\
+        \nPer-module params (``n_tp``, ``time_unit``, \u2026) are set inside each\n\
+        ``PtoolsAnalysisConfig`` entry and only affect the module they belong to."
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    HpcRun:
+      properties:
+        database_id:
+          type: integer
+          title: Database Id
+        correlation_id:
+          type: string
+          title: Correlation Id
+        job_type:
+          $ref: '#/components/schemas/JobType'
+        ref_id:
+          type: integer
+          title: Ref Id
+        status:
+          anyOf:
+          - $ref: '#/components/schemas/JobStatus'
+          - type: 'null'
+        start_time:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Start Time
+        end_time:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: End Time
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+        job_id_ext:
+          type: string
+          title: Job Id Ext
+          readOnly: true
+        job_backend:
+          type: string
+          title: Job Backend
+          readOnly: true
+      additionalProperties: true
+      type: object
+      required:
+      - database_id
+      - correlation_id
+      - job_type
+      - ref_id
+      - job_id_ext
+      - job_backend
+      title: HpcRun
+    JobStatus:
+      type: string
+      enum:
+      - unknown
+      - waiting
+      - pending
+      - queued
+      - running
+      - completed
+      - cancelled
+      - failed
+      title: JobStatus
+      description: Shared job status enum for simulations, analyses, and other HPC
+        jobs.
+    JobType:
+      type: string
+      enum:
+      - analysis
+      - simulation
+      - parca
+      - build_image
+      title: JobType
+    ObservableInfoModel:
+      properties:
+        name:
+          type: string
+          title: Name
+        dims:
+          items:
+            type: string
+          type: array
+          title: Dims
+        shape:
+          items:
+            type: integer
+          type: array
+          title: Shape
+      additionalProperties: true
+      type: object
+      required:
+      - name
+      - dims
+      - shape
+      title: ObservableInfoModel
+    OutputFile:
+      properties:
+        name:
+          type: string
+          title: Name
+        content:
+          type: string
+          title: Content
+      type: object
+      required:
+      - name
+      - content
+      title: OutputFile
+    OutputFileMetadata:
+      properties:
+        filename:
+          type: string
+          title: Filename
+        variant:
+          type: integer
+          title: Variant
+          default: 0
+        lineage_seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Lineage Seed
+        generation:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Generation
+        agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Id
+        content:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content
+      type: object
+      required:
+      - filename
+      title: OutputFileMetadata
+    PackageType:
+      type: string
+      enum:
+      - pypi
+      - conda
+      title: PackageType
+    ParcaDataset:
+      properties:
+        database_id:
+          type: integer
+          title: Database Id
+        parca_dataset_request:
+          $ref: '#/components/schemas/ParcaDatasetRequest'
+        remote_archive_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Remote Archive Path
+      additionalProperties: true
+      type: object
+      required:
+      - database_id
+      - parca_dataset_request
+      title: ParcaDataset
+    ParcaDatasetRequest:
+      properties:
+        simulator_version:
+          $ref: '#/components/schemas/SimulatorVersion'
+        parca_config:
+          $ref: '#/components/schemas/ParcaOptions'
+          default:
+            outdir: /projects/SMS/viva_api/prod/sims
+      additionalProperties: true
+      type: object
+      required:
+      - simulator_version
+      title: ParcaDatasetRequest
+    ParcaOptions:
+      properties:
+        outdir:
+          type: string
+          title: Outdir
+          default: /projects/SMS/viva_api/prod/sims
+      additionalProperties: true
+      type: object
+      title: ParcaOptions
+    PtoolsAnalysisConfig:
+      properties:
+        name:
+          type: string
+          title: Name
+          default: ptools_rxns
+        n_tp:
+          type: integer
+          title: N Tp
+          default: 8
+        variant:
+          type: integer
+          title: Variant
+          default: 0
+        generation:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Generation
+        lineage_seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Lineage Seed
+        agent_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Agent Id
+        files:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/OutputFileMetadata'
+            type: array
+          - type: 'null'
+          title: Files
+      type: object
+      title: PtoolsAnalysisConfig
+      description: "Configuration for a single ptools analysis module.\n\n:param name:\
+        \ Analysis module type name\n    (one of ``\"ptools_rxns\"``, ``\"ptools_rna\"\
+        ``, ``\"ptools_proteins\"``).\n:param n_tp: Number of timepoints/columns in\
+        \ the output TSV.\n:param files: Specification of files requested to be returned\n\
+        \    with the completion of the analysis.\n\nGeneration/seed filtering is\
+        \ handled at the request level\n(``ExperimentAnalysisRequest.generation_start/end/seeds``),\
+        \ not per-module.\nFully supported for ``single`` analyses.  Aggregated types\n\
+        (``multigeneration``, ``multiseed``) do not currently respect these\nfilters\
+        \ due to a known vEcoli limitation."
+    RegisteredPackage:
+      properties:
+        database_id:
+          type: integer
+          title: Database Id
+        package_type:
+          $ref: '#/components/schemas/PackageType'
+        name:
+          type: string
+          title: Name
+        processes:
+          items:
+            $ref: '#/components/schemas/BiGraphProcess'
+          type: array
+          title: Processes
+        steps:
+          items:
+            $ref: '#/components/schemas/BiGraphStep'
+          type: array
+          title: Steps
+      type: object
+      required:
+      - database_id
+      - package_type
+      - name
+      - processes
+      - steps
+      title: RegisteredPackage
+    RegisteredSimulators:
+      properties:
+        versions:
+          items:
+            $ref: '#/components/schemas/SimulatorVersion'
+          type: array
+          title: Versions
+        timestamp:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Timestamp
+      additionalProperties: true
+      type: object
+      required:
+      - versions
+      title: RegisteredSimulators
+    RepoDiscovery:
+      properties:
+        simulator_id:
+          type: integer
+          title: Simulator Id
+        git_repo_url:
+          type: string
+          title: Git Repo Url
+        git_commit_hash:
+          type: string
+          title: Git Commit Hash
+        config_filenames:
+          items:
+            type: string
+          type: array
+          title: Config Filenames
+        analysis_modules:
+          additionalProperties:
+            items:
+              type: string
+            type: array
+          type: object
+          title: Analysis Modules
+      additionalProperties: true
+      type: object
+      required:
+      - simulator_id
+      - git_repo_url
+      - git_commit_hash
+      title: RepoDiscovery
+      description: Available config filenames and analysis modules discovered from
+        a simulator's repo.
+    Simulation:
+      properties:
+        database_id:
+          type: integer
+          title: Database Id
+        simulator_id:
+          type: integer
+          title: Simulator Id
+        parca_dataset_id:
+          type: integer
+          title: Parca Dataset Id
+        config:
+          $ref: '#/components/schemas/SimulationConfig'
+        simulation_config_filename:
+          type: string
+          title: Simulation Config Filename
+        experiment_id:
+          type: string
+          title: Experiment Id
+        last_updated:
+          type: string
+          title: Last Updated
+          default: '2026-07-14 16:12:38.947722'
+        job_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Job Id
+        num_seeds:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Num Seeds
+        tags:
+          items:
+            type: string
+          type: array
+          title: Tags
+      additionalProperties: true
+      type: object
+      required:
+      - database_id
+      - simulator_id
+      - parca_dataset_id
+      - config
+      - simulation_config_filename
+      - experiment_id
+      title: Simulation
+      description: Used by the /simulation endpoint
+    SimulationAnalysisDataResponseType:
+      type: string
+      enum:
+      - streaming
+      - file
+      title: SimulationAnalysisDataResponseType
+      description: Response type for simulation data endpoint.
+    SimulationConfig:
+      properties:
+        experiment_id:
+          type: string
+          title: Experiment Id
+        parca_options:
+          $ref: '#/components/schemas/ParcaOptions'
+          default:
+            outdir: /projects/SMS/viva_api/prod/sims
+        analysis_options:
+          $ref: '#/components/schemas/AnalysisOptions'
+          default: {}
+        ecoli_sources_uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ecoli Sources Uri
+        ecoli_sources_overlays:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ecoli Sources Overlays
+        generations:
+          type: integer
+          title: Generations
+          default: 1
+      additionalProperties: true
+      type: object
+      required:
+      - experiment_id
+      title: SimulationConfig
+    SimulationObservableIndex:
+      properties:
+        simulation_id:
+          type: integer
+          title: Simulation Id
+        experiment_id:
+          type: string
+          title: Experiment Id
+        seed:
+          type: integer
+          title: Seed
+        store:
+          type: string
+          enum:
+          - zarr
+          - parquet
+          title: Store
+        observables:
+          items:
+            $ref: '#/components/schemas/ObservableInfoModel'
+          type: array
+          title: Observables
+      additionalProperties: true
+      type: object
+      required:
+      - simulation_id
+      - experiment_id
+      - seed
+      - store
+      - observables
+      title: SimulationObservableIndex
+    SimulationObservables:
+      properties:
+        simulation_id:
+          type: integer
+          title: Simulation Id
+        experiment_id:
+          type: string
+          title: Experiment Id
+        seed:
+          type: integer
+          title: Seed
+        store:
+          type: string
+          enum:
+          - zarr
+          - parquet
+          title: Store
+        time:
+          items:
+            type: number
+          type: array
+          title: Time
+        series:
+          additionalProperties:
+            items:
+              anyOf:
+              - type: number
+              - type: 'null'
+            type: array
+          type: object
+          title: Series
+      additionalProperties: true
+      type: object
+      required:
+      - simulation_id
+      - experiment_id
+      - seed
+      - store
+      - time
+      - series
+      title: SimulationObservables
+    SimulationRun:
+      properties:
+        id:
+          type: integer
+          title: Id
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+      additionalProperties: true
+      type: object
+      required:
+      - id
+      - status
+      title: SimulationRun
+    Simulator:
+      properties:
+        git_commit_hash:
+          type: string
+          title: Git Commit Hash
+        git_repo_url:
+          type: string
+          title: Git Repo Url
+        git_branch:
+          type: string
+          title: Git Branch
+      additionalProperties: true
+      type: object
+      required:
+      - git_commit_hash
+      - git_repo_url
+      - git_branch
+      title: Simulator
+    SimulatorVersion:
+      properties:
+        git_commit_hash:
+          type: string
+          title: Git Commit Hash
+        git_repo_url:
+          type: string
+          title: Git Repo Url
+        git_branch:
+          type: string
+          title: Git Branch
+        database_id:
+          type: integer
+          title: Database Id
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+      additionalProperties: true
+      type: object
+      required:
+      - git_commit_hash
+      - git_repo_url
+      - git_branch
+      - database_id
+      title: SimulatorVersion
+    TsvOutputFile:
+      properties:
+        filename:
+          type: string
+          title: Filename
+        variant:
+          type: integer
+          title: Variant
+          default: 0
+        lineage_seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Lineage Seed
+        generation:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Generation
+        agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Id
+        content:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content
+      type: object
+      required:
+      - filename
+      title: TsvOutputFile
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError

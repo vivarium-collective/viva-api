@@ -4,9 +4,9 @@ import types
 
 import pytest
 
-from sms_api.common.models import JobBackend
-from sms_api.compose import simulation_service_ray as mod
-from sms_api.compose.simulation_service_ray import ComposeSimulationServiceRay
+from viva_api.common.models import JobBackend
+from viva_api.compose import simulation_service_ray as mod
+from viva_api.compose.simulation_service_ray import ComposeSimulationServiceRay
 
 
 def _settings(**overrides: object) -> types.SimpleNamespace:

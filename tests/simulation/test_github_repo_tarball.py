@@ -6,8 +6,8 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
-from sms_api.simulation.github_repo import open_repo_tarball_stream, repo_tarball_url
-from sms_api.simulation.models import SimulatorVersion
+from viva_api.simulation.github_repo import open_repo_tarball_stream, repo_tarball_url
+from viva_api.simulation.models import SimulatorVersion
 
 
 def _sim() -> SimulatorVersion:

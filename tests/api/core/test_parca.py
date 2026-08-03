@@ -1,21 +1,21 @@
 import pytest
 
-import sms_api
-import sms_api.api
-from sms_api.api.client import Client
-from sms_api.api.client.api.ecoli_sim.get_parca_status import asyncio as get_parca_status_async
-from sms_api.api.client.api.ecoli_sim.get_parca_versions import asyncio as get_parca_versions_async
-from sms_api.api.client.api.ecoli_sim.get_simulator_versions import asyncio as get_simulator_versions_async
-from sms_api.api.client.api.ecoli_sim.run_parca import asyncio as run_parca_async
-from sms_api.api.client.models import (
+import viva_api
+import viva_api.api
+from tests.fixtures.simulation_service_mocks import SimulationServiceMockParca
+from viva_api.api.client import Client
+from viva_api.api.client.api.ecoli_sim.get_parca_status import asyncio as get_parca_status_async
+from viva_api.api.client.api.ecoli_sim.get_parca_versions import asyncio as get_parca_versions_async
+from viva_api.api.client.api.ecoli_sim.get_simulator_versions import asyncio as get_simulator_versions_async
+from viva_api.api.client.api.ecoli_sim.run_parca import asyncio as run_parca_async
+from viva_api.api.client.models import (
     HpcRun,
     ParcaDataset,
     ParcaDatasetRequest,
     ParcaOptions,
     RegisteredSimulators,
 )
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from tests.fixtures.simulation_service_mocks import SimulationServiceMockParca
+from viva_api.simulation.database_service import DatabaseServiceSQL
 
 
 @pytest.mark.asyncio
@@ -49,6 +49,6 @@ async def test_insert_parca(
         client=in_memory_api_client, parca_id=returned_parca_dataset_dto.database_id
     )
     assert type(parca_status) is HpcRun
-    assert parca_status.status == sms_api.api.client.models.job_status.JobStatus.RUNNING
-    assert parca_status.job_type == sms_api.api.client.models.job_type.JobType.PARCA
+    assert parca_status.status == viva_api.api.client.models.job_status.JobStatus.RUNNING
+    assert parca_status.job_type == viva_api.api.client.models.job_type.JobType.PARCA
     assert parca_status.ref_id == returned_parca_dataset_dto.database_id

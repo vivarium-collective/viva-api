@@ -59,7 +59,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from app.app_data_service import get_data_service  # noqa: E402
-from sms_api.config import get_settings  # noqa: E402
+from viva_api.config import get_settings  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Log-parsing utilities

@@ -102,11 +102,11 @@ The test uses a minimal workflow config:
 
 ## Log File Locations on HPC
 
-- Sbatch script: `/projects/SMS/sms_api/<user>/htclogs/workflow_<uuid>.sbatch`
-- Stdout: `/projects/SMS/sms_api/<user>/htclogs/workflow_<uuid>.out`
-- Stderr: `/projects/SMS/sms_api/<user>/htclogs/workflow_<uuid>.err`
-- Workflow config: `/projects/SMS/sms_api/<user>/htclogs/workflow_<uuid>_output/workflow_config.json`
-- Nextflow work: `/projects/SMS/sms_api/<user>/workspace/api_outputs/workflow_test_<uuid>/nextflow/nextflow_workdirs/`
+- Sbatch script: `/projects/SMS/viva_api/<user>/htclogs/workflow_<uuid>.sbatch`
+- Stdout: `/projects/SMS/viva_api/<user>/htclogs/workflow_<uuid>.out`
+- Stderr: `/projects/SMS/viva_api/<user>/htclogs/workflow_<uuid>.err`
+- Workflow config: `/projects/SMS/viva_api/<user>/htclogs/workflow_<uuid>_output/workflow_config.json`
+- Nextflow work: `/projects/SMS/viva_api/<user>/workspace/api_outputs/workflow_test_<uuid>/nextflow/nextflow_workdirs/`
 
 ## Debugging Tips
 

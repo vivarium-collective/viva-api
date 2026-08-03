@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from sms_api.data.models import BiocycCredentials
+from viva_api.data.models import BiocycCredentials
 
 
 @pytest.mark.asyncio

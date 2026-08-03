@@ -5,12 +5,12 @@
 
 Connection: uses SQLALCHEMY_DATABASE_URL if set, else POSTGRES_HOST/PORT/USER/
 PASSWORD/DATABASE. In-cluster the same check is available as
-``uv run python -m sms_api.simulation.db_reconcile --analyze``.
+``uv run python -m viva_api.simulation.db_reconcile --analyze``.
 
 Exit code 0 = safe to reconcile; 2 = INCONSISTENT, manual reconciliation needed.
 """
 
-from sms_api.simulation.db_reconcile import main
+from viva_api.simulation.db_reconcile import main
 
 if __name__ == "__main__":
     raise SystemExit(main(["--analyze"]))

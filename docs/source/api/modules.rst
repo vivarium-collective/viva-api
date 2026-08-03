@@ -1,10 +1,10 @@
 API Reference
 =============
 
-Auto-generated documentation from the ``sms_api`` Python package.
+Auto-generated documentation from the ``viva_api`` Python package.
 
 .. autosummary::
    :toctree: generated
    :recursive:
 
-   sms_api
+   viva_api

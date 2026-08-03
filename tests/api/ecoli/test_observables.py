@@ -53,7 +53,7 @@ class TestDefaultObservables:
         import json
         from pathlib import Path
 
-        from sms_api.common.simulator_defaults import DEFAULT_OBSERVABLES
+        from viva_api.common.simulator_defaults import DEFAULT_OBSERVABLES
 
         baseline_path = Path(__file__).resolve().parents[3] / "assets" / "observables_baseline.json"
         if not baseline_path.exists():
@@ -64,7 +64,7 @@ class TestDefaultObservables:
         assert result == expected
 
     def test_default_observables_is_nonempty(self) -> None:
-        from sms_api.common.simulator_defaults import DEFAULT_OBSERVABLES
+        from viva_api.common.simulator_defaults import DEFAULT_OBSERVABLES
 
         assert len(DEFAULT_OBSERVABLES) > 0
         assert all(isinstance(obs, str) for obs in DEFAULT_OBSERVABLES)
@@ -72,7 +72,7 @@ class TestDefaultObservables:
 
     def test_fallback_uses_defaults_when_none(self) -> None:
         """Handler logic: when observables is None, use DEFAULT_OBSERVABLES."""
-        from sms_api.common.simulator_defaults import DEFAULT_OBSERVABLES
+        from viva_api.common.simulator_defaults import DEFAULT_OBSERVABLES
 
         observables = None
         effective = observables if observables else DEFAULT_OBSERVABLES
@@ -80,7 +80,7 @@ class TestDefaultObservables:
 
     def test_user_override_takes_precedence(self) -> None:
         """Handler logic: when observables is provided, use it instead of defaults."""
-        from sms_api.common.simulator_defaults import DEFAULT_OBSERVABLES
+        from viva_api.common.simulator_defaults import DEFAULT_OBSERVABLES
 
         user_obs = ["bulk", "listeners.mass.cell_mass"]
         effective = user_obs if user_obs else DEFAULT_OBSERVABLES

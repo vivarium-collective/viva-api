@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from sms_api.simulation.observable_reader import (
+from viva_api.simulation.observable_reader import (
     StoreIndex,
     detect_store_kind,
     list_observables,

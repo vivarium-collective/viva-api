@@ -1,4 +1,4 @@
-from sms_api.compose.container_def import ContainerizationFileRepr
+from viva_api.compose.container_def import ContainerizationFileRepr
 
 
 def test_dto_holds_representation() -> None:

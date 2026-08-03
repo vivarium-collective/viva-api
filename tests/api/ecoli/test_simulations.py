@@ -24,21 +24,21 @@ import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from sms_api.api.main import app
-from sms_api.common import handlers
-from sms_api.common.models import JobStatus
-from sms_api.common.ssh.ssh_service import SSHSessionService
-from sms_api.config import get_settings
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from sms_api.simulation.models import (
+from tests.fixtures.api_fixtures import SimulatorRepoInfo
+from viva_api.api.main import app
+from viva_api.common import handlers
+from viva_api.common.models import JobStatus
+from viva_api.common.ssh.ssh_service import SSHSessionService
+from viva_api.config import get_settings
+from viva_api.simulation.database_service import DatabaseServiceSQL
+from viva_api.simulation.models import (
     SimulationRequest,
     SimulatorVersion,
 )
-from sms_api.simulation.simulation_service import SimulationServiceHpc
-from tests.fixtures.api_fixtures import SimulatorRepoInfo
+from viva_api.simulation.simulation_service import SimulationServiceHpc
 
 if TYPE_CHECKING:
-    from sms_api.simulation.job_scheduler import JobScheduler
+    from viva_api.simulation.job_scheduler import JobScheduler
 
 # Config file name expected in vEcoli/configs/
 CONFIG_FILENAME = "api_simulation_default_ccam.json"
@@ -384,7 +384,7 @@ async def test_list_simulation_tags_endpoint(
     """The discovery endpoint reflects tags actually present in the database."""
     from httpx import ASGITransport, AsyncClient
 
-    from sms_api.api.main import app
+    from viva_api.api.main import app
 
     await _insert_tagged(database_service, experiment_request, "tagdisc-a", ["disc-bundle"])
     await _insert_tagged(database_service, experiment_request, "tagdisc-b", ["disc-bundle"])
@@ -407,7 +407,7 @@ async def test_list_simulations_filtered_by_tag(
     """Filtering by tag returns exactly the simulations carrying that tag."""
     from httpx import ASGITransport, AsyncClient
 
-    from sms_api.api.main import app
+    from viva_api.api.main import app
 
     await _insert_tagged(database_service, experiment_request, "tagfilt-x", ["filt-bundle"])
     await _insert_tagged(database_service, experiment_request, "tagfilt-y", ["filt-bundle"])
@@ -431,7 +431,7 @@ async def test_list_simulations_filtered_unknown_tag(
     """An unknown tag matches nothing and returns an empty 200 (tags are free-form data)."""
     from httpx import ASGITransport, AsyncClient
 
-    from sms_api.api.main import app
+    from viva_api.api.main import app
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -449,7 +449,7 @@ async def test_add_simulation_tags_endpoint(
     """POST /simulations/{id}/tags union-merges tags onto an existing simulation."""
     from httpx import ASGITransport, AsyncClient
 
-    from sms_api.api.main import app
+    from viva_api.api.main import app
 
     experiment_request.experiment_id = "tagadd-1"
     experiment_request.config.experiment_id = "tagadd-1"

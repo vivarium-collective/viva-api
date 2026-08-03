@@ -1,6 +1,6 @@
 import pytest
 
-from sms_api.common.utils import get_uuid, unique_id
+from viva_api.common.utils import get_uuid, unique_id
 
 
 @pytest.mark.asyncio
