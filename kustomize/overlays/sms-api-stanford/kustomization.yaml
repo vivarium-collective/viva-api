@@ -111,8 +111,14 @@ images:
   # 0.9.28's new endpoint) instead of a blind sleep, and folds the completed
   # result into .pbg/runs/<run_id>/analyses.json -- closing the loop through
   # the existing Analyses button with no frontend changes needed.
+  # 0.3.29 (workbench #711): depends on viva-marketplace (ledger) so the
+  # workbench reads the topic-discovered registry. Found live on prod
+  # already running this tag with no matching bump here -- this file had
+  # drifted from the real deployed state; re-syncing it now closes that gap
+  # (a plain `kubectl apply` of the stale 0.3.28 pin would otherwise silently
+  # roll the live workbench pod backward on the next unrelated deploy).
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.28
+    newTag: 0.3.29
 
 replicas:
   - count: 1
