@@ -11,7 +11,7 @@ on_rtd = os.environ.get("READTHEDOCS") == "True"
 
 # -- Project information -----------------------------------------------------
 
-project = "Atlantis API (SMS API)"
+project = "Atlantis API (Viva API)"
 copyright = "2025-2026, Alexander Patrie, Jim Schaff, Ryan Spangler"
 author = "Alexander Patrie, Jim Schaff, Ryan Spangler"
 
