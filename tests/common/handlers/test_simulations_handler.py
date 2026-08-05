@@ -26,6 +26,7 @@ from sms_api.config import get_settings
 from sms_api.dependencies import get_file_service, set_file_service
 from sms_api.simulation.models import Simulation, SimulationConfig, SimulatorVersion
 from sms_api.simulation.simulation_service_k8s import SimulationServiceK8s
+from sms_api.simulation.tables_orm import ORMAnalysis
 
 
 @pytest.mark.integration
@@ -299,6 +300,14 @@ async def test_run_standalone_analysis_ray_native_routes_to_v2ecoli_job() -> Non
     assert call_kwargs["params"]["out_uri"] == "s3://bucket/vecoli-output/exp123"
     assert call_kwargs["params"]["n_seeds"] == 2
     assert call_kwargs["params"]["modules"] == {"multiseed": {"doubling_time_distribution": {}}}
+    # regression: ORMAnalysis.to_dto() unconditionally reads config["analysis_options"]
+    # (AnalysisConfigOptions requires experiment_id) -- this producer must write that
+    # shape too, matching the legacy Batch/SLURM producers in run_standalone_analysis(),
+    # or GET /analyses/{id} 500s with a raw KeyError for every Ray-native analysis.
+    assert call_kwargs["params"]["analysis_options"] == {
+        "experiment_id": ["exp123"],
+        "multiseed": {"doubling_time_distribution": {}},
+    }
     assert result["config"] == call_kwargs["params"]
     assert result["database_id"] == 42
 
@@ -309,6 +318,18 @@ async def test_run_standalone_analysis_ray_native_routes_to_v2ecoli_job() -> Non
     assert record_kwargs["backend"] == "ray"
     assert record_kwargs["job_id_ext"] == "ana-exp123"
     assert record_kwargs["result_uri"].startswith("s3://bucket/vecoli-output/exp123/analyses/")
+    # The actual reported bug: to_dto() must not raise on this producer's config shape.
+    orm_row = ORMAnalysis(
+        id=42,
+        name="ana-exp123",
+        config=call_kwargs["params"],
+        last_updated=datetime.now(UTC).isoformat(),
+        experiment_id="exp123",
+        simulation_id=115,
+        backend="ray",
+    )
+    dto = orm_row.to_dto()
+    assert dto.config.analysis_options.experiment_id == ["exp123"]
 
 
 @pytest.mark.asyncio
