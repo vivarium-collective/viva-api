@@ -136,4 +136,17 @@
 #          'multiseed'" — live-reproduced against a completed pilot simulation,
 #          5 separate K8s Job attempts over 22h, all Failed. Default now nests
 #          under "single".
-__version__ = "0.9.33"
+# 0.9.34 — fix: unify ray_num_nodes / compose_ray_num_nodes into a single
+#          ray_num_nodes setting. Both the ensemble sim path (simulation/
+#          simulation_service_ray.py) and the compose path (compose/
+#          simulation_service_ray.py) submit through the SAME shared
+#          SimulationServiceRay._submit_mnp() -- compose is a thin wrapper
+#          around it, not a separate subsystem -- but each read an independent
+#          node-count setting. The CDK-side 24-node capacity scale-up
+#          (sms-cdk#29) only ever updated compose_ray_num_nodes, silently
+#          leaving the actually-used ensemble sim path stuck at ray_num_nodes=4.
+#          Live-reproduced: the real 1000x10 baseline job ran on 4 nodes
+#          instead of 24 (~14-15 min/gen vs ~8 measured at low contention on
+#          the same instance type), extrapolated ~24-27h total, had to be
+#          killed. One setting now, can't drift apart again.
+__version__ = "0.9.34"
