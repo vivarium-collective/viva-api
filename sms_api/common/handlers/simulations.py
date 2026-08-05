@@ -1548,7 +1548,7 @@ async def run_standalone_analysis(
         database_service: DB service for looking up the simulation.
         simulation_id: Database ID of a completed simulation.
         modules: Analysis modules to run, keyed by domain.
-            E.g. ``{"multiseed": {"ptools_rna": {"n_tp": 10}, "ptools_rxns": {"n_tp": 10}}}``
+            E.g. ``{"single": {"ptools_rna": {"n_tp": 10}, "ptools_rxns": {"n_tp": 10}}}``
             If None, uses a default set of ptools modules.
     """
     settings = get_settings()
@@ -1561,7 +1561,7 @@ async def run_standalone_analysis(
     # Default analysis modules if none specified
     if modules is None:
         modules = {
-            "multiseed": {
+            "single": {
                 "ptools_rna": {"n_tp": 10},
                 "ptools_rxns": {"n_tp": 10},
                 "ptools_proteins": {"n_tp": 10},
