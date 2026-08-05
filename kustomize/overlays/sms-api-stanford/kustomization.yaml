@@ -125,8 +125,12 @@ images:
   # switched build's shared base (sms-ecoli's) was crashing every session
   # switch to it. Supersedes 0.3.30/0.3.31, deployed surgically without a
   # matching bump here at the time -- same drift pattern as 0.3.29 above.
+  # 0.3.34 (workbench #747): "Run current spec" is now mode-aware -- on a
+  # remote-pinned deployment (this one) it dispatches to AWS Batch via the
+  # existing /api/remote-run-submit instead of always running locally. One
+  # button, no new button; deployment mode decides the behavior.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.32
+    newTag: 0.3.34
 
 replicas:
   - count: 1
