@@ -21,8 +21,11 @@ images:
   # 0.9.30: sets V2ECOLI_SIM_DATA on submit_ray_native_analysis()'s K8s Job spec
   # (gap #1) so the DuckDB/cd1 analysis suite can resolve sim_data for an S3
   # sweep -- required for the cd1 (base/vio/mec) reproduction via sms-ecoli.
+  # 0.9.32: fixes _run_standalone_analysis_ray_native's config missing
+  # analysis_options (ORMAnalysis.to_dto() unconditionally reads it) -- every
+  # GET /analyses/{id} for a Ray-native analysis 500'd with a raw KeyError.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.30
+    newTag: 0.9.32
   # ptools pinned to last-known-good tag — CI only builds sms-api, so there is
   # no newer sms-ptools:0.6.x image on ghcr.io.  0.5.9 is the tag the live Stanford
   # pod has been running successfully; keeping both namespaces pointing here
