@@ -118,7 +118,7 @@ images:
   # (a plain `kubectl apply` of the stale 0.3.28 pin would otherwise silently
   # roll the live workbench pod backward on the next unrelated deploy).
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.29
+    newTag: 0.3.30
 
 replicas:
   - count: 1
