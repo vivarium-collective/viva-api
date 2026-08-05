@@ -1501,6 +1501,14 @@ async def _run_standalone_analysis_ray_native(
         "n_seeds": n_seeds,
         "modules": modules,
         "analysis_name": analysis_name,
+        # ORMAnalysis.to_dto() unconditionally reads config["analysis_options"]
+        # (AnalysisConfigOptions requires experiment_id) -- the legacy Batch/SLURM
+        # producers below already write this shape (experiment_id + each domain
+        # spread as a top-level key); match it so to_dto() doesn't KeyError. The
+        # v2ecoli-side consumer (run_standalone_analysis.py) only reads out_uri/
+        # n_seeds/modules/analysis_name and ignores unknown keys, so this is inert
+        # for it -- purely for the DTO contract.
+        "analysis_options": {"experiment_id": [experiment_id], **modules},
     }
     job_id = await sim_service.submit_ray_native_analysis(
         experiment_id=experiment_id,
