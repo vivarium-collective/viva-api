@@ -23,6 +23,7 @@ from sms_api.analysis.models import (
     TsvOutputFile,
 )
 from sms_api.common.models import JobId, JobStatus, SSHTarget
+from sms_api.common.storage import data_layout
 from sms_api.common.storage.file_paths import HPCFilePath, S3FilePath
 from sms_api.common.utils import get_data_id, timestamp
 from sms_api.config import get_settings
@@ -214,9 +215,8 @@ async def handle_get_ray_analysis_status(
     file_service = get_file_service()
     manifest_bytes = None
     if file_service is not None and record.result_uri:
-        manifest_bytes = await file_service.get_file_contents(
-            S3FilePath(s3_path=Path(f"{record.result_uri}/_manifest.json"))
-        )
+        manifest_key = data_layout.key_from_uri(f"{record.result_uri}/_manifest.json")
+        manifest_bytes = await file_service.get_file_contents(S3FilePath(s3_path=Path(manifest_key)))
     if manifest_bytes is not None:
         manifest = json.loads(manifest_bytes)
         if manifest.get("written"):

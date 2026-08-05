@@ -149,4 +149,15 @@
 #          instead of 24 (~14-15 min/gen vs ~8 measured at low contention on
 #          the same instance type), extrapolated ~24-27h total, had to be
 #          killed. One setting now, can't drift apart again.
-__version__ = "0.9.34"
+# 0.9.35 — fix: Ray-native analysis status polling used the full s3://<bucket>/...
+#          result_uri directly as S3FilePath.s3_path, which is documented (and
+#          FileServiceS3 relies on it) as BUCKET-RELATIVE -- the bucket is
+#          resolved separately from settings, so the full URI double-prefixed
+#          the bucket into the key and, via Path()'s slash-collapsing, mangled
+#          "s3://" into "s3:/". The constructed key never matched a real S3
+#          object, so the manifest-exists check silently 404'd forever.
+#          Live-reproduced: atlantis analysis status kept reporting "running"
+#          20+ minutes after the K8s pod had genuinely completed with a valid
+#          manifest already in S3. New data_layout.key_from_uri() strips the
+#          s3://<bucket>/ prefix before constructing S3FilePath.
+__version__ = "0.9.35"
