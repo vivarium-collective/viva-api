@@ -156,7 +156,7 @@ async def test_submit_simulation_job_uses_the_unified_ray_num_nodes_setting(
     )
 
     svc = ComposeSimulationServiceRay()
-    svc._ray._ensure_mnp_job_def = lambda image, tag: "smscdk-ray-mnp:1"
+    monkeypatch.setattr(svc._ray, "_ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
 
     captured: dict[str, object] = {}
 
@@ -164,7 +164,7 @@ async def test_submit_simulation_job_uses_the_unified_ray_num_nodes_setting(
         captured.update(kwargs)
         return "batch-job-id"
 
-    svc._ray._submit_mnp = _capture_submit_mnp
+    monkeypatch.setattr(svc._ray, "_submit_mnp", _capture_submit_mnp)
 
     fake_file_service = AsyncMock()
     fake_file_service.upload_file = AsyncMock()
