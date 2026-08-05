@@ -112,4 +112,17 @@
 #          stuck at QUEUED forever even after the Batch job SUCCEEDED and results
 #          landed in S3. Now polls every NON-TERMINAL state so a job traverses
 #          queued->running->completed. Found by the same stanford-test smoke test.
-__version__ = "0.9.29"
+# 0.9.30 — skipped here on purpose: already used (untagged) on the deploy trunk
+#          (feat/multi-generation-dispatch, the branch actually live on
+#          sms-api-stanford prod, diverged from main by the sms_api->viva_api
+#          rename). Not retroactively reconciled onto main today - see
+#          backlog/memory "viva-api deploy-trunk reconciliation debt". Skipping
+#          the number here avoids two different tags/releases both claiming 0.9.30.
+# 0.9.31 — fix: Ray-native standalone analysis (_run_standalone_analysis_ray_native)
+#          never wrote config["analysis_options"], which ORMAnalysis.to_dto()
+#          unconditionally reads (AnalysisConfigOptions requires experiment_id) -
+#          every GET /analyses/{id} for a Ray-native analysis 500'd with a raw
+#          KeyError. Fixed to match the shape the legacy Batch/SLURM producers
+#          already write (experiment_id + each analysis domain spread as a
+#          top-level key).
+__version__ = "0.9.31"
