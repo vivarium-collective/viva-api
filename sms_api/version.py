@@ -128,4 +128,12 @@
 #          unconditionally reading config["analysis_options"], which this
 #          producer never wrote, so GET /analyses/{id} 500'd for every
 #          Ray-native analysis.
-__version__ = "0.9.32"
+# 0.9.33 — fix: run_standalone_analysis()'s default ptools_* module set (used
+#          whenever --modules is omitted) nested ptools_rna/ptools_rxns/
+#          ptools_proteins under "multiseed", but those modules are registered
+#          scale="single" in v2ecoli/sms-ecoli's ANALYSIS_REGISTRY. Every
+#          default-modules dispatch failed with "is scale='single', not
+#          'multiseed'" — live-reproduced against a completed pilot simulation,
+#          5 separate K8s Job attempts over 22h, all Failed. Default now nests
+#          under "single".
+__version__ = "0.9.33"
