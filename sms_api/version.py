@@ -118,4 +118,14 @@
 #          sweep paths). Closes the deploy gap on this branch specifically —
 #          main already had this fix (PR #207); this branch (the real Stanford
 #          deploy trunk) did not.
-__version__ = "0.9.30"
+# 0.9.31 — skipped here on purpose: used on `main` for the same underlying fix
+#          (cherry-picked onto this branch instead of merging main's full
+#          sms_api->viva_api rename). Skipping avoids two different tags/
+#          releases both claiming 0.9.31 for genuinely different commits.
+# 0.9.32 — fix: Ray-native standalone analysis config missing analysis_options
+#          (cherry-pick of main's 0.9.31 fix onto this deploy trunk — see that
+#          release's notes for the full root cause). ORMAnalysis.to_dto() was
+#          unconditionally reading config["analysis_options"], which this
+#          producer never wrote, so GET /analyses/{id} 500'd for every
+#          Ray-native analysis.
+__version__ = "0.9.32"
