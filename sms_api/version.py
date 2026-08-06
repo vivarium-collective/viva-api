@@ -187,4 +187,18 @@
 #          command: the old assertion checked a substring that the WRONG
 #          value also satisfies (it's a prefix of the real id), so it could
 #          never have caught this regression either.
-__version__ = "0.9.37"
+# 0.9.38 — 0.9.37 was STILL wrong: a second real pilot dispatch failed again,
+#          identical error, with the now-correctly-SHAPED id. Root cause:
+#          "ecoli_baseline" doesn't exist anywhere in sms-ecoli (the deployed
+#          simulator image) — confirmed via git show/git grep directly
+#          against commit e38f742, not the separate local v2ecoli checkout,
+#          which does have an ecoli_baseline.py but is NOT a mirror of what's
+#          actually in the image. sms-ecoli's real multi-gen composite is
+#          v2ecoli/composites/batch_baseline.py (name="batch_baseline"),
+#          whose declared parameters match this dispatch's overrides dict
+#          exactly. Renamed V2ECOLI_BASELINE_COMPOSITE_ID ->
+#          V2ECOLI_BATCH_BASELINE_COMPOSITE_ID = "v2ecoli.composites.
+#          batch_baseline.batch_baseline" (old name was itself misleading —
+#          said BASELINE, pointed nowhere real). Same two ray_backend tests
+#          updated to the real id (still exact-match, not substring).
+__version__ = "0.9.38"

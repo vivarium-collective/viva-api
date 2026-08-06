@@ -260,12 +260,12 @@ class TestSimulationServiceRaySubmit:
         assert "run_batch_baseline_ray.py" not in cmd
         assert "run_phase0_xarray_ensemble.py" not in cmd
         assert "aws s3 cp" in cmd and "/tmp/run_pbg.py" in cmd  # noqa: S108
-        # Exact match, not a substring check: "v2ecoli.composites.ecoli_baseline" alone is a
-        # PREFIX of the real registered id and would have silently passed the wrong constant
-        # (process_bigraph.composite_spec's id scheme is f"{fn.__module__}.{name}" -- the
-        # module already ends in "ecoli_baseline", and the composite's own name="ecoli_baseline"
-        # repeats it -- a live pilot dispatch failed on exactly this mistake, 2026-08-06).
-        assert "--composite-id v2ecoli.composites.ecoli_baseline.ecoli_baseline " in cmd
+        # Exact match, not a substring check. sms-ecoli has no "ecoli_baseline" module
+        # at all -- two real pilot dispatches (2026-08-06) failed chasing that name
+        # before the real module (v2ecoli/composites/batch_baseline.py, decorated
+        # name="batch_baseline") was confirmed directly against the deployed sms-ecoli
+        # image at commit e38f742, never the separate/diverged local v2ecoli checkout.
+        assert "--composite-id v2ecoli.composites.batch_baseline.batch_baseline " in cmd
         assert "PBG_CORE_BUILDER=v2ecoli.core:build_core" in cmd
 
         tokens = shlex.split(cmd)
@@ -392,12 +392,12 @@ class TestSimulationServiceRayBuild:
         assert "run_phase0_xarray_ensemble.py" not in cmd
         assert "aws s3 cp s3://mybucket/vecoli-output/sim47-real-experiment/run_pbg.py /tmp/run_pbg.py" in cmd
         assert "python /tmp/run_pbg.py" in cmd
-        # Exact match, not a substring check: "v2ecoli.composites.ecoli_baseline" alone is a
-        # PREFIX of the real registered id and would have silently passed the wrong constant
-        # (process_bigraph.composite_spec's id scheme is f"{fn.__module__}.{name}" -- the
-        # module already ends in "ecoli_baseline", and the composite's own name="ecoli_baseline"
-        # repeats it -- a live pilot dispatch failed on exactly this mistake, 2026-08-06).
-        assert "--composite-id v2ecoli.composites.ecoli_baseline.ecoli_baseline " in cmd
+        # Exact match, not a substring check. sms-ecoli has no "ecoli_baseline" module
+        # at all -- two real pilot dispatches (2026-08-06) failed chasing that name
+        # before the real module (v2ecoli/composites/batch_baseline.py, decorated
+        # name="batch_baseline") was confirmed directly against the deployed sms-ecoli
+        # image at commit e38f742, never the separate/diverged local v2ecoli checkout.
+        assert "--composite-id v2ecoli.composites.batch_baseline.batch_baseline " in cmd
         assert "PBG_CORE_BUILDER=v2ecoli.core:build_core" in cmd
         assert "-n 1" in cmd
 

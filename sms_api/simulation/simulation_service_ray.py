@@ -67,19 +67,31 @@ logger = logging.getLogger(__name__)
 # of a v2ecoli-specific CLI script — see backlog items 26/27.
 _RUNNER_SRC = (_res.files("sms_api.compose") / "run_pbg.py").read_text()
 
-# Registered composite id (process_bigraph.composite_spec) for v2ecoli's multi-generation
-# batch orchestrator, and the workspace core-builder that resolves its registered types
-# (e.g. "inplace_dict"). Both are inherent facts about what THIS endpoint dispatches — this
-# file already hardcodes v2ecoli-specific paths (V2ECOLI_DIR, PARCA_CACHE_DIR below); what
-# item 27 removes is the bespoke EXECUTION MECHANISM (a CLI script), not this identity.
-# The id is `f"{fn.__module__}.{name}"` (process_bigraph.composite_spec's own registration
-# scheme, mirrored by viva_superpowers.composite_generator) -- v2ecoli/composites/
-# ecoli_baseline.py's decorated function is `baseline`, module `v2ecoli.composites.
-# ecoli_baseline`, decorated with `name="ecoli_baseline"`, so the real id has
-# "ecoli_baseline" twice (module path ends in it, name repeats it) -- don't "simplify" this
-# back to the module path alone, a live pilot dispatch failed with exactly that mistake
-# (2026-08-06): "run_pbg: no composite registered as 'v2ecoli.composites.ecoli_baseline'".
-V2ECOLI_BASELINE_COMPOSITE_ID = "v2ecoli.composites.ecoli_baseline.ecoli_baseline"
+# Registered composite id (process_bigraph.composite_spec) for the multi-generation
+# batch orchestrator, and the workspace core-builder that resolves its registered
+# types (e.g. "inplace_dict"). Both are inherent facts about what THIS endpoint
+# dispatches — this file already hardcodes v2ecoli-specific paths (V2ECOLI_DIR,
+# PARCA_CACHE_DIR below); what item 27 removes is the bespoke EXECUTION MECHANISM (a
+# CLI script), not this identity.
+#
+# The id is `f"{fn.__module__}.{name}"` (process_bigraph.composite_spec's own
+# registration scheme, mirrored by pbg_superpowers.composite_generator). Two real
+# pilot dispatches (2026-08-06) failed chasing wrong values for this constant before
+# it was verified directly against the DEPLOYED sms-ecoli image (commit e38f742,
+# `git show`/`git grep` against that exact commit — never the local v2ecoli
+# checkout, a separate, structurally-diverged repo that is NOT a mirror of what's
+# actually in this simulator image):
+#   1st: "v2ecoli.composites.ecoli_baseline" — missing the id scheme's trailing
+#     name-repeat.
+#   2nd: "...ecoli_baseline.ecoli_baseline" — correctly SHAPED, but sms-ecoli has
+#     no "ecoli_baseline" module at all (zero matches anywhere in that repo at the
+#     deployed commit) — it was chasing a module name from a different codebase.
+# The real module is v2ecoli/composites/batch_baseline.py: decorated function
+# `batch_baseline`, name="batch_baseline". Its declared parameters (n_seeds,
+# n_generations, cache_dir, out_dir, experiment_id, analyses, parallel) match the
+# `overrides` dict below exactly. sms-ecoli's separate baseline.py is single-run
+# only (no n_seeds/n_generations param at all) — not a candidate for this path.
+V2ECOLI_BATCH_BASELINE_COMPOSITE_ID = "v2ecoli.composites.batch_baseline.batch_baseline"
 V2ECOLI_CORE_BUILDER = "v2ecoli.core:build_core"
 
 # Absolute paths inside the v2ecoli Ray image (WORKDIR=/app/v2ecoli). The
@@ -380,13 +392,15 @@ class SimulationServiceRay(SimulationService):
             # scripts/run_phase0_xarray_ensemble.py below silently ignores this
             # entirely and only ever runs one generation per seed.
             #
-            # Dispatched as a registered process-bigraph composite (v2ecoli's
-            # BatchBaselineRunner, wired in by ecoli_baseline.baseline() whenever
-            # n_seeds>1/n_generations>1) run through the SAME generic run_pbg.py
-            # every compose-on-Batch job already uses — not a v2ecoli-specific CLI
-            # script. See backlog items 26/27: this is the one execution mechanism
-            # both the ensemble endpoint and the generic compose endpoint dispatch
-            # through; only the composite id + overrides differ per caller.
+            # Dispatched as a registered process-bigraph composite (sms-ecoli's
+            # v2ecoli/composites/batch_baseline.py, which wires in BatchBaselineRunner
+            # directly — a dedicated always-batch-shaped composite, not a conditional
+            # branch of the single-run baseline.py) run through the SAME generic
+            # run_pbg.py every compose-on-Batch job already uses — not a
+            # v2ecoli-specific CLI script. See backlog items 26/27: this is the one
+            # execution mechanism both the ensemble endpoint and the generic compose
+            # endpoint dispatch through; only the composite id + overrides differ per
+            # caller.
             if not experiment_id:
                 raise RuntimeError("experiment_id is required for multi-generation batch dispatch")
             if not runner_s3_uri:
@@ -411,7 +425,7 @@ class SimulationServiceRay(SimulationService):
                 f"cd {V2ECOLI_DIR}"
                 f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
                 f" && {env} python /tmp/run_pbg.py"
-                f" --composite-id {V2ECOLI_BASELINE_COMPOSITE_ID}"
+                f" --composite-id {V2ECOLI_BATCH_BASELINE_COMPOSITE_ID}"
                 f" --overrides {shlex.quote(json.dumps(overrides))} -n 1"
             )
         return (
