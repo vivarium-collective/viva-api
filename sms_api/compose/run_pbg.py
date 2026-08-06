@@ -7,6 +7,19 @@ CLI contract (fixed by sms-api's ``_build_run_command``)::
 Writes results into ``/experiment/output`` (the bind-mounted, zipped dir).
 The ``-o`` value is accepted for CLI compatibility but output always lands in
 ``RESULTS_DIR`` so it matches sms-api's ``zip -r ../results.zip`` collection.
+
+A second, equally generic mode builds the document itself rather than reading
+one from disk::
+
+    python run_pbg.py --composite-id <id> --overrides '<json>' -n <steps>
+
+``<id>`` is any id resolvable by ``process_bigraph.composite_spec.get()`` (the
+single registry every ``@composite_generator``/``@composite_spec`` decorator
+registers into) — not specific to any one workspace. This is what lets a
+model-specific dispatcher (e.g. viva-api's vEcoli ensemble endpoint) submit a
+config-driven run through the exact same execution mechanism a hand-authored
+``.pbg`` document uses, instead of shelling out to a bespoke per-workspace CLI
+script. Exactly one of ``input_file`` or ``--composite-id`` is required.
 """
 
 from __future__ import annotations
@@ -139,8 +152,47 @@ def _redirect_emitters(node: Any, results_dir: Path) -> int:
     return redirected
 
 
-def run(input_file: str, steps: int, results_dir: Path = RESULTS_DIR) -> Path:
-    """Load a ``.pbg`` document, run it ``steps`` times, write ``final_state.json``.
+def _resolve_document(
+    input_file: str | None, composite_id: str | None, overrides: dict[str, Any] | None, core: Any
+) -> dict:
+    """Load a static ``.pbg`` document, or build one from a registered composite.
+
+    The composite-id branch resolves through ``process_bigraph.composite_spec`` —
+    the same registry ``vivarium_workbench.lib.pbg_export.export_composite_pbg``
+    already resolves composites through for the Composites-tab / remote-run path.
+    Building the document HERE (in-process, same call that constructs ``Composite``
+    below) never crosses a serialization boundary, so unlike a document loaded from
+    disk, realized-edge fields (a live ``instance``, resolved port schemas) are
+    exactly what the generator function returns — nothing to strip or rewrite.
+    """
+    if composite_id:
+        from process_bigraph.composite_spec import get as get_spec, discover_specs
+
+        spec = get_spec(composite_id)
+        if spec is None:
+            # The defining module may not have been imported yet (its
+            # @composite_generator/@composite_spec decorator only fires on
+            # import) — discover_specs() walks every installed
+            # bigraph-schema-dependent package to force that, then retry once.
+            discover_specs()
+            spec = get_spec(composite_id)
+        if spec is None:
+            raise SystemExit(f"run_pbg: no composite registered as {composite_id!r}")
+        return spec.to_document(overrides=overrides or {}, core=core)
+    assert input_file is not None  # enforced by main()'s mutual-exclusion check
+    return json.loads(Path(input_file).read_text())
+
+
+def run(
+    input_file: str | None,
+    steps: int,
+    results_dir: Path = RESULTS_DIR,
+    *,
+    composite_id: str | None = None,
+    overrides: dict[str, Any] | None = None,
+) -> Path:
+    """Get a document (static file, or built from ``composite_id`` + ``overrides``),
+    run it ``steps`` times, write ``final_state.json``.
 
     Any pbg-emitters step the document itself wires (``local:ParquetEmitter`` etc.)
     resolves via ``_build_core()`` and writes its own zarr/parquet output alongside
@@ -150,7 +202,6 @@ def run(input_file: str, steps: int, results_dir: Path = RESULTS_DIR) -> Path:
     from process_bigraph import Composite  # imported lazily so tests can stub it
 
     results_dir.mkdir(parents=True, exist_ok=True)
-    document = json.loads(Path(input_file).read_text())
     # Prefer the workspace's own core (it registers types the generic one can't know
     # about); fall back to the generic core when no builder is named. Test against
     # None explicitly — a Core is a registry-ish object that may well define
@@ -158,6 +209,7 @@ def run(input_file: str, steps: int, results_dir: Path = RESULTS_DIR) -> Path:
     core = _workspace_core()
     if core is None:
         core = _build_core()
+    document = _resolve_document(input_file, composite_id, overrides, core)
     # Emitters must write where the entrypoint syncs from, not where the authoring
     # workspace would have put them.
     _redirect_emitters(document, results_dir)
@@ -170,11 +222,16 @@ def run(input_file: str, steps: int, results_dir: Path = RESULTS_DIR) -> Path:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("input_file")
+    parser.add_argument("input_file", nargs="?", default=None)
+    parser.add_argument("--composite-id", dest="composite_id", default=None)
+    parser.add_argument("--overrides", default=None, help="JSON object of composite-generator parameter overrides")
     parser.add_argument("-o", "--output", default=str(RESULTS_DIR))
     parser.add_argument("-n", "--steps", type=int, default=1)
     args = parser.parse_args(argv)
-    run(args.input_file, args.steps)
+    if bool(args.input_file) == bool(args.composite_id):
+        parser.error("exactly one of input_file or --composite-id is required")
+    overrides = json.loads(args.overrides) if args.overrides else None
+    run(args.input_file, args.steps, composite_id=args.composite_id, overrides=overrides)
 
 
 if __name__ == "__main__":

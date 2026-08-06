@@ -160,4 +160,19 @@
 #          20+ minutes after the K8s pod had genuinely completed with a valid
 #          manifest already in S3. New data_layout.key_from_uri() strips the
 #          s3://<bucket>/ prefix before constructing S3FilePath.
-__version__ = "0.9.35"
+# 0.9.36 — the multi-generation batch dispatch (previously a hardcoded CLI
+#          script, scripts/run_batch_baseline_ray.py) now builds a process-
+#          bigraph document and runs it through the SAME generic run_pbg.py
+#          runner the compose-on-Batch path already uses, instead of shelling
+#          out to a v2ecoli-specific script (backlog items 26/27 — the two Ray
+#          job-submission paths never had duplicated submission code, only a
+#          duplicated job COMMAND; this closes that gap too, since there is no
+#          longer a second execution mechanism to unify). run_pbg.py gains a
+#          --composite-id/--overrides mode (process_bigraph.composite_spec
+#          resolution, same as vivarium_workbench.lib.pbg_export already uses)
+#          alongside its existing static-file mode. Also fixes a real bug this
+#          surfaced: the multi-gen dispatch never threaded the real
+#          experiment_id through — every batch's zarr/parquet output was
+#          silently stamped with the literal "batch_baseline" regardless of
+#          the actual request.
+__version__ = "0.9.36"

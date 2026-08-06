@@ -1,6 +1,8 @@
 """Tests for the Ray-on-Batch backend: JobId.ray, Batch state mapping, ComputeBackend.RAY,
 and SimulationServiceRay submission/status/cancel (boto3 mocked, Postgres via testcontainers)."""
 
+import json
+import shlex
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -225,29 +227,49 @@ class TestSimulationServiceRaySubmit:
         """config.generations > 1 (a real SimulationConfig field, not an "extra"
         comparison knob) must reach the sim job's command -- previously dropped
         entirely, so every GovCloud dispatch silently ran one generation only
-        regardless of what was requested."""
+        regardless of what was requested. Dispatched through the generic
+        run_pbg.py runner (backlog items 26/27), not a v2ecoli-specific script,
+        so the real request's own experiment_id must land in the overrides too
+        (previously silently defaulted to the script's own "batch_baseline")."""
         setattr(experiment_request.config, "n_init_sims", 2)  # noqa: B010
         experiment_request.config.generations = 3
         simulation = await database_service.insert_simulation(sim_request=experiment_request)
 
         mock_batch = _fake_batch(["parca-123", "sim-456"])
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
 
         service = SimulationServiceRay()
         with (
             patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
             patch("sms_api.common.storage.data_layout.get_settings", _ray_settings),
             patch("sms_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("sms_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             await service.submit_ecoli_simulation_job(
                 ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-2"
             )
 
+        # The generic runner is staged to S3 exactly once (per-experiment, mirroring
+        # ComposeSimulationServiceRay's own staging) before the sim job is built.
+        fake_file_service.upload_file.assert_awaited_once()
+
         _, sim_call = mock_batch.submit_job.call_args_list
         sim_env = _env_of(sim_call)
-        assert "run_batch_baseline_ray.py" in sim_env["RAY_JOB_CMD"]
-        assert "--n-seeds 2" in sim_env["RAY_JOB_CMD"]
-        assert "--n-generations 3" in sim_env["RAY_JOB_CMD"]
-        assert "run_phase0_xarray_ensemble.py" not in sim_env["RAY_JOB_CMD"]
+        cmd = sim_env["RAY_JOB_CMD"]
+        assert "run_batch_baseline_ray.py" not in cmd
+        assert "run_phase0_xarray_ensemble.py" not in cmd
+        assert "aws s3 cp" in cmd and "/tmp/run_pbg.py" in cmd
+        assert "--composite-id v2ecoli.composites.ecoli_baseline" in cmd
+        assert "PBG_CORE_BUILDER=v2ecoli.core:build_core" in cmd
+
+        tokens = shlex.split(cmd)
+        overrides = json.loads(tokens[tokens.index("--overrides") + 1])
+        assert overrides["n_seeds"] == 2
+        assert overrides["n_generations"] == 3
+        # The request's REAL experiment_id, not a hardcoded/implicit placeholder.
+        assert overrides["experiment_id"] == simulation.config.experiment_id
+        assert overrides["analyses"] == "none"
 
 
 @pytest.mark.asyncio
@@ -347,15 +369,51 @@ class TestSimulationServiceRayBuild:
 
     def test_sim_command_routes_to_batch_baseline_when_multi_generation_requested(self) -> None:
         """config.generations > 1 must route to the real multi-generation
-        LineageProcess/batch_baseline_runner pipeline, not the single-generation
-        script that silently ignores generation count."""
+        LineageProcess/batch_baseline_runner pipeline, dispatched as a registered
+        process-bigraph composite through the generic run_pbg.py runner -- not a
+        v2ecoli-specific CLI script (backlog items 26/27), and not the
+        single-generation script that silently ignores generation count."""
         service = SimulationServiceRay()
         with patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings):
-            cmd = service._sim_command(n_seeds=2, n_steps=600, chunk=60, n_generations=3)
-        assert "run_batch_baseline_ray.py" in cmd
-        assert "--n-seeds 2" in cmd
-        assert "--n-generations 3" in cmd
+            cmd = service._sim_command(
+                n_seeds=2,
+                n_steps=600,
+                chunk=60,
+                n_generations=3,
+                experiment_id="sim47-real-experiment",
+                runner_s3_uri="s3://mybucket/vecoli-output/sim47-real-experiment/run_pbg.py",
+            )
+        assert "run_batch_baseline_ray.py" not in cmd
         assert "run_phase0_xarray_ensemble.py" not in cmd
+        assert "aws s3 cp s3://mybucket/vecoli-output/sim47-real-experiment/run_pbg.py /tmp/run_pbg.py" in cmd
+        assert "python /tmp/run_pbg.py" in cmd
+        assert "--composite-id v2ecoli.composites.ecoli_baseline" in cmd
+        assert "PBG_CORE_BUILDER=v2ecoli.core:build_core" in cmd
+        assert "-n 1" in cmd
+
+        # The overrides are a real, single-quoted JSON blob -- unpack it via shlex to
+        # assert on structured content rather than substring-matching a hand-escaped string.
+        tokens = shlex.split(cmd)
+        overrides = json.loads(tokens[tokens.index("--overrides") + 1])
+        assert overrides == {
+            "n_seeds": 2,
+            "n_generations": 3,
+            "cache_dir": PARCA_CACHE_DIR,
+            "out_dir": SIM_OUT_DIR,
+            "experiment_id": "sim47-real-experiment",
+            "analyses": "none",
+            "parallel": "ray",
+        }
+
+    def test_sim_command_multi_generation_requires_experiment_id_and_runner_uri(self) -> None:
+        """No silent placeholder default -- both must be supplied explicitly or the
+        dispatch fails loudly instead of running against the wrong experiment_id."""
+        service = SimulationServiceRay()
+        with patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            with pytest.raises(RuntimeError, match="experiment_id"):
+                service._sim_command(n_seeds=2, n_steps=600, chunk=60, n_generations=3, runner_s3_uri="s3://x/y.py")
+            with pytest.raises(RuntimeError, match="runner_s3_uri"):
+                service._sim_command(n_seeds=2, n_steps=600, chunk=60, n_generations=3, experiment_id="exp-1")
 
     def test_sim_command_composite_takes_precedence_over_n_generations(self) -> None:
         """The comparison driver's own --max-generations flag is a separate knob
