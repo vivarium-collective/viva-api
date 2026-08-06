@@ -255,6 +255,16 @@ class Settings(BaseSettings):
     ray_chunk: int = 60  # default xarray emitter flush interval (--chunk)
     ray_log_s3_prefix: str = ""  # s3:// prefix for Ray session logs + report.json (RayLogS3Prefix stack output)
 
+    # --- Ray-on-Batch ARRAY dispatch settings ---
+    # Used for the canonical/batch_baseline multiseed x multigeneration sweep: one
+    # AWS Batch ARRAY job, each child an independent single-seed task (no Ray
+    # cluster) -- see sms-cdk lib/ray-batch-stack.ts's RayArrayJobDef. Kept as
+    # dedicated settings (not reused from ray_mnp_*) even though ray_array_queue's
+    # deployed value is BatchStack's vecoli-task-amd64 queue -- same convention as
+    # every other explicit-not-implicit setting in this file.
+    ray_array_queue: str = ""  # Batch Array job queue (BatchStack's vecoli-task-amd64, reused deliberately)
+    ray_array_job_definition: str = ""  # Batch Array job definition (e.g. "smscdk-ray-array")
+
     # EC2 build machine (legacy, replaced by Batch DooD builds)
     build_node_host: str = ""
     build_node_user: str = ""

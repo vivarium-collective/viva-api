@@ -198,6 +198,54 @@ class SimulationServiceRay(SimulationService):
         logger.info("Registered Ray MNP job def %s:%s for image %s", name, response["revision"], image)
         return f"{name}:{response['revision']}"
 
+    def _ensure_array_job_def(self, image: str, commit: str) -> str:
+        """Return an Array job definition (name:revision) whose image is the commit's image.
+
+        Verified directly against the real AWS Batch API (``aws batch submit-job
+        help``): a plain container job's ``--container-overrides`` has no ``image``
+        field (only EKS jobs' ``eksPropertiesOverride`` does) -- container jobs
+        can't override the image per-submission either, same limitation as MNP,
+        just for a different reason. So, symmetric with ``_ensure_mnp_job_def``,
+        derive a per-commit job-def revision: describe the CDK base job def
+        (``ray_array_job_definition``: roles, resources, retry strategy, log
+        config), swap ONLY the container image to ``image``, and register it as
+        ``<base>-<commit>``. An existing active revision already pointing at this
+        image is reused, so resubmits don't churn revisions.
+        """
+        settings = get_settings()
+        batch = self._batch()
+        name = f"{settings.ray_array_job_definition}-{commit}"
+
+        existing = batch.describe_job_definitions(jobDefinitionName=name, status="ACTIVE")
+        for jd in existing.get("jobDefinitions", []):
+            if jd.get("containerProperties", {}).get("image") == image:
+                return f"{name}:{jd['revision']}"
+
+        base = batch.describe_job_definitions(jobDefinitionName=settings.ray_array_job_definition, status="ACTIVE")
+        base_defs = base.get("jobDefinitions", [])
+        if not base_defs:
+            raise RuntimeError(f"Base Array job definition {settings.ray_array_job_definition!r} not found")
+        base_def = max(base_defs, key=lambda d: d["revision"])
+        container_properties = copy.deepcopy(base_def["containerProperties"])
+        container_properties["image"] = image
+
+        register_kwargs: dict[str, Any] = {
+            "jobDefinitionName": name,
+            "type": "container",
+            "containerProperties": container_properties,
+        }
+        # Carry forward everything else the CDK base job def sets (retryStrategy,
+        # platformCapabilities) -- register_job_definition does NOT inherit these
+        # from an existing revision, it only creates exactly what's passed in.
+        if base_def.get("retryStrategy"):
+            register_kwargs["retryStrategy"] = base_def["retryStrategy"]
+        if base_def.get("platformCapabilities"):
+            register_kwargs["platformCapabilities"] = base_def["platformCapabilities"]
+
+        response = batch.register_job_definition(**register_kwargs)
+        logger.info("Registered Array job def %s:%s for image %s", name, response["revision"], image)
+        return f"{name}:{response['revision']}"
+
     def _submit_mnp(
         self,
         *,
@@ -277,6 +325,66 @@ class SimulationServiceRay(SimulationService):
             batch_job_id,
             num_nodes,
             settings.ray_mnp_queue,
+        )
+        return batch_job_id
+
+    def _submit_array(
+        self,
+        *,
+        job_name: str,
+        job_definition: str,
+        array_size: int,
+        array_job_cmd: str,
+        out_s3: str,
+        out_dir: str,
+        stage_s3: str | None = None,
+        stage_dir: str | None = None,
+        depends_on: list[str] | None = None,
+        tags: dict[str, str] | None = None,
+    ) -> str:
+        """Submit an AWS Batch ARRAY job: N independent single-seed children, no
+        Ray cluster (see scripts/batch-array-entrypoint.sh, sms-cdk). Every child
+        gets the SAME containerOverrides -- Batch injects only
+        AWS_BATCH_JOB_ARRAY_INDEX differently per child, which ``array_job_cmd``
+        resolves at container-start time (see ``_array_sim_command``). Env names
+        are ``ARRAY_*`` (not ``RAY_*``) so the two dispatch paths' env vars can
+        never be cross-wired if a caller mixes them up. Returns the AWS Batch job
+        id (the array parent id; child status is queried per-index if needed).
+        """
+        settings = get_settings()
+        env: list[dict[str, str]] = [
+            {"name": "ARRAY_JOB_CMD", "value": array_job_cmd},
+            {"name": "ARRAY_OUT_DIR", "value": out_dir},
+            {"name": "ARRAY_OUT_S3", "value": out_s3},
+            {"name": "ARRAY_REPORT_PATH", "value": REPORT_PATH},
+        ]
+        if stage_s3 and stage_dir:
+            env.append({"name": "ARRAY_STAGE_S3", "value": stage_s3})
+            env.append({"name": "ARRAY_STAGE_DIR", "value": stage_dir})
+        if settings.ray_log_s3_prefix:
+            env.append({"name": "ARRAY_LOG_S3_PREFIX", "value": settings.ray_log_s3_prefix})
+
+        kwargs: dict[str, Any] = {
+            "jobName": job_name,
+            "jobQueue": settings.ray_array_queue,
+            "jobDefinition": job_definition,
+            "arrayProperties": {"size": array_size},
+            "containerOverrides": {"environment": env},
+        }
+        if depends_on:
+            kwargs["dependsOn"] = [{"jobId": jid, "type": "SEQUENTIAL"} for jid in depends_on]
+        if tags:
+            kwargs["tags"] = tags
+            kwargs["propagateTags"] = True
+
+        response = self._batch().submit_job(**kwargs)
+        batch_job_id = str(response["jobId"])
+        logger.info(
+            "Submitted Batch Array job %s (id=%s, size=%d) to %s",
+            job_name,
+            batch_job_id,
+            array_size,
+            settings.ray_array_queue,
         )
         return batch_job_id
 
@@ -431,6 +539,56 @@ class SimulationServiceRay(SimulationService):
         return (
             f"cd {V2ECOLI_DIR} && python scripts/run_phase0_xarray_ensemble.py"
             f" --n-seeds {n_seeds} --n-steps {n_steps} --chunk {chunk} --parallel ray"
+        )
+
+    def _array_sim_command(
+        self,
+        n_generations: int,
+        experiment_id: str,
+        runner_s3_uri: str,
+        base_seed_offset: int = 0,
+    ) -> str:
+        """Build one Array child's run_pbg.py command (the batch_baseline path).
+
+        Every child runs exactly ONE seed (n_seeds=1), which v2ecoli's
+        ``_resolve_parallel()`` deterministically routes to the sequential
+        no-Ray code path (``len(branches) > 1`` is False for a 1-seed,
+        no-variants request, regardless of the ``parallel`` setting) -- so an
+        array child never needs a Ray cluster at all, verified directly
+        against v2ecoli/workflow/run.py at the deployed commit.
+
+        Each child's real seed is ``base_seed_offset + AWS_BATCH_JOB_ARRAY_INDEX``
+        -- only known once the container starts (AWS Batch injects an identical
+        containerOverrides.environment into every child; only
+        AWS_BATCH_JOB_ARRAY_INDEX itself differs per child), so it can't be
+        computed at submission time. The merge happens via a small ``python3 -c``
+        invocation at container-start: BASE_SEED is arithmetic-only (digits, no
+        quoting concerns); the static overrides are shlex-quoted (safe
+        regardless of what ``experiment_id`` contains -- it is a caller-supplied,
+        unconstrained string) and passed as argv, never string-spliced into the
+        JSON -- json.loads/json.dumps do the merge exactly once, so there is no
+        hand-rolled escaping to get wrong.
+        """
+        overrides = {
+            "n_seeds": 1,
+            "n_generations": int(n_generations),
+            "cache_dir": PARCA_CACHE_DIR,
+            "out_dir": SIM_OUT_DIR,
+            "experiment_id": experiment_id,
+            "analyses": "none",
+            "parallel": "",
+        }
+        static_overrides_json = shlex.quote(json.dumps(overrides))
+        merge_py = 'import json,sys; d=json.loads(sys.argv[1]); d["base_seed"]=int(sys.argv[2]); print(json.dumps(d))'
+        env = f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER}"
+        return (
+            f"BASE_SEED=$(({int(base_seed_offset)} + AWS_BATCH_JOB_ARRAY_INDEX))"
+            f" && OVERRIDES=$(python3 -c '{merge_py}' {static_overrides_json} \"$BASE_SEED\")"
+            f" && cd {V2ECOLI_DIR}"
+            f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
+            f" && {env} python /tmp/run_pbg.py"
+            f" --composite-id {V2ECOLI_BATCH_BASELINE_COMPOSITE_ID}"
+            f' --overrides "$OVERRIDES" -n 1'
         )
 
     @override
@@ -603,37 +761,76 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             tags={**base_tags, "Phase": "parca"},
         )
 
-        # 2. Simulation ensemble (N nodes), gated on ParCa, staging the cache.
-        sim_job_id = self._submit_mnp(
-            job_name=f"ray-sim-{experiment_id}-{_rand_suffix()}"[:128],
-            job_definition=job_def,
-            num_nodes=settings.ray_num_nodes,
-            ray_job_cmd=self._sim_command(
+        # 2. Simulation ensemble, gated on ParCa, staging the cache.
+        #
+        # The canonical batch_baseline sweep (n_seeds independent seeds, only
+        # the within-seed generation chain is sequential -- verified via
+        # v2ecoli.workflow.run._resolve_parallel and run_seeds_parallel's pure
+        # ray.remote() fan-out, zero actors/shared state) is Array-jobs-shaped:
+        # dispatch it as N independent single-seed children instead of an MNP
+        # Ray cluster. Everything else (phase0 ensemble, comparison-ensemble)
+        # keeps using MNP -- those DO fan out via Ray actors internally. A
+        # single-seed batch_baseline request (n_seeds<=1) also stays on MNP:
+        # AWS Batch array jobs require size>=2, and there's no parallelism to
+        # gain from Array-izing a single seed anyway. See the ray-vs-batch-
+        # array-jobs-investigation decision: Array jobs for canonical, Ray-MNP
+        # stays for colonies/anything needing real Ray coordination.
+        is_array_eligible = composite is None and n_generations > 1 and int(n_seeds) > 1
+
+        if is_array_eligible:
+            if not runner_s3_uri:
+                raise RuntimeError("runner_s3_uri is required for batch_baseline array dispatch")
+            array_job_def = self._ensure_array_job_def(self._image_uri(commit), commit)
+            sim_job_id = self._submit_array(
+                job_name=f"array-sim-{experiment_id}-{_rand_suffix()}"[:128],
+                job_definition=array_job_def,
+                array_size=int(n_seeds),
+                array_job_cmd=self._array_sim_command(n_generations, str(experiment_id), runner_s3_uri),
+                out_s3=self._results_s3_uri(experiment_id),
+                out_dir=SIM_OUT_DIR,
+                stage_s3=cache_s3,
+                stage_dir=PARCA_CACHE_DIR,
+                depends_on=[parca_job_id],
+                tags={**base_tags, "Phase": "sim"},
+            )
+            logger.info(
+                "Array simulation %s: parca job %s -> sim job %s (%d array children)",
+                experiment_id,
+                parca_job_id,
+                sim_job_id,
                 int(n_seeds),
-                int(n_steps),
-                int(chunk),
-                composite=composite,
-                condition=condition,
-                max_generations=max_generations,
-                vecoli_source=vecoli_source,
-                n_generations=n_generations,
-                experiment_id=str(experiment_id),
-                runner_s3_uri=runner_s3_uri,
-            ),
-            out_s3=self._results_s3_uri(experiment_id),
-            out_dir=SIM_OUT_DIR,
-            stage_s3=cache_s3,
-            stage_dir=PARCA_CACHE_DIR,
-            depends_on=[parca_job_id],
-            tags={**base_tags, "Phase": "sim"},
-        )
-        logger.info(
-            "Ray simulation %s: parca job %s -> sim job %s (%d nodes)",
-            experiment_id,
-            parca_job_id,
-            sim_job_id,
-            settings.ray_num_nodes,
-        )
+            )
+        else:
+            sim_job_id = self._submit_mnp(
+                job_name=f"ray-sim-{experiment_id}-{_rand_suffix()}"[:128],
+                job_definition=job_def,
+                num_nodes=settings.ray_num_nodes,
+                ray_job_cmd=self._sim_command(
+                    int(n_seeds),
+                    int(n_steps),
+                    int(chunk),
+                    composite=composite,
+                    condition=condition,
+                    max_generations=max_generations,
+                    vecoli_source=vecoli_source,
+                    n_generations=n_generations,
+                    experiment_id=str(experiment_id),
+                    runner_s3_uri=runner_s3_uri,
+                ),
+                out_s3=self._results_s3_uri(experiment_id),
+                out_dir=SIM_OUT_DIR,
+                stage_s3=cache_s3,
+                stage_dir=PARCA_CACHE_DIR,
+                depends_on=[parca_job_id],
+                tags={**base_tags, "Phase": "sim"},
+            )
+            logger.info(
+                "Ray simulation %s: parca job %s -> sim job %s (%d nodes)",
+                experiment_id,
+                parca_job_id,
+                sim_job_id,
+                settings.ray_num_nodes,
+            )
         return JobId.ray(sim_job_id)
 
     @override

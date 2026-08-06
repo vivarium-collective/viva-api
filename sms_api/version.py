@@ -201,4 +201,27 @@
 #          batch_baseline.batch_baseline" (old name was itself misleading —
 #          said BASELINE, pointed nowhere real). Same two ray_backend tests
 #          updated to the real id (still exact-match, not substring).
-__version__ = "0.9.38"
+# 0.9.39 — Array-jobs-for-canonical dispatch: the batch_baseline multiseed x
+#          multigeneration sweep (n_seeds>1, n_generations>1, no composite
+#          override) now submits as an AWS Batch ARRAY job -- N independent
+#          single-seed children (AWS_BATCH_JOB_ARRAY_INDEX), no Ray cluster
+#          -- instead of an MNP Ray cluster. Verified directly against the
+#          deployed sms-ecoli source (never assumed from memory): base_seed
+#          is a real batch_baseline parameter, and n_seeds=1 deterministically
+#          takes v2ecoli's existing sequential no-Ray code path
+#          (_resolve_parallel), so an array child never needs Ray at all.
+#          New _submit_array/_array_sim_command/_ensure_array_job_def in
+#          simulation_service_ray.py (the last mirrors _ensure_mnp_job_def:
+#          verified against the real AWS Batch API that plain container jobs
+#          can't override the image via containerOverrides either, same
+#          limitation as MNP). New ray_array_queue/ray_array_job_definition
+#          settings. ParCa stays on MNP unchanged (single deterministic
+#          computation, no seed-parallelism); phase0/comparison-ensemble
+#          paths stay on MNP unchanged (they genuinely fan out via Ray
+#          actors). A single-seed batch_baseline request also stays on MNP
+#          (AWS Batch array jobs require size>=2, and there's no parallelism
+#          to gain from Array-izing one seed anyway). Companion sms-cdk PR
+#          adds the RayArrayJobDef job definition + batch-array-entrypoint.sh
+#          -- see the ray-vs-batch-array-jobs-investigation decision: Array
+#          jobs for canonical, Ray-MNP stays for colonies.
+__version__ = "0.9.39"
