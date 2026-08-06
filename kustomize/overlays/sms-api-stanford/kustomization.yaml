@@ -29,8 +29,16 @@ images:
   # default-modules (--modules omitted) analysis dispatch failed at the
   # analysis-runner boundary (live-reproduced against sim db id 125, 5 failed
   # K8s Job attempts over 22h before root-caused).
+  # 0.9.34: unifies ray_num_nodes/compose_ray_num_nodes into one setting --
+  # the two paths already shared _submit_mnp(); only the node-count config
+  # was duplicated, which is exactly how RAY_NUM_NODES drifted to 4 (see
+  # RAY_NUM_NODES in shared.env, bumped separately to 24 in this same window).
+  # 0.9.35: fixes Ray-native analysis status polling using the full s3://
+  # result_uri as a bucket-relative S3FilePath key -- manifest-exists checks
+  # silently 404'd forever, so `atlantis analysis status` reported "running"
+  # 20+ minutes after the backing K8s pod had genuinely completed.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.33
+    newTag: 0.9.35
   # ptools pinned to last-known-good tag — CI only builds sms-api, so there is
   # no newer sms-ptools:0.6.x image on ghcr.io.  0.5.9 is the tag the live Stanford
   # pod has been running successfully; keeping both namespaces pointing here
