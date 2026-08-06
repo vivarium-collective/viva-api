@@ -44,8 +44,16 @@ images:
   # 'v2ecoli.composites.ecoli_baseline'", caught by a live pilot dispatch
   # against this exact deployment (2026-08-06), never caught by unit tests
   # (they mock the whole registry).
+  # 0.9.38: 0.9.37 was STILL wrong -- a second real pilot dispatch failed
+  # identically with the now-correctly-shaped id. Root cause: "ecoli_baseline"
+  # does not exist anywhere in sms-ecoli (confirmed via git show/git grep
+  # directly against the deployed commit e38f742) -- it's only real in the
+  # separate, unsynced v2ecoli repo. The real composite is sms-ecoli's own
+  # v2ecoli/composites/batch_baseline.py (name="batch_baseline"). Renamed the
+  # constant to V2ECOLI_BATCH_BASELINE_COMPOSITE_ID = "v2ecoli.composites.
+  # batch_baseline.batch_baseline".
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.37
+    newTag: 0.9.38
   # ptools pinned to last-known-good tag — CI only builds sms-api, so there is
   # no newer sms-ptools:0.6.x image on ghcr.io.  0.5.9 is the tag the live Stanford
   # pod has been running successfully; keeping both namespaces pointing here
