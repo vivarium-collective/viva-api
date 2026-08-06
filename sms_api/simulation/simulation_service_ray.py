@@ -23,9 +23,14 @@ base (cloning its node properties, swapping the image to ``v2ecoli:<commit>``).
 """
 
 import copy
+import importlib.resources as _res
+import json
 import logging
 import random
+import shlex
 import string
+import tempfile
+from pathlib import Path
 from typing import Any, override
 
 import boto3
@@ -35,6 +40,7 @@ from sms_api.common.hpc.local_task_service import LocalTaskService
 from sms_api.common.models import JobBackend, JobId, JobStatus
 from sms_api.common.simulator_defaults import DEFAULT_BRANCH, DEFAULT_REPO
 from sms_api.common.storage import data_layout
+from sms_api.common.storage.file_paths import S3FilePath
 from sms_api.config import get_settings
 from sms_api.simulation import batch_build
 from sms_api.simulation.database_service import DatabaseService
@@ -54,6 +60,20 @@ from sms_api.simulation.models import (
 from sms_api.simulation.simulation_service import SimulationService
 
 logger = logging.getLogger(__name__)
+
+# The generic runner every Ray-Batch job (ensemble or compose) executes. Read once as a
+# resource (same source sms_api.compose.simulation_service_ray stages for compose jobs) so
+# the multi-generation batch path below dispatches through the identical mechanism instead
+# of a v2ecoli-specific CLI script — see backlog items 26/27.
+_RUNNER_SRC = (_res.files("sms_api.compose") / "run_pbg.py").read_text()
+
+# Registered composite id (process_bigraph.composite_spec) for v2ecoli's multi-generation
+# batch orchestrator, and the workspace core-builder that resolves its registered types
+# (e.g. "inplace_dict"). Both are inherent facts about what THIS endpoint dispatches — this
+# file already hardcodes v2ecoli-specific paths (V2ECOLI_DIR, PARCA_CACHE_DIR below); what
+# item 27 removes is the bespoke EXECUTION MECHANISM (a CLI script), not this identity.
+V2ECOLI_BASELINE_COMPOSITE_ID = "v2ecoli.composites.ecoli_baseline"
+V2ECOLI_CORE_BUILDER = "v2ecoli.core:build_core"
 
 # Absolute paths inside the v2ecoli Ray image (WORKDIR=/app/v2ecoli). The
 # entrypoint runs RAY_JOB_CMD on the head; v2ecoli reads the cache from
@@ -285,6 +305,31 @@ class SimulationServiceRay(SimulationService):
             f" --copy-to {PARCA_CACHE_DIR}"
         )
 
+    async def _stage_runner(self, experiment_id: str) -> str:
+        """Upload the generic run_pbg.py runner to S3 for this experiment; return its URI.
+
+        Mirrors ``sms_api.compose.simulation_service_ray.ComposeSimulationServiceRay``'s
+        own runner staging exactly (same source, same per-experiment S3 layout) -- the
+        multi-generation batch path below downloads and runs it the identical way a
+        compose job does. Staged (not embedded via heredoc) because AWS Batch caps a
+        container override command at 8192 bytes.
+        """
+        from sms_api.dependencies import get_file_service
+
+        file_service = get_file_service()
+        if file_service is None:
+            raise RuntimeError("FileService not initialized; cannot stage run_pbg.py to S3.")
+        exp_prefix = data_layout.RayLayout.experiment_prefix(experiment_id)
+        runner_key = f"{exp_prefix}/run_pbg.py"
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tmp:
+            tmp.write(_RUNNER_SRC)
+            runner_local = tmp.name
+        try:
+            await file_service.upload_file(Path(runner_local), S3FilePath(s3_path=Path(runner_key)))
+        finally:
+            Path(runner_local).unlink(missing_ok=True)
+        return data_layout.s3_uri(runner_key)
+
     def _sim_command(
         self,
         n_seeds: int,
@@ -296,6 +341,8 @@ class SimulationServiceRay(SimulationService):
         max_generations: int | None = None,
         vecoli_source: VecoliSource | None = None,
         n_generations: int = 1,
+        experiment_id: str | None = None,
+        runner_s3_uri: str | None = None,
     ) -> str:
         # When ``composite`` is set, run the two-engine comparison driver — both
         # engines (v2ecoli port + vEcoli imported via build_composite_native)
@@ -325,9 +372,40 @@ class SimulationServiceRay(SimulationService):
             # Real multi-generation lineage (cell division across generations) --
             # scripts/run_phase0_xarray_ensemble.py below silently ignores this
             # entirely and only ever runs one generation per seed.
+            #
+            # Dispatched as a registered process-bigraph composite (v2ecoli's
+            # BatchBaselineRunner, wired in by ecoli_baseline.baseline() whenever
+            # n_seeds>1/n_generations>1) run through the SAME generic run_pbg.py
+            # every compose-on-Batch job already uses — not a v2ecoli-specific CLI
+            # script. See backlog items 26/27: this is the one execution mechanism
+            # both the ensemble endpoint and the generic compose endpoint dispatch
+            # through; only the composite id + overrides differ per caller.
+            if not experiment_id:
+                raise RuntimeError("experiment_id is required for multi-generation batch dispatch")
+            if not runner_s3_uri:
+                raise RuntimeError(
+                    "runner_s3_uri is required for multi-generation batch dispatch "
+                    "(the generic run_pbg.py runner must be staged to S3 first)"
+                )
+            overrides = {
+                "n_seeds": int(n_seeds),
+                "n_generations": int(n_generations),
+                "cache_dir": PARCA_CACHE_DIR,
+                "out_dir": SIM_OUT_DIR,
+                "experiment_id": experiment_id,
+                # Standalone post-hoc analysis (scripts/run_standalone_analysis.py)
+                # runs the same analysis_runner.run_analyses() directly against the
+                # landed S3 sweep -- skip the composite's own inline flush here.
+                "analyses": "none",
+                "parallel": "ray",
+            }
+            env = f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER}"
             return (
-                f"cd {V2ECOLI_DIR} && python scripts/run_batch_baseline_ray.py"
-                f" --n-seeds {n_seeds} --n-generations {int(n_generations)}"
+                f"cd {V2ECOLI_DIR}"
+                f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
+                f" && {env} python /tmp/run_pbg.py"
+                f" --composite-id {V2ECOLI_BASELINE_COMPOSITE_ID}"
+                f" --overrides {shlex.quote(json.dumps(overrides))} -n 1"
             )
         return (
             f"cd {V2ECOLI_DIR} && python scripts/run_phase0_xarray_ensemble.py"
@@ -476,6 +554,11 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         cache_s3 = self._upstream_cache_s3_uri(commit) if is_upstream else self._cache_s3_uri(commit)
         parca_command = self._upstream_parca_command() if is_upstream else self._parca_command()
 
+        # The multi-generation batch path dispatches through the generic run_pbg.py
+        # runner (see _sim_command) instead of a hardcoded CLI script, so it alone
+        # needs the runner staged to S3 first. Every other path is unaffected.
+        runner_s3_uri = await self._stage_runner(experiment_id) if n_generations > 1 else None
+
         # Cost-allocation tags (propagate to ECS tasks → payer-account Cost
         # Explorer attributes spend per run/engine/condition). Values must be
         # tag-safe strings.
@@ -513,6 +596,8 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
                 max_generations=max_generations,
                 vecoli_source=vecoli_source,
                 n_generations=n_generations,
+                experiment_id=str(experiment_id),
+                runner_s3_uri=runner_s3_uri,
             ),
             out_s3=self._results_s3_uri(experiment_id),
             out_dir=SIM_OUT_DIR,

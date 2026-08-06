@@ -138,3 +138,142 @@ def test_a_falsy_workspace_core_is_still_used(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setitem(sys.modules, "fake_falsy_ws", mod)
     monkeypatch.setenv("PBG_CORE_BUILDER", "fake_falsy_ws:build_core")
     assert run_pbg._workspace_core() is sentinel
+
+
+# --- _resolve_document / composite-id mode (backlog items 26/27) -----------------
+# A model-specific dispatcher (e.g. viva-api's vEcoli ensemble endpoint) can submit
+# a config-driven run through this SAME generic runner instead of a bespoke CLI
+# script, by naming a registered composite id + overrides. Verified against a fake
+# process_bigraph.composite_spec module so this stays testable without the real
+# (container-only) process-bigraph install, matching test_run_writes_final_state's
+# module-injection style above.
+
+
+class FakeSpec:
+    def __init__(self, doc: dict[str, Any]) -> None:
+        self._doc = doc
+        self.overrides_received: dict[str, Any] | None = None
+        self.core_received: Any = None
+
+    def to_document(self, overrides: dict[str, Any] | None = None, core: Any = None) -> dict[str, Any]:
+        self.overrides_received = overrides
+        self.core_received = core
+        return self._doc
+
+
+def _install_fake_composite_spec(monkeypatch: pytest.MonkeyPatch, registry: dict[str, Any]) -> list[str]:
+    """Inject a fake process_bigraph.composite_spec module; returns discover_specs() call count."""
+    discover_calls: list[str] = []
+    fake_mod = types.ModuleType("process_bigraph.composite_spec")
+    fake_mod.get = lambda spec_id: registry.get(spec_id)  # type: ignore[attr-defined]
+    fake_mod.discover_specs = lambda: discover_calls.append("called")  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "process_bigraph.composite_spec", fake_mod)
+    return discover_calls
+
+
+def test_resolve_document_static_file_mode_unchanged(tmp_path: Path) -> None:
+    """No composite_id: behaves exactly as before — reads the JSON file verbatim."""
+    pbg = tmp_path / "m.pbg"
+    pbg.write_text(json.dumps({"state": {"x": 1}}))
+    doc = run_pbg._resolve_document(str(pbg), None, None, core=FakeCore())
+    assert doc == {"state": {"x": 1}}
+
+
+def test_resolve_document_composite_id_mode_builds_via_registered_spec(monkeypatch: pytest.MonkeyPatch) -> None:
+    spec = FakeSpec({"state": {"batch_runner": {}}})
+    _install_fake_composite_spec(monkeypatch, {"v2ecoli.composites.ecoli_baseline": spec})
+    core = FakeCore()
+    overrides = {"n_seeds": 1000, "n_generations": 10}
+
+    doc = run_pbg._resolve_document(None, "v2ecoli.composites.ecoli_baseline", overrides, core=core)
+
+    assert doc == {"state": {"batch_runner": {}}}
+    assert spec.overrides_received == overrides
+    assert spec.core_received is core
+
+
+def test_resolve_document_composite_id_retries_after_discover_specs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The composite's defining module may not be imported yet — its decorator only
+    fires on import. discover_specs() forces that; a second lookup then succeeds."""
+    spec = FakeSpec({"state": {}})
+    registry: dict[str, Any] = {}
+    discover_calls = _install_fake_composite_spec(monkeypatch, registry)
+
+    def _discover_and_populate() -> None:
+        discover_calls.append("called")
+        registry["late.module.ecoli_baseline"] = spec
+
+    sys.modules["process_bigraph.composite_spec"].discover_specs = _discover_and_populate  # type: ignore[attr-defined]
+
+    doc = run_pbg._resolve_document(None, "late.module.ecoli_baseline", {}, core=FakeCore())
+    assert doc == {"state": {}}
+    assert discover_calls == ["called"]
+
+
+def test_resolve_document_composite_id_unresolvable_raises_clearly(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_composite_spec(monkeypatch, {})
+    with pytest.raises(SystemExit, match="no composite registered as 'missing.id'"):
+        run_pbg._resolve_document(None, "missing.id", None, core=FakeCore())
+
+
+def test_main_requires_exactly_one_of_input_file_or_composite_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(run_pbg, "run", lambda *a, **kw: captured.update(kw) or Path("x"))
+
+    with pytest.raises(SystemExit):
+        run_pbg.main([])  # neither given
+
+    pbg = tmp_path / "m.pbg"
+    pbg.write_text("{}")
+    with pytest.raises(SystemExit):
+        run_pbg.main([str(pbg), "--composite-id", "x.y"])  # both given
+
+
+def test_main_composite_id_mode_parses_overrides_json_and_calls_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(run_pbg, "run", lambda *a, **kw: captured.update(args=a, kwargs=kw) or Path("out"))
+
+    run_pbg.main(["--composite-id", "v2ecoli.composites.ecoli_baseline", "--overrides", '{"n_seeds": 2}', "-n", "1"])
+
+    assert captured["kwargs"]["composite_id"] == "v2ecoli.composites.ecoli_baseline"
+    assert captured["kwargs"]["overrides"] == {"n_seeds": 2}
+
+
+def test_run_composite_id_mode_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Full run() path: composite-id resolves to a document, Composite runs it, and
+    final_state.json still lands — the composite-id branch is a drop-in alternative
+    to the file branch, not a separate code path downstream of document acquisition."""
+
+    class FakeComposite:
+        def __init__(self, doc: Any, core: Any = None) -> None:
+            self.doc = doc
+
+        def run(self, n: int) -> None:
+            pass
+
+        def serialize_state(self) -> dict[str, Any]:
+            return {"doc_seen": self.doc}
+
+    fake_pbg_mod = types.ModuleType("process_bigraph")
+    fake_pbg_mod.Composite = FakeComposite  # type: ignore[attr-defined]
+    fake_pbg_mod.register_types = lambda core: core  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "process_bigraph", fake_pbg_mod)
+    fake_schema_mod = types.ModuleType("bigraph_schema")
+    fake_schema_mod.allocate_core = FakeCore  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "bigraph_schema", fake_schema_mod)
+
+    spec = FakeSpec({"state": {"batch_runner": {}}})
+    _install_fake_composite_spec(monkeypatch, {"v2ecoli.composites.ecoli_baseline": spec})
+
+    out = run_pbg.run(
+        None,
+        steps=1,
+        results_dir=tmp_path / "output",
+        composite_id="v2ecoli.composites.ecoli_baseline",
+        overrides={"n_seeds": 2, "n_generations": 3},
+    )
+
+    assert json.loads(out.read_text())["doc_seen"] == {"state": {"batch_runner": {}}}
+    assert spec.overrides_received == {"n_seeds": 2, "n_generations": 3}
