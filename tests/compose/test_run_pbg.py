@@ -216,7 +216,9 @@ def test_resolve_document_composite_id_unresolvable_raises_clearly(monkeypatch: 
         run_pbg._resolve_document(None, "missing.id", None, core=FakeCore())
 
 
-def test_main_requires_exactly_one_of_input_file_or_composite_id(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_main_requires_exactly_one_of_input_file_or_composite_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     captured: dict[str, Any] = {}
     monkeypatch.setattr(run_pbg, "run", lambda *a, **kw: captured.update(kw) or Path("x"))
 

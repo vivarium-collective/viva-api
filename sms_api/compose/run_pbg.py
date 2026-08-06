@@ -154,7 +154,7 @@ def _redirect_emitters(node: Any, results_dir: Path) -> int:
 
 def _resolve_document(
     input_file: str | None, composite_id: str | None, overrides: dict[str, Any] | None, core: Any
-) -> dict:
+) -> dict[str, Any]:
     """Load a static ``.pbg`` document, or build one from a registered composite.
 
     The composite-id branch resolves through ``process_bigraph.composite_spec`` —
@@ -166,7 +166,8 @@ def _resolve_document(
     exactly what the generator function returns — nothing to strip or rewrite.
     """
     if composite_id:
-        from process_bigraph.composite_spec import get as get_spec, discover_specs
+        from process_bigraph.composite_spec import discover_specs
+        from process_bigraph.composite_spec import get as get_spec
 
         spec = get_spec(composite_id)
         if spec is None:
@@ -178,9 +179,12 @@ def _resolve_document(
             spec = get_spec(composite_id)
         if spec is None:
             raise SystemExit(f"run_pbg: no composite registered as {composite_id!r}")
-        return spec.to_document(overrides=overrides or {}, core=core)
-    assert input_file is not None  # enforced by main()'s mutual-exclusion check
-    return json.loads(Path(input_file).read_text())
+        document: dict[str, Any] = spec.to_document(overrides=overrides or {}, core=core)
+        return document
+    if input_file is None:
+        raise ValueError("_resolve_document: input_file is required when composite_id is not given")
+    loaded: dict[str, Any] = json.loads(Path(input_file).read_text())
+    return loaded
 
 
 def run(

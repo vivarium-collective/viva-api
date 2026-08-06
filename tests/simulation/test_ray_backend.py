@@ -259,7 +259,7 @@ class TestSimulationServiceRaySubmit:
         cmd = sim_env["RAY_JOB_CMD"]
         assert "run_batch_baseline_ray.py" not in cmd
         assert "run_phase0_xarray_ensemble.py" not in cmd
-        assert "aws s3 cp" in cmd and "/tmp/run_pbg.py" in cmd
+        assert "aws s3 cp" in cmd and "/tmp/run_pbg.py" in cmd  # noqa: S108
         assert "--composite-id v2ecoli.composites.ecoli_baseline" in cmd
         assert "PBG_CORE_BUILDER=v2ecoli.core:build_core" in cmd
 
