@@ -175,4 +175,16 @@
 #          experiment_id through — every batch's zarr/parquet output was
 #          silently stamped with the literal "batch_baseline" regardless of
 #          the actual request.
-__version__ = "0.9.36"
+# 0.9.37 — fixes V2ECOLI_BASELINE_COMPOSITE_ID: was "v2ecoli.composites.
+#          ecoli_baseline", missing process_bigraph.composite_spec's own
+#          f"{fn.__module__}.{name}" id scheme's trailing ".ecoli_baseline"
+#          (the composite's decorator name=). Every 0.9.36 multi-gen dispatch
+#          failed with "no composite registered as
+#          'v2ecoli.composites.ecoli_baseline'" — never caught by the unit
+#          tests (they mock the whole registry), only by a real pilot
+#          dispatch against live GovCloud (2026-08-06). Also strengthens the
+#          two ray_backend tests that asserted this id in the constructed
+#          command: the old assertion checked a substring that the WRONG
+#          value also satisfies (it's a prefix of the real id), so it could
+#          never have caught this regression either.
+__version__ = "0.9.37"

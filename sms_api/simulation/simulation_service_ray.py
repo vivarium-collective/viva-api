@@ -72,7 +72,14 @@ _RUNNER_SRC = (_res.files("sms_api.compose") / "run_pbg.py").read_text()
 # (e.g. "inplace_dict"). Both are inherent facts about what THIS endpoint dispatches — this
 # file already hardcodes v2ecoli-specific paths (V2ECOLI_DIR, PARCA_CACHE_DIR below); what
 # item 27 removes is the bespoke EXECUTION MECHANISM (a CLI script), not this identity.
-V2ECOLI_BASELINE_COMPOSITE_ID = "v2ecoli.composites.ecoli_baseline"
+# The id is `f"{fn.__module__}.{name}"` (process_bigraph.composite_spec's own registration
+# scheme, mirrored by viva_superpowers.composite_generator) -- v2ecoli/composites/
+# ecoli_baseline.py's decorated function is `baseline`, module `v2ecoli.composites.
+# ecoli_baseline`, decorated with `name="ecoli_baseline"`, so the real id has
+# "ecoli_baseline" twice (module path ends in it, name repeats it) -- don't "simplify" this
+# back to the module path alone, a live pilot dispatch failed with exactly that mistake
+# (2026-08-06): "run_pbg: no composite registered as 'v2ecoli.composites.ecoli_baseline'".
+V2ECOLI_BASELINE_COMPOSITE_ID = "v2ecoli.composites.ecoli_baseline.ecoli_baseline"
 V2ECOLI_CORE_BUILDER = "v2ecoli.core:build_core"
 
 # Absolute paths inside the v2ecoli Ray image (WORKDIR=/app/v2ecoli). The
