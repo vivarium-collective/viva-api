@@ -18,6 +18,7 @@ from sms_api.simulation.simulation_service_ray import (
     PARCA_CACHE_DIR,
     SIM_OUT_DIR,
     SimulationServiceRay,
+    analysis_modules_for,
 )
 
 if TYPE_CHECKING:
@@ -266,7 +267,7 @@ class TestSimulationServiceRaySubmit:
         experiment_request.config.generations = 3
         simulation = await database_service.insert_simulation(sim_request=experiment_request)
 
-        mock_batch = _fake_batch(["parca-123", "sim-456"])
+        mock_batch = _fake_batch(["parca-123", "sim-456", "analysis-789"])
         fake_file_service = AsyncMock()
         fake_file_service.upload_file = AsyncMock()
 
@@ -283,8 +284,9 @@ class TestSimulationServiceRaySubmit:
 
         fake_file_service.upload_file.assert_awaited_once()
         assert job_id == JobId.ray("sim-456")
-        assert mock_batch.submit_job.call_count == 2
-        parca_call, sim_call = mock_batch.submit_job.call_args_list
+        # parca -> sim(array) -> analysis: the analysis DAG node rides along.
+        assert mock_batch.submit_job.call_count == 3
+        parca_call, sim_call, _analysis_call = mock_batch.submit_job.call_args_list
 
         # ParCa: unchanged -- still a 1-node MNP job, no dependency.
         assert parca_call.kwargs["nodeOverrides"]["numNodes"] == 1
@@ -354,7 +356,7 @@ class TestSimulationServiceRaySubmit:
         experiment_request.config.generations = 3
         simulation = await database_service.insert_simulation(sim_request=experiment_request)
 
-        mock_batch = _fake_batch(["parca-123", "sim-456"])
+        mock_batch = _fake_batch(["parca-123", "sim-456", "analysis-789"])
         fake_file_service = AsyncMock()
         fake_file_service.upload_file = AsyncMock()
 
@@ -369,11 +371,277 @@ class TestSimulationServiceRaySubmit:
                 ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-single"
             )
 
-        _, sim_call = mock_batch.submit_job.call_args_list
+        _, sim_call, analysis_call = mock_batch.submit_job.call_args_list
         assert "nodeOverrides" in sim_call.kwargs
         assert "arrayProperties" not in sim_call.kwargs
         assert sim_call.kwargs["jobQueue"] == "smscdk-ray-mnp"
         assert "--composite-id v2ecoli.composites.batch_baseline.batch_baseline " in _env_of(sim_call)["RAY_JOB_CMD"]
+        # An MNP sim job is NOT array-shaped, so the analysis node keeps the
+        # long-standing SEQUENTIAL dependency shape this path has always used.
+        assert analysis_call.kwargs["dependsOn"] == [{"jobId": "sim-456", "type": "SEQUENTIAL"}]
+
+
+class TestAnalysisModulesFor:
+    """analysis_modules_for reads the simulation's OWN configured analyses."""
+
+    def test_real_scale_entries_are_forwarded_verbatim(self) -> None:
+        from sms_api.simulation.models import AnalysisOptions, SimulationConfig
+
+        config = SimulationConfig(
+            experiment_id="exp-1",
+            analysis_options=AnalysisOptions.model_validate({
+                "multiseed": {"cd1_metabolomics": {"generation_lower_bound": 5}},
+                "cpus": 4,
+            }),
+        )
+        # cpus is a real AnalysisOptions field, NOT a scale — forwarding it as one
+        # would ask the model image to run an analysis called "cpus".
+        assert analysis_modules_for(config) == {"multiseed": {"cd1_metabolomics": {"generation_lower_bound": 5}}}
+
+    def test_unset_or_empty_options_fall_back_to_the_applicable_keyword(self) -> None:
+        """The run endpoint's own no-analysis-options default is `{"multiseed": {}}`
+        — "no modules named", not "run nothing". Both it and a bare default must
+        resolve to `applicable`, which the model image expands with its own
+        registry (sms-api has none)."""
+        from sms_api.simulation.models import AnalysisOptions, SimulationConfig
+
+        assert analysis_modules_for(SimulationConfig(experiment_id="exp-1")) == "applicable"
+        empty = SimulationConfig(
+            experiment_id="exp-1", analysis_options=AnalysisOptions.model_validate({"multiseed": {}})
+        )
+        assert analysis_modules_for(empty) == "applicable"
+
+
+class TestAnalysisCommand:
+    """_analysis_command builds the analysis DAG node's workload."""
+
+    def _cmd(self, **kw: Any) -> str:
+        service = SimulationServiceRay()
+        defaults: dict[str, Any] = {
+            "experiment_id": "sim47-real-experiment",
+            "n_seeds": 4,
+            "n_generations": 3,
+            "modules": "applicable",
+            "analysis_name": "analysis-sim47-abc123",
+            "commit": "deadbeef",
+        }
+        with (
+            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("sms_api.common.storage.data_layout.get_settings", _ray_settings),
+        ):
+            return service._analysis_command(**{**defaults, **kw})
+
+    def test_runs_the_model_images_own_s3_native_analysis_entrypoint(self) -> None:
+        cmd = self._cmd()
+        assert "python scripts/run_standalone_analysis.py" in cmd
+        # The sweep prefix is the SAME one the sim job syncs its output to, with no
+        # trailing slash (run_standalone_analysis rstrips it to build result_uri).
+        assert "--out-uri s3://mybucket/vecoli-output/sim47-real-experiment " in cmd + " "
+        assert "--n-seeds 4" in cmd
+        assert "--n-generations 3" in cmd
+        assert "--analysis-name analysis-sim47-abc123" in cmd
+
+    def test_points_sim_data_at_the_commits_parca_cache(self) -> None:
+        """An s3:// sweep has no co-located sim_data pickle to glob, so the DuckDB
+        analyses would raise FileNotFoundError without this pointer. Both this job
+        and the ParCa job derive the URI from the commit — no hand-off plumbing."""
+        cmd = self._cmd(commit="c0ffee")
+        assert "V2ECOLI_SIM_DATA=s3://mybucket/ray-parca-cache/c0ffee/simData.cPickle" in cmd
+
+    def test_explicit_modules_ride_as_json_and_survive_a_hostile_experiment_id(self) -> None:
+        """experiment_id is a caller-supplied, unconstrained string, and the modules
+        blob is JSON — both must reach the container as DATA, never shell syntax."""
+        hostile = "exp'; touch /tmp/analysis-command-canary; echo '$(echo pwned)"
+        modules = {"multiseed": {"cd1_metabolomics": {"generation_lower_bound": 5}}}
+        cmd = self._cmd(experiment_id=hostile, modules=modules)
+        tokens = shlex.split(cmd.split("&&", 1)[1].replace("V2ECOLI_SIM_DATA=", "", 1))
+        assert json.loads(tokens[tokens.index("--modules") + 1]) == modules
+        assert tokens[tokens.index("--out-uri") + 1].endswith(hostile)
+        assert "touch /tmp/analysis-command-canary" not in shlex.split(cmd)
+
+    def test_n_generations_is_emitted_only_for_the_applicable_keyword(self) -> None:
+        """--n-generations exists solely to resolve `applicable`, and is the ONE
+        flag a simulator image built before that keyword landed would reject
+        (argparse: unrecognized argument). Emitting it only in the keyword case
+        keeps an explicit module mapping runnable against ANY image that already
+        ships the script, so a pre-existing build still gets its configured
+        analyses instead of failing the whole node."""
+        assert "--n-generations" in self._cmd(modules="applicable")
+        assert "--n-generations" not in self._cmd(modules={"multiseed": {"cd1_fluxomics": {}}})
+
+
+@pytest.mark.asyncio
+class TestAnalysisDagNode:
+    """Item 24: the analysis must fire from the pipeline DAG itself, with no
+    separate manual step and no external watcher."""
+
+    async def test_analysis_job_depends_on_the_array_sim_and_is_recorded(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """REGRESSION (backlog item 24): before this, the Ray backend never read
+        `config.analysis_options` and submitted no analysis at all — a completed
+        remote simulation produced zero cd1_*/ptools_* artifacts until somebody ran
+        the CLI by hand. The analysis is now the DAG's third node, gated on the sim
+        job, and tracked in the same `analyses` table the on-demand trigger uses."""
+        setattr(experiment_request.config, "n_init_sims", 4)  # noqa: B010
+        experiment_request.config.generations = 3
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        mock_batch = _fake_batch(["parca-123", "sim-456", "analysis-789"])
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("sms_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("sms_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("sms_api.dependencies.get_file_service", return_value=fake_file_service),
+        ):
+            await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-analysis"
+            )
+
+        _parca_call, _sim_call, analysis_call = mock_batch.submit_job.call_args_list
+        experiment_id = simulation.config.experiment_id
+
+        # Gated on the SIM job (not ParCa): the sweep is only whole once every
+        # array child's output has landed in S3.
+        assert analysis_call.kwargs["dependsOn"] == [{"jobId": "sim-456"}]
+        # An array parent id under a SEQUENTIAL type is rejected by real AWS Batch —
+        # this is the shape that guard produces, and must not be "simplified" back.
+        assert "type" not in analysis_call.kwargs["dependsOn"][0]
+        assert analysis_call.kwargs["nodeOverrides"]["numNodes"] == 1
+
+        env = _env_of(analysis_call)
+        assert "run_standalone_analysis.py" in env["RAY_JOB_CMD"]
+        assert f"--out-uri s3://mybucket/vecoli-output/{experiment_id}" in env["RAY_JOB_CMD"]
+        assert "--n-seeds 4" in env["RAY_JOB_CMD"]
+        # No ParCa staging: sim_data is named explicitly as an S3 URI instead.
+        assert "RAY_STAGE_S3" not in env
+        assert "V2ECOLI_SIM_DATA=s3://mybucket/ray-parca-cache/" in env["RAY_JOB_CMD"]
+        assert analysis_call.kwargs["tags"]["Phase"] == "analysis"
+
+        # Tracked: GET /simulations/{id}/analyses and GET /analyses/{id}/status must
+        # both resolve an auto-triggered analysis, exactly like a hand-triggered one.
+        records = await database_service.list_analyses(simulation_id=simulation.database_id)
+        assert len(records) == 1
+        record = records[0]
+        assert record.backend == "ray"
+        assert record.job_id_ext == "analysis-789"
+        assert record.status == JobStatus.RUNNING
+        # result_uri is where the job's own _manifest.json lands — the S3-exists probe
+        # in handle_get_ray_analysis_status reads exactly this path.
+        assert record.result_uri == f"s3://mybucket/vecoli-output/{experiment_id}/analyses/{record.name}"
+        assert f"--analysis-name {record.name}" in env["RAY_JOB_CMD"]
+
+    async def test_configured_analysis_options_reach_the_analysis_job(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """REGRESSION: `config.analysis_options` (set by the run endpoint from the
+        caller's --analysis-options, and by the workbench from a study's
+        spec.analyses) was read by no Ray code path at all."""
+        from sms_api.simulation.models import AnalysisOptions
+
+        setattr(experiment_request.config, "n_init_sims", 4)  # noqa: B010
+        experiment_request.config.generations = 3
+        experiment_request.config.analysis_options = AnalysisOptions.model_validate({
+            "multiseed": {"cd1_fluxomics": {"generation_lower_bound": 5}}
+        })
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        mock_batch = _fake_batch(["parca-123", "sim-456", "analysis-789"])
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("sms_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("sms_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("sms_api.dependencies.get_file_service", return_value=fake_file_service),
+        ):
+            await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-opts"
+            )
+
+        cmd = _env_of(mock_batch.submit_job.call_args_list[2])["RAY_JOB_CMD"]
+        tokens = shlex.split(cmd.split("&&", 1)[1].replace("V2ECOLI_SIM_DATA=", "", 1))
+        assert json.loads(tokens[tokens.index("--modules") + 1]) == {
+            "multiseed": {"cd1_fluxomics": {"generation_lower_bound": 5}}
+        }
+
+    async def test_no_analysis_node_for_the_single_generation_ensemble(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """The phase0 single-generation ensemble writes no hive-parquet sweep, so
+        there is nothing for the ported analyses to read — it must stay a 2-job DAG
+        rather than burn a node on a guaranteed FileNotFoundError."""
+        setattr(experiment_request.config, "n_init_sims", 2)  # noqa: B010
+        experiment_request.config.generations = 1
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        mock_batch = _fake_batch(["parca-123", "sim-456"])
+        service = SimulationServiceRay()
+        with (
+            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("sms_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("sms_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-phase0"
+            )
+
+        assert mock_batch.submit_job.call_count == 2
+        assert await database_service.list_analyses(simulation_id=simulation.database_id) == []
+
+    async def test_a_failed_analysis_submission_is_recorded_not_swallowed(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """The sim job is already running by then, so raising would orphan a real,
+        expensive job — but a silently-missing analysis is the exact failure mode
+        item 24 exists to eliminate. It must land as a FAILED row instead."""
+        setattr(experiment_request.config, "n_init_sims", 4)  # noqa: B010
+        experiment_request.config.generations = 3
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        mock_batch = _fake_batch(["parca-123", "sim-456"])
+        submits = [{"jobId": "parca-123"}, {"jobId": "sim-456"}]
+
+        def _submit(**kwargs: Any) -> dict[str, str]:
+            if submits:
+                return submits.pop(0)
+            raise RuntimeError("Batch said no")
+
+        mock_batch.submit_job.side_effect = _submit
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("sms_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("sms_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("sms_api.dependencies.get_file_service", return_value=fake_file_service),
+        ):
+            job_id = await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-fail"
+            )
+
+        # The simulation dispatch itself still succeeds and stays tracked.
+        assert job_id == JobId.ray("sim-456")
+        records = await database_service.list_analyses(simulation_id=simulation.database_id)
+        assert len(records) == 1
+        assert records[0].status == JobStatus.FAILED
+        assert "Batch said no" in (records[0].error_message or "")
 
 
 @pytest.mark.asyncio

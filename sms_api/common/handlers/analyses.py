@@ -22,14 +22,21 @@ from sms_api.analysis.models import (
     OutputFileMetadata,
     TsvOutputFile,
 )
+from sms_api.common.hpc.job_service import JobStatusInfo
 from sms_api.common.models import JobId, JobStatus, SSHTarget
 from sms_api.common.storage import data_layout
 from sms_api.common.storage.file_paths import HPCFilePath, S3FilePath
 from sms_api.common.utils import get_data_id, timestamp
 from sms_api.config import get_settings
-from sms_api.dependencies import get_file_service, get_simulation_service, get_ssh_session_service
+from sms_api.dependencies import (
+    get_file_service,
+    get_simulation_service,
+    get_simulation_service_for_repo,
+    get_ssh_session_service,
+)
 from sms_api.simulation.database_service import DatabaseService
 from sms_api.simulation.models import SimulatorVersion
+from sms_api.simulation.simulation_service import SimulationService
 from sms_api.simulation.tables_orm import AnalysisStatusDB
 
 # Text output extensions the analysis data endpoint returns (mirrors the legacy
@@ -196,18 +203,67 @@ def _parse_cached_filename_metadata(filename: str) -> dict[str, int]:
     return metadata
 
 
+async def _live_analysis_job_status(
+    db_service: DatabaseService,
+    record: ExperimentAnalysisDTO,
+) -> JobStatusInfo | None:
+    """Live job status for an analysis record's backing job, whichever backend ran it.
+
+    Two producers write ``backend="ray"`` rows and they do NOT share a job
+    namespace: ``submit_ray_native_analysis`` creates a **K8s Job**
+    (``job_id_ext`` = the Job name), while the Ray dispatch DAG's own analysis
+    node is an **AWS Batch job** (``job_id_ext`` = the Batch job id). A K8s
+    lookup of a Batch id just returns None, so without this the Batch case would
+    have no early-failure signal at all -- including the common one where the
+    simulation itself failed and Batch never ran the dependent analysis job,
+    which would leave the row COMPUTING forever instead of reporting FAILED.
+
+    Tries the default service first (unchanged behaviour for the K8s producer),
+    then the service that actually owns the record's simulation. Each lookup is
+    isolated: querying one backend with the other's identifier is expected to
+    miss, and must not surface as an error.
+    """
+    if not record.job_id_ext:
+        return None
+    attempts: list[tuple[SimulationService, JobId]] = []
+    default_service = get_simulation_service()
+    if default_service is not None:
+        attempts.append((default_service, JobId.k8s(record.job_id_ext)))
+    if record.simulation_id is not None:
+        simulation = await db_service.get_simulation(simulation_id=record.simulation_id)
+        simulator = (
+            await db_service.get_simulator(simulator_id=simulation.simulator_id) if simulation is not None else None
+        )
+        if simulator is not None:
+            owning = get_simulation_service_for_repo(simulator.git_repo_url)
+            if owning is not None and owning is not default_service:
+                attempts.append((owning, JobId.ray(record.job_id_ext)))
+    for service, job_id in attempts:
+        try:
+            info = await service.get_job_status(job_id)
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "analysis %s: no job status from %s", record.database_id, type(service).__name__
+            )
+            continue
+        if info is not None:
+            return info
+    return None
+
+
 async def handle_get_ray_analysis_status(
     db_service: DatabaseService,
     record: ExperimentAnalysisDTO,
 ) -> AnalysisRun:
-    """Resolve a Ray-native standalone analysis's status (submit_ray_native_analysis).
+    """Resolve a Ray-native standalone analysis's status.
 
-    There is no persistent job-status API for the backing K8s Job (it has
-    ttl_seconds_after_finished=86400, so get_job_status returns None once that
-    expires) -- S3-exists is the durable, authoritative READY signal, matching
-    analysis-results-design.md's own status-resolution plan. Falls back to a
-    live K8s job-status check only to catch an early, hard failure (image pull
-    error, scheduling failure) before the manifest could ever be written.
+    There is no persistent job-status API for the backing job (a K8s Job has
+    ttl_seconds_after_finished=86400, an AWS Batch job ages out of describe_jobs)
+    -- S3-exists is the durable, authoritative READY signal, matching
+    analysis-results-design.md's own status-resolution plan. Falls back to a live
+    job-status check only to catch a failure that happened before the manifest
+    could ever be written: an image-pull/scheduling error, or (for the dispatch
+    DAG's analysis node) the simulation it depends on having failed.
     """
     if record.status in (JobStatus.COMPLETED, JobStatus.FAILED):
         return AnalysisRun(id=record.database_id, status=record.status, error_log=record.error_message)
@@ -230,14 +286,12 @@ async def handle_get_ray_analysis_status(
         )
         return AnalysisRun(id=record.database_id, status=JobStatus.FAILED, error_log=error_message)
 
-    sim_service = get_simulation_service()
-    if sim_service is not None and record.job_id_ext:
-        job_status_info = await sim_service.get_job_status(JobId.k8s(record.job_id_ext))
-        if job_status_info is not None and job_status_info.status == JobStatus.FAILED:
-            await db_service.update_analysis_status(
-                record.database_id, AnalysisStatusDB.FAILED, error_message=job_status_info.error_message
-            )
-            return AnalysisRun(id=record.database_id, status=JobStatus.FAILED, error_log=job_status_info.error_message)
+    job_status_info = await _live_analysis_job_status(db_service, record)
+    if job_status_info is not None and job_status_info.status == JobStatus.FAILED:
+        await db_service.update_analysis_status(
+            record.database_id, AnalysisStatusDB.FAILED, error_message=job_status_info.error_message
+        )
+        return AnalysisRun(id=record.database_id, status=JobStatus.FAILED, error_log=job_status_info.error_message)
 
     return AnalysisRun(id=record.database_id, status=JobStatus.RUNNING)
 
