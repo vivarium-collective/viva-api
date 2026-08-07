@@ -16,21 +16,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from sms_api.common.handlers import simulations as sim_handlers
-from sms_api.common.hpc.job_service import JobStatusInfo
-from sms_api.common.models import JobId, JobStatus
-from sms_api.common.simulator_defaults import RepoUrl
-from sms_api.config import ComputeBackend
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from sms_api.simulation.models import (
+from tests.fixtures.api_fixtures import SimulatorRepoInfo
+from viva_api.common.handlers import simulations as sim_handlers
+from viva_api.common.hpc.job_service import JobStatusInfo
+from viva_api.common.models import JobId, JobStatus
+from viva_api.common.simulator_defaults import RepoUrl
+from viva_api.config import ComputeBackend
+from viva_api.simulation.database_service import DatabaseServiceSQL
+from viva_api.simulation.models import (
     AnalysisOptions,
     ParcaDatasetRequest,
     ParcaOptions,
     RepoDiscovery,
     SimulatorVersion,
 )
-from sms_api.simulation.simulation_service_k8s import SimulationServiceK8s
-from tests.fixtures.api_fixtures import SimulatorRepoInfo
+from viva_api.simulation.simulation_service_k8s import SimulationServiceK8s
 
 CONFIG_TEMPLATE = json.dumps({
     "experiment_id": "EXPERIMENT_ID_PLACEHOLDER",
@@ -215,7 +215,7 @@ async def test_k8s_workflow_config_contents(
 
     simulation_service_k8s_mock.read_config_template = AsyncMock(return_value=CONFIG_TEMPLATE)  # type: ignore[method-assign]
 
-    with patch("sms_api.common.handlers.simulations.get_job_backend", return_value=ComputeBackend.BATCH):
+    with patch("viva_api.common.handlers.simulations.get_job_backend", return_value=ComputeBackend.BATCH):
         await sim_handlers.run_simulation_workflow(
             database_service=database_service,
             simulation_service=simulation_service_k8s_mock,
@@ -255,7 +255,7 @@ async def test_analysis_options_default_public_repo(
     )
     simulation_service_k8s_mock.read_config_template = AsyncMock(return_value=CONFIG_TEMPLATE)  # type: ignore[method-assign]
 
-    with patch("sms_api.common.handlers.simulations.get_job_backend", return_value=ComputeBackend.BATCH):
+    with patch("viva_api.common.handlers.simulations.get_job_backend", return_value=ComputeBackend.BATCH):
         await sim_handlers.run_simulation_workflow(
             database_service=database_service,
             simulation_service=simulation_service_k8s_mock,
@@ -405,7 +405,7 @@ async def test_analysis_options_validation_accepts_valid_module(
     simulation_service_k8s_mock.discover_repo_contents = AsyncMock(return_value=discovery)  # type: ignore[method-assign]
 
     valid_analyses = AnalysisOptions.model_validate({"multiseed": {"ptools_rna": {"n_tp": 10}}})
-    with patch("sms_api.common.handlers.simulations.get_job_backend", return_value=ComputeBackend.BATCH):
+    with patch("viva_api.common.handlers.simulations.get_job_backend", return_value=ComputeBackend.BATCH):
         simulation = await sim_handlers.run_simulation_workflow(
             database_service=database_service,
             simulation_service=simulation_service_k8s_mock,
@@ -436,7 +436,7 @@ async def test_discovery_failure_does_not_block_workflow(
     simulation_service_k8s_mock.discover_repo_contents = AsyncMock(side_effect=RuntimeError("GitHub API down"))  # type: ignore[method-assign]
 
     user_analyses = AnalysisOptions.model_validate({"multiseed": {"anything": {}}})
-    with patch("sms_api.common.handlers.simulations.get_job_backend", return_value=ComputeBackend.BATCH):
+    with patch("viva_api.common.handlers.simulations.get_job_backend", return_value=ComputeBackend.BATCH):
         simulation = await sim_handlers.run_simulation_workflow(
             database_service=database_service,
             simulation_service=simulation_service_k8s_mock,

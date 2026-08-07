@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from sms_api.common.handlers.simulations import (
+from viva_api.common.handlers.simulations import (
     _ALLOWED_SOURCE_ORGS,
     _MAX_FILE_COUNT,
     _SKIP_DIRS,
@@ -25,7 +25,7 @@ from sms_api.common.handlers.simulations import (
     _upload_source_tree,
     _validate_manifest,
 )
-from sms_api.config import ComputeBackend
+from viva_api.config import ComputeBackend
 
 # ---------------------------------------------------------------------------
 # _parse_github_owner_repo
@@ -196,7 +196,7 @@ class TestUploadSourceTree:
 class TestSyncEcoliSourcesBackendGuard:
     @pytest.mark.asyncio
     async def test_slurm_backend_raises_400(self) -> None:
-        with patch("sms_api.common.handlers.simulations.get_job_backend", return_value=ComputeBackend.SLURM):
+        with patch("viva_api.common.handlers.simulations.get_job_backend", return_value=ComputeBackend.SLURM):
             with pytest.raises(HTTPException) as exc_info:
                 await _sync_ecoli_sources_from_github(
                     repo_url="https://github.com/vivarium-collective/ecoli-sources",
@@ -208,7 +208,7 @@ class TestSyncEcoliSourcesBackendGuard:
 
     @pytest.mark.asyncio
     async def test_disallowed_org_raises_403_before_download(self) -> None:
-        with patch("sms_api.common.handlers.simulations.get_job_backend", return_value=ComputeBackend.BATCH):
+        with patch("viva_api.common.handlers.simulations.get_job_backend", return_value=ComputeBackend.BATCH):
             with pytest.raises(HTTPException) as exc_info:
                 await _sync_ecoli_sources_from_github(
                     repo_url="https://github.com/evil-org/bad-repo",

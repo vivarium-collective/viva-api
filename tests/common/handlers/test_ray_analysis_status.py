@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from sms_api.analysis.models import AnalysisConfig, AnalysisConfigOptions, ExperimentAnalysisDTO
-from sms_api.common.handlers.analyses import handle_get_ray_analysis_status
-from sms_api.common.models import JobId, JobStatus
-from sms_api.simulation.tables_orm import AnalysisStatusDB
+from viva_api.analysis.models import AnalysisConfig, AnalysisConfigOptions, ExperimentAnalysisDTO
+from viva_api.common.handlers.analyses import handle_get_ray_analysis_status
+from viva_api.common.models import JobId, JobStatus
+from viva_api.simulation.tables_orm import AnalysisStatusDB
 
 
 def _make_record(*, status: JobStatus = JobStatus.RUNNING, simulation_id: int | None = None) -> ExperimentAnalysisDTO:
@@ -67,7 +67,7 @@ async def test_manifest_lookup_uses_a_bucket_relative_key_not_the_full_uri() -> 
     fake_file_service = AsyncMock()
     fake_file_service.get_file_contents.return_value = manifest
 
-    with patch("sms_api.common.handlers.analyses.get_file_service", return_value=fake_file_service):
+    with patch("viva_api.common.handlers.analyses.get_file_service", return_value=fake_file_service):
         await handle_get_ray_analysis_status(db_service=db_service, record=record)
 
     fake_file_service.get_file_contents.assert_called_once()
@@ -87,7 +87,7 @@ async def test_manifest_present_with_output_marks_ready() -> None:
     fake_file_service = AsyncMock()
     fake_file_service.get_file_contents.return_value = manifest
 
-    with patch("sms_api.common.handlers.analyses.get_file_service", return_value=fake_file_service):
+    with patch("viva_api.common.handlers.analyses.get_file_service", return_value=fake_file_service):
         result = await handle_get_ray_analysis_status(db_service=db_service, record=record)
 
     assert result.status == JobStatus.COMPLETED
@@ -106,7 +106,7 @@ async def test_manifest_present_with_only_errors_marks_failed() -> None:
     fake_file_service = AsyncMock()
     fake_file_service.get_file_contents.return_value = manifest
 
-    with patch("sms_api.common.handlers.analyses.get_file_service", return_value=fake_file_service):
+    with patch("viva_api.common.handlers.analyses.get_file_service", return_value=fake_file_service):
         result = await handle_get_ray_analysis_status(db_service=db_service, record=record)
 
     assert result.status == JobStatus.FAILED
@@ -125,8 +125,8 @@ async def test_no_manifest_yet_and_job_still_running_stays_computing() -> None:
     fake_sim_service.get_job_status.return_value = None  # job vanished/still scheduling
 
     with (
-        patch("sms_api.common.handlers.analyses.get_file_service", return_value=fake_file_service),
-        patch("sms_api.common.handlers.analyses.get_simulation_service", return_value=fake_sim_service),
+        patch("viva_api.common.handlers.analyses.get_file_service", return_value=fake_file_service),
+        patch("viva_api.common.handlers.analyses.get_simulation_service", return_value=fake_sim_service),
     ):
         result = await handle_get_ray_analysis_status(db_service=db_service, record=record)
 
@@ -139,7 +139,7 @@ async def test_no_manifest_but_k8s_job_failed_marks_failed_early() -> None:
     """Catches a hard failure (ImagePullBackOff, scheduling error) before the
     24h TTL would otherwise leave this stuck COMPUTING forever with no
     manifest ever coming."""
-    from sms_api.common.hpc.job_service import JobStatusInfo
+    from viva_api.common.hpc.job_service import JobStatusInfo
 
     record = _make_record()
     db_service = AsyncMock()
@@ -153,8 +153,8 @@ async def test_no_manifest_but_k8s_job_failed_marks_failed_early() -> None:
     )
 
     with (
-        patch("sms_api.common.handlers.analyses.get_file_service", return_value=fake_file_service),
-        patch("sms_api.common.handlers.analyses.get_simulation_service", return_value=fake_sim_service),
+        patch("viva_api.common.handlers.analyses.get_file_service", return_value=fake_file_service),
+        patch("viva_api.common.handlers.analyses.get_simulation_service", return_value=fake_sim_service),
     ):
         result = await handle_get_ray_analysis_status(db_service=db_service, record=record)
 
@@ -179,7 +179,7 @@ async def test_a_batch_analysis_jobs_failure_is_detected_via_its_own_backend() -
     The K8s service is left returning None (what it genuinely does for a Batch
     id) rather than being taught to answer, so this asserts the real routing,
     not a mock agreeing with itself."""
-    from sms_api.common.hpc.job_service import JobStatusInfo
+    from viva_api.common.hpc.job_service import JobStatusInfo
 
     record = _make_record(simulation_id=115)
     db_service = AsyncMock()
@@ -198,10 +198,10 @@ async def test_a_batch_analysis_jobs_failure_is_detected_via_its_own_backend() -
     )
 
     with (
-        patch("sms_api.common.handlers.analyses.get_file_service", return_value=fake_file_service),
-        patch("sms_api.common.handlers.analyses.get_simulation_service", return_value=k8s_service),
+        patch("viva_api.common.handlers.analyses.get_file_service", return_value=fake_file_service),
+        patch("viva_api.common.handlers.analyses.get_simulation_service", return_value=k8s_service),
         patch(
-            "sms_api.common.handlers.analyses.get_simulation_service_for_repo",
+            "viva_api.common.handlers.analyses.get_simulation_service_for_repo",
             return_value=ray_service,
         ),
     ):
@@ -236,10 +236,10 @@ async def test_a_probe_against_the_wrong_backend_never_surfaces_as_an_error() ->
     ray_service.get_job_status.side_effect = RuntimeError("ClientError: invalid jobId")
 
     with (
-        patch("sms_api.common.handlers.analyses.get_file_service", return_value=fake_file_service),
-        patch("sms_api.common.handlers.analyses.get_simulation_service", return_value=k8s_service),
+        patch("viva_api.common.handlers.analyses.get_file_service", return_value=fake_file_service),
+        patch("viva_api.common.handlers.analyses.get_simulation_service", return_value=k8s_service),
         patch(
-            "sms_api.common.handlers.analyses.get_simulation_service_for_repo",
+            "viva_api.common.handlers.analyses.get_simulation_service_for_repo",
             return_value=ray_service,
         ),
     ):

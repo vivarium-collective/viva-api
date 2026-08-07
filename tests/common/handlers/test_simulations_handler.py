@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import pytest_asyncio
 
-from sms_api.analysis.models import TsvOutputFile
-from sms_api.common.handlers.simulations import (
+from viva_api.analysis.models import TsvOutputFile
+from viva_api.common.handlers.simulations import (
     _S3_DOWNLOAD_CONCURRENCY,
     SimulationAnalysisResponseType,
     _download_outputs_from_s3,
@@ -18,15 +18,15 @@ from sms_api.common.handlers.simulations import (
     fetch_omics_outputs,
     get_available_omics_output_paths,
 )
-from sms_api.common.simulator_defaults import RepoUrl
-from sms_api.common.ssh.ssh_service import SSHSessionService
-from sms_api.common.storage.file_paths import HPCFilePath, S3FilePath
-from sms_api.common.storage.file_service import FileService, ListingItem
-from sms_api.config import ComputeBackend, get_settings
-from sms_api.dependencies import get_file_service, set_file_service
-from sms_api.simulation.models import AnalysisOptions, Simulation, SimulationConfig, SimulatorVersion
-from sms_api.simulation.simulation_service_k8s import SimulationServiceK8s
-from sms_api.simulation.tables_orm import ORMAnalysis
+from viva_api.common.simulator_defaults import RepoUrl
+from viva_api.common.ssh.ssh_service import SSHSessionService
+from viva_api.common.storage.file_paths import HPCFilePath, S3FilePath
+from viva_api.common.storage.file_service import FileService, ListingItem
+from viva_api.config import ComputeBackend, get_settings
+from viva_api.dependencies import get_file_service, set_file_service
+from viva_api.simulation.models import AnalysisOptions, Simulation, SimulationConfig, SimulatorVersion
+from viva_api.simulation.simulation_service_k8s import SimulationServiceK8s
+from viva_api.simulation.tables_orm import ORMAnalysis
 
 
 @pytest.mark.integration
@@ -285,7 +285,7 @@ async def test_run_standalone_analysis_ray_native_routes_to_v2ecoli_job() -> Non
     mock_db_service = AsyncMock()
     mock_db_service.record_analysis.return_value = SimpleNamespace(database_id=42)
 
-    with patch("sms_api.common.handlers.simulations.get_simulation_service", return_value=mock_k8s_service):
+    with patch("viva_api.common.handlers.simulations.get_simulation_service", return_value=mock_k8s_service):
         result = await _run_standalone_analysis_ray_native(
             database_service=mock_db_service,
             simulation=simulation,
@@ -335,7 +335,7 @@ async def test_run_standalone_analysis_ray_native_routes_to_v2ecoli_job() -> Non
 async def _run_default_modules_ray_native(simulation: Simulation) -> dict[str, Any]:
     """Drive the REAL default-selection path (modules=None) end to end for a
     Ray/sms-ecoli simulator, returning the submitted params."""
-    from sms_api.common.handlers.simulations import run_standalone_analysis
+    from viva_api.common.handlers.simulations import run_standalone_analysis
 
     simulator = SimulatorVersion(
         database_id=53,
@@ -351,8 +351,8 @@ async def _run_default_modules_ray_native(simulation: Simulation) -> dict[str, A
     mock_db_service.record_analysis.return_value = SimpleNamespace(database_id=42)
 
     with (
-        patch("sms_api.common.handlers.simulations.get_job_backend", return_value=ComputeBackend.BATCH),
-        patch("sms_api.common.handlers.simulations.get_simulation_service", return_value=mock_k8s_service),
+        patch("viva_api.common.handlers.simulations.get_job_backend", return_value=ComputeBackend.BATCH),
+        patch("viva_api.common.handlers.simulations.get_simulation_service", return_value=mock_k8s_service),
     ):
         result = await run_standalone_analysis(
             database_service=mock_db_service,

@@ -21,16 +21,16 @@ from pathlib import Path
 
 import pytest
 
-from sms_api.common.handlers import simulations
-from sms_api.common.hpc.job_service import JobStatusInfo
-from sms_api.common.models import JobId, JobStatus, SSHTarget
-from sms_api.config import get_settings
-from sms_api.dependencies import get_ssh_session_service
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from sms_api.simulation.hpc_utils import get_apptainer_image_file
-from sms_api.simulation.models import SimulatorVersion
-from sms_api.simulation.simulation_service import SimulationServiceHpc
 from tests.fixtures.api_fixtures import SimulatorRepoInfo
+from viva_api.common.handlers import simulations
+from viva_api.common.hpc.job_service import JobStatusInfo
+from viva_api.common.models import JobId, JobStatus, SSHTarget
+from viva_api.config import get_settings
+from viva_api.dependencies import get_ssh_session_service
+from viva_api.simulation.database_service import DatabaseServiceSQL
+from viva_api.simulation.hpc_utils import get_apptainer_image_file
+from viva_api.simulation.models import SimulatorVersion
+from viva_api.simulation.simulation_service import SimulationServiceHpc
 
 # Config file name expected in vEcoli/configs/
 CONFIG_FILENAME = "api_simulation_default_with_profile.json"

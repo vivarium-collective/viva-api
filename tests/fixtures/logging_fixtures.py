@@ -33,6 +33,6 @@ def configure_logging() -> None:
 def logger() -> logging.Logger:
     # pass
     # ...to ensure logging is configured before any tests run
-    logger = logging.getLogger("sms_api:pytest")
+    logger = logging.getLogger("viva_api:pytest")
     logger.info("Logging is configured for the test session.")
     return logger

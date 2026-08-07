@@ -7,15 +7,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sms_api.common.hpc.k8s_job_service import K8sJobService, _job_to_status
-from sms_api.common.hpc.local_task_service import LocalTaskService
-from sms_api.common.models import JobBackend, JobId, JobStatus
-from sms_api.config import ComputeBackend, get_settings
-from sms_api.simulation.simulation_service_k8s import SimulationServiceK8s
+from viva_api.common.hpc.k8s_job_service import K8sJobService, _job_to_status
+from viva_api.common.hpc.local_task_service import LocalTaskService
+from viva_api.common.models import JobBackend, JobId, JobStatus
+from viva_api.config import ComputeBackend, get_settings
+from viva_api.simulation.simulation_service_k8s import SimulationServiceK8s
 
 if TYPE_CHECKING:
-    from sms_api.simulation.database_service import DatabaseServiceSQL
-    from sms_api.simulation.models import SimulationRequest
+    from viva_api.simulation.database_service import DatabaseServiceSQL
+    from viva_api.simulation.models import SimulationRequest
 
 
 class TestJobToStatus:
@@ -63,23 +63,23 @@ class TestJobToStatus:
 
 class TestGetJobBackend:
     def test_slurm_backend(self) -> None:
-        from sms_api.config import get_job_backend
+        from viva_api.config import get_job_backend
 
-        with patch("sms_api.config.get_settings") as mock_settings:
+        with patch("viva_api.config.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(compute_backend="slurm")
             assert get_job_backend() == ComputeBackend.SLURM
 
     def test_batch_backend(self) -> None:
-        from sms_api.config import get_job_backend
+        from viva_api.config import get_job_backend
 
-        with patch("sms_api.config.get_settings") as mock_settings:
+        with patch("viva_api.config.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(compute_backend="batch")
             assert get_job_backend() == ComputeBackend.BATCH
 
     def test_default_is_slurm(self) -> None:
-        from sms_api.config import get_job_backend
+        from viva_api.config import get_job_backend
 
-        with patch("sms_api.config.get_settings") as mock_settings:
+        with patch("viva_api.config.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(compute_backend="slurm")
             assert get_job_backend() == ComputeBackend.SLURM
 
@@ -357,7 +357,7 @@ class TestSimulationServiceK8s:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Verify read_config_template calls GitHub Contents API."""
-        from sms_api.simulation.models import SimulatorVersion
+        from viva_api.simulation.models import SimulatorVersion
 
         simulator = SimulatorVersion(
             database_id=1,
@@ -375,7 +375,7 @@ class TestSimulationServiceK8s:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        monkeypatch.setattr("sms_api.simulation.github_repo.httpx.AsyncClient", lambda: mock_client)
+        monkeypatch.setattr("viva_api.simulation.github_repo.httpx.AsyncClient", lambda: mock_client)
 
         result = await simulation_service_k8s_mock.read_config_template(simulator, "test.json")
 
@@ -393,7 +393,7 @@ class TestSimulationServiceK8s:
         """Verify read_config_template raises HTTPException(404) when config not found."""
         from fastapi import HTTPException
 
-        from sms_api.simulation.models import SimulatorVersion
+        from viva_api.simulation.models import SimulatorVersion
 
         simulator = SimulatorVersion(
             database_id=1,
@@ -411,7 +411,7 @@ class TestSimulationServiceK8s:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        monkeypatch.setattr("sms_api.simulation.github_repo.httpx.AsyncClient", lambda: mock_client)
+        monkeypatch.setattr("viva_api.simulation.github_repo.httpx.AsyncClient", lambda: mock_client)
 
         with pytest.raises(HTTPException) as exc_info:
             await simulation_service_k8s_mock.read_config_template(simulator, "nonexistent.json")
@@ -423,8 +423,8 @@ class TestSimulationServiceK8s:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Verify read_config_template returns embedded default when allow_default_fallback=True."""
-        from sms_api.simulation.github_repo import _DEFAULT_CONFIG_TEMPLATE
-        from sms_api.simulation.models import SimulatorVersion
+        from viva_api.simulation.github_repo import _DEFAULT_CONFIG_TEMPLATE
+        from viva_api.simulation.models import SimulatorVersion
 
         simulator = SimulatorVersion(
             database_id=1,
@@ -442,7 +442,7 @@ class TestSimulationServiceK8s:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        monkeypatch.setattr("sms_api.simulation.github_repo.httpx.AsyncClient", lambda: mock_client)
+        monkeypatch.setattr("viva_api.simulation.github_repo.httpx.AsyncClient", lambda: mock_client)
 
         result = await simulation_service_k8s_mock.read_config_template(
             simulator, "api_simulation_default.json", allow_default_fallback=True
@@ -461,7 +461,7 @@ class TestSimulationServiceK8s:
         """Verify configs/ prefix in filename is rejected with a 400."""
         from fastapi import HTTPException
 
-        from sms_api.simulation.models import SimulatorVersion
+        from viva_api.simulation.models import SimulatorVersion
 
         simulator = SimulatorVersion(
             database_id=1,
@@ -480,7 +480,7 @@ class TestSimulationServiceK8s:
         simulation_service_k8s_mock: SimulationServiceK8s,
     ) -> None:
         """Verify _build_command generates a valid DooD build script."""
-        from sms_api.common.simulator_defaults import DEFAULT_SIMULATOR
+        from viva_api.common.simulator_defaults import DEFAULT_SIMULATOR
 
         # Task image command (no submit)
         cmd = simulation_service_k8s_mock._build_command(DEFAULT_SIMULATOR, image_tag="test123")
@@ -553,7 +553,7 @@ class TestSimulationServiceK8s:
         family (cd1/ptools) can't resolve sim_data without this env var. The
         ParCa job and this analysis job derive the same commit-keyed cache URI
         independently -- no new hand-off plumbing needed."""
-        from sms_api.common.storage import data_layout
+        from viva_api.common.storage import data_layout
 
         params = {
             "out_uri": "s3://bucket/vecoli-output/exp123",

@@ -5,11 +5,11 @@ import datetime
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from sms_api.common.storage.file_service import ListingItem
-from sms_api.dependencies import set_file_service
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from sms_api.simulation.models import SimulationRequest
-from sms_api.simulation.tables_orm import AnalysisStatusDB
+from viva_api.common.storage.file_service import ListingItem
+from viva_api.dependencies import set_file_service
+from viva_api.simulation.database_service import DatabaseServiceSQL
+from viva_api.simulation.models import SimulationRequest
+from viva_api.simulation.tables_orm import AnalysisStatusDB
 
 _RESULT_URI = "vecoli-output/exp-ana/exp-ana/analyses"
 
@@ -29,7 +29,7 @@ class _FakeFileService:
 
 
 async def _client() -> AsyncClient:
-    from sms_api.api.main import app
+    from viva_api.api.main import app
 
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver")
 

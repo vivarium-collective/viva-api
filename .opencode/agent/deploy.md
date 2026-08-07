@@ -53,7 +53,7 @@ AWS_PROFILE=stanford-sso AWS_DEFAULT_REGION=us-gov-west-1 \
 # Step 5 — Verify the pod has YOUR fix (do this EVERY time)
 POD=$(kubectl get pod -n sms-api-stanford-test -l app=api \
   --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
-kubectl exec -n sms-api-stanford-test $POD -- grep -c <unique_marker> /app/sms_api/<file>.py
+kubectl exec -n sms-api-stanford-test $POD -- grep -c <unique_marker> /app/viva_api/<file>.py
 
 # Step 6 — E2E test via CLI (never curl)
 uv run atlantis simulator latest --repo-url https://github.com/CovertLabEcoli/vEcoli-private --branch master
@@ -75,7 +75,7 @@ kubectl rollout status deployment/api -n sms-api-rke
 ```bash
 VERSION="0.X.Y"
 # Update these:
-sed -i '' "s/__version__ = .*/__version__ = \"$VERSION\"/" sms_api/version.py
+sed -i '' "s/__version__ = .*/__version__ = \"$VERSION\"/" viva_api/version.py
 # pyproject.toml version = "..."
 # kustomize/overlays/sms-api-stanford-test/kustomization.yaml  (sms-api entry only)
 # kustomize/overlays/sms-api-stanford/kustomization.yaml

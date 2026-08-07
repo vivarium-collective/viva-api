@@ -27,7 +27,7 @@ All 6 phases are complete as of commit `83af46da`.
 
 ### Phase 1 — PB document factory
 
-**File**: `sms_api/compose/biomodel_documents.py`
+**File**: `viva_api/compose/biomodel_documents.py`
 
 Ports `document_creation.py` from `biomodels-regression`:
 - `make_utc_step_state` — builds a single simulator step with full UTC config
@@ -37,7 +37,7 @@ Ports `document_creation.py` from `biomodels-regression`:
 
 ### Phase 2 — Service refactor
 
-**File**: `sms_api/compose/biomodels_service.py`
+**File**: `viva_api/compose/biomodels_service.py`
 
 All EBI interaction and SED-ML parsing:
 - `get_identifiers()` — curated ODE model IDs from EBI
@@ -113,10 +113,10 @@ uv run atlantis compose biomodels-regression        # regression suite
 
 | biomodels-regression file | sms-api destination |
 |---------------------------|---------------------|
-| `types.py` | `sms_api/compose/biomodels_service.py` (dataclasses) |
-| `biomodel_retrieval/biomodel_fetching.py` | `sms_api/compose/biomodels_service.py` (`load_biomodel`) |
-| `biomodel_retrieval/sedml_parsing.py` | `sms_api/compose/biomodels_service.py` (`_read_sedml_doc`, `_extract_first_utc`) |
-| `utils.py` | `sms_api/compose/biomodels_service.py` (`_iter_entry_files`, `_find_first_sedml`, ...) |
-| `document_creation.py` | `sms_api/compose/biomodel_documents.py` |
-| `__init__.py` (TYPES_DICT) | `sms_api/compose/biomodel_documents.py` |
+| `types.py` | `viva_api/compose/biomodels_service.py` (dataclasses) |
+| `biomodel_retrieval/biomodel_fetching.py` | `viva_api/compose/biomodels_service.py` (`load_biomodel`) |
+| `biomodel_retrieval/sedml_parsing.py` | `viva_api/compose/biomodels_service.py` (`_read_sedml_doc`, `_extract_first_utc`) |
+| `utils.py` | `viva_api/compose/biomodels_service.py` (`_iter_entry_files`, `_find_first_sedml`, ...) |
+| `document_creation.py` | `viva_api/compose/biomodel_documents.py` |
+| `__init__.py` (TYPES_DICT) | `viva_api/compose/biomodel_documents.py` |
 | `run_biomodels.py` | `POST /compose/v1/biomodels/regression` + `POST .../audit` |

@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from sms_api.compose import run_pbg
+from viva_api.compose import run_pbg
 
 
 class FakeCore:

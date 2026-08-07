@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from sms_api.common.hpc.models import (
+from viva_api.common.hpc.models import (
     NextflowEvent,
     NextflowMetadataEvent,
     NextflowTraceEvent,

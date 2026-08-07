@@ -1,5 +1,5 @@
 [project]
-name = "sms_api"
+name = "viva_api"
 version = "0.9.41"
 description = "This is the api server for Vivarium simulation services."
 authors = [{ name = "Alex Patrie", email = "alexanderpatrie@gmail.com" }, { name = "Jim Schaff", email = "jschaff@gmail.com" }]
@@ -71,8 +71,8 @@ dependencies = [
 atlantis = "app.cli:main"
 
 [project.urls]
-Repository = "https://github.com/vivarium-collective/sms-api"
-Documentation = "https://vivarium-collective.github.io/sms-api/"
+Repository = "https://github.com/vivarium-collective/viva-api"
+Documentation = "https://vivarium-collective.github.io/viva-api/"
 
 [dependency-groups]
 dev = [
@@ -114,6 +114,7 @@ constraint-dependencies = [
 
 [tool.hatch.build.targets.sdist]
 include = [
+    "viva_api",
     "sms_api",
     "tests",
     "app",
@@ -121,6 +122,7 @@ include = [
 
 [tool.hatch.build.targets.wheel]
 include = [
+    "viva_api",
     "sms_api",
     "tests",
     "app",
@@ -131,9 +133,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.mypy]
-files = ["sms_api", "tests", "app"]
+files = ["viva_api", "tests", "app"]
 strict = true
-exclude = ['^notes/', '^sms_api/api/client/.*', '^app/ui/.*', '^app/gui\\.py$', '^app/tui\\.py$', '^home/*', "^scratchpads/*", "^simulation_configs/*", "^sms_api/simulation_data_service\\.py$"]
+exclude = ['^notes/', '^viva_api/api/client/.*', '^app/ui/.*', '^app/gui\\.py$', '^app/tui\\.py$', '^home/*', "^scratchpads/*", "^simulation_configs/*", "^viva_api/simulation_data_service\\.py$", '^sms_api/.*']
 
 [[tool.mypy.overrides]]
 module = ["kubernetes.*", "textual", "textual.*", "boto3", "boto3.*", "botocore.*", "process_bigraph", "process_bigraph.*", "bigraph_schema", "bigraph_schema.*", "pbg_emitters", "pbg_emitters.*", "biosimulators_utils.*", "libsedml.*", "libsbml.*", "spython.*", "nats.*", "biomodels", "biomodels.*", "fsspec", "fsspec.*"]
@@ -264,7 +266,7 @@ ignore = [
 #    # UP035 `typing.Dict` is deprecated, use `dict` instead
 #    "UP035",
 ]
-exclude = [".venv/*", "app/ui/*", "sms_api/api/client/*", "documentation/*", "home/*", "scratchpads/*", "simulation_configs/*", "notes/*", "app/gui.py"]
+exclude = [".venv/*", "app/ui/*", "viva_api/api/client/*", "documentation/*", "home/*", "scratchpads/*", "simulation_configs/*", "notes/*", "app/gui.py"]
 
 [tool.ruff.format]
 preview = true
@@ -274,10 +276,10 @@ skip_empty = true
 
 [tool.coverage.run]
 branch = true
-source = ["sms_api", "client"]
+source = ["viva_api", "client"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]
-"sms_api/simulation/simulation_service.py" = ["E501"]
+"viva_api/simulation/simulation_service.py" = ["E501"]
 "app/gui.py" = ["B018", "F841"]  # Marimo notebook: bare expressions are cell outputs, unused vars are cell returns
 "app/cli.py" = ["S603", "S607"]  # CLI subprocess calls are intentional

@@ -1,19 +1,19 @@
-# sms-api: Simulating Microbial Systems
+# viva-api: Simulating Microbial Systems
 
 [![Homepage](https://img.shields.io/badge/Homepage-Visit-blue)](https://sms.cam.uchc.edu/home)
 [![API Documentation](https://img.shields.io/badge/docs-REST%20API-blue)](https://sms.cam.uchc.edu/documentation)
 [![Swagger UI](https://img.shields.io/badge/swagger_docs-Swagger_UI-green?logo=swagger)](https://sms.cam.uchc.edu/docs)
-[![Build status](https://img.shields.io/github/actions/workflow/status/vivarium-collective/sms-api/main.yml?branch=main)](https://github.com/vivarium-collective/sms-api/actions/workflows/main.yml?query=branch%3Amain)
-[![codecov](https://codecov.io/gh/vivarium-collective/sms-api/branch/main/graph/badge.svg)](https://codecov.io/gh/vivarium-collective/sms-api)
-[![Commit activity](https://img.shields.io/github/commit-activity/m/vivarium-collective/sms-api)](https://img.shields.io/github/commit-activity/m/vivarium-collective/sms-api)
+[![Build status](https://img.shields.io/github/actions/workflow/status/vivarium-collective/viva-api/main.yml?branch=main)](https://github.com/vivarium-collective/viva-api/actions/workflows/main.yml?query=branch%3Amain)
+[![codecov](https://codecov.io/gh/vivarium-collective/viva-api/branch/main/graph/badge.svg)](https://codecov.io/gh/vivarium-collective/viva-api)
+[![Commit activity](https://img.shields.io/github/commit-activity/m/vivarium-collective/viva-api)](https://img.shields.io/github/commit-activity/m/vivarium-collective/viva-api)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 [![Documentation](https://img.shields.io/badge/documentation-online-blue.svg)](https://sms-api.readthedocs.io/en/latest/)
 
 <p align="center">
-  <img src="https://github.com/vivarium-collective/sms-api/blob/main/docs/source/_static/wholecellecoli.png?raw=true" width="400" />
+  <img src="https://github.com/vivarium-collective/viva-api/blob/main/docs/source/_static/wholecellecoli.png?raw=true" width="400" />
 </p>
 
-- **Github repository**: <https://github.com/vivarium-collective/sms-api/>
+- **Github repository**: <https://github.com/vivarium-collective/viva-api/>
 - **REST API Documentation**: [View Docs](https://sms.cam.uchc.edu/documentation)
 - **Documentation(In progress, not complete)** <https://sms-api.readthedocs.io/en/latest/>
 

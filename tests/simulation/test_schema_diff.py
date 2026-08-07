@@ -1,6 +1,6 @@
 """Unit tests for the pure schema-diff logic (no database access)."""
 
-from sms_api.simulation.schema_diff import DbSchema, diff_schemas
+from viva_api.simulation.schema_diff import DbSchema, diff_schemas
 
 
 def _expected() -> DbSchema:

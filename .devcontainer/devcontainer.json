@@ -47,8 +47,8 @@
   "forwardPorts": [8000],  // any ports exposed
   "workspaceFolder": "/app", // where in container vscode will open to
   "mounts": [
-    "source=${localWorkspaceFolder}/sms_api,target=/app/sms_api,type=bind"
+    "source=${localWorkspaceFolder}/viva_api,target=/app/viva_api,type=bind"
   ],
   "remoteUser": "appuser"
-  // "postCreateCommand": "pip install -e ./sms_api" // use if you want editable mode (probably not needed)
+  // "postCreateCommand": "pip install -e ./viva_api" // use if you want editable mode (probably not needed)
 }

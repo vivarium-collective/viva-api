@@ -23,17 +23,17 @@ import pytest
 import pytest_asyncio
 from starlette.responses import FileResponse
 
-from sms_api.common.handlers.simulations import (
+from viva_api.common.handlers.simulations import (
     SimulationAnalysisDataResponseType,
     _download_outputs_from_s3,
     get_simulation_outputs,
 )
-from sms_api.common.models import JobId
-from sms_api.common.storage.file_service_s3 import FileServiceS3
-from sms_api.config import get_settings
-from sms_api.dependencies import get_file_service, set_file_service
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from sms_api.simulation.models import (
+from viva_api.common.models import JobId
+from viva_api.common.storage.file_service_s3 import FileServiceS3
+from viva_api.config import get_settings
+from viva_api.dependencies import get_file_service, set_file_service
+from viva_api.simulation.database_service import DatabaseServiceSQL
+from viva_api.simulation.models import (
     JobType,
     ParcaDatasetRequest,
     ParcaOptions,

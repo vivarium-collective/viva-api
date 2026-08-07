@@ -292,7 +292,7 @@ fi
 ### Using FileServiceS3
 
 ```python
-from sms_api.common.storage import FileServiceS3
+from viva_api.common.storage import FileServiceS3
 
 # Initialize service (uses credentials from environment)
 s3_service = FileServiceS3()
@@ -321,7 +321,7 @@ contents = await s3_service.get_file_contents("test/hello.txt")
 print(contents.decode("utf-8"))
 
 # List files
-from sms_api.common.storage import ListingItem
+from viva_api.common.storage import ListingItem
 files: list[ListingItem] = await s3_service.get_listing("test/")
 for file in files:
     print(f"{file.Key} - {file.Size} bytes - {file.LastModified}")
@@ -361,7 +361,7 @@ export STORAGE_S3_SESSION_TOKEN="mysessiontoken"
 ### Settings (config.py)
 
 ```python
-from sms_api.config import get_settings
+from viva_api.config import get_settings
 
 settings = get_settings()
 print(f"S3 Bucket: {settings.storage_s3_bucket}")

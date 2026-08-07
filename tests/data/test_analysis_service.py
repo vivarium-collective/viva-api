@@ -2,15 +2,15 @@ from pathlib import Path
 
 import pytest
 
-from sms_api.analysis.analysis_service import AnalysisServiceSlurm, RequestPayload, parse_partition_metadata
-from sms_api.analysis.models import (
+from viva_api.analysis.analysis_service import AnalysisServiceSlurm, RequestPayload, parse_partition_metadata
+from viva_api.analysis.models import (
     AnalysisConfig,
     ExperimentAnalysisRequest,
     PtoolsAnalysisConfig,
     PtoolsAnalysisType,
 )
-from sms_api.api import request_examples
-from sms_api.config import get_settings
+from viva_api.api import request_examples
+from viva_api.config import get_settings
 
 ENV = get_settings()
 GENERATE_ARTIFACTS = True
@@ -46,7 +46,7 @@ async def test_generate_slurm_script(
 
 @pytest.mark.asyncio
 async def test_normalize() -> None:
-    from sms_api.api.request_examples import analysis_request_base
+    from viva_api.api.request_examples import analysis_request_base
 
     origin = analysis_request_base.model_dump()
     payload1 = RequestPayload(data=origin)

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from sms_api.compose.models import (
+from viva_api.compose.models import (
     ComposeSimulationExperiment,
 )
 
@@ -37,10 +37,12 @@ def _patch_biomodels_run_compose(experiment: ComposeSimulationExperiment) -> Mag
     class _MultiPatch:
         def __enter__(self) -> _MultiPatch:
             self._stack = ExitStack()
-            self._stack.enter_context(_patch("sms_api.api.routers.compose.run_compose_curated", mock_run))
-            self._stack.enter_context(_patch("sms_api.api.routers.compose._require_db", return_value=mock_db))
-            self._stack.enter_context(_patch("sms_api.api.routers.compose._require_sim", return_value=mock_sim))
-            self._stack.enter_context(_patch("sms_api.api.routers.compose._require_monitor", return_value=mock_monitor))
+            self._stack.enter_context(_patch("viva_api.api.routers.compose.run_compose_curated", mock_run))
+            self._stack.enter_context(_patch("viva_api.api.routers.compose._require_db", return_value=mock_db))
+            self._stack.enter_context(_patch("viva_api.api.routers.compose._require_sim", return_value=mock_sim))
+            self._stack.enter_context(
+                _patch("viva_api.api.routers.compose._require_monitor", return_value=mock_monitor)
+            )
             return self
 
         def __exit__(
@@ -55,19 +57,19 @@ def _patch_biomodels_run_compose(experiment: ComposeSimulationExperiment) -> Mag
 
 
 def _patch_biomodels_identifiers(ids: list[str]) -> AbstractContextManager[Any]:
-    return patch("sms_api.compose.biomodels_service.BiomodelsService.get_identifiers", return_value=ids)
+    return patch("viva_api.compose.biomodels_service.BiomodelsService.get_identifiers", return_value=ids)
 
 
 def _patch_biomodels_metadata(meta: dict[str, Any]) -> AbstractContextManager[Any]:
-    return patch("sms_api.compose.biomodels_service.BiomodelsService.get_metadata", return_value=meta)
+    return patch("viva_api.compose.biomodels_service.BiomodelsService.get_metadata", return_value=meta)
 
 
 def _patch_biomodels_metadata_error(exc: Exception) -> AbstractContextManager[Any]:
-    return patch("sms_api.compose.biomodels_service.BiomodelsService.get_metadata", side_effect=exc)
+    return patch("viva_api.compose.biomodels_service.BiomodelsService.get_metadata", side_effect=exc)
 
 
 def _patch_load_biomodel(biomodel_id: str = "BIOMD001") -> AbstractContextManager[Any]:
-    from sms_api.compose.biomodels_service import BiomodelLoadResult, UniformTimeCourseSpec
+    from viva_api.compose.biomodels_service import BiomodelLoadResult, UniformTimeCourseSpec
 
     utc = UniformTimeCourseSpec(0.0, 0.0, 10.0, 100)
     result = BiomodelLoadResult(
@@ -76,11 +78,11 @@ def _patch_load_biomodel(biomodel_id: str = "BIOMD001") -> AbstractContextManage
         sedml_path="/tmp/test.sedml",  # noqa: S108
         utc=utc,
     )
-    return patch("sms_api.compose.biomodels_service.BiomodelsService.load_biomodel", return_value=result)
+    return patch("viva_api.compose.biomodels_service.BiomodelsService.load_biomodel", return_value=result)
 
 
 def _patch_load_biomodel_error(exc: Exception) -> AbstractContextManager[Any]:
-    return patch("sms_api.compose.biomodels_service.BiomodelsService.load_biomodel", side_effect=exc)
+    return patch("viva_api.compose.biomodels_service.BiomodelsService.load_biomodel", side_effect=exc)
 
 
 # ---------------------------------------------------------------------------

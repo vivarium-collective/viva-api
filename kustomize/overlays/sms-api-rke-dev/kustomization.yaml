@@ -43,7 +43,7 @@ patches:
     target:
       kind: Deployment
       name: api
-  # supplementalGroups: 10274=smsgroup, 10281=sms_api, 10269=vivarium
+  # supplementalGroups: 10274=smsgroup, 10281=viva_api, 10269=vivarium
   - patch: |-
       - op: add
         path: /spec/template/spec/securityContext/supplementalGroups

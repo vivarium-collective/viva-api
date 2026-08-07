@@ -2,17 +2,17 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, override
 
-from sms_api.common.hpc.job_service import JobStatusInfo
-from sms_api.common.models import JobId
-from sms_api.simulation.database_service import DatabaseService
-from sms_api.simulation.models import (
+from viva_api.common.hpc.job_service import JobStatusInfo
+from viva_api.common.models import JobId
+from viva_api.simulation.database_service import DatabaseService
+from viva_api.simulation.models import (
     ParcaDataset,
     ParcaDatasetRequest,
     ParcaOptions,
     Simulation,
     SimulatorVersion,
 )
-from sms_api.simulation.simulation_service import SimulationService
+from viva_api.simulation.simulation_service import SimulationService
 
 
 class MockSSHSession:

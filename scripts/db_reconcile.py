@@ -11,10 +11,10 @@ Refuses and prints manual instructions if the schema is inconsistent.
 
 Connection: uses SQLALCHEMY_DATABASE_URL if set, else POSTGRES_HOST/PORT/USER/
 PASSWORD/DATABASE. This is the same entrypoint the migration Job runs as
-``python -m sms_api.simulation.db_reconcile --apply``.
+``python -m viva_api.simulation.db_reconcile --apply``.
 """
 
-from sms_api.simulation.db_reconcile import main
+from viva_api.simulation.db_reconcile import main
 
 if __name__ == "__main__":
     raise SystemExit(main(["--apply"]))

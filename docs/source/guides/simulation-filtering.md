@@ -37,7 +37,7 @@ Returns a mapping of all available tag names to their experiment ID lists:
 }
 ```
 
-Tags are defined in code at `sms_api/simulation/simulation_tags.py` and are zero-migration (no database schema changes needed).
+Tags are defined in code at `viva_api/simulation/simulation_tags.py` and are zero-migration (no database schema changes needed).
 
 ## Examples
 
@@ -174,8 +174,8 @@ Output format matches the REST API (JSON by default, or use `--format table` for
 Using the auto-generated OpenAPI client:
 
 ```python
-from sms_api.api.client import Client
-from sms_api.api.client.api.simulations import list_ecoli_simulations
+from viva_api.api.client import Client
+from viva_api.api.client.api.simulations import list_ecoli_simulations
 
 client = Client(base_url="https://sms.cam.uchc.edu/api/v1")
 
@@ -192,7 +192,7 @@ filtered = list_ecoli_simulations.sync(
 cd1_sims = list_ecoli_simulations.sync(client=client, tag="cd1")
 
 # List tags
-from sms_api.api.client.api.simulations import list_simulation_tags
+from viva_api.api.client.api.simulations import list_simulation_tags
 tags = list_simulation_tags.sync(client=client)
 print(tags)  # {"cd1": ["sim31-baseline-60bb", ...]}
 ```
@@ -200,7 +200,7 @@ print(tags)  # {"cd1": ["sim31-baseline-60bb", ...]}
 ## Deployment Notes
 
 - The `cd1` tag bundle contains experiments that **only exist on the `sms-api-stanford` (GovCloud/AWS Batch) deployment**. They will return empty results on the public `sms-api-rke` (UCONN CCAM/SLURM) deployment.
-- Tags are defined in code (`sms_api/simulation/simulation_tags.py`). To add new tags, edit the `SIMULATION_TAGS` dict and redeploy — no database migration required.
+- Tags are defined in code (`viva_api/simulation/simulation_tags.py`). To add new tags, edit the `SIMULATION_TAGS` dict and redeploy — no database migration required.
 - The filtering logic runs in the database layer (`DatabaseService.list_simulations_filtered`) for efficiency.
 
 ## Error Responses

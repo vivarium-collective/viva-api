@@ -95,7 +95,7 @@ from unittest.mock import patch, MagicMock
 
 @pytest.fixture
 def mock_biomodels():
-    with patch("sms_api.compose.biomodels_service.biomodels") as mock:
+    with patch("viva_api.compose.biomodels_service.biomodels") as mock:
         mock.get_omex.return_value = b"fake omex bytes"
         mock.search.return_value = {"models": [{"id": "BIOMD001"}]}
         yield mock
@@ -114,7 +114,7 @@ def mock_ssh_session():
 
 @pytest.fixture
 def mock_slurm(mock_ssh_session):
-    with patch("sms_api.common.hpc.slurm_service.SlurmService.submit_job") as mock:
+    with patch("viva_api.common.hpc.slurm_service.SlurmService.submit_job") as mock:
         mock.return_value = 12345
         yield mock
 ```
@@ -124,7 +124,7 @@ def mock_slurm(mock_ssh_session):
 ```python
 @pytest.fixture
 def mock_file_service():
-    with patch("sms_api.common.storage.file_service.FileService") as mock:
+    with patch("viva_api.common.storage.file_service.FileService") as mock:
         mock.return_value.upload.return_value = None
         mock.return_value.download.return_value = b"fake data"
         yield mock.return_value
@@ -133,7 +133,7 @@ def mock_file_service():
 ### Mock compose run_compose_curated
 
 ```python
-from sms_api.compose.models import ComposeSimulationExperiment
+from viva_api.compose.models import ComposeSimulationExperiment
 
 @pytest.fixture
 def mock_run_curated():
@@ -143,7 +143,7 @@ def mock_run_curated():
         last_updated="2026-05-08T00:00:00",
         metadata={}
     )
-    with patch("sms_api.api.routers.compose.run_compose_curated") as mock:
+    with patch("viva_api.api.routers.compose.run_compose_curated") as mock:
         mock.return_value = fake_experiment
         yield mock
 ```

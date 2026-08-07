@@ -15,19 +15,19 @@ from pathlib import Path
 
 import pytest
 
-from sms_api.common.hpc.job_service import JobStatusInfo
-from sms_api.common.hpc.models import SlurmJob
-from sms_api.common.hpc.slurm_service import SlurmService
-from sms_api.common.models import JobStatus, SSHTarget
-from sms_api.common.ssh.ssh_service import SSHSessionService
-from sms_api.common.storage.file_paths import HPCFilePath
-from sms_api.config import get_settings
-from sms_api.dependencies import get_ssh_session_service
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from sms_api.simulation.hpc_utils import get_apptainer_image_file
-from sms_api.simulation.models import SimulatorVersion
-from sms_api.simulation.simulation_service import SimulationServiceHpc
 from tests.fixtures.api_fixtures import SimulatorRepoInfo
+from viva_api.common.hpc.job_service import JobStatusInfo
+from viva_api.common.hpc.models import SlurmJob
+from viva_api.common.hpc.slurm_service import SlurmService
+from viva_api.common.models import JobStatus, SSHTarget
+from viva_api.common.ssh.ssh_service import SSHSessionService
+from viva_api.common.storage.file_paths import HPCFilePath
+from viva_api.config import get_settings
+from viva_api.dependencies import get_ssh_session_service
+from viva_api.simulation.database_service import DatabaseServiceSQL
+from viva_api.simulation.hpc_utils import get_apptainer_image_file
+from viva_api.simulation.models import SimulatorVersion
+from viva_api.simulation.simulation_service import SimulationServiceHpc
 
 
 @dataclass

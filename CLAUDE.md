@@ -19,7 +19,7 @@ SMS API (Simulating Microbial Systems API, also known as Atlantis API) is a Fast
 ### Directory Structure
 
 ```
-sms_api/
+viva_api/
 ├── api/           # FastAPI routes and generated OpenAPI client
 │   ├── routers/   # Route handlers: gateway, core, antibiotics, biofactory, inference, variants
 │   ├── client/    # Auto-generated OpenAPI client (do NOT edit manually)
@@ -51,7 +51,7 @@ artifacts/         # Debug output directory (gitignored)
 
 ### Request Flow
 
-API requests hit FastAPI routers (`sms_api/api/routers/`) which depend on services injected via `sms_api/dependencies.py`. The dependency module manages global singletons for SSH sessions, database connections, file storage, messaging, and the simulation service.
+API requests hit FastAPI routers (`viva_api/api/routers/`) which depend on services injected via `viva_api/dependencies.py`. The dependency module manages global singletons for SSH sessions, database connections, file storage, messaging, and the simulation service.
 
 ### Key Services
 
@@ -65,13 +65,13 @@ API requests hit FastAPI routers (`sms_api/api/routers/`) which depend on servic
 
 ### Compute Backend Dispatch
 
-Backend selection is determined by `deployment_namespace` in `sms_api/config.py`:
+Backend selection is determined by `deployment_namespace` in `viva_api/config.py`:
 - **SLURM** (default): `sms-api-rke`, `sms-api-rke-dev` — UCONN CCAM on-prem HPC
 - **K8s + AWS Batch**: `sms-api-stanford`, `sms-api-stanford-test` — GovCloud
 
 The dispatch happens in `dependencies.py` at startup: `SimulationServiceHpc` for SLURM, `SimulationServiceK8s` for K8s.
 
-Config filenames are also namespace-aware via `sms_api/common/simulator_defaults.py`:
+Config filenames are also namespace-aware via `viva_api/common/simulator_defaults.py`:
 - `SimulationConfigPublic` (CCAM/RKE deployments)
 - `SimulationConfigPrivate` (Stanford deployments)
 - `SimulationConfigFilename` is dynamically set based on `PUBLIC_MODE`
@@ -102,7 +102,7 @@ The Atlantis logo (E. coli capsule + flagella squigglies) is defined in:
 
 ### Generated Code
 
-`sms_api/api/client/` is auto-generated from the OpenAPI spec. Regenerate with `make api_client`.
+`viva_api/api/client/` is auto-generated from the OpenAPI spec. Regenerate with `make api_client`.
 
 ## Development
 
@@ -160,7 +160,7 @@ head` then runs from base and fails re-`CREATE`-ing existing tables.
 - **Add a migration**: `uv run alembic revision -m "…"` (or hand-write one; see
   `c1a2b3d4e5f6_add_tags_to_simulation.py`). Set `down_revision` to the current
   head. Prefer PG-safe, idempotent ops.
-- **The reconciler** (`sms_api/simulation/db_reconcile.py`, run by the
+- **The reconciler** (`viva_api/simulation/db_reconcile.py`, run by the
   `alembic-migrate` Job) classifies any DB and acts idempotently:
   - **FRESH** (no tables, no `alembic_version`) → `upgrade head` from base
   - **MANAGED** (`alembic_version` present) → `upgrade head` (no-op if current)
@@ -177,7 +177,7 @@ head` then runs from base and fails re-`CREATE`-ing existing tables.
   Each site's RDS may sit at a different un-stamped point.
   ```bash
   # read-only report (in a pod or locally; uses SQLALCHEMY_DATABASE_URL or POSTGRES_*)
-  uv run python -m sms_api.simulation.db_reconcile --analyze   # or scripts/db_analyze.py
+  uv run python -m viva_api.simulation.db_reconcile --analyze   # or scripts/db_analyze.py
   # apply (this is what the migration Job runs)
   kubectl delete job alembic-migrate -n <ns> --ignore-not-found   # Jobs are immutable
   kubectl apply -k kustomize/overlays/<ns>-db-migration
@@ -243,7 +243,7 @@ async with get_ssh_session_service().session() as ssh:
 ## Tooling
 
 - **Linting/Formatting**: ruff (line length 120). Pre-commit runs ruff lint + ruff format.
-- **Type checking**: mypy with strict mode. Excludes: `sms_api/api/client/`, `app/ui/`, `notes/`, `scratchpads/`.
+- **Type checking**: mypy with strict mode. Excludes: `viva_api/api/client/`, `app/ui/`, `notes/`, `scratchpads/`.
 - **Python**: 3.12.9 (pinned exact).
 - **Package manager**: uv with hatchling build backend.
 
@@ -253,7 +253,7 @@ async with get_ssh_session_service().session() as ssh:
 Follow this exact sequence to cut a release:
 
 1. **Include the version bump in the feature/fix branch** before merging:
-   - `sms_api/version.py` — `__version__ = "X.Y.Z"`
+   - `viva_api/version.py` — `__version__ = "X.Y.Z"`
    - `pyproject.toml` — `version = "X.Y.Z"`
 2. **Single PR to `main`** — contains all changes + version bump. Merge.
 3. **Tag the merge commit**:
@@ -273,7 +273,7 @@ Follow this exact sequence to cut a release:
    Then bump `newTag` in all kustomize overlays and apply.
 
 **Version sync checklist** (when bumping version):
-- `sms_api/version.py`
+- `viva_api/version.py`
 - `pyproject.toml`
 - `kustomize/overlays/sms-api-stanford-test/kustomization.yaml` (sms-api only — keep sms-ptools at 0.5.9)
 - `kustomize/overlays/sms-api-stanford/kustomization.yaml`
@@ -307,7 +307,7 @@ We seek to have the Atlantis CLI (`app.cli`) to do this workflow, which again sh
 
 *WHEN TESTING THE SMS_API's EUTE, MAKE SURE to use the atlantis cli (app.cli).* IN FACT, this is the iterative dev loop i want to get in: we use the cli to test end-user-facing e2e workflows (that is, the
 "product" itself, one that stakeholders and clients alike will use: must be sleek, easy to use, yet robust and informative, and most importantly useful/novel enough to where it would be perferred to use the cli over any other
-arbitrary external client that may call the api...I will then want to ensure that the same working functionality is exposed/present in the tui (basically, the entrypoint to the rest api defined in sms_api has 3
+arbitrary external client that may call the api...I will then want to ensure that the same working functionality is exposed/present in the tui (basically, the entrypoint to the rest api defined in viva_api has 3
 entrypoints/clients (other than direct http requests to the endpoints themselves): a. the marimo notebooks found in app/ui/..., b. the cli (atlantis) found in app.cli, c. the tui found at app.tui. With that said, it is
 imperative that the aforementioned a, b, and c are implementations of the same thing (the full e2e end-user workflow calling the restapi endpoonts as mentioned), but within different media...ie: cli app, marimo gui (app mode in
 marimo), and tui (textual-based tui) all expose/provide the same functionality, just in those different formats. Let's fully make this happen! If youre in, say "I dig ya broski: let's cook!", then make it happen babbbby!
@@ -346,7 +346,7 @@ AWS_PROFILE=stanford-sso AWS_DEFAULT_REGION=us-gov-west-1 \
 POD=$(kubectl get pod -n sms-api-stanford-test -l app=api \
   --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
 kubectl exec -n sms-api-stanford-test $POD -- grep -c <marker> \
-  /app/sms_api/<path/to/changed/file>.py
+  /app/viva_api/<path/to/changed/file>.py
 #    ^ Replace <marker> with something unique to your fix (an identifier,
 #      a log string, etc.). If this returns 0, step 2's build didn't pick up
 #      your commit. Stop. Do not proceed.
@@ -360,7 +360,7 @@ uv run atlantis simulation outputs <SIM_ID> --dest ./debug
 ```
 
 **Version sync:** When bumping version, update ALL of:
-- `sms_api/version.py`
+- `viva_api/version.py`
 - `pyproject.toml`
 - `kustomize/overlays/sms-api-stanford-test/kustomization.yaml` (the `sms-api` image entry only — leave `sms-ptools` pinned to 0.5.9)
 - `kustomize/overlays/sms-api-rke/kustomization.yaml`
@@ -370,7 +370,7 @@ Prefer bumping the tag to reusing the same one — a new tag is the unambiguous 
 
 **Alternative: Local build** (faster, no GH Action wait):
 ```bash
-./kustomize/scripts/build_and_push.sh   # reads version from sms_api/version.py
+./kustomize/scripts/build_and_push.sh   # reads version from viva_api/version.py
 ```
 
 **Helper script:** `scripts/deploy-namespace.sh` wraps steps 1–6 (mostly) for the
@@ -389,7 +389,7 @@ the action, the build will produce an image with your OLD code — and
 `imagePullPolicy: Always` will faithfully pull that old code onto the new pod.
 Symptom: you deployed, pods rolled, `/health` works, but the fix isn't there.
 Verification step 5 above catches this — always grep a marker unique to your
-fix inside `/app/sms_api/...` on the live pod before declaring victory.
+fix inside `/app/viva_api/...` on the live pod before declaring victory.
 
 **Pitfall 2 — Ephemeral storage eviction on large downloads.**
 The `api` pod mounts `/app/.results_cache` as an `emptyDir` with

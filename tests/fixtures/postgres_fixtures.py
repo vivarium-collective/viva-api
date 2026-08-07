@@ -5,10 +5,10 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from testcontainers.postgres import PostgresContainer  # type: ignore [import-untyped]
 
-from sms_api.dependencies import get_database_service, get_postgres_engine, set_database_service, set_postgres_engine
-from sms_api.simulation.database_service import DatabaseService, DatabaseServiceSQL
-from sms_api.simulation.tables_orm import create_db
 from tests.docker_utils import SKIP_DOCKER_REASON, SKIP_DOCKER_TESTS
+from viva_api.dependencies import get_database_service, get_postgres_engine, set_database_service, set_postgres_engine
+from viva_api.simulation.database_service import DatabaseService, DatabaseServiceSQL
+from viva_api.simulation.tables_orm import create_db
 
 
 @pytest.fixture(scope="module")

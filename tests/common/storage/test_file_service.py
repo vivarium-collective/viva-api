@@ -9,12 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from sms_api.common.storage.file_paths import S3FilePath
-from sms_api.common.storage.file_service_gcs import FileServiceGCS
-from sms_api.common.storage.file_service_qumulo_s3 import FileServiceQumuloS3
-from sms_api.common.storage.file_service_s3 import FileServiceS3
-from sms_api.config import get_settings
 from tests.fixtures.file_service_local import FileServiceLocal
+from viva_api.common.storage.file_paths import S3FilePath
+from viva_api.common.storage.file_service_gcs import FileServiceGCS
+from viva_api.common.storage.file_service_qumulo_s3 import FileServiceQumuloS3
+from viva_api.common.storage.file_service_s3 import FileServiceS3
+from viva_api.config import get_settings
 
 
 @pytest.mark.asyncio
