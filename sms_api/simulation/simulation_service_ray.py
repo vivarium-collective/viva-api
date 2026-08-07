@@ -372,7 +372,13 @@ class SimulationServiceRay(SimulationService):
             "containerOverrides": {"environment": env},
         }
         if depends_on:
-            kwargs["dependsOn"] = [{"jobId": jid, "type": "SEQUENTIAL"} for jid in depends_on]
+            # Plain job dependency (no "type") -- NOT "SEQUENTIAL", unlike _submit_mnp above.
+            # AWS Batch rejects {"jobId": ..., "type": "SEQUENTIAL"} for a job that also sets
+            # arrayProperties: real error, hit live 2026-08-06, "Job Id cannot be set when
+            # dependency type is SEQUENTIAL". SEQUENTIAL is for an array job depending on
+            # itself/other array-shaped dependents, not a targeted jobId wait -- it doesn't
+            # apply here, we just need "don't start any array child until ParCa succeeds".
+            kwargs["dependsOn"] = [{"jobId": jid} for jid in depends_on]
         if tags:
             kwargs["tags"] = tags
             kwargs["propagateTags"] = True

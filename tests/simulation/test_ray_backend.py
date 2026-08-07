@@ -294,7 +294,12 @@ class TestSimulationServiceRaySubmit:
         assert "nodeOverrides" not in sim_call.kwargs
         assert sim_call.kwargs["arrayProperties"] == {"size": 4}
         assert sim_call.kwargs["jobQueue"] == "smscdk-vecoli-task-amd64"
-        assert sim_call.kwargs["dependsOn"] == [{"jobId": "parca-123", "type": "SEQUENTIAL"}]
+        # Plain dependency, NO "type" key -- real AWS Batch rejects {"type": "SEQUENTIAL"}
+        # combined with an explicit jobId when the submitting job itself sets
+        # arrayProperties (live error hit 2026-08-06: "Job Id cannot be set when
+        # dependency type is SEQUENTIAL"). Do not "simplify" this back to match
+        # _submit_mnp's shape -- that's the exact regression this assertion guards.
+        assert sim_call.kwargs["dependsOn"] == [{"jobId": "parca-123"}]
 
         sim_env = _array_env(sim_call)
         cmd = sim_env["ARRAY_JOB_CMD"]

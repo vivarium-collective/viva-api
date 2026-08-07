@@ -224,4 +224,17 @@
 #          adds the RayArrayJobDef job definition + batch-array-entrypoint.sh
 #          -- see the ray-vs-batch-array-jobs-investigation decision: Array
 #          jobs for canonical, Ray-MNP stays for colonies.
-__version__ = "0.9.39"
+# 0.9.40 — fix _submit_array's dependsOn: real AWS Batch rejected the array pilot's
+#          first live dispatch with "Job Id cannot be set when dependency type is
+#          SEQUENTIAL" -- _submit_array had copy-pasted _submit_mnp's dependsOn
+#          shape ({"jobId": jid, "type": "SEQUENTIAL"}) verbatim, but SEQUENTIAL
+#          is invalid alongside an explicit jobId for a job that also sets
+#          arrayProperties (which every array submission does). Fixed to a plain
+#          {"jobId": jid} dependency (no "type"). _submit_mnp is untouched --
+#          the MNP path has real successful dispatch history with the SEQUENTIAL
+#          shape and was never in question. The mocked unit test for the array
+#          path had asserted the buggy shape as correct (classic green-mock-as-
+#          go-signal: the mock never validates against AWS's real API rules) --
+#          strengthened to assert the correct type-less shape, with a comment
+#          explaining why so it can't be silently "simplified" back.
+__version__ = "0.9.40"
