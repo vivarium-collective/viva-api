@@ -237,4 +237,33 @@
 #          go-signal: the mock never validates against AWS's real API rules) --
 #          strengthened to assert the correct type-less shape, with a comment
 #          explaining why so it can't be silently "simplified" back.
-__version__ = "0.9.40"
+# 0.9.41 — analysis auto-triggers from the dispatch DAG (backlog item 24). The Ray
+#          backend never read config.analysis_options and submitted no analysis at
+#          all, so a completed remote simulation produced zero cd1_*/ptools_*
+#          artifacts until somebody ran `atlantis simulation analysis <id>` by
+#          hand -- which defeats the "everything triggered through the Workbench"
+#          bar. submit_ecoli_simulation_job now submits a THIRD Batch job for the
+#          multi-generation batch_baseline sweep, dependsOn the sim job, running
+#          the model image's own S3-native scripts/run_standalone_analysis.py
+#          (-> v2ecoli.workflow.analysis_runner.run_analyses, the SAME function
+#          the composite's inline flush calls) over the landed sweep. So the
+#          pipeline is now one Batch dependency DAG, parca -> sim -> analysis:
+#          no poller, no webhook, no external watcher.
+#          The composite's own inline flush stays disabled ("analyses": "none")
+#          on purpose and is NOT the mechanism: the canonical dispatch is an
+#          Array job of N single-seed children with no shared filesystem, so an
+#          inline flush would run the cross-seed scales against 1/N of the sweep,
+#          N times over. The whole-sweep analysis is a gather node by nature.
+#          Modules come from the simulation's own analysis_options when the
+#          caller set any; otherwise the composite's own "applicable" keyword,
+#          which the model image expands with its own ANALYSIS_REGISTRY (sms-api
+#          has none) -- see the companion sms-ecoli PR adding that keyword to
+#          run_standalone_analysis.py. Every auto-triggered analysis is recorded
+#          in the same `analyses` table as a hand-triggered one, so
+#          GET /simulations/{id}/analyses and GET /analyses/{id}/status resolve
+#          it; a submission failure lands as a FAILED row rather than vanishing
+#          (the sim job is already running by then, so raising would orphan it).
+#          _submit_mnp gains an optional depends_type: the analysis node waits on
+#          an ARRAY parent id, which AWS Batch rejects under SEQUENTIAL; the
+#          ParCa -> sim edge keeps its live-verified SEQUENTIAL shape untouched.
+__version__ = "0.9.41"
