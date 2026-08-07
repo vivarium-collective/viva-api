@@ -48,6 +48,22 @@ def s3_uri(key: str) -> str:
     return f"s3://{_bucket()}/{key}"
 
 
+def key_from_uri(uri: str) -> str:
+    """Strip a ``s3://<bucket>/`` prefix, returning the bucket-relative key.
+
+    The inverse of ``s3_uri``. ``S3FilePath.s3_path`` is documented as bucket-relative
+    (``FileServiceS3`` resolves the bucket separately from settings) -- passing a full
+    ``s3://...`` URI into it double-prefixes the bucket into the key AND, via
+    ``Path()``'s slash-collapsing, mangles ``s3://`` into ``s3:/``, so the resulting
+    "key" never matches a real object and every existence check silently 404s. Any
+    caller building an ``S3FilePath`` from a stored full URI (e.g. a DB record's
+    ``result_uri``) must go through this first.
+    """
+    if not uri.startswith("s3://"):
+        return uri
+    return uri.removeprefix("s3://").split("/", 1)[1]
+
+
 class RayLayout:
     """v2ecoli / XArray-zarr output layout (single-nested), plus the Ray ParCa caches."""
 

@@ -237,17 +237,33 @@ class Settings(BaseSettings):
     # Provisioned by sms-cdk lib/ray-batch-stack.ts (the <prefix>-ray-mnp queue/job-def).
     ray_mnp_queue: str = ""  # Batch MNP job queue (e.g. "smscdk-ray-mnp")
     ray_mnp_job_definition: str = ""  # Batch MNP job definition (e.g. "smscdk-ray-mnp")
-    ray_num_nodes: int = 3  # MNP node count for the simulation job (1 head + N-1 workers)
-    # MNP node count for COMPOSE runs; 1 = single node (head is also worker, per the
-    # ray-batch-entrypoint --num-cpus conditional). Raise to fan seed lineages across
-    # N worker nodes for large sweeps (must be <= CDK rayBatch.numNodes).
-    compose_ray_num_nodes: int = 1
+    # MNP node count for BOTH the vEcoli ensemble sim and generic compose runs (1 head
+    # + N-1 workers; single node = head is also worker, per the ray-batch-entrypoint
+    # --num-cpus conditional). One setting, not two: compose and the ensemble sim
+    # submit through the same shared _submit_mnp() on the same MNP queue/job-def (see
+    # ComposeSimulationServiceRay.__init__ / _submit_mnp's docstring), so a single
+    # node-count knob is the only shape that can't silently drift between them again
+    # (was ray_num_nodes + compose_ray_num_nodes, two independent settings feeding the
+    # same call -- the CDK's 24-node capacity scale-up only ever updated the compose
+    # one, leaving the actually-used ensemble sim path stuck at 4; see backlog item 26).
+    # Must be <= CDK rayBatch.numNodes.
+    ray_num_nodes: int = 3
     ray_ecr_repository: str = "v2ecoli"  # ECR repo for the workload-owned Ray image (built by submit_build_image_job)
     ray_parca_mode: str = "full"  # v2ecoli-parca --mode (fast for debug, full for production)
     ray_parca_cpus: int = 8  # v2ecoli-parca --cpus
     ray_n_steps: int = 600  # default sim steps per seed (run_phase0_xarray_ensemble --n-steps)
     ray_chunk: int = 60  # default xarray emitter flush interval (--chunk)
     ray_log_s3_prefix: str = ""  # s3:// prefix for Ray session logs + report.json (RayLogS3Prefix stack output)
+
+    # --- Ray-on-Batch ARRAY dispatch settings ---
+    # Used for the canonical/batch_baseline multiseed x multigeneration sweep: one
+    # AWS Batch ARRAY job, each child an independent single-seed task (no Ray
+    # cluster) -- see sms-cdk lib/ray-batch-stack.ts's RayArrayJobDef. Kept as
+    # dedicated settings (not reused from ray_mnp_*) even though ray_array_queue's
+    # deployed value is BatchStack's vecoli-task-amd64 queue -- same convention as
+    # every other explicit-not-implicit setting in this file.
+    ray_array_queue: str = ""  # Batch Array job queue (BatchStack's vecoli-task-amd64, reused deliberately)
+    ray_array_job_definition: str = ""  # Batch Array job definition (e.g. "smscdk-ray-array")
 
     # EC2 build machine (legacy, replaced by Batch DooD builds)
     build_node_host: str = ""

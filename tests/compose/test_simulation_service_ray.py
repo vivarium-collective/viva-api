@@ -1,11 +1,20 @@
 """ComposeSimulationServiceRay unit tests (no AWS): command shape + backend flags."""
 
 import types
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from viva_api.common.models import JobBackend
 from viva_api.compose import simulation_service_ray as mod
+from viva_api.compose.container_def import ContainerizationFileRepr
+from viva_api.compose.models import (
+    ComposeSimulation,
+    ComposeSimulationRequest,
+    ComposeSimulatorVersion,
+    SimulationFileType,
+)
 from viva_api.compose.simulation_service_ray import ComposeSimulationServiceRay
 
 
@@ -115,3 +124,52 @@ def test_compose_command_omits_core_builder_when_unset(monkeypatch: pytest.Monke
     monkeypatch.setattr(mod, "get_settings", lambda: _settings(compose_pbg_core_builder=""))
     cmd = ComposeSimulationServiceRay()._compose_command("s3://b/i.pbg", "s3://b/run_pbg.py", steps=3)
     assert "PBG_CORE_BUILDER" not in cmd
+
+
+@pytest.mark.asyncio
+async def test_submit_simulation_job_uses_the_unified_ray_num_nodes_setting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression: compose used to read its OWN compose_ray_num_nodes setting,
+    independent of the ensemble sim path's ray_num_nodes -- both ultimately call the
+    same shared SimulationServiceRay._submit_mnp(), so two settings could (and did)
+    drift apart. The CDK-side 24-node capacity scale-up only ever updated
+    compose_ray_num_nodes, silently leaving the actually-used ensemble sim path stuck
+    at 4 (live-reproduced 2026-08-05: a real 1000x10 baseline job ran on 4 nodes
+    instead of 24, ~14-15 min/gen instead of ~8, had to be killed). Now there is only
+    ray_num_nodes; this proves the compose path actually reads it."""
+    monkeypatch.setattr(mod, "get_settings", lambda: _settings(ray_num_nodes=24, compose_parca_cache_dir=""))
+
+    doc_path = tmp_path / "input.pbg"
+    doc_path.write_text("{}")
+    simulation = ComposeSimulation(
+        database_id=1,
+        sim_request=ComposeSimulationRequest(
+            request_file_path=doc_path, simulation_file_type=SimulationFileType.PBG, is_batch=False
+        ),
+        simulator_version=ComposeSimulatorVersion(
+            database_id=1,
+            singularity_def=ContainerizationFileRepr(representation="Bootstrap: docker\n"),
+            singularity_def_hash="x",
+            packages=None,
+        ),
+    )
+
+    svc = ComposeSimulationServiceRay()
+    monkeypatch.setattr(svc._ray, "_ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
+
+    captured: dict[str, object] = {}
+
+    def _capture_submit_mnp(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return "batch-job-id"
+
+    monkeypatch.setattr(svc._ray, "_submit_mnp", _capture_submit_mnp)
+
+    fake_file_service = AsyncMock()
+    fake_file_service.upload_file = AsyncMock()
+
+    with patch("viva_api.dependencies.get_file_service", return_value=fake_file_service):
+        await svc.submit_simulation_job(simulation, experiment_id="exp-1")
+
+    assert captured["num_nodes"] == 24

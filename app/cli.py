@@ -461,7 +461,7 @@ def simulation_run(
     ),
     analysis_options: str | None = Option(
         default=None,
-        help='JSON string of vEcoli analysis module config. E.g. \'{"multiseed": {"ptools_rna": {"n_tp": 10}}}\'.'
+        help='JSON string of vEcoli analysis module config. E.g. \'{"single": {"ptools_rna": {"n_tp": 10}}}\'.'
         " Keys are analysis categories (single, multiseed, multigeneration, etc.);"
         " values map module names to params. If omitted, defaults depend on the simulator repo.",
     ),
@@ -771,7 +771,7 @@ def simulation_analysis(
     simulation_id: int = Argument(help="Simulation database ID (must be completed)."),
     modules: str | None = Option(
         default=None,
-        help='JSON string of analysis modules. E.g. \'{"multiseed": {"ptools_rna": {"n_tp": 10}}}\'.'
+        help='JSON string of analysis modules. E.g. \'{"single": {"ptools_rna": {"n_tp": 10}}}\'.'
         " If omitted, runs default ptools modules.",
     ),
     base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),

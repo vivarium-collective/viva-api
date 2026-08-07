@@ -135,7 +135,7 @@ fails in the most expensive way possible: after a full successful run.
 ### B5 — version not bumped · 15 min
 Branch is `0.9.23`, identical to what's deployed. Per CLAUDE.md, reusing a tag
 makes "did the rollout pull new bits?" unanswerable. Cut **0.9.24** and bump:
-`viva_api/version.py`, `pyproject.toml`, and the `sms-api` `newTag` in all four
+`sms_api/version.py`, `pyproject.toml`, and the `sms-api` `newTag` in all four
 Stanford overlays — app **and** both `-db-migration` overlays. Migration
 `e5a7c9d10f21` only runs if the db-migration overlay carries it.
 

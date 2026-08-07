@@ -50,7 +50,7 @@
 #          experiment_id (comma-separated) + tag (predefined bundle, e.g. cd1) query
 #          params (union, backwards-compatible), a GET /simulations/tags discovery
 #          endpoint, and the atlantis CLI --tag/--experiment-id + `simulation tags` (#163)
-# 0.9.19 — self-diagnosing DB reconciliation (viva_api/simulation/db_reconcile.py +
+# 0.9.19 — self-diagnosing DB reconciliation (sms_api/simulation/db_reconcile.py +
 #          scripts/db_analyze.py|db_reconcile.py): adopts legacy create_all-bootstrapped
 #          databases into Alembic (stamp matched rev -> upgrade head), upgrades managed
 #          ones, builds fresh ones from base, and refuses loudly on an inconsistent
@@ -112,17 +112,158 @@
 #          stuck at QUEUED forever even after the Batch job SUCCEEDED and results
 #          landed in S3. Now polls every NON-TERMINAL state so a job traverses
 #          queued->running->completed. Found by the same stanford-test smoke test.
-# 0.9.30 — skipped here on purpose: already used (untagged) on the deploy trunk
-#          (feat/multi-generation-dispatch, the branch actually live on
-#          sms-api-stanford prod, diverged from main by the sms_api->viva_api
-#          rename). Not retroactively reconciled onto main today - see
-#          backlog/memory "viva-api deploy-trunk reconciliation debt". Skipping
-#          the number here avoids two different tags/releases both claiming 0.9.30.
-# 0.9.31 — fix: Ray-native standalone analysis (_run_standalone_analysis_ray_native)
-#          never wrote config["analysis_options"], which ORMAnalysis.to_dto()
-#          unconditionally reads (AnalysisConfigOptions requires experiment_id) -
-#          every GET /analyses/{id} for a Ray-native analysis 500'd with a raw
-#          KeyError. Fixed to match the shape the legacy Batch/SLURM producers
-#          already write (experiment_id + each analysis domain spread as a
-#          top-level key).
-__version__ = "0.9.31"
+# 0.9.30 — set V2ECOLI_SIM_DATA on submit_ray_native_analysis()'s K8s Job spec
+#          (gap #1) so the DuckDB/cd1 analysis suite can resolve sim_data for an
+#          S3 sweep (resolve_sim_data only globs a co-located pickle for LOCAL
+#          sweep paths). Closes the deploy gap on this branch specifically —
+#          main already had this fix (PR #207); this branch (the real Stanford
+#          deploy trunk) did not.
+# 0.9.31 — skipped here on purpose: used on `main` for the same underlying fix
+#          (cherry-picked onto this branch instead of merging main's full
+#          sms_api->viva_api rename). Skipping avoids two different tags/
+#          releases both claiming 0.9.31 for genuinely different commits.
+# 0.9.32 — fix: Ray-native standalone analysis config missing analysis_options
+#          (cherry-pick of main's 0.9.31 fix onto this deploy trunk — see that
+#          release's notes for the full root cause). ORMAnalysis.to_dto() was
+#          unconditionally reading config["analysis_options"], which this
+#          producer never wrote, so GET /analyses/{id} 500'd for every
+#          Ray-native analysis.
+# 0.9.33 — fix: run_standalone_analysis()'s default ptools_* module set (used
+#          whenever --modules is omitted) nested ptools_rna/ptools_rxns/
+#          ptools_proteins under "multiseed", but those modules are registered
+#          scale="single" in v2ecoli/sms-ecoli's ANALYSIS_REGISTRY. Every
+#          default-modules dispatch failed with "is scale='single', not
+#          'multiseed'" — live-reproduced against a completed pilot simulation,
+#          5 separate K8s Job attempts over 22h, all Failed. Default now nests
+#          under "single".
+# 0.9.34 — fix: unify ray_num_nodes / compose_ray_num_nodes into a single
+#          ray_num_nodes setting. Both the ensemble sim path (simulation/
+#          simulation_service_ray.py) and the compose path (compose/
+#          simulation_service_ray.py) submit through the SAME shared
+#          SimulationServiceRay._submit_mnp() -- compose is a thin wrapper
+#          around it, not a separate subsystem -- but each read an independent
+#          node-count setting. The CDK-side 24-node capacity scale-up
+#          (sms-cdk#29) only ever updated compose_ray_num_nodes, silently
+#          leaving the actually-used ensemble sim path stuck at ray_num_nodes=4.
+#          Live-reproduced: the real 1000x10 baseline job ran on 4 nodes
+#          instead of 24 (~14-15 min/gen vs ~8 measured at low contention on
+#          the same instance type), extrapolated ~24-27h total, had to be
+#          killed. One setting now, can't drift apart again.
+# 0.9.35 — fix: Ray-native analysis status polling used the full s3://<bucket>/...
+#          result_uri directly as S3FilePath.s3_path, which is documented (and
+#          FileServiceS3 relies on it) as BUCKET-RELATIVE -- the bucket is
+#          resolved separately from settings, so the full URI double-prefixed
+#          the bucket into the key and, via Path()'s slash-collapsing, mangled
+#          "s3://" into "s3:/". The constructed key never matched a real S3
+#          object, so the manifest-exists check silently 404'd forever.
+#          Live-reproduced: atlantis analysis status kept reporting "running"
+#          20+ minutes after the K8s pod had genuinely completed with a valid
+#          manifest already in S3. New data_layout.key_from_uri() strips the
+#          s3://<bucket>/ prefix before constructing S3FilePath.
+# 0.9.36 — the multi-generation batch dispatch (previously a hardcoded CLI
+#          script, scripts/run_batch_baseline_ray.py) now builds a process-
+#          bigraph document and runs it through the SAME generic run_pbg.py
+#          runner the compose-on-Batch path already uses, instead of shelling
+#          out to a v2ecoli-specific script (backlog items 26/27 — the two Ray
+#          job-submission paths never had duplicated submission code, only a
+#          duplicated job COMMAND; this closes that gap too, since there is no
+#          longer a second execution mechanism to unify). run_pbg.py gains a
+#          --composite-id/--overrides mode (process_bigraph.composite_spec
+#          resolution, same as vivarium_workbench.lib.pbg_export already uses)
+#          alongside its existing static-file mode. Also fixes a real bug this
+#          surfaced: the multi-gen dispatch never threaded the real
+#          experiment_id through — every batch's zarr/parquet output was
+#          silently stamped with the literal "batch_baseline" regardless of
+#          the actual request.
+# 0.9.37 — fixes V2ECOLI_BASELINE_COMPOSITE_ID: was "v2ecoli.composites.
+#          ecoli_baseline", missing process_bigraph.composite_spec's own
+#          f"{fn.__module__}.{name}" id scheme's trailing ".ecoli_baseline"
+#          (the composite's decorator name=). Every 0.9.36 multi-gen dispatch
+#          failed with "no composite registered as
+#          'v2ecoli.composites.ecoli_baseline'" — never caught by the unit
+#          tests (they mock the whole registry), only by a real pilot
+#          dispatch against live GovCloud (2026-08-06). Also strengthens the
+#          two ray_backend tests that asserted this id in the constructed
+#          command: the old assertion checked a substring that the WRONG
+#          value also satisfies (it's a prefix of the real id), so it could
+#          never have caught this regression either.
+# 0.9.38 — 0.9.37 was STILL wrong: a second real pilot dispatch failed again,
+#          identical error, with the now-correctly-SHAPED id. Root cause:
+#          "ecoli_baseline" doesn't exist anywhere in sms-ecoli (the deployed
+#          simulator image) — confirmed via git show/git grep directly
+#          against commit e38f742, not the separate local v2ecoli checkout,
+#          which does have an ecoli_baseline.py but is NOT a mirror of what's
+#          actually in the image. sms-ecoli's real multi-gen composite is
+#          v2ecoli/composites/batch_baseline.py (name="batch_baseline"),
+#          whose declared parameters match this dispatch's overrides dict
+#          exactly. Renamed V2ECOLI_BASELINE_COMPOSITE_ID ->
+#          V2ECOLI_BATCH_BASELINE_COMPOSITE_ID = "v2ecoli.composites.
+#          batch_baseline.batch_baseline" (old name was itself misleading —
+#          said BASELINE, pointed nowhere real). Same two ray_backend tests
+#          updated to the real id (still exact-match, not substring).
+# 0.9.39 — Array-jobs-for-canonical dispatch: the batch_baseline multiseed x
+#          multigeneration sweep (n_seeds>1, n_generations>1, no composite
+#          override) now submits as an AWS Batch ARRAY job -- N independent
+#          single-seed children (AWS_BATCH_JOB_ARRAY_INDEX), no Ray cluster
+#          -- instead of an MNP Ray cluster. Verified directly against the
+#          deployed sms-ecoli source (never assumed from memory): base_seed
+#          is a real batch_baseline parameter, and n_seeds=1 deterministically
+#          takes v2ecoli's existing sequential no-Ray code path
+#          (_resolve_parallel), so an array child never needs Ray at all.
+#          New _submit_array/_array_sim_command/_ensure_array_job_def in
+#          simulation_service_ray.py (the last mirrors _ensure_mnp_job_def:
+#          verified against the real AWS Batch API that plain container jobs
+#          can't override the image via containerOverrides either, same
+#          limitation as MNP). New ray_array_queue/ray_array_job_definition
+#          settings. ParCa stays on MNP unchanged (single deterministic
+#          computation, no seed-parallelism); phase0/comparison-ensemble
+#          paths stay on MNP unchanged (they genuinely fan out via Ray
+#          actors). A single-seed batch_baseline request also stays on MNP
+#          (AWS Batch array jobs require size>=2, and there's no parallelism
+#          to gain from Array-izing one seed anyway). Companion sms-cdk PR
+#          adds the RayArrayJobDef job definition + batch-array-entrypoint.sh
+#          -- see the ray-vs-batch-array-jobs-investigation decision: Array
+#          jobs for canonical, Ray-MNP stays for colonies.
+# 0.9.40 — fix _submit_array's dependsOn: real AWS Batch rejected the array pilot's
+#          first live dispatch with "Job Id cannot be set when dependency type is
+#          SEQUENTIAL" -- _submit_array had copy-pasted _submit_mnp's dependsOn
+#          shape ({"jobId": jid, "type": "SEQUENTIAL"}) verbatim, but SEQUENTIAL
+#          is invalid alongside an explicit jobId for a job that also sets
+#          arrayProperties (which every array submission does). Fixed to a plain
+#          {"jobId": jid} dependency (no "type"). _submit_mnp is untouched --
+#          the MNP path has real successful dispatch history with the SEQUENTIAL
+#          shape and was never in question. The mocked unit test for the array
+#          path had asserted the buggy shape as correct (classic green-mock-as-
+#          go-signal: the mock never validates against AWS's real API rules) --
+#          strengthened to assert the correct type-less shape, with a comment
+#          explaining why so it can't be silently "simplified" back.
+# 0.9.41 — analysis auto-triggers from the dispatch DAG (backlog item 24). The Ray
+#          backend never read config.analysis_options and submitted no analysis at
+#          all, so a completed remote simulation produced zero cd1_*/ptools_*
+#          artifacts until somebody ran `atlantis simulation analysis <id>` by
+#          hand -- which defeats the "everything triggered through the Workbench"
+#          bar. submit_ecoli_simulation_job now submits a THIRD Batch job for the
+#          multi-generation batch_baseline sweep, dependsOn the sim job, running
+#          the model image's own S3-native scripts/run_standalone_analysis.py
+#          (-> v2ecoli.workflow.analysis_runner.run_analyses, the SAME function
+#          the composite's inline flush calls) over the landed sweep. So the
+#          pipeline is now one Batch dependency DAG, parca -> sim -> analysis:
+#          no poller, no webhook, no external watcher.
+#          The composite's own inline flush stays disabled ("analyses": "none")
+#          on purpose and is NOT the mechanism: the canonical dispatch is an
+#          Array job of N single-seed children with no shared filesystem, so an
+#          inline flush would run the cross-seed scales against 1/N of the sweep,
+#          N times over. The whole-sweep analysis is a gather node by nature.
+#          Modules come from the simulation's own analysis_options when the
+#          caller set any; otherwise the composite's own "applicable" keyword,
+#          which the model image expands with its own ANALYSIS_REGISTRY (sms-api
+#          has none) -- see the companion sms-ecoli PR adding that keyword to
+#          run_standalone_analysis.py. Every auto-triggered analysis is recorded
+#          in the same `analyses` table as a hand-triggered one, so
+#          GET /simulations/{id}/analyses and GET /analyses/{id}/status resolve
+#          it; a submission failure lands as a FAILED row rather than vanishing
+#          (the sim job is already running by then, so raising would orphan it).
+#          _submit_mnp gains an optional depends_type: the analysis node waits on
+#          an ARRAY parent id, which AWS Batch rejects under SEQUENTIAL; the
+#          ParCa -> sim edge keeps its live-verified SEQUENTIAL shape untouched.
+__version__ = "0.9.41"

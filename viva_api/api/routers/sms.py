@@ -416,7 +416,7 @@ async def run_simulation_analysis(
     modules: str | None = Query(
         default=None,
         description="JSON object mapping analysis domains to module configs. "
-        'E.g. \'{"multiseed": {"ptools_rna": {"n_tp": 10}}}\'.'
+        'E.g. \'{"single": {"ptools_rna": {"n_tp": 10}}}\'.'
         " If omitted, runs default ptools modules.",
     ),
 ) -> dict:  # type: ignore[type-arg]

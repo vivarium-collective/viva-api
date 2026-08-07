@@ -13,6 +13,12 @@ Data flow (no shared filesystem):
   - The simulation MNP job ``dependsOn`` the ParCa job (Batch gates it until
     ParCa SUCCEEDED), stages that cache (``RAY_STAGE_S3``), runs the ensemble,
     and captures the zarr/summary outputs to S3 (``RAY_OUT_S3``).
+  - For the multi-generation batch_baseline sweep, an ANALYSIS job ``dependsOn``
+    the simulation job and runs the ported cd1_*/ptools_* analyses over the
+    landed S3 sweep. The whole pipeline is therefore one Batch dependency DAG
+    (parca -> sim -> analysis); nothing external has to notice a completion and
+    react to it. See ``_analysis_command`` for why this is a third DAG node and
+    not the composite's own inline flush.
 
 The image is the **workload-owned**, self-contained ``v2ecoli:<sha>`` (bundles
 the AWS CLI + the Ray entrypoint), built by ``submit_build_image_job`` via a DooD
@@ -23,18 +29,25 @@ base (cloning its node properties, swapping the image to ``v2ecoli:<commit>``).
 """
 
 import copy
+import importlib.resources as _res
+import json
 import logging
 import random
+import shlex
 import string
+import tempfile
+from pathlib import Path
 from typing import Any, override
 
 import boto3
+from pydantic import BaseModel
 
 from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.hpc.local_task_service import LocalTaskService
 from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.common.simulator_defaults import DEFAULT_BRANCH, DEFAULT_REPO
 from viva_api.common.storage import data_layout
+from viva_api.common.storage.file_paths import S3FilePath
 from viva_api.config import get_settings
 from viva_api.simulation import batch_build
 from viva_api.simulation.database_service import DatabaseService
@@ -52,8 +65,42 @@ from viva_api.simulation.models import (
     VecoliSource,
 )
 from viva_api.simulation.simulation_service import SimulationService
+from viva_api.simulation.tables_orm import AnalysisStatusDB
 
 logger = logging.getLogger(__name__)
+
+# The generic runner every Ray-Batch job (ensemble or compose) executes. Read once as a
+# resource (same source viva_api.compose.simulation_service_ray stages for compose jobs) so
+# the multi-generation batch path below dispatches through the identical mechanism instead
+# of a v2ecoli-specific CLI script — see backlog items 26/27.
+_RUNNER_SRC = (_res.files("viva_api.compose") / "run_pbg.py").read_text()
+
+# Registered composite id (process_bigraph.composite_spec) for the multi-generation
+# batch orchestrator, and the workspace core-builder that resolves its registered
+# types (e.g. "inplace_dict"). Both are inherent facts about what THIS endpoint
+# dispatches — this file already hardcodes v2ecoli-specific paths (V2ECOLI_DIR,
+# PARCA_CACHE_DIR below); what item 27 removes is the bespoke EXECUTION MECHANISM (a
+# CLI script), not this identity.
+#
+# The id is `f"{fn.__module__}.{name}"` (process_bigraph.composite_spec's own
+# registration scheme, mirrored by pbg_superpowers.composite_generator). Two real
+# pilot dispatches (2026-08-06) failed chasing wrong values for this constant before
+# it was verified directly against the DEPLOYED sms-ecoli image (commit e38f742,
+# `git show`/`git grep` against that exact commit — never the local v2ecoli
+# checkout, a separate, structurally-diverged repo that is NOT a mirror of what's
+# actually in this simulator image):
+#   1st: "v2ecoli.composites.ecoli_baseline" — missing the id scheme's trailing
+#     name-repeat.
+#   2nd: "...ecoli_baseline.ecoli_baseline" — correctly SHAPED, but sms-ecoli has
+#     no "ecoli_baseline" module at all (zero matches anywhere in that repo at the
+#     deployed commit) — it was chasing a module name from a different codebase.
+# The real module is v2ecoli/composites/batch_baseline.py: decorated function
+# `batch_baseline`, name="batch_baseline". Its declared parameters (n_seeds,
+# n_generations, cache_dir, out_dir, experiment_id, analyses, parallel) match the
+# `overrides` dict below exactly. sms-ecoli's separate baseline.py is single-run
+# only (no n_seeds/n_generations param at all) — not a candidate for this path.
+V2ECOLI_BATCH_BASELINE_COMPOSITE_ID = "v2ecoli.composites.batch_baseline.batch_baseline"
+V2ECOLI_CORE_BUILDER = "v2ecoli.core:build_core"
 
 # Absolute paths inside the v2ecoli Ray image (WORKDIR=/app/v2ecoli). The
 # entrypoint runs RAY_JOB_CMD on the head; v2ecoli reads the cache from
@@ -62,12 +109,52 @@ V2ECOLI_DIR = "/app/v2ecoli"
 PARCA_CACHE_DIR = f"{V2ECOLI_DIR}/out/cache"
 PARCA_SIMDATA_DIR = f"{V2ECOLI_DIR}/out/sim_data"
 SIM_OUT_DIR = f"{V2ECOLI_DIR}/.pbg/runs/phase0-xarray"
+# The analysis DAG node writes its outputs straight to S3 (see _analysis_command),
+# so this local dir normally never exists and the entrypoint's RAY_OUT_DIR sync is a
+# documented no-op ("no <dir>; nothing to upload"). It is still declared so anything
+# the analysis does drop locally lands under the run's own S3 prefix.
+ANALYSIS_OUT_DIR = f"{V2ECOLI_DIR}/.pbg/runs/analysis"
 # Where the head writes the entrypoint's metrics report (uploaded as report.json).
 REPORT_PATH = "/tmp/report.json"  # noqa: S108
+
+# The analysis scales a v2ecoli ``analysis_options`` map can carry. Everything else
+# in that (extra="allow") model — ``cpus``, ``memory_gb``, vEcoli-Nextflow-only keys —
+# is not a scale and must not be forwarded as one.
+ANALYSIS_SCALES = ("single", "multidaughter", "multigeneration", "multiseed", "multivariant")
+# The composite's own "every analysis this batch's shape has the cells for" keyword
+# (v2ecoli.steps.batch_baseline_runner.build_analysis_options). Used when the caller
+# named no modules: sms-api runs outside the model image and has no ANALYSIS_REGISTRY
+# to enumerate, so it asks the image to resolve the set with its own resolver rather
+# than carrying a second, drift-prone copy of the list.
+APPLICABLE_ANALYSES = "applicable"
 
 
 def _rand_suffix() -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+
+
+def analysis_modules_for(config: Any) -> dict[str, dict[str, Any]] | str:
+    """The analyses the analysis DAG node should run for this simulation.
+
+    Reads the simulation's OWN ``config.analysis_options`` — the field the run
+    endpoint already populates from the caller's ``--analysis-options`` (and that
+    the workbench already fills from a study's ``spec.analyses``), and which this
+    backend previously ignored entirely, so a remote dispatch's configured
+    analyses never ran.
+
+    Only real scale keys are forwarded, and only non-empty ones: the endpoint's
+    own fallback default is ``{"multiseed": {}}`` — "no modules named", not "run
+    nothing" — which resolves to the ``applicable`` keyword like any other
+    unset case.
+    """
+    options: Any = getattr(config, "analysis_options", None)
+    raw: dict[str, Any] = options.model_dump() if isinstance(options, BaseModel) else dict(options or {})
+    modules = {
+        scale: dict(entries)
+        for scale, entries in raw.items()
+        if scale in ANALYSIS_SCALES and isinstance(entries, dict) and entries
+    }
+    return modules or APPLICABLE_ANALYSES
 
 
 def _is_upstream_vecoli(composite: CompositeEngine | None) -> bool:
@@ -159,6 +246,54 @@ class SimulationServiceRay(SimulationService):
         logger.info("Registered Ray MNP job def %s:%s for image %s", name, response["revision"], image)
         return f"{name}:{response['revision']}"
 
+    def _ensure_array_job_def(self, image: str, commit: str) -> str:
+        """Return an Array job definition (name:revision) whose image is the commit's image.
+
+        Verified directly against the real AWS Batch API (``aws batch submit-job
+        help``): a plain container job's ``--container-overrides`` has no ``image``
+        field (only EKS jobs' ``eksPropertiesOverride`` does) -- container jobs
+        can't override the image per-submission either, same limitation as MNP,
+        just for a different reason. So, symmetric with ``_ensure_mnp_job_def``,
+        derive a per-commit job-def revision: describe the CDK base job def
+        (``ray_array_job_definition``: roles, resources, retry strategy, log
+        config), swap ONLY the container image to ``image``, and register it as
+        ``<base>-<commit>``. An existing active revision already pointing at this
+        image is reused, so resubmits don't churn revisions.
+        """
+        settings = get_settings()
+        batch = self._batch()
+        name = f"{settings.ray_array_job_definition}-{commit}"
+
+        existing = batch.describe_job_definitions(jobDefinitionName=name, status="ACTIVE")
+        for jd in existing.get("jobDefinitions", []):
+            if jd.get("containerProperties", {}).get("image") == image:
+                return f"{name}:{jd['revision']}"
+
+        base = batch.describe_job_definitions(jobDefinitionName=settings.ray_array_job_definition, status="ACTIVE")
+        base_defs = base.get("jobDefinitions", [])
+        if not base_defs:
+            raise RuntimeError(f"Base Array job definition {settings.ray_array_job_definition!r} not found")
+        base_def = max(base_defs, key=lambda d: d["revision"])
+        container_properties = copy.deepcopy(base_def["containerProperties"])
+        container_properties["image"] = image
+
+        register_kwargs: dict[str, Any] = {
+            "jobDefinitionName": name,
+            "type": "container",
+            "containerProperties": container_properties,
+        }
+        # Carry forward everything else the CDK base job def sets (retryStrategy,
+        # platformCapabilities) -- register_job_definition does NOT inherit these
+        # from an existing revision, it only creates exactly what's passed in.
+        if base_def.get("retryStrategy"):
+            register_kwargs["retryStrategy"] = base_def["retryStrategy"]
+        if base_def.get("platformCapabilities"):
+            register_kwargs["platformCapabilities"] = base_def["platformCapabilities"]
+
+        response = batch.register_job_definition(**register_kwargs)
+        logger.info("Registered Array job def %s:%s for image %s", name, response["revision"], image)
+        return f"{name}:{response['revision']}"
+
     def _submit_mnp(
         self,
         *,
@@ -171,6 +306,7 @@ class SimulationServiceRay(SimulationService):
         stage_s3: str | None = None,
         stage_dir: str | None = None,
         depends_on: list[str] | None = None,
+        depends_type: str | None = "SEQUENTIAL",
         tags: dict[str, str] | None = None,
     ) -> str:
         """Submit a Ray MNP job via boto3, mirroring sms-cdk scripts/ray_batch_submit.sh.
@@ -181,6 +317,13 @@ class SimulationServiceRay(SimulationService):
         zarr to S3. Only ``RAY_JOB_CMD`` (the driver) and ``RAY_REPORT_PATH`` are
         head-only. So the shared env goes on node 0 (``0:0``) and, when there are
         workers, also on the worker range (``1:``). Returns the AWS Batch job id.
+
+        ``depends_type`` selects the ``dependsOn`` shape. The default keeps the
+        long-standing ParCa→sim edge byte-identical (``{"jobId": …, "type":
+        "SEQUENTIAL"}``, live-verified). Pass ``None`` for a plain ``{"jobId": …}``
+        wait — required when the DEPENDENCY is an Array job, whose parent id AWS
+        Batch will not accept under a SEQUENTIAL type (real API rejection, hit live
+        2026-08-06; see ``_submit_array``).
         """
         settings = get_settings()
         # Per-node knobs every node acts on (stage cache in, sync results out, ship logs).
@@ -223,7 +366,9 @@ class SimulationServiceRay(SimulationService):
             "nodeOverrides": node_overrides,
         }
         if depends_on:
-            kwargs["dependsOn"] = [{"jobId": jid, "type": "SEQUENTIAL"} for jid in depends_on]
+            kwargs["dependsOn"] = [
+                ({"jobId": jid, "type": depends_type} if depends_type else {"jobId": jid}) for jid in depends_on
+            ]
         if tags:
             # Cost-allocation tags: propagate to the underlying ECS tasks so the
             # payer account's Cost Explorer can attribute compute per run/engine.
@@ -238,6 +383,72 @@ class SimulationServiceRay(SimulationService):
             batch_job_id,
             num_nodes,
             settings.ray_mnp_queue,
+        )
+        return batch_job_id
+
+    def _submit_array(
+        self,
+        *,
+        job_name: str,
+        job_definition: str,
+        array_size: int,
+        array_job_cmd: str,
+        out_s3: str,
+        out_dir: str,
+        stage_s3: str | None = None,
+        stage_dir: str | None = None,
+        depends_on: list[str] | None = None,
+        tags: dict[str, str] | None = None,
+    ) -> str:
+        """Submit an AWS Batch ARRAY job: N independent single-seed children, no
+        Ray cluster (see scripts/batch-array-entrypoint.sh, sms-cdk). Every child
+        gets the SAME containerOverrides -- Batch injects only
+        AWS_BATCH_JOB_ARRAY_INDEX differently per child, which ``array_job_cmd``
+        resolves at container-start time (see ``_array_sim_command``). Env names
+        are ``ARRAY_*`` (not ``RAY_*``) so the two dispatch paths' env vars can
+        never be cross-wired if a caller mixes them up. Returns the AWS Batch job
+        id (the array parent id; child status is queried per-index if needed).
+        """
+        settings = get_settings()
+        env: list[dict[str, str]] = [
+            {"name": "ARRAY_JOB_CMD", "value": array_job_cmd},
+            {"name": "ARRAY_OUT_DIR", "value": out_dir},
+            {"name": "ARRAY_OUT_S3", "value": out_s3},
+            {"name": "ARRAY_REPORT_PATH", "value": REPORT_PATH},
+        ]
+        if stage_s3 and stage_dir:
+            env.append({"name": "ARRAY_STAGE_S3", "value": stage_s3})
+            env.append({"name": "ARRAY_STAGE_DIR", "value": stage_dir})
+        if settings.ray_log_s3_prefix:
+            env.append({"name": "ARRAY_LOG_S3_PREFIX", "value": settings.ray_log_s3_prefix})
+
+        kwargs: dict[str, Any] = {
+            "jobName": job_name,
+            "jobQueue": settings.ray_array_queue,
+            "jobDefinition": job_definition,
+            "arrayProperties": {"size": array_size},
+            "containerOverrides": {"environment": env},
+        }
+        if depends_on:
+            # Plain job dependency (no "type") -- NOT "SEQUENTIAL", unlike _submit_mnp above.
+            # AWS Batch rejects {"jobId": ..., "type": "SEQUENTIAL"} for a job that also sets
+            # arrayProperties: real error, hit live 2026-08-06, "Job Id cannot be set when
+            # dependency type is SEQUENTIAL". SEQUENTIAL is for an array job depending on
+            # itself/other array-shaped dependents, not a targeted jobId wait -- it doesn't
+            # apply here, we just need "don't start any array child until ParCa succeeds".
+            kwargs["dependsOn"] = [{"jobId": jid} for jid in depends_on]
+        if tags:
+            kwargs["tags"] = tags
+            kwargs["propagateTags"] = True
+
+        response = self._batch().submit_job(**kwargs)
+        batch_job_id = str(response["jobId"])
+        logger.info(
+            "Submitted Batch Array job %s (id=%s, size=%d) to %s",
+            job_name,
+            batch_job_id,
+            array_size,
+            settings.ray_array_queue,
         )
         return batch_job_id
 
@@ -285,6 +496,31 @@ class SimulationServiceRay(SimulationService):
             f" --copy-to {PARCA_CACHE_DIR}"
         )
 
+    async def _stage_runner(self, experiment_id: str) -> str:
+        """Upload the generic run_pbg.py runner to S3 for this experiment; return its URI.
+
+        Mirrors ``viva_api.compose.simulation_service_ray.ComposeSimulationServiceRay``'s
+        own runner staging exactly (same source, same per-experiment S3 layout) -- the
+        multi-generation batch path below downloads and runs it the identical way a
+        compose job does. Staged (not embedded via heredoc) because AWS Batch caps a
+        container override command at 8192 bytes.
+        """
+        from viva_api.dependencies import get_file_service
+
+        file_service = get_file_service()
+        if file_service is None:
+            raise RuntimeError("FileService not initialized; cannot stage run_pbg.py to S3.")
+        exp_prefix = data_layout.RayLayout.experiment_prefix(experiment_id)
+        runner_key = f"{exp_prefix}/run_pbg.py"
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tmp:
+            tmp.write(_RUNNER_SRC)
+            runner_local = tmp.name
+        try:
+            await file_service.upload_file(Path(runner_local), S3FilePath(s3_path=Path(runner_key)))
+        finally:
+            Path(runner_local).unlink(missing_ok=True)
+        return data_layout.s3_uri(runner_key)
+
     def _sim_command(
         self,
         n_seeds: int,
@@ -296,6 +532,8 @@ class SimulationServiceRay(SimulationService):
         max_generations: int | None = None,
         vecoli_source: VecoliSource | None = None,
         n_generations: int = 1,
+        experiment_id: str | None = None,
+        runner_s3_uri: str | None = None,
     ) -> str:
         # When ``composite`` is set, run the two-engine comparison driver — both
         # engines (v2ecoli port + vEcoli imported via build_composite_native)
@@ -325,14 +563,256 @@ class SimulationServiceRay(SimulationService):
             # Real multi-generation lineage (cell division across generations) --
             # scripts/run_phase0_xarray_ensemble.py below silently ignores this
             # entirely and only ever runs one generation per seed.
+            #
+            # Dispatched as a registered process-bigraph composite (sms-ecoli's
+            # v2ecoli/composites/batch_baseline.py, which wires in BatchBaselineRunner
+            # directly — a dedicated always-batch-shaped composite, not a conditional
+            # branch of the single-run baseline.py) run through the SAME generic
+            # run_pbg.py every compose-on-Batch job already uses — not a
+            # v2ecoli-specific CLI script. See backlog items 26/27: this is the one
+            # execution mechanism both the ensemble endpoint and the generic compose
+            # endpoint dispatch through; only the composite id + overrides differ per
+            # caller.
+            if not experiment_id:
+                raise RuntimeError("experiment_id is required for multi-generation batch dispatch")
+            if not runner_s3_uri:
+                raise RuntimeError(
+                    "runner_s3_uri is required for multi-generation batch dispatch "
+                    "(the generic run_pbg.py runner must be staged to S3 first)"
+                )
+            overrides = {
+                "n_seeds": int(n_seeds),
+                "n_generations": int(n_generations),
+                "cache_dir": PARCA_CACHE_DIR,
+                "out_dir": SIM_OUT_DIR,
+                "experiment_id": experiment_id,
+                # The analysis DAG node (see _analysis_command) runs the same
+                # analysis_runner.run_analyses() over the LANDED S3 sweep once this
+                # job has succeeded -- skip the composite's own inline flush here so
+                # the analyses run exactly once, over the whole sweep.
+                "analyses": "none",
+                "parallel": "ray",
+            }
+            env = f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER}"
             return (
-                f"cd {V2ECOLI_DIR} && python scripts/run_batch_baseline_ray.py"
-                f" --n-seeds {n_seeds} --n-generations {int(n_generations)}"
+                f"cd {V2ECOLI_DIR}"
+                f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
+                f" && {env} python /tmp/run_pbg.py"
+                f" --composite-id {V2ECOLI_BATCH_BASELINE_COMPOSITE_ID}"
+                f" --overrides {shlex.quote(json.dumps(overrides))} -n 1"
             )
         return (
             f"cd {V2ECOLI_DIR} && python scripts/run_phase0_xarray_ensemble.py"
             f" --n-seeds {n_seeds} --n-steps {n_steps} --chunk {chunk} --parallel ray"
         )
+
+    def _array_sim_command(
+        self,
+        n_generations: int,
+        experiment_id: str,
+        runner_s3_uri: str,
+        base_seed_offset: int = 0,
+    ) -> str:
+        """Build one Array child's run_pbg.py command (the batch_baseline path).
+
+        Every child runs exactly ONE seed (n_seeds=1), which v2ecoli's
+        ``_resolve_parallel()`` deterministically routes to the sequential
+        no-Ray code path (``len(branches) > 1`` is False for a 1-seed,
+        no-variants request, regardless of the ``parallel`` setting) -- so an
+        array child never needs a Ray cluster at all, verified directly
+        against v2ecoli/workflow/run.py at the deployed commit.
+
+        Each child's real seed is ``base_seed_offset + AWS_BATCH_JOB_ARRAY_INDEX``
+        -- only known once the container starts (AWS Batch injects an identical
+        containerOverrides.environment into every child; only
+        AWS_BATCH_JOB_ARRAY_INDEX itself differs per child), so it can't be
+        computed at submission time. The merge happens via a small ``python3 -c``
+        invocation at container-start: BASE_SEED is arithmetic-only (digits, no
+        quoting concerns); the static overrides are shlex-quoted (safe
+        regardless of what ``experiment_id`` contains -- it is a caller-supplied,
+        unconstrained string) and passed as argv, never string-spliced into the
+        JSON -- json.loads/json.dumps do the merge exactly once, so there is no
+        hand-rolled escaping to get wrong.
+        """
+        overrides = {
+            "n_seeds": 1,
+            "n_generations": int(n_generations),
+            "cache_dir": PARCA_CACHE_DIR,
+            "out_dir": SIM_OUT_DIR,
+            "experiment_id": experiment_id,
+            # A child sees only ITS OWN seed, so an inline flush here would run the
+            # cross-seed scales against one seed, N times over. The whole-sweep
+            # analysis is the DAG's third node instead -- see _analysis_command.
+            "analyses": "none",
+            "parallel": "",
+        }
+        static_overrides_json = shlex.quote(json.dumps(overrides))
+        merge_py = 'import json,sys; d=json.loads(sys.argv[1]); d["base_seed"]=int(sys.argv[2]); print(json.dumps(d))'
+        env = f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER}"
+        return (
+            f"BASE_SEED=$(({int(base_seed_offset)} + AWS_BATCH_JOB_ARRAY_INDEX))"
+            f" && OVERRIDES=$(python3 -c '{merge_py}' {static_overrides_json} \"$BASE_SEED\")"
+            f" && cd {V2ECOLI_DIR}"
+            f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
+            f" && {env} python /tmp/run_pbg.py"
+            f" --composite-id {V2ECOLI_BATCH_BASELINE_COMPOSITE_ID}"
+            f' --overrides "$OVERRIDES" -n 1'
+        )
+
+    def _analysis_command(
+        self,
+        *,
+        experiment_id: str,
+        n_seeds: int,
+        n_generations: int,
+        modules: dict[str, dict[str, Any]] | str,
+        analysis_name: str,
+        commit: str,
+    ) -> str:
+        """Build the analysis DAG node's command: the ported analyses over the S3 sweep.
+
+        WHY A THIRD DAG NODE, not the composite's own inline flush. The composite
+        (``v2ecoli.composites.batch_baseline``) does ship a post-simulation flush that
+        runs exactly these analyses, and the sim overrides deliberately disable it
+        (``"analyses": "none"``). That is not a workaround for a broken flush — it is
+        forced by the sweep's SHAPE on this backend:
+
+          * The canonical dispatch is an AWS Batch ARRAY job: N independent children,
+            one seed each, no shared filesystem. Each child's composite run sees 1/N
+            of the sweep, so an inline flush there would run the cross-seed scales
+            (multiseed/multivariant) against a single seed — N times over, racing on
+            the same output prefix. The sweep only becomes whole once every child's
+            output has landed in S3.
+          * The whole-sweep analysis is therefore a GATHER node, and the DAG edge that
+            expresses "after every child succeeded" is the same Batch ``dependsOn``
+            the ParCa→sim edge already uses. No poller, no webhook, no external
+            watcher: completion is an edge in the pipeline graph.
+
+        The node itself reuses the model image's existing, S3-native entrypoint
+        (``scripts/run_standalone_analysis.py`` → ``v2ecoli.workflow.analysis_runner.
+        run_analyses``) — the SAME function the composite's inline flush calls, reading
+        the hive-parquet in place through DuckDB/httpfs. No new analysis logic.
+
+        ``V2ECOLI_SIM_DATA`` points at the commit's ParCa cache in S3 because an S3
+        sweep has no co-located pickle to glob (``analysis_runner.resolve_sim_data``
+        only globs local paths) — identical to how ``SimulationServiceK8s.
+        submit_ray_native_analysis`` provisions the same script. Both this job and the
+        ParCa job derive that URI from the commit independently, so it needs no
+        hand-off plumbing.
+        """
+        out_uri = self._results_s3_uri(experiment_id).rstrip("/")
+        sim_data_uri = f"{data_layout.RayLayout.parca_cache_uri(commit)}simData.cPickle"
+        modules_arg = modules if isinstance(modules, str) else json.dumps(modules)
+        # --n-generations exists only to let the image resolve the "applicable"
+        # keyword; an explicit module mapping doesn't need it. Emitting it only in
+        # the keyword case keeps the explicit path runnable against ANY image that
+        # already ships the script, so a simulator built before the keyword landed
+        # still gets its configured analyses instead of dying on an unrecognized
+        # argument. Only the keyword default requires the newer image.
+        gens = f" --n-generations {int(n_generations)}" if isinstance(modules, str) else ""
+        return (
+            f"cd {V2ECOLI_DIR}"
+            f" && V2ECOLI_SIM_DATA={shlex.quote(sim_data_uri)}"
+            f" python scripts/run_standalone_analysis.py"
+            f" --out-uri {shlex.quote(out_uri)}"
+            f" --n-seeds {int(n_seeds)}"
+            f"{gens}"
+            f" --modules {shlex.quote(modules_arg)}"
+            f" --analysis-name {shlex.quote(analysis_name)}"
+        )
+
+    async def _submit_analysis_job(
+        self,
+        *,
+        simulation: Simulation,
+        database_service: DatabaseService,
+        job_definition: str,
+        commit: str,
+        sim_job_id: str,
+        n_seeds: int,
+        n_generations: int,
+        depends_type: str | None,
+        tags: dict[str, str],
+    ) -> str | None:
+        """Submit the analysis DAG node and record it, returning its Batch job id.
+
+        The analysis is tracked in the SAME ``analyses`` table (and therefore the same
+        ``GET /analyses/{id}/status`` S3-manifest probe) the on-demand
+        ``POST /simulations/{id}/analysis`` trigger already writes to — an
+        auto-triggered analysis must be exactly as discoverable as a hand-triggered
+        one, not an invisible side effect.
+
+        Best-effort by design, but never SILENT: the simulation job is already
+        submitted and running by the time this is reached, so raising would orphan a
+        real, expensive job. A submission failure is logged AND written to the
+        analyses table as a FAILED row, so "the analysis never ran" is a visible state
+        rather than an absence.
+        """
+        experiment_id = simulation.config.experiment_id
+        analysis_name = f"analysis-{experiment_id[:20]}-{_rand_suffix()}"
+        out_uri = self._results_s3_uri(experiment_id).rstrip("/")
+        result_uri = f"{out_uri}/analyses/{analysis_name}"
+        modules = analysis_modules_for(simulation.config)
+        params: dict[str, Any] = {
+            "out_uri": out_uri,
+            "n_seeds": int(n_seeds),
+            "n_generations": int(n_generations),
+            "modules": modules,
+            "analysis_name": analysis_name,
+            "trigger": "dispatch-dag",
+            # ORMAnalysis.to_dto() unconditionally reads config["analysis_options"]
+            # (AnalysisConfigOptions requires experiment_id) -- mirror the shape the
+            # existing producers write so to_dto() doesn't KeyError.
+            "analysis_options": {
+                "experiment_id": [experiment_id],
+                **(modules if isinstance(modules, dict) else {}),
+            },
+        }
+        try:
+            analysis_job_id = self._submit_mnp(
+                job_name=f"ray-analysis-{experiment_id}-{_rand_suffix()}"[:128],
+                job_definition=job_definition,
+                num_nodes=1,
+                ray_job_cmd=self._analysis_command(
+                    experiment_id=experiment_id,
+                    n_seeds=n_seeds,
+                    n_generations=n_generations,
+                    modules=modules,
+                    analysis_name=analysis_name,
+                    commit=commit,
+                ),
+                out_s3=self._results_s3_uri(experiment_id),
+                out_dir=ANALYSIS_OUT_DIR,
+                depends_on=[sim_job_id],
+                depends_type=depends_type,
+                tags=tags,
+            )
+        except Exception as e:
+            logger.exception("Analysis DAG node submission failed for %s", experiment_id)
+            await database_service.record_analysis(
+                experiment_id=experiment_id,
+                n_tp=None,
+                status=AnalysisStatusDB.FAILED,
+                config=params,
+                name=analysis_name,
+                simulation_id=simulation.database_id,
+                backend="ray",
+                result_uri=result_uri,
+                error_message=f"analysis job submission failed: {type(e).__name__}: {e}",
+            )
+            return None
+        await database_service.record_analysis(
+            experiment_id=experiment_id,
+            n_tp=None,
+            status=AnalysisStatusDB.COMPUTING,
+            config=params,
+            name=analysis_name,
+            simulation_id=simulation.database_id,
+            backend="ray",
+            job_id_ext=str(analysis_job_id),
+            result_uri=result_uri,
+        )
+        return analysis_job_id
 
     @override
     async def get_latest_commit_hash(
@@ -476,6 +956,11 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         cache_s3 = self._upstream_cache_s3_uri(commit) if is_upstream else self._cache_s3_uri(commit)
         parca_command = self._upstream_parca_command() if is_upstream else self._parca_command()
 
+        # The multi-generation batch path dispatches through the generic run_pbg.py
+        # runner (see _sim_command) instead of a hardcoded CLI script, so it alone
+        # needs the runner staged to S3 first. Every other path is unaffected.
+        runner_s3_uri = await self._stage_runner(experiment_id) if n_generations > 1 else None
+
         # Cost-allocation tags (propagate to ECS tasks → payer-account Cost
         # Explorer attributes spend per run/engine/condition). Values must be
         # tag-safe strings.
@@ -499,35 +984,103 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             tags={**base_tags, "Phase": "parca"},
         )
 
-        # 2. Simulation ensemble (N nodes), gated on ParCa, staging the cache.
-        sim_job_id = self._submit_mnp(
-            job_name=f"ray-sim-{experiment_id}-{_rand_suffix()}"[:128],
-            job_definition=job_def,
-            num_nodes=settings.ray_num_nodes,
-            ray_job_cmd=self._sim_command(
+        # 2. Simulation ensemble, gated on ParCa, staging the cache.
+        #
+        # The canonical batch_baseline sweep (n_seeds independent seeds, only
+        # the within-seed generation chain is sequential -- verified via
+        # v2ecoli.workflow.run._resolve_parallel and run_seeds_parallel's pure
+        # ray.remote() fan-out, zero actors/shared state) is Array-jobs-shaped:
+        # dispatch it as N independent single-seed children instead of an MNP
+        # Ray cluster. Everything else (phase0 ensemble, comparison-ensemble)
+        # keeps using MNP -- those DO fan out via Ray actors internally. A
+        # single-seed batch_baseline request (n_seeds<=1) also stays on MNP:
+        # AWS Batch array jobs require size>=2, and there's no parallelism to
+        # gain from Array-izing a single seed anyway. See the ray-vs-batch-
+        # array-jobs-investigation decision: Array jobs for canonical, Ray-MNP
+        # stays for colonies/anything needing real Ray coordination.
+        is_array_eligible = composite is None and n_generations > 1 and int(n_seeds) > 1
+
+        if is_array_eligible:
+            if not runner_s3_uri:
+                raise RuntimeError("runner_s3_uri is required for batch_baseline array dispatch")
+            array_job_def = self._ensure_array_job_def(self._image_uri(commit), commit)
+            sim_job_id = self._submit_array(
+                job_name=f"array-sim-{experiment_id}-{_rand_suffix()}"[:128],
+                job_definition=array_job_def,
+                array_size=int(n_seeds),
+                array_job_cmd=self._array_sim_command(n_generations, str(experiment_id), runner_s3_uri),
+                out_s3=self._results_s3_uri(experiment_id),
+                out_dir=SIM_OUT_DIR,
+                stage_s3=cache_s3,
+                stage_dir=PARCA_CACHE_DIR,
+                depends_on=[parca_job_id],
+                tags={**base_tags, "Phase": "sim"},
+            )
+            logger.info(
+                "Array simulation %s: parca job %s -> sim job %s (%d array children)",
+                experiment_id,
+                parca_job_id,
+                sim_job_id,
                 int(n_seeds),
-                int(n_steps),
-                int(chunk),
-                composite=composite,
-                condition=condition,
-                max_generations=max_generations,
-                vecoli_source=vecoli_source,
+            )
+        else:
+            sim_job_id = self._submit_mnp(
+                job_name=f"ray-sim-{experiment_id}-{_rand_suffix()}"[:128],
+                job_definition=job_def,
+                num_nodes=settings.ray_num_nodes,
+                ray_job_cmd=self._sim_command(
+                    int(n_seeds),
+                    int(n_steps),
+                    int(chunk),
+                    composite=composite,
+                    condition=condition,
+                    max_generations=max_generations,
+                    vecoli_source=vecoli_source,
+                    n_generations=n_generations,
+                    experiment_id=str(experiment_id),
+                    runner_s3_uri=runner_s3_uri,
+                ),
+                out_s3=self._results_s3_uri(experiment_id),
+                out_dir=SIM_OUT_DIR,
+                stage_s3=cache_s3,
+                stage_dir=PARCA_CACHE_DIR,
+                depends_on=[parca_job_id],
+                tags={**base_tags, "Phase": "sim"},
+            )
+            logger.info(
+                "Ray simulation %s: parca job %s -> sim job %s (%d nodes)",
+                experiment_id,
+                parca_job_id,
+                sim_job_id,
+                settings.ray_num_nodes,
+            )
+
+        # 3. Analysis, gated on the simulation. The multi-generation batch_baseline
+        #    sweep is the shape that emits the hive-parquet the ported cd1_*/ptools_*
+        #    analyses read, so it is the shape that gets the third DAG node. The
+        #    comparison-ensemble and phase0 paths write no such sweep and are
+        #    deliberately untouched.
+        #
+        #    An Array sim job's parent id cannot be waited on under a SEQUENTIAL
+        #    dependency type (real AWS Batch rejection) -- plain {"jobId": …} there.
+        if composite is None and n_generations > 1:
+            analysis_job_id = await self._submit_analysis_job(
+                simulation=ecoli_simulation,
+                database_service=database_service,
+                job_definition=job_def,
+                commit=commit,
+                sim_job_id=sim_job_id,
+                n_seeds=int(n_seeds),
                 n_generations=n_generations,
-            ),
-            out_s3=self._results_s3_uri(experiment_id),
-            out_dir=SIM_OUT_DIR,
-            stage_s3=cache_s3,
-            stage_dir=PARCA_CACHE_DIR,
-            depends_on=[parca_job_id],
-            tags={**base_tags, "Phase": "sim"},
-        )
-        logger.info(
-            "Ray simulation %s: parca job %s -> sim job %s (%d nodes)",
-            experiment_id,
-            parca_job_id,
-            sim_job_id,
-            settings.ray_num_nodes,
-        )
+                depends_type=None if is_array_eligible else "SEQUENTIAL",
+                tags={**base_tags, "Phase": "analysis"},
+            )
+            logger.info(
+                "Ray simulation %s: sim job %s -> analysis job %s",
+                experiment_id,
+                sim_job_id,
+                analysis_job_id,
+            )
         return JobId.ray(sim_job_id)
 
     @override
