@@ -703,13 +703,20 @@ class SimulationServiceRay(SimulationService):
         out_uri = self._results_s3_uri(experiment_id).rstrip("/")
         sim_data_uri = f"{data_layout.RayLayout.parca_cache_uri(commit)}simData.cPickle"
         modules_arg = modules if isinstance(modules, str) else json.dumps(modules)
+        # --n-generations exists only to let the image resolve the "applicable"
+        # keyword; an explicit module mapping doesn't need it. Emitting it only in
+        # the keyword case keeps the explicit path runnable against ANY image that
+        # already ships the script, so a simulator built before the keyword landed
+        # still gets its configured analyses instead of dying on an unrecognized
+        # argument. Only the keyword default requires the newer image.
+        gens = f" --n-generations {int(n_generations)}" if isinstance(modules, str) else ""
         return (
             f"cd {V2ECOLI_DIR}"
             f" && V2ECOLI_SIM_DATA={shlex.quote(sim_data_uri)}"
             f" python scripts/run_standalone_analysis.py"
             f" --out-uri {shlex.quote(out_uri)}"
             f" --n-seeds {int(n_seeds)}"
-            f" --n-generations {int(n_generations)}"
+            f"{gens}"
             f" --modules {shlex.quote(modules_arg)}"
             f" --analysis-name {shlex.quote(analysis_name)}"
         )

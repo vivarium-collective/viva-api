@@ -459,6 +459,16 @@ class TestAnalysisCommand:
         assert tokens[tokens.index("--out-uri") + 1].endswith(hostile)
         assert "touch /tmp/analysis-command-canary" not in shlex.split(cmd)
 
+    def test_n_generations_is_emitted_only_for_the_applicable_keyword(self) -> None:
+        """--n-generations exists solely to resolve `applicable`, and is the ONE
+        flag a simulator image built before that keyword landed would reject
+        (argparse: unrecognized argument). Emitting it only in the keyword case
+        keeps an explicit module mapping runnable against ANY image that already
+        ships the script, so a pre-existing build still gets its configured
+        analyses instead of failing the whole node."""
+        assert "--n-generations" in self._cmd(modules="applicable")
+        assert "--n-generations" not in self._cmd(modules={"multiseed": {"cd1_fluxomics": {}}})
+
 
 @pytest.mark.asyncio
 class TestAnalysisDagNode:
@@ -508,7 +518,7 @@ class TestAnalysisDagNode:
         env = _env_of(analysis_call)
         assert "run_standalone_analysis.py" in env["RAY_JOB_CMD"]
         assert f"--out-uri s3://mybucket/vecoli-output/{experiment_id}" in env["RAY_JOB_CMD"]
-        assert "--n-seeds 4" in env["RAY_JOB_CMD"] and "--n-generations 3" in env["RAY_JOB_CMD"]
+        assert "--n-seeds 4" in env["RAY_JOB_CMD"]
         # No ParCa staging: sim_data is named explicitly as an S3 URI instead.
         assert "RAY_STAGE_S3" not in env
         assert "V2ECOLI_SIM_DATA=s3://mybucket/ray-parca-cache/" in env["RAY_JOB_CMD"]
