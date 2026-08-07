@@ -52,8 +52,14 @@ images:
   # v2ecoli/composites/batch_baseline.py (name="batch_baseline"). Renamed the
   # constant to V2ECOLI_BATCH_BASELINE_COMPOSITE_ID = "v2ecoli.composites.
   # batch_baseline.batch_baseline".
+  # 0.9.39 (#226): Array-jobs-for-canonical dispatch -- batch_baseline multiseed x
+  # multigeneration sweeps (n_seeds>1, n_generations>1, no composite override) now
+  # submit as an AWS Batch Array job (N independent single-seed children) instead of
+  # an MNP Ray cluster. Ray-MNP unchanged for ParCa, phase0/comparison-ensemble, and
+  # colonies. Needs the new RAY_ARRAY_QUEUE/RAY_ARRAY_JOB_DEFINITION shared.env values
+  # (smscdk-ray-batch stack's RayArrayJobDef, sms-cdk PR #33, deployed same session).
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.38
+    newTag: 0.9.39
   # ptools pinned to last-known-good tag — CI only builds sms-api, so there is
   # no newer sms-ptools:0.6.x image on ghcr.io.  0.5.9 is the tag the live Stanford
   # pod has been running successfully; keeping both namespaces pointing here
