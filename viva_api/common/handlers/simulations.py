@@ -1457,11 +1457,23 @@ def workflow_log(simulation_id: int, base_url: str = "http://localhost:8080", ti
     )
 
 
+# Caller-facing default for the LEGACY vEcoli/Nextflow analysis paths, which take an
+# explicit module list and have no registry-backed resolver. The Ray/v2ecoli path
+# resolves its own default instead (see _run_standalone_analysis_ray_native).
+_DEFAULT_LEGACY_ANALYSIS_MODULES: dict[str, dict[str, Any]] = {
+    "single": {
+        "ptools_rna": {"n_tp": 10},
+        "ptools_rxns": {"n_tp": 10},
+        "ptools_proteins": {"n_tp": 10},
+    }
+}
+
+
 async def _run_standalone_analysis_ray_native(
     database_service: DatabaseService,
     simulation: Simulation,
     simulator: SimulatorVersion,
-    modules: dict[str, dict[str, Any]],
+    modules: dict[str, dict[str, Any]] | None,
 ) -> dict[str, Any]:
     """Standalone analysis for a Ray/xarray-dispatched simulation (v2ecoli/sms-ecoli).
 
@@ -1473,8 +1485,19 @@ async def _run_standalone_analysis_ray_native(
     -- already migrated, just never wired into a K8s submission path before
     this) so GET /analyses/{id}/status can resolve real progress instead of
     callers having no way to know when the job is done.
+
+    ``modules=None`` resolves the same way the dispatch DAG's own analysis node
+    does (``analysis_modules_for``): the simulation's own configured
+    analysis_options, else the composite's ``applicable`` keyword. A
+    hand-triggered analysis and an auto-triggered one must cover the same
+    ground -- the legacy caller-facing default (three ptools modules) would
+    silently under-deliver the cd1_* suite for this pipeline.
     """
+    from viva_api.simulation.simulation_service_ray import analysis_modules_for
+
     config = simulation.config
+    if modules is None:
+        modules = analysis_modules_for(config)  # type: ignore[assignment]
     out_uri = getattr(config, "emitter_arg", None)
     out_uri = (out_uri or {}).get("out_uri") if isinstance(out_uri, dict) else None
     if not out_uri:
@@ -1499,6 +1522,7 @@ async def _run_standalone_analysis_ray_native(
     params: dict[str, Any] = {
         "out_uri": out_uri,
         "n_seeds": n_seeds,
+        "n_generations": int(getattr(config, "generations", 1) or 1),
         "modules": modules,
         "analysis_name": analysis_name,
         # ORMAnalysis.to_dto() unconditionally reads config["analysis_options"]
@@ -1506,9 +1530,13 @@ async def _run_standalone_analysis_ray_native(
         # producers below already write this shape (experiment_id + each domain
         # spread as a top-level key); match it so to_dto() doesn't KeyError. The
         # v2ecoli-side consumer (run_standalone_analysis.py) only reads out_uri/
-        # n_seeds/modules/analysis_name and ignores unknown keys, so this is inert
-        # for it -- purely for the DTO contract.
-        "analysis_options": {"experiment_id": [experiment_id], **modules},
+        # n_seeds/n_generations/modules/analysis_name and ignores unknown keys, so
+        # this is inert for it -- purely for the DTO contract. ``modules`` may be
+        # the "applicable" keyword rather than a mapping, which spreads to nothing.
+        "analysis_options": {
+            "experiment_id": [experiment_id],
+            **(modules if isinstance(modules, dict) else {}),
+        },
     }
     job_id = await sim_service.submit_ray_native_analysis(
         experiment_id=experiment_id,
@@ -1558,16 +1586,6 @@ async def run_standalone_analysis(
 
     experiment_id = simulation.experiment_id
 
-    # Default analysis modules if none specified
-    if modules is None:
-        modules = {
-            "single": {
-                "ptools_rna": {"n_tp": 10},
-                "ptools_rxns": {"n_tp": 10},
-                "ptools_proteins": {"n_tp": 10},
-            }
-        }
-
     # Build analysis config — path patterns match vEcoli conventions
     backend = get_job_backend()
     if backend == ComputeBackend.BATCH:
@@ -1584,6 +1602,9 @@ async def run_standalone_analysis(
                 simulator=simulator,
                 modules=modules,
             )
+        # The legacy vEcoli/Nextflow path below has no "applicable" resolver, so its
+        # caller-facing default stays an explicit module list.
+        modules = modules or _DEFAULT_LEGACY_ANALYSIS_MODULES
         s3_output = data_layout.NextflowLayout.output_uri(experiment_id)
         analysis_name = f"analysis-{experiment_id[:20]}-{str(uuid.uuid4())[:4]}"
         analysis_config: dict[str, Any] = {
@@ -1619,6 +1640,7 @@ async def run_standalone_analysis(
         return {"job_id": str(job_id), "analysis_name": analysis_name, "config": analysis_config}
     else:
         # SLURM path
+        modules = modules or _DEFAULT_LEGACY_ANALYSIS_MODULES
         sim_base = settings.hpc_sim_base_path.remote_path
         analysis_name = f"analysis-{experiment_id[:20]}-{str(uuid.uuid4())[:4]}"
         analysis_config = {

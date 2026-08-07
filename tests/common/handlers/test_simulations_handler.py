@@ -24,7 +24,7 @@ from viva_api.common.storage.file_paths import HPCFilePath, S3FilePath
 from viva_api.common.storage.file_service import FileService, ListingItem
 from viva_api.config import ComputeBackend, get_settings
 from viva_api.dependencies import get_file_service, set_file_service
-from viva_api.simulation.models import Simulation, SimulationConfig, SimulatorVersion
+from viva_api.simulation.models import AnalysisOptions, Simulation, SimulationConfig, SimulatorVersion
 from viva_api.simulation.simulation_service_k8s import SimulationServiceK8s
 from viva_api.simulation.tables_orm import ORMAnalysis
 
@@ -332,26 +332,17 @@ async def test_run_standalone_analysis_ray_native_routes_to_v2ecoli_job() -> Non
     assert dto.config.analysis_options.experiment_id == ["exp123"]
 
 
-@pytest.mark.asyncio
-async def test_run_standalone_analysis_default_modules_use_single_scale() -> None:
-    """Regression: the ptools_* default (when modules=None) nested all three
-    modules under "multiseed", but ptools_rna/ptools_rxns/ptools_proteins are
-    registered scale="single" in v2ecoli/sms-ecoli's ANALYSIS_REGISTRY. Every
-    real standalone-analysis dispatch that relied on the default (no --modules
-    passed) failed with "is scale='single', not 'multiseed'" -- live-reproduced
-    2026-08-05 against a completed pilot simulation, 5 separate K8s Job attempts
-    over 22h, all Failed. This calls the real default-selection path (modules=None)
-    end to end, not a hand-constructed payload, so it would have caught the bug."""
+async def _run_default_modules_ray_native(simulation: Simulation) -> dict[str, Any]:
+    """Drive the REAL default-selection path (modules=None) end to end for a
+    Ray/sms-ecoli simulator, returning the submitted params."""
     from viva_api.common.handlers.simulations import run_standalone_analysis
 
-    simulation = _make_ray_simulation()
     simulator = SimulatorVersion(
         database_id=53,
         git_commit_hash="deadbeef",
         git_repo_url=RepoUrl.SMS_ECOLI_REPO_URL,
         git_branch="main",
     )
-
     mock_k8s_service = AsyncMock(spec=SimulationServiceK8s)
     mock_k8s_service.submit_ray_native_analysis.return_value = "ana-exp123"
     mock_db_service = AsyncMock()
@@ -368,11 +359,57 @@ async def test_run_standalone_analysis_default_modules_use_single_scale() -> Non
             simulation_id=115,
             modules=None,
         )
+    return dict(result["config"])
 
-    modules_sent = result["config"]["modules"]
-    assert "single" in modules_sent
-    assert set(modules_sent["single"]) == {"ptools_rna", "ptools_rxns", "ptools_proteins"}
-    assert "multiseed" not in modules_sent
+
+@pytest.mark.asyncio
+async def test_ray_native_default_modules_defer_to_the_images_own_resolver() -> None:
+    """Regression, twice over.
+
+    (1) The old ptools_* default (modules=None) nested all three modules under
+    "multiseed", but ptools_rna/ptools_rxns/ptools_proteins are registered
+    scale="single" -- every dispatch relying on the default failed with "is
+    scale='single', not 'multiseed'" (live-reproduced 2026-08-05, 5 K8s Job
+    attempts over 22h, all Failed). A hardcoded name->scale list in sms-api can
+    always drift from the image's registry, which is what made that bug possible.
+
+    (2) That default also silently under-delivered: three ptools modules, none of
+    the cd1_* omics suite the deliverable is defined by.
+
+    Both are closed by deferring to the model image's own resolver -- the same
+    "applicable" keyword the composite's inline flush uses -- so sms-api never
+    restates a name, a scale, or a list it cannot verify. Scale correctness is
+    then true by construction.
+    """
+    params = await _run_default_modules_ray_native(_make_ray_simulation())
+
+    assert params["modules"] == "applicable"
+    # n_generations rides along: "applicable" cannot decide whether the
+    # multigeneration scales apply without it.
+    assert params["n_generations"] == 1
+    # The DTO contract still holds when modules is a keyword rather than a mapping.
+    assert params["analysis_options"] == {"experiment_id": ["exp123"]}
+
+
+@pytest.mark.asyncio
+async def test_ray_native_default_modules_prefer_the_simulations_own_options() -> None:
+    """A simulation dispatched WITH analysis_options (the workbench sends a study's
+    spec.analyses through) must have those re-run on demand, not a generic default
+    -- and must match what the dispatch DAG's own analysis node would run."""
+    simulation = _make_ray_simulation()
+    simulation.config.analysis_options = AnalysisOptions.model_validate({
+        "multiseed": {"cd1_proteomics": {"generation_lower_bound": 5}}
+    })
+    simulation.config.generations = 10
+
+    params = await _run_default_modules_ray_native(simulation)
+
+    assert params["modules"] == {"multiseed": {"cd1_proteomics": {"generation_lower_bound": 5}}}
+    assert params["n_generations"] == 10
+    assert params["analysis_options"] == {
+        "experiment_id": ["exp123"],
+        "multiseed": {"cd1_proteomics": {"generation_lower_bound": 5}},
+    }
 
 
 @pytest.mark.asyncio

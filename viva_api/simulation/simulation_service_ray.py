@@ -13,6 +13,12 @@ Data flow (no shared filesystem):
   - The simulation MNP job ``dependsOn`` the ParCa job (Batch gates it until
     ParCa SUCCEEDED), stages that cache (``RAY_STAGE_S3``), runs the ensemble,
     and captures the zarr/summary outputs to S3 (``RAY_OUT_S3``).
+  - For the multi-generation batch_baseline sweep, an ANALYSIS job ``dependsOn``
+    the simulation job and runs the ported cd1_*/ptools_* analyses over the
+    landed S3 sweep. The whole pipeline is therefore one Batch dependency DAG
+    (parca -> sim -> analysis); nothing external has to notice a completion and
+    react to it. See ``_analysis_command`` for why this is a third DAG node and
+    not the composite's own inline flush.
 
 The image is the **workload-owned**, self-contained ``v2ecoli:<sha>`` (bundles
 the AWS CLI + the Ray entrypoint), built by ``submit_build_image_job`` via a DooD
@@ -34,6 +40,7 @@ from pathlib import Path
 from typing import Any, override
 
 import boto3
+from pydantic import BaseModel
 
 from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.hpc.local_task_service import LocalTaskService
@@ -58,6 +65,7 @@ from viva_api.simulation.models import (
     VecoliSource,
 )
 from viva_api.simulation.simulation_service import SimulationService
+from viva_api.simulation.tables_orm import AnalysisStatusDB
 
 logger = logging.getLogger(__name__)
 
@@ -101,12 +109,52 @@ V2ECOLI_DIR = "/app/v2ecoli"
 PARCA_CACHE_DIR = f"{V2ECOLI_DIR}/out/cache"
 PARCA_SIMDATA_DIR = f"{V2ECOLI_DIR}/out/sim_data"
 SIM_OUT_DIR = f"{V2ECOLI_DIR}/.pbg/runs/phase0-xarray"
+# The analysis DAG node writes its outputs straight to S3 (see _analysis_command),
+# so this local dir normally never exists and the entrypoint's RAY_OUT_DIR sync is a
+# documented no-op ("no <dir>; nothing to upload"). It is still declared so anything
+# the analysis does drop locally lands under the run's own S3 prefix.
+ANALYSIS_OUT_DIR = f"{V2ECOLI_DIR}/.pbg/runs/analysis"
 # Where the head writes the entrypoint's metrics report (uploaded as report.json).
 REPORT_PATH = "/tmp/report.json"  # noqa: S108
+
+# The analysis scales a v2ecoli ``analysis_options`` map can carry. Everything else
+# in that (extra="allow") model — ``cpus``, ``memory_gb``, vEcoli-Nextflow-only keys —
+# is not a scale and must not be forwarded as one.
+ANALYSIS_SCALES = ("single", "multidaughter", "multigeneration", "multiseed", "multivariant")
+# The composite's own "every analysis this batch's shape has the cells for" keyword
+# (v2ecoli.steps.batch_baseline_runner.build_analysis_options). Used when the caller
+# named no modules: sms-api runs outside the model image and has no ANALYSIS_REGISTRY
+# to enumerate, so it asks the image to resolve the set with its own resolver rather
+# than carrying a second, drift-prone copy of the list.
+APPLICABLE_ANALYSES = "applicable"
 
 
 def _rand_suffix() -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+
+
+def analysis_modules_for(config: Any) -> dict[str, dict[str, Any]] | str:
+    """The analyses the analysis DAG node should run for this simulation.
+
+    Reads the simulation's OWN ``config.analysis_options`` — the field the run
+    endpoint already populates from the caller's ``--analysis-options`` (and that
+    the workbench already fills from a study's ``spec.analyses``), and which this
+    backend previously ignored entirely, so a remote dispatch's configured
+    analyses never ran.
+
+    Only real scale keys are forwarded, and only non-empty ones: the endpoint's
+    own fallback default is ``{"multiseed": {}}`` — "no modules named", not "run
+    nothing" — which resolves to the ``applicable`` keyword like any other
+    unset case.
+    """
+    options: Any = getattr(config, "analysis_options", None)
+    raw: dict[str, Any] = options.model_dump() if isinstance(options, BaseModel) else dict(options or {})
+    modules = {
+        scale: dict(entries)
+        for scale, entries in raw.items()
+        if scale in ANALYSIS_SCALES and isinstance(entries, dict) and entries
+    }
+    return modules or APPLICABLE_ANALYSES
 
 
 def _is_upstream_vecoli(composite: CompositeEngine | None) -> bool:
@@ -258,6 +306,7 @@ class SimulationServiceRay(SimulationService):
         stage_s3: str | None = None,
         stage_dir: str | None = None,
         depends_on: list[str] | None = None,
+        depends_type: str | None = "SEQUENTIAL",
         tags: dict[str, str] | None = None,
     ) -> str:
         """Submit a Ray MNP job via boto3, mirroring sms-cdk scripts/ray_batch_submit.sh.
@@ -268,6 +317,13 @@ class SimulationServiceRay(SimulationService):
         zarr to S3. Only ``RAY_JOB_CMD`` (the driver) and ``RAY_REPORT_PATH`` are
         head-only. So the shared env goes on node 0 (``0:0``) and, when there are
         workers, also on the worker range (``1:``). Returns the AWS Batch job id.
+
+        ``depends_type`` selects the ``dependsOn`` shape. The default keeps the
+        long-standing ParCa→sim edge byte-identical (``{"jobId": …, "type":
+        "SEQUENTIAL"}``, live-verified). Pass ``None`` for a plain ``{"jobId": …}``
+        wait — required when the DEPENDENCY is an Array job, whose parent id AWS
+        Batch will not accept under a SEQUENTIAL type (real API rejection, hit live
+        2026-08-06; see ``_submit_array``).
         """
         settings = get_settings()
         # Per-node knobs every node acts on (stage cache in, sync results out, ship logs).
@@ -310,7 +366,9 @@ class SimulationServiceRay(SimulationService):
             "nodeOverrides": node_overrides,
         }
         if depends_on:
-            kwargs["dependsOn"] = [{"jobId": jid, "type": "SEQUENTIAL"} for jid in depends_on]
+            kwargs["dependsOn"] = [
+                ({"jobId": jid, "type": depends_type} if depends_type else {"jobId": jid}) for jid in depends_on
+            ]
         if tags:
             # Cost-allocation tags: propagate to the underlying ECS tasks so the
             # payer account's Cost Explorer can attribute compute per run/engine.
@@ -528,9 +586,10 @@ class SimulationServiceRay(SimulationService):
                 "cache_dir": PARCA_CACHE_DIR,
                 "out_dir": SIM_OUT_DIR,
                 "experiment_id": experiment_id,
-                # Standalone post-hoc analysis (scripts/run_standalone_analysis.py)
-                # runs the same analysis_runner.run_analyses() directly against the
-                # landed S3 sweep -- skip the composite's own inline flush here.
+                # The analysis DAG node (see _analysis_command) runs the same
+                # analysis_runner.run_analyses() over the LANDED S3 sweep once this
+                # job has succeeded -- skip the composite's own inline flush here so
+                # the analyses run exactly once, over the whole sweep.
                 "analyses": "none",
                 "parallel": "ray",
             }
@@ -581,6 +640,9 @@ class SimulationServiceRay(SimulationService):
             "cache_dir": PARCA_CACHE_DIR,
             "out_dir": SIM_OUT_DIR,
             "experiment_id": experiment_id,
+            # A child sees only ITS OWN seed, so an inline flush here would run the
+            # cross-seed scales against one seed, N times over. The whole-sweep
+            # analysis is the DAG's third node instead -- see _analysis_command.
             "analyses": "none",
             "parallel": "",
         }
@@ -596,6 +658,161 @@ class SimulationServiceRay(SimulationService):
             f" --composite-id {V2ECOLI_BATCH_BASELINE_COMPOSITE_ID}"
             f' --overrides "$OVERRIDES" -n 1'
         )
+
+    def _analysis_command(
+        self,
+        *,
+        experiment_id: str,
+        n_seeds: int,
+        n_generations: int,
+        modules: dict[str, dict[str, Any]] | str,
+        analysis_name: str,
+        commit: str,
+    ) -> str:
+        """Build the analysis DAG node's command: the ported analyses over the S3 sweep.
+
+        WHY A THIRD DAG NODE, not the composite's own inline flush. The composite
+        (``v2ecoli.composites.batch_baseline``) does ship a post-simulation flush that
+        runs exactly these analyses, and the sim overrides deliberately disable it
+        (``"analyses": "none"``). That is not a workaround for a broken flush — it is
+        forced by the sweep's SHAPE on this backend:
+
+          * The canonical dispatch is an AWS Batch ARRAY job: N independent children,
+            one seed each, no shared filesystem. Each child's composite run sees 1/N
+            of the sweep, so an inline flush there would run the cross-seed scales
+            (multiseed/multivariant) against a single seed — N times over, racing on
+            the same output prefix. The sweep only becomes whole once every child's
+            output has landed in S3.
+          * The whole-sweep analysis is therefore a GATHER node, and the DAG edge that
+            expresses "after every child succeeded" is the same Batch ``dependsOn``
+            the ParCa→sim edge already uses. No poller, no webhook, no external
+            watcher: completion is an edge in the pipeline graph.
+
+        The node itself reuses the model image's existing, S3-native entrypoint
+        (``scripts/run_standalone_analysis.py`` → ``v2ecoli.workflow.analysis_runner.
+        run_analyses``) — the SAME function the composite's inline flush calls, reading
+        the hive-parquet in place through DuckDB/httpfs. No new analysis logic.
+
+        ``V2ECOLI_SIM_DATA`` points at the commit's ParCa cache in S3 because an S3
+        sweep has no co-located pickle to glob (``analysis_runner.resolve_sim_data``
+        only globs local paths) — identical to how ``SimulationServiceK8s.
+        submit_ray_native_analysis`` provisions the same script. Both this job and the
+        ParCa job derive that URI from the commit independently, so it needs no
+        hand-off plumbing.
+        """
+        out_uri = self._results_s3_uri(experiment_id).rstrip("/")
+        sim_data_uri = f"{data_layout.RayLayout.parca_cache_uri(commit)}simData.cPickle"
+        modules_arg = modules if isinstance(modules, str) else json.dumps(modules)
+        # --n-generations exists only to let the image resolve the "applicable"
+        # keyword; an explicit module mapping doesn't need it. Emitting it only in
+        # the keyword case keeps the explicit path runnable against ANY image that
+        # already ships the script, so a simulator built before the keyword landed
+        # still gets its configured analyses instead of dying on an unrecognized
+        # argument. Only the keyword default requires the newer image.
+        gens = f" --n-generations {int(n_generations)}" if isinstance(modules, str) else ""
+        return (
+            f"cd {V2ECOLI_DIR}"
+            f" && V2ECOLI_SIM_DATA={shlex.quote(sim_data_uri)}"
+            f" python scripts/run_standalone_analysis.py"
+            f" --out-uri {shlex.quote(out_uri)}"
+            f" --n-seeds {int(n_seeds)}"
+            f"{gens}"
+            f" --modules {shlex.quote(modules_arg)}"
+            f" --analysis-name {shlex.quote(analysis_name)}"
+        )
+
+    async def _submit_analysis_job(
+        self,
+        *,
+        simulation: Simulation,
+        database_service: DatabaseService,
+        job_definition: str,
+        commit: str,
+        sim_job_id: str,
+        n_seeds: int,
+        n_generations: int,
+        depends_type: str | None,
+        tags: dict[str, str],
+    ) -> str | None:
+        """Submit the analysis DAG node and record it, returning its Batch job id.
+
+        The analysis is tracked in the SAME ``analyses`` table (and therefore the same
+        ``GET /analyses/{id}/status`` S3-manifest probe) the on-demand
+        ``POST /simulations/{id}/analysis`` trigger already writes to — an
+        auto-triggered analysis must be exactly as discoverable as a hand-triggered
+        one, not an invisible side effect.
+
+        Best-effort by design, but never SILENT: the simulation job is already
+        submitted and running by the time this is reached, so raising would orphan a
+        real, expensive job. A submission failure is logged AND written to the
+        analyses table as a FAILED row, so "the analysis never ran" is a visible state
+        rather than an absence.
+        """
+        experiment_id = simulation.config.experiment_id
+        analysis_name = f"analysis-{experiment_id[:20]}-{_rand_suffix()}"
+        out_uri = self._results_s3_uri(experiment_id).rstrip("/")
+        result_uri = f"{out_uri}/analyses/{analysis_name}"
+        modules = analysis_modules_for(simulation.config)
+        params: dict[str, Any] = {
+            "out_uri": out_uri,
+            "n_seeds": int(n_seeds),
+            "n_generations": int(n_generations),
+            "modules": modules,
+            "analysis_name": analysis_name,
+            "trigger": "dispatch-dag",
+            # ORMAnalysis.to_dto() unconditionally reads config["analysis_options"]
+            # (AnalysisConfigOptions requires experiment_id) -- mirror the shape the
+            # existing producers write so to_dto() doesn't KeyError.
+            "analysis_options": {
+                "experiment_id": [experiment_id],
+                **(modules if isinstance(modules, dict) else {}),
+            },
+        }
+        try:
+            analysis_job_id = self._submit_mnp(
+                job_name=f"ray-analysis-{experiment_id}-{_rand_suffix()}"[:128],
+                job_definition=job_definition,
+                num_nodes=1,
+                ray_job_cmd=self._analysis_command(
+                    experiment_id=experiment_id,
+                    n_seeds=n_seeds,
+                    n_generations=n_generations,
+                    modules=modules,
+                    analysis_name=analysis_name,
+                    commit=commit,
+                ),
+                out_s3=self._results_s3_uri(experiment_id),
+                out_dir=ANALYSIS_OUT_DIR,
+                depends_on=[sim_job_id],
+                depends_type=depends_type,
+                tags=tags,
+            )
+        except Exception as e:
+            logger.exception("Analysis DAG node submission failed for %s", experiment_id)
+            await database_service.record_analysis(
+                experiment_id=experiment_id,
+                n_tp=None,
+                status=AnalysisStatusDB.FAILED,
+                config=params,
+                name=analysis_name,
+                simulation_id=simulation.database_id,
+                backend="ray",
+                result_uri=result_uri,
+                error_message=f"analysis job submission failed: {type(e).__name__}: {e}",
+            )
+            return None
+        await database_service.record_analysis(
+            experiment_id=experiment_id,
+            n_tp=None,
+            status=AnalysisStatusDB.COMPUTING,
+            config=params,
+            name=analysis_name,
+            simulation_id=simulation.database_id,
+            backend="ray",
+            job_id_ext=str(analysis_job_id),
+            result_uri=result_uri,
+        )
+        return analysis_job_id
 
     @override
     async def get_latest_commit_hash(
@@ -836,6 +1053,33 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
                 parca_job_id,
                 sim_job_id,
                 settings.ray_num_nodes,
+            )
+
+        # 3. Analysis, gated on the simulation. The multi-generation batch_baseline
+        #    sweep is the shape that emits the hive-parquet the ported cd1_*/ptools_*
+        #    analyses read, so it is the shape that gets the third DAG node. The
+        #    comparison-ensemble and phase0 paths write no such sweep and are
+        #    deliberately untouched.
+        #
+        #    An Array sim job's parent id cannot be waited on under a SEQUENTIAL
+        #    dependency type (real AWS Batch rejection) -- plain {"jobId": …} there.
+        if composite is None and n_generations > 1:
+            analysis_job_id = await self._submit_analysis_job(
+                simulation=ecoli_simulation,
+                database_service=database_service,
+                job_definition=job_def,
+                commit=commit,
+                sim_job_id=sim_job_id,
+                n_seeds=int(n_seeds),
+                n_generations=n_generations,
+                depends_type=None if is_array_eligible else "SEQUENTIAL",
+                tags={**base_tags, "Phase": "analysis"},
+            )
+            logger.info(
+                "Ray simulation %s: sim job %s -> analysis job %s",
+                experiment_id,
+                sim_job_id,
+                analysis_job_id,
             )
         return JobId.ray(sim_job_id)
 
