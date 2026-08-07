@@ -3,8 +3,8 @@ from typing import Any
 import numpy as np
 import pytest_asyncio
 
-from sms_api.analysis.analysis_service import AnalysisServiceSlurm as AnalysisServiceHpc
-from sms_api.config import get_settings
+from viva_api.analysis.analysis_service import AnalysisServiceSlurm as AnalysisServiceHpc
+from viva_api.config import get_settings
 
 ENV = get_settings()
 

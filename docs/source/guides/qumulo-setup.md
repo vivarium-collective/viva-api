@@ -124,7 +124,7 @@ uv run pytest tests/test_qumulo_s3.py::test_qumulo_file_service -v -s
 ### Option 1: Via Configured Backend (Recommended)
 
 ```python
-from sms_api.dependencies import get_file_service
+from viva_api.dependencies import get_file_service
 
 # Get the configured file service (Qumulo when STORAGE_BACKEND=qumulo)
 file_service = get_file_service()
@@ -142,7 +142,7 @@ contents = await file_service.get_file_contents("simulations/results/data.txt")
 ### Option 2: Direct Instantiation
 
 ```python
-from sms_api.common.storage import FileServiceQumuloS3
+from viva_api.common.storage import FileServiceQumuloS3
 
 # Create Qumulo service
 qumulo = FileServiceQumuloS3()
@@ -167,7 +167,7 @@ finally:
 
 ```python
 import pytest
-from sms_api.common.storage import FileServiceQumuloS3
+from viva_api.common.storage import FileServiceQumuloS3
 
 @pytest.mark.asyncio
 async def test_my_feature(file_service_qumulo: FileServiceQumuloS3):

@@ -183,7 +183,7 @@ class RunSimulationScreen(ModalScreen[dict[str, Any] | None]):
     """
 
     def compose(self) -> ComposeResult:
-        from sms_api.common.simulator_defaults import SimulationConfigFilename as SCF
+        from viva_api.common.simulator_defaults import SimulationConfigFilename as SCF
 
         config_options = [(f"{c.name} ({c.value})", c.value) for c in SCF]
 
@@ -1009,9 +1009,9 @@ class AtlantisTUI(App[None]):
         self.write_log(f"  Experiment: [bold]{experiment_id}[/bold]")
         self.write_log(f"  [dim]Source: {test_outdir}[/dim]")
 
-        from sms_api.common.storage.file_service_s3 import FileServiceS3
-        from sms_api.config import get_settings
-        from sms_api.dependencies import get_file_service, set_file_service
+        from viva_api.common.storage.file_service_s3 import FileServiceS3
+        from viva_api.config import get_settings
+        from viva_api.dependencies import get_file_service, set_file_service
 
         settings = get_settings()
         if not settings.storage_s3_bucket or not settings.storage_s3_region:
@@ -1026,7 +1026,7 @@ class AtlantisTUI(App[None]):
         set_file_service(fs)
 
         try:
-            from sms_api.common.handlers.simulations import _download_outputs_from_s3
+            from viva_api.common.handlers.simulations import _download_outputs_from_s3
 
             dest_path = Path("./demo_outputs").resolve()
             local_cache = dest_path / experiment_id

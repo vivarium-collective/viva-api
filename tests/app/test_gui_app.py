@@ -100,7 +100,7 @@ class TestMarimoNotebookStructure:
 
 def _make_mock_service() -> MagicMock:
     """Create a mock E2EDataService with all methods stubbed."""
-    from sms_api.common.models import JobStatus
+    from viva_api.common.models import JobStatus
 
     mock = MagicMock()
 

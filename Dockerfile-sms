@@ -85,4 +85,4 @@ VOLUME ["/app/scratch"]
 EXPOSE 8000
 
 # Command to run the application
-CMD ["uv", "run", "uvicorn", "sms_api.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run", "uvicorn", "viva_api.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

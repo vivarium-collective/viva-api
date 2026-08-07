@@ -4,8 +4,8 @@ from typing import Any
 
 import pytest
 
-from sms_api.analysis.models import AnalysisConfig
-from sms_api.simulation.models import SimulationConfig
+from viva_api.analysis.models import AnalysisConfig
+from viva_api.simulation.models import SimulationConfig
 
 FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures" / "configs"
 

@@ -6,7 +6,7 @@ LOCAL_GATEWAY_PORT=8888
 
 POSTGRES_PORT=5432
 
-CURRENT_VERSION := $(shell uv run python -c "from sms_api import version;print(f'{version.__version__}')")
+CURRENT_VERSION := $(shell uv run python -c "from viva_api import version;print(f'{version.__version__}')")
 VENV := $(shell uv run which python)
 REPO_DIR := $(shell uv run python -c "from pathlib import Path; import os; print(Path(os.getcwd()).absolute())")
 
@@ -75,11 +75,11 @@ clean-build: ## Clean build artifacts
 
 # ----------------------------------------------------------------------------
 # PyPI publish — mirrors ../vecoli_deployment's publish workflow so that
-# `pip install sms-api` ships the full end-user bundle (app.cli, app.tui,
+# `pip install viva-api` ships the full end-user bundle (app.cli, app.tui,
 # app.gui, app_data_service, etc.) to stakeholders.
 #
 # Usage:
-#   make publish                              # reads token from ~/.ssh/.pypi-sms-api
+#   make publish                              # reads token from ~/.ssh/.pypi-viva-api (falls back to ~/.ssh/.pypi-sms-api)
 #   make publish token=pypi-AgEN...           # explicit token
 #   make upload_package token=pypi-...        # upload already-built dist/
 # ----------------------------------------------------------------------------
@@ -94,7 +94,7 @@ sync_publish: ## Recreate uv.lock and sync all groups (no-cache) for a clean pub
 
 .PHONY: build_package
 build_package: clean-build ## Build sdist + wheel into dist/ using the standard PEP 517 builder
-	@echo "🚀 Building sms_api package (sdist + wheel)"
+	@echo "🚀 Building viva_api package (sdist + wheel)"
 	@uvx --from build pyproject-build --installer uv
 
 .PHONY: upload_package
@@ -102,17 +102,20 @@ upload_package: ## Upload dist/* to PyPI (requires token=... and a pre-built dis
 	@if [ -z "$(token)" ]; then \
 		echo "❌ upload_package requires token=..."; exit 1; \
 	fi
-	@echo "🚀 Uploading sms_api package to PyPI"
+	@echo "🚀 Uploading viva_api package to PyPI"
 	@uv publish --no-cache --token $(token)
 
 .PHONY: publish
-publish: ## Publish sms_api to PyPI (sync → build → upload). Reads token from ~/.ssh/.pypi-sms-api unless token=... is set.
+publish: ## Publish viva_api to PyPI (sync → build → upload). Reads token from ~/.ssh/.pypi-viva-api (or ~/.ssh/.pypi-sms-api) unless token=... is set.
 	@TOKEN="$(token)"; \
+	if [ -z "$$TOKEN" ] && [ -f "$$HOME/.ssh/.pypi-viva-api" ]; then \
+		TOKEN=$$(cat "$$HOME/.ssh/.pypi-viva-api"); \
+	fi; \
 	if [ -z "$$TOKEN" ] && [ -f "$$HOME/.ssh/.pypi-sms-api" ]; then \
 		TOKEN=$$(cat "$$HOME/.ssh/.pypi-sms-api"); \
 	fi; \
 	if [ -z "$$TOKEN" ]; then \
-		echo "❌ No PyPI token. Set token=... or write one to ~/.ssh/.pypi-sms-api"; \
+		echo "❌ No PyPI token. Set token=... or write one to ~/.ssh/.pypi-viva-api (or ~/.ssh/.pypi-sms-api)"; \
 		exit 1; \
 	fi; \
 	$(MAKE) sync_publish && \
@@ -152,7 +155,7 @@ check-minikube:
 
 .PHONY: spec
 spec:
-	@uv run --no-cache ./sms_api/api/openapi_spec.py
+	@uv run --no-cache ./viva_api/api/openapi_spec.py
 
 .PHONY: new
 new:
@@ -169,7 +172,7 @@ whichkube:
 .PHONY: gateway
 gateway:
 	@make spec
-	@uv run uvicorn sms_api.api.main:app \
+	@uv run uvicorn viva_api.api.main:app \
 		--env-file assets/dev/config/.dev_env \
 		--host 0.0.0.0 \
 		--port ${LOCAL_GATEWAY_PORT} \
@@ -256,7 +259,7 @@ workflow:
 	curl -X POST \
 		-H "Authorization: token $(token)" \
 		-H "Accept: application/vnd.github.v3+json" \
-		https://api.github.com/repos/vivarium-collective/sms-api/actions/workflows/build-and-push.yml/dispatches \
+		https://api.github.com/repos/vivarium-collective/viva-api/actions/workflows/build-and-push.yml/dispatches \
 		-d '{"ref": $(branch)}'
 
 .PHONY: generate-client
@@ -324,11 +327,11 @@ compose:
 .PHONY: api_client
 api_client:
 	@make spec; uv run --no-cache --refresh openapi-python-client generate \
-		--path ./sms_api/api/spec/openapi_3_1_0_generated.yaml \
+		--path ./viva_api/api/spec/openapi_3_1_0_generated.yaml \
 		--config ./client-generator-config.yml \
 		--overwrite \
-		--output-path ./sms_api/api
-	@rm ./sms_api/api/pyproject.toml && rm ./sms_api/api/.gitignore && git restore ./sms_api/api/README.md
+		--output-path ./viva_api/api
+	@rm ./viva_api/api/pyproject.toml && rm ./viva_api/api/.gitignore && git restore ./viva_api/api/README.md
 
 .PHONY: ui
 ui:

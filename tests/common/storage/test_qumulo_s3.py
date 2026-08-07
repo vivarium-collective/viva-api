@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from sms_api.common.storage.file_paths import S3FilePath
-from sms_api.common.storage.file_service_qumulo_s3 import FileServiceQumuloS3
-from sms_api.config import get_settings
+from viva_api.common.storage.file_paths import S3FilePath
+from viva_api.common.storage.file_service_qumulo_s3 import FileServiceQumuloS3
+from viva_api.config import get_settings
 
 
 @pytest.mark.skipif(

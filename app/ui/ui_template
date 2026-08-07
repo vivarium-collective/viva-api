@@ -1,5 +1,5 @@
 """
-DEACTIVATED: This template depends on sms_api.data.data_service (vecoli).
+DEACTIVATED: This template depends on viva_api.data.data_service (vecoli).
 See app/ui/explore.py for details.
 
 Template for new Marimo notebooks
@@ -26,7 +26,7 @@ To get started, simply do the following:
                 Data Loading/Transformation parameters (variant, generation, seed, experiment_id, etc. Whatever is required
                 for the data loader as explained below)
 
-    - **Data Loading/Transformation**: instantiate the ``sms_api.data.data_service.SimulationDataServiceFS`` class. The
+    - **Data Loading/Transformation**: instantiate the ``viva_api.data.data_service.SimulationDataServiceFS`` class. The
         ``SimulationDataService`` interface allows for implementations with uniquely different simulation
         output file sources. Let the naming convention for new implementations of this interface be as such:
         ``SimulationDataService<SOURCE_DOMAIN>``, where ``<SOURCE_DOMAIN>`` denotes where the simulation output
@@ -35,7 +35,7 @@ To get started, simply do the following:
         using your own local filesystem, except with a different ``$HOME`` (``wd_root``, for example). **Note that
         you may want to extend an implementation (i.e.; ``SimulationDataServiceFS``) to fit the desired functionality of your new notebook.
         In this case, please do the following:
-            2a. Create a new class in the ``sms_api.data.data_service`` module which inherits that original implementation (NOT
+            2a. Create a new class in the ``viva_api.data.data_service`` module which inherits that original implementation (NOT
                 the ``SimulationDataService`` base class), and whose name is ``SimulationDataService<SOURCE_DOMAIN><SPECIFIED_DOMAIN>`` where
                 ``<SPECIFIED_DOMAIN>`` should explain the extended functionality (for example ``SimulationDataServiceFSAutoEncoder`` would
                 mean that the data service reads raw simulation outputs (pq files) using the inherited IO logic and performs further
@@ -72,7 +72,7 @@ def _():
 
 @app.cell
 def _():
-    from sms_api.config import get_settings
+    from viva_api.config import get_settings
 
     env = get_settings()
     return (env,)
@@ -106,7 +106,7 @@ def _():
 
 @app.cell
 def _(env):
-    from sms_api.data.data_service import PARTITION_GROUPS, AnalysisType, SimulationDataServiceFS
+    from viva_api.data.data_service import PARTITION_GROUPS, AnalysisType, SimulationDataServiceFS
 
     data_service = SimulationDataServiceFS(env=env)
     return (

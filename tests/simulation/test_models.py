@@ -4,8 +4,8 @@ from typing import Any
 
 import pytest
 
-from sms_api.common.models import JobBackend
-from sms_api.simulation.models import (
+from viva_api.common.models import JobBackend
+from viva_api.simulation.models import (
     BaseModel,
     HpcRun,
     Simulation,

@@ -1,6 +1,6 @@
 """Tests for the Nextflow log truncation logic."""
 
-from sms_api.common.handlers.simulations import _truncate_log
+from viva_api.common.handlers.simulations import _truncate_log
 
 
 class TestTruncateLog:

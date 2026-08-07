@@ -13,10 +13,10 @@ spec:
           # Self-diagnosing reconciler (not bare `alembic upgrade head`): adopts
           # legacy create_all-bootstrapped databases (stamp matched rev -> upgrade),
           # upgrades already-managed ones, builds fresh ones from base, and refuses
-          # loudly on an inconsistent schema. See sms_api/simulation/db_reconcile.py.
+          # loudly on an inconsistent schema. See viva_api/simulation/db_reconcile.py.
           # Requires an image tag that contains the module (>= 0.9.19) — kept in
           # sync with the `newTag` in this overlay's kustomization.yaml.
-          command: ["uv", "run", "python", "-m", "sms_api.simulation.db_reconcile", "--apply"]
+          command: ["uv", "run", "python", "-m", "viva_api.simulation.db_reconcile", "--apply"]
           env:
             - name: SQLALCHEMY_DATABASE_URL
               valueFrom:

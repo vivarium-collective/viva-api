@@ -3,7 +3,7 @@
 # dependency has been removed from the project. This file is retained for
 # reference but is not imported or executed by any active code path.
 #
-# To reactivate, install vecoli and restore the sms_api.data.data_service module.
+# To reactivate, install vecoli and restore the viva_api.data.data_service module.
 
 raise SystemExit("app/ui/explore.py is deactivated — see comment at top of file")
 
@@ -24,7 +24,7 @@ def _():
 
 @app.cell
 def _():
-    from sms_api.config import get_settings
+    from viva_api.config import get_settings
 
     env = get_settings()
     return (env,)
@@ -58,7 +58,7 @@ def _():
 
 @app.cell
 def _():
-    from sms_api.data.data_service import PARTITION_GROUPS, AnalysisType, SimulationDataServiceFS
+    from viva_api.data.data_service import PARTITION_GROUPS, AnalysisType, SimulationDataServiceFS
 
     data_service = SimulationDataServiceFS()
     return (

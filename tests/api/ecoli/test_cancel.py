@@ -5,10 +5,10 @@ Run with: uv run pytest tests/api/ecoli/test_cancel.py -v
 
 import pytest
 
-from sms_api.common.hpc.job_service import JobStatusUpdate
-from sms_api.common.models import JobBackend, JobId, JobStatus
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from sms_api.simulation.models import (
+from viva_api.common.hpc.job_service import JobStatusUpdate
+from viva_api.common.models import JobBackend, JobId, JobStatus
+from viva_api.simulation.database_service import DatabaseServiceSQL
+from viva_api.simulation.models import (
     JobType,
     SimulationRequest,
 )
@@ -72,8 +72,8 @@ async def test_cancel_already_completed_is_noop(
     database_service: DatabaseServiceSQL,
 ) -> None:
     """Test that the cancel handler returns existing status for terminal jobs."""
-    from sms_api.common.handlers.simulations import cancel_simulation
     from tests.fixtures.simulation_service_mocks import ConcreteSimulationService
+    from viva_api.common.handlers.simulations import cancel_simulation
 
     simulation = await database_service.insert_simulation(sim_request=experiment_request)
     await database_service.insert_hpcrun(

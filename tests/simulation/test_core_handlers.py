@@ -1,10 +1,10 @@
 import pytest
 
-from sms_api.common.handlers.simulators import upload_simulator
-from sms_api.common.models import JobStatus
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from sms_api.simulation.models import JobType
 from tests.fixtures.simulation_service_mocks import SimulationServiceMockCloneAndBuild
+from viva_api.common.handlers.simulators import upload_simulator
+from viva_api.common.models import JobStatus
+from viva_api.simulation.database_service import DatabaseServiceSQL
+from viva_api.simulation.models import JobType
 
 
 @pytest.mark.asyncio

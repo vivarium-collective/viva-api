@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from sms_api.compose.models import ComposeSimulationExperiment
+from viva_api.compose.models import ComposeSimulationExperiment
 
 
 @pytest.mark.asyncio
@@ -27,10 +27,10 @@ async def test_submit_simulation_threads_extra_pip_deps(fastapi_app: object) -> 
     )
 
     with ExitStack() as stack:
-        stack.enter_context(patch("sms_api.api.routers.compose.run_compose_simulation", _fake_run))
-        stack.enter_context(patch("sms_api.api.routers.compose._require_db", return_value=fake_db))
-        stack.enter_context(patch("sms_api.api.routers.compose._require_sim", return_value=MagicMock()))
-        stack.enter_context(patch("sms_api.api.routers.compose._require_monitor", return_value=MagicMock()))
+        stack.enter_context(patch("viva_api.api.routers.compose.run_compose_simulation", _fake_run))
+        stack.enter_context(patch("viva_api.api.routers.compose._require_db", return_value=fake_db))
+        stack.enter_context(patch("viva_api.api.routers.compose._require_sim", return_value=MagicMock()))
+        stack.enter_context(patch("viva_api.api.routers.compose._require_monitor", return_value=MagicMock()))
         async with AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://testserver") as client:  # type: ignore[arg-type]
             response = await client.post(
                 "/compose/v1/simulation/run",

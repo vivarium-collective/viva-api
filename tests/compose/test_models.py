@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from sms_api.compose.models import (
+from viva_api.compose.models import (
     BiGraphComputeType,
     BiGraphProcess,
     BiGraphStep,
@@ -134,7 +134,7 @@ class TestComposeSimulationExperiment:
 
 class TestGetSingularityHash:
     def test_deterministic(self) -> None:
-        from sms_api.compose.container_def import ContainerizationEngine, ContainerizationFileRepr
+        from viva_api.compose.container_def import ContainerizationEngine, ContainerizationFileRepr
 
         rep = ContainerizationFileRepr(
             representation="Bootstrap: docker\nFrom: python:3.13",

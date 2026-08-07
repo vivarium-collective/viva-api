@@ -74,7 +74,7 @@ System instruction goes here as markdown body.
 ## Trigger Conditions
 
 Re-run bootstrapper after:
-- Any new subsystem added (new router, new service, new `sms_api/` package)
+- Any new subsystem added (new router, new service, new `viva_api/` package)
 - Version bump (update version references in agent instructions)
 - New external dependency added (check security-auditor coverage)
 - New deploy target or namespace added (update deploy agent)

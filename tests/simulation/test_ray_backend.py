@@ -11,18 +11,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sms_api.common.hpc.job_service import JobStatusInfo
-from sms_api.common.models import JobBackend, JobId, JobStatus
-from sms_api.config import ComputeBackend
-from sms_api.simulation.simulation_service_ray import (
+from viva_api.common.hpc.job_service import JobStatusInfo
+from viva_api.common.models import JobBackend, JobId, JobStatus
+from viva_api.config import ComputeBackend
+from viva_api.simulation.simulation_service_ray import (
     PARCA_CACHE_DIR,
     SIM_OUT_DIR,
     SimulationServiceRay,
 )
 
 if TYPE_CHECKING:
-    from sms_api.simulation.database_service import DatabaseServiceSQL
-    from sms_api.simulation.models import SimulationRequest
+    from viva_api.simulation.database_service import DatabaseServiceSQL
+    from viva_api.simulation.models import SimulationRequest
 
 
 def _ray_settings() -> MagicMock:
@@ -149,9 +149,9 @@ class TestComputeBackendRay:
         assert ComputeBackend("ray") == ComputeBackend.RAY
 
     def test_get_job_backend(self) -> None:
-        from sms_api.config import get_job_backend
+        from viva_api.config import get_job_backend
 
-        with patch("sms_api.config.get_settings") as mock_settings:
+        with patch("viva_api.config.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(compute_backend="ray")
             assert get_job_backend() == ComputeBackend.RAY
 
@@ -173,10 +173,10 @@ class TestSimulationServiceRaySubmit:
 
         service = SimulationServiceRay()
         with (
-            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
             # data_layout builds the S3 URIs (results/cache) and reads config.get_settings directly.
-            patch("sms_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("sms_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
         ):
             job_id = await service.submit_ecoli_simulation_job(
                 ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-1"
@@ -272,10 +272,10 @@ class TestSimulationServiceRaySubmit:
 
         service = SimulationServiceRay()
         with (
-            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("sms_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("sms_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
-            patch("sms_api.dependencies.get_file_service", return_value=fake_file_service),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             job_id = await service.submit_ecoli_simulation_job(
                 ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-2"
@@ -360,10 +360,10 @@ class TestSimulationServiceRaySubmit:
 
         service = SimulationServiceRay()
         with (
-            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("sms_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("sms_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
-            patch("sms_api.dependencies.get_file_service", return_value=fake_file_service),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             await service.submit_ecoli_simulation_job(
                 ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-single"
@@ -383,8 +383,8 @@ class TestSimulationServiceRayStatusCancel:
         mock_batch.describe_jobs.return_value = {"jobs": [{"jobId": "sim-456", "status": "RUNNING", "startedAt": 111}]}
         service = SimulationServiceRay()
         with (
-            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("sms_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
         ):
             info = await service.get_job_status(JobId.ray("sim-456"))
         assert info is not None
@@ -396,8 +396,8 @@ class TestSimulationServiceRayStatusCancel:
         mock_batch.describe_jobs.return_value = {"jobs": []}
         service = SimulationServiceRay()
         with (
-            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("sms_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
         ):
             assert await service.get_job_status(JobId.ray("missing")) is None
 
@@ -413,8 +413,8 @@ class TestSimulationServiceRayStatusCancel:
         mock_batch = MagicMock()
         service = SimulationServiceRay()
         with (
-            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("sms_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
         ):
             await service.cancel_job(JobId.ray("sim-456"))
         mock_batch.terminate_job.assert_called_once()
@@ -422,7 +422,7 @@ class TestSimulationServiceRayStatusCancel:
 
 
 def _v2ecoli_simulator() -> Any:
-    from sms_api.simulation.models import SimulatorVersion
+    from viva_api.simulation.models import SimulatorVersion
 
     return SimulatorVersion(
         database_id=1,
@@ -437,7 +437,7 @@ class TestSimulationServiceRayBuild:
 
     def test_build_command_clones_v2ecoli_and_runs_its_recipe(self) -> None:
         service = SimulationServiceRay()
-        with patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
             cmd = service._build_command(_v2ecoli_simulator())
         assert cmd[0] == "sh" and cmd[1] == "-c"
         script = cmd[2]
@@ -450,7 +450,7 @@ class TestSimulationServiceRayBuild:
     def test_sim_command_composite_defaults_to_single_generation(self) -> None:
         """Selecting an engine must NOT imply the 16-gen comparison default."""
         service = SimulationServiceRay()
-        with patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
             cmd = service._sim_command(n_seeds=1, n_steps=10, chunk=4, composite="v2ecoli")
         assert "run_comparison_ensemble.py" in cmd
         assert "--max-generations 1" in cmd
@@ -458,7 +458,7 @@ class TestSimulationServiceRayBuild:
 
     def test_sim_command_composite_honors_explicit_generations(self) -> None:
         service = SimulationServiceRay()
-        with patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
             cmd = service._sim_command(n_seeds=1, n_steps=10, chunk=4, composite="v2ecoli", max_generations=5)
         assert "--max-generations 5" in cmd
 
@@ -466,7 +466,7 @@ class TestSimulationServiceRayBuild:
         """No composite, no generations requested: unchanged, verified-working
         single-generation dispatch -- must not regress by default."""
         service = SimulationServiceRay()
-        with patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
             cmd = service._sim_command(n_seeds=2, n_steps=600, chunk=60)
         assert "run_phase0_xarray_ensemble.py" in cmd
         assert "run_batch_baseline_ray.py" not in cmd
@@ -478,7 +478,7 @@ class TestSimulationServiceRayBuild:
         v2ecoli-specific CLI script (backlog items 26/27), and not the
         single-generation script that silently ignores generation count."""
         service = SimulationServiceRay()
-        with patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
             cmd = service._sim_command(
                 n_seeds=2,
                 n_steps=600,
@@ -518,7 +518,7 @@ class TestSimulationServiceRayBuild:
         """No silent placeholder default -- both must be supplied explicitly or the
         dispatch fails loudly instead of running against the wrong experiment_id."""
         service = SimulationServiceRay()
-        with patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
             with pytest.raises(RuntimeError, match="experiment_id"):
                 service._sim_command(n_seeds=2, n_steps=600, chunk=60, n_generations=3, runner_s3_uri="s3://x/y.py")
             with pytest.raises(RuntimeError, match="runner_s3_uri"):
@@ -528,7 +528,7 @@ class TestSimulationServiceRayBuild:
         """The comparison driver's own --max-generations flag is a separate knob
         from plain n_generations -- composite selection wins regardless."""
         service = SimulationServiceRay()
-        with patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
             cmd = service._sim_command(n_seeds=1, n_steps=10, chunk=4, composite="v2ecoli", n_generations=3)
         assert "run_comparison_ensemble.py" in cmd
         assert "run_batch_baseline_ray.py" not in cmd
@@ -536,7 +536,7 @@ class TestSimulationServiceRayBuild:
     def test_sim_command_vecoli_source_only_appended_for_upstream_vecoli(self) -> None:
         """--vecoli-source is meaningful only for --composite vecoli."""
         service = SimulationServiceRay()
-        with patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
             vecoli = service._sim_command(
                 n_seeds=1, n_steps=10, chunk=4, composite="vecoli", vecoli_source="vivarium-process"
             )
@@ -630,7 +630,7 @@ class TestIsUpstreamVecoli:
     """The single routing predicate shared by submit_ecoli_simulation_job and _sim_command."""
 
     def test_only_vecoli_is_upstream(self) -> None:
-        from sms_api.simulation.simulation_service_ray import _is_upstream_vecoli
+        from viva_api.simulation.simulation_service_ray import _is_upstream_vecoli
 
         assert _is_upstream_vecoli("vecoli") is True
         assert _is_upstream_vecoli("v2ecoli") is False
@@ -644,13 +644,13 @@ class TestSimulationServiceRayBuildSubmit:
     async def test_run_build_submits_to_amd64_queue_and_polls(self) -> None:
         service = SimulationServiceRay()
         with (
-            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
             patch(
-                "sms_api.simulation.simulation_service_ray.batch_build.submit_batch_build",
+                "viva_api.simulation.simulation_service_ray.batch_build.submit_batch_build",
                 new=AsyncMock(return_value="build-job-1"),
             ) as mock_submit,
             patch(
-                "sms_api.simulation.simulation_service_ray.batch_build.poll_batch_jobs",
+                "viva_api.simulation.simulation_service_ray.batch_build.poll_batch_jobs",
                 new=AsyncMock(),
             ) as mock_poll,
         ):
@@ -664,12 +664,12 @@ class TestSimulationServiceRayBuildSubmit:
     async def test_submit_build_returns_local_job(self) -> None:
         service = SimulationServiceRay()
         with (
-            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
             patch(
-                "sms_api.simulation.simulation_service_ray.batch_build.submit_batch_build",
+                "viva_api.simulation.simulation_service_ray.batch_build.submit_batch_build",
                 new=AsyncMock(return_value="bj"),
             ),
-            patch("sms_api.simulation.simulation_service_ray.batch_build.poll_batch_jobs", new=AsyncMock()),
+            patch("viva_api.simulation.simulation_service_ray.batch_build.poll_batch_jobs", new=AsyncMock()),
         ):
             job_id = await service.submit_build_image_job(_v2ecoli_simulator())
         assert job_id.backend == JobBackend.LOCAL
@@ -688,8 +688,8 @@ class TestEnsureMnpJobDef:
         }
         service = SimulationServiceRay()
         with (
-            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("sms_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
         ):
             jd = service._ensure_mnp_job_def(image, "abc1234")
         assert jd == "smscdk-ray-mnp-abc1234:5"
@@ -710,8 +710,8 @@ class TestEnsureArrayJobDef:
         }
         service = SimulationServiceRay()
         with (
-            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("sms_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
         ):
             jd = service._ensure_array_job_def(image, "abc1234")
         assert jd == "smscdk-ray-array-abc1234:5"
@@ -745,8 +745,8 @@ class TestEnsureArrayJobDef:
         service = SimulationServiceRay()
         new_image = "476270107793.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:def5678"
         with (
-            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("sms_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
         ):
             jd = service._ensure_array_job_def(new_image, "def5678")
         assert jd == "smscdk-ray-array-def5678:1"
@@ -764,8 +764,8 @@ class TestEnsureArrayJobDef:
         mock_batch.describe_job_definitions.return_value = {"jobDefinitions": []}
         service = SimulationServiceRay()
         with (
-            patch("sms_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("sms_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
             pytest.raises(RuntimeError, match="Base Array job definition"),
         ):
             service._ensure_array_job_def("some:image", "abc1234")

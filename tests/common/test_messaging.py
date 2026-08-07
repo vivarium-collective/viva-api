@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from sms_api.common.messaging.messaging_service_redis import MessagingServiceRedis
+from viva_api.common.messaging.messaging_service_redis import MessagingServiceRedis
 
 
 @pytest.mark.asyncio

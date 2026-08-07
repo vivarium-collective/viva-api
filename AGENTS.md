@@ -28,20 +28,20 @@ uv run pytest -s -m <marker>
 
 ## Generated code — NEVER edit by hand
 
-- `sms_api/api/client/` — auto-generated OpenAPI client via `openapi-python-client`
-- `sms_api/api/spec/` — auto-generated OpenAPI spec from route introspection
+- `viva_api/api/client/` — auto-generated OpenAPI client via `openapi-python-client`
+- `viva_api/api/spec/` — auto-generated OpenAPI spec from route introspection
 - Regenerate both with `make api_client`
 
 ## Architecture
 
-- **Entrypoints**: `sms_api/api/main.py` (FastAPI server), `app/cli.py` (Typer CLI, entry `atlantis`), `app/tui.py` (Textual TUI), `app/gui.py` (Marimo GUI)
+- **Entrypoints**: `viva_api/api/main.py` (FastAPI server), `app/cli.py` (Typer CLI, entry `atlantis`), `app/tui.py` (Textual TUI), `app/gui.py` (Marimo GUI)
 - **All three clients** implement the same EUTE workflow calling REST endpoints. Prefer CLI for testing (`uv run atlantis <command>`).
-- **Backend dispatch**: `sms_api/config.py` — `compute_backend` setting. SLURM for `sms-api-rke*`, Batch for `sms-api-stanford*`.
-- **Services wired** in `sms_api/dependencies.py` via global singletons (SSH, DB, file, messaging, simulation).
+- **Backend dispatch**: `viva_api/config.py` — `compute_backend` setting. SLURM for `sms-api-rke*`, Batch for `sms-api-stanford*`.
+- **Services wired** in `viva_api/dependencies.py` via global singletons (SSH, DB, file, messaging, simulation).
 
 ## Testing quirks
 
-- `tests/conftest.py` MUST set `COMPUTE_BACKEND` and `PUBLIC_MODE` env vars **before** any `sms_api` imports (module-level code reads them at import time).
+- `tests/conftest.py` MUST set `COMPUTE_BACKEND` and `PUBLIC_MODE` env vars **before** any `viva_api` imports (module-level code reads them at import time).
 - Integration tests (`tests/integration/`) need SSH access; auto-skipped if `SLURM_SUBMIT_KEY_PATH` not set.
 - Uses testcontainers for Postgres, Redis, MongoDB fixtures.
 - Centralized fixtures live in `tests/fixtures/`, re-exported via `tests/conftest.py`.
@@ -50,11 +50,11 @@ uv run pytest -s -m <marker>
 
 - Env file: `assets/dev/config/.dev_env` (contains real credentials — do not commit changes)
 - Python 3.13, uv package manager, hatchling build backend
-- ruff line-length 120, mypy strict mode (excludes: `sms_api/api/client/`, `app/ui/`, `notes/`, `scratchpads/`)
+- ruff line-length 120, mypy strict mode (excludes: `viva_api/api/client/`, `app/ui/`, `notes/`, `scratchpads/`)
 
 ## Version bump checklist (6 files, all must match)
 
-1. `sms_api/version.py`
+1. `viva_api/version.py`
 2. `pyproject.toml`
 3. `kustomize/overlays/sms-api-stanford-test/kustomization.yaml` (sms-api only; keep sms-ptools at 0.5.9)
 4. `kustomize/overlays/sms-api-stanford/kustomization.yaml`

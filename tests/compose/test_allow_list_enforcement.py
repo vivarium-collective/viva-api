@@ -1,8 +1,8 @@
 import pytest
 from fastapi import HTTPException
 
-from sms_api.compose.handlers import _check_allow_list
-from sms_api.compose.models import PBAllowList
+from viva_api.compose.handlers import _check_allow_list
+from viva_api.compose.models import PBAllowList
 
 
 def test_allowed_deps_pass() -> None:

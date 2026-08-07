@@ -16,7 +16,7 @@
             "module": "uvicorn",
             "python": "${workspaceFolder}/.venv/bin/python",
             "args": [
-                "sms_api.api.main:app",
+                "viva_api.api.main:app",
                 "--reload",
                 "--port",
                 "8888",

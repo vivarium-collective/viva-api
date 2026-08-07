@@ -10,27 +10,27 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport
 
-from sms_api.analysis.models import (
+from viva_api.analysis.models import (
     AnalysisConfig,
     AnalysisDomain,
     ExperimentAnalysisRequest,
 )
-from sms_api.api import request_examples
-from sms_api.api import request_examples as examples
-from sms_api.api.client import Client
-from sms_api.api.main import app
-from sms_api.common.gateway.utils import generate_analysis_request
-from sms_api.common.hpc.slurm_service import SlurmService
-from sms_api.common.messaging.messaging_service_redis import MessagingServiceRedis
-from sms_api.common.simulator_defaults import DEFAULT_SIMULATOR
-from sms_api.common.utils import get_uuid
-from sms_api.config import REPO_ROOT, get_settings
-from sms_api.dependencies import get_job_scheduler, set_job_scheduler
+from viva_api.api import request_examples
+from viva_api.api import request_examples as examples
+from viva_api.api.client import Client
+from viva_api.api.main import app
+from viva_api.common.gateway.utils import generate_analysis_request
+from viva_api.common.hpc.slurm_service import SlurmService
+from viva_api.common.messaging.messaging_service_redis import MessagingServiceRedis
+from viva_api.common.simulator_defaults import DEFAULT_SIMULATOR
+from viva_api.common.utils import get_uuid
+from viva_api.config import REPO_ROOT, get_settings
+from viva_api.dependencies import get_job_scheduler, set_job_scheduler
 
-# from sms_api.data.biocyc_service import BiocycService
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from sms_api.simulation.job_scheduler import JobScheduler
-from sms_api.simulation.models import (
+# from viva_api.data.biocyc_service import BiocycService
+from viva_api.simulation.database_service import DatabaseServiceSQL
+from viva_api.simulation.job_scheduler import JobScheduler
+from viva_api.simulation.models import (
     ParcaDatasetRequest,
     ParcaOptions,
     Simulation,
@@ -38,7 +38,7 @@ from sms_api.simulation.models import (
     SimulationRequest,
     Simulator,
 )
-from sms_api.simulation.simulation_service import SimulationServiceHpc
+from viva_api.simulation.simulation_service import SimulationServiceHpc
 
 ENV = get_settings()
 
@@ -355,7 +355,7 @@ async def simulation_mock(database_service: DatabaseServiceSQL) -> Simulation:
     sim_config = SimulationConfig(  # type: ignore[call-arg]
         experiment_id=experiment_id,
         emitter="parquet",
-        emitter_arg={"out_dir": "/projects/SMS/sms_api/alex/sims/sms_multigeneration"},
+        emitter_arg={"out_dir": "/projects/SMS/viva_api/alex/sims/sms_multigeneration"},
     )
 
     # Create the simulation request
@@ -405,7 +405,7 @@ async def large_simulation_mock(database_service: DatabaseServiceSQL) -> Simulat
     sim_config = SimulationConfig(  # type: ignore[call-arg]
         experiment_id=experiment_id,
         emitter="parquet",
-        emitter_arg={"out_dir": "/projects/SMS/sms_api/alex/sims/sms_multigeneration"},
+        emitter_arg={"out_dir": "/projects/SMS/viva_api/alex/sims/sms_multigeneration"},
     )
 
     # Create the simulation request

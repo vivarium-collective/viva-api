@@ -176,7 +176,7 @@ cython_debug/
 .dev_env
 datamount/
 test_history/
-sms_api/api/_main.py
+viva_api/api/_main.py
 /assets/dev/config/sms_known_hosts
 simulation_configs/
 scratchpads/

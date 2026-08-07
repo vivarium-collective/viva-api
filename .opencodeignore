@@ -20,7 +20,7 @@ venv/
 env/
 
 # Auto-generated OpenAPI client (never edit manually — use make api_client)
-sms_api/api/client/
+viva_api/api/client/
 
 # Lock file (297-package dependency tree — not useful as context)
 uv.lock

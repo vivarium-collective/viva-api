@@ -1,4 +1,4 @@
-from sms_api.simulation.models import (
+from viva_api.simulation.models import (
     ObservableInfoModel,
     SimulationObservableIndex,
     SimulationObservables,

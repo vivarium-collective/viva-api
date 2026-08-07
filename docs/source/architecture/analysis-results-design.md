@@ -25,7 +25,7 @@ S3 path or result DTO.
 ### Current state
 
 The Stanford **K8s/Batch** analysis path (`run_standalone_analysis` → `submit_standalone_analysis`,
-`sms_api/common/handlers/simulations.py:1459`, `sms_api/simulation/simulation_service_k8s.py:333`) fires
+`viva_api/common/handlers/simulations.py:1459`, `viva_api/simulation/simulation_service_k8s.py:333`) fires
 a fire-and-forget K8s Job, **persists nothing**, has **no list/status/fetch endpoint and no
 idempotency**, and its K8s Job name (`ana-{safe_id}`) is not unique per sampling (collision across
 `n_tp`). The legacy `POST /analyses` path is SLURM-only and **synchronous** (blocks polling the job to
@@ -48,7 +48,7 @@ retrieve are separate operations; retrieval never triggers computation.
 
 ### 1. Data model — generalize the existing `analysis` table (do **not** fork a new table)
 
-Keep `ORMAnalysis` (table `analysis`, `sms_api/simulation/tables_orm.py:209`) as the single, general
+Keep `ORMAnalysis` (table `analysis`, `viva_api/simulation/tables_orm.py:209`) as the single, general
 record of **all** analysis types, with `config` (JSONB) remaining the authoritative store of arbitrary
 analysis config. `n_tp` is merely the first attribute we need to *query* on; we denormalize/index only
 what we must, extensible later. Add these **nullable** columns (nullable so legacy rows and the existing
@@ -68,17 +68,17 @@ what we must, extensible later. Add these **nullable** columns (nullable so lega
 - Legacy columns (`name`, `config`, `last_updated`, `job_name`, `job_id`) and `to_dto()` are unchanged
   — additive only. **The K8s standalone path, which persists nothing today, starts INSERTing here.**
 - **Idempotency** is handler-level (query-then-insert, like the parca dedup at
-  `sms_api/simulation/database_service.py:430`), **not** a DB unique constraint — the table is general
+  `viva_api/simulation/database_service.py:430`), **not** a DB unique constraint — the table is general
   and other analysis kinds could legitimately share `(experiment_id, n_tp)`. For this use case, look up
   the latest row matching `(experiment_id, n_tp)` for the ptools bundle. (A partial unique index can be
   added later if we formalize an analysis-kind.)
-- `AnalysisStatusDB` maps to the existing `JobStatus` (`sms_api/common/models.py:91`):
+- `AnalysisStatusDB` maps to the existing `JobStatus` (`viva_api/common/models.py:91`):
   COMPUTING ↔ PENDING/RUNNING/QUEUED/WAITING/UNKNOWN, READY ↔ COMPLETED, FAILED ↔ FAILED/CANCELLED.
 - **Alembic migration** `alembic/versions/<rev>_add_analysis_query_columns.py`
   (`down_revision="c1a2b3d4e5f6"`), mirroring `c1a2b3d4e5f6_add_tags_to_simulation.py`: `add_column`
   each nullable column + the enum type + indexes on `experiment_id`/`n_tp`/`simulation_id`; `downgrade`
   drops them + the enum.
-- **Reconciler fingerprint** (`sms_api/simulation/db_reconcile.py`): a `_column_exists(conn, "analysis",
+- **Reconciler fingerprint** (`viva_api/simulation/db_reconcile.py`): a `_column_exists(conn, "analysis",
   "n_tp")` predicate; append `("<rev>", "analysis.n_tp column exists")` to `LEGACY_FINGERPRINTS` and
   `_LEGACY_PREDICATES` (after the tags entry). See the "Database migrations" section in `CLAUDE.md` for
   why every new migration also needs a fingerprint marker while `create_all` still bootstraps prod DBs.
@@ -91,13 +91,13 @@ Build on `insert_analysis` / `get_analysis` / `list_analyses` (`database_service
 - `get_analysis_by_experiment_ntp(experiment_id, n_tp) -> ExperimentAnalysisDTO | None`
 - extend `list_analyses(*, experiment_id=None, simulation_id=None)` with optional filters (keep the no-arg behavior).
 - `update_analysis_status(analysis_id, status, result_uri=None, error_message=None) -> ExperimentAnalysisDTO`
-- Extend `ExperimentAnalysisDTO` (`sms_api/analysis/models.py:254`) with the new optional fields
+- Extend `ExperimentAnalysisDTO` (`viva_api/analysis/models.py:254`) with the new optional fields
   (`experiment_id`, `n_tp`, `status`, `result_uri`, `simulation_id`, `backend`, timestamps) so one DTO
   serves both `to_dto()` and the new endpoints; `ORMAnalysis.to_dto()` populates them when present.
 
 ### 3. Submit + idempotency (nonblocking)
 
-Add `AVAILABLE_NTP = [10, 50, 100]` to `sms_api/analysis/models.py` (single source of truth). New
+Add `AVAILABLE_NTP = [10, 50, 100]` to `viva_api/analysis/models.py` (single source of truth). New
 handler `request_analysis_sampling(db, simulation_id, n_tp)`:
 
 1. Validate `n_tp in AVAILABLE_NTP` (else 400/422); `get_simulation(id)` (404 if none) → `experiment_id`.
@@ -132,7 +132,7 @@ only reads/persists status — it never submits or waits:
   → FAILED (persist + error) / still RUNNING (stay COMPUTING) / None-with-no-S3 after a grace window →
   FAILED.
 
-### 5. Endpoints (`sms_api/api/routers/sms.py`, tag `["Analyses"]`, new unique `operation_id`s)
+### 5. Endpoints (`viva_api/api/routers/sms.py`, tag `["Analyses"]`, new unique `operation_id`s)
 
 Retrieval and status are keyed by **analysis database id** (reusing the existing `/analyses/{id}`
 resource family: `get_analysis_spec` `sms.py:675`, `/analyses/{id}/status` `:693`, `/log` `:720`,
@@ -179,7 +179,7 @@ Config-first, two tiers:
 **S3 write/read double-nesting asymmetry.** `run_standalone_analysis` writes `outdir` under the
 *single-nested* `NextflowLayout.output_uri` (`…/{exp}/analyses/…`), while `_download_outputs_from_s3`
 reads the *double-nested* `NextflowLayout.experiment_prefix` (`…/{exp}/{exp}/analyses/…`)
-(`sms_api/common/storage/data_layout.py:94`). Before wiring the readiness probe / `result_uri`, **list a
+(`viva_api/common/storage/data_layout.py:94`). Before wiring the readiness probe / `result_uri`, **list a
 real Stanford `sim*` experiment's `analyses/` prefix in S3** to confirm which nesting the standalone K8s
 analysis job actually writes — the probe and `result_uri` must match reality.
 
@@ -187,12 +187,12 @@ analysis job actually writes — the probe and `result_uri` must match reality.
 
 ### Files
 
-**Modify:** `sms_api/simulation/tables_orm.py` (nullable columns + `AnalysisStatusDB` enum; extend
-`to_dto()`) · `sms_api/analysis/models.py` (`AVAILABLE_NTP` + extend `ExperimentAnalysisDTO`) ·
-`sms_api/simulation/database_service.py` (extend analysis methods) · `sms_api/common/handlers/simulations.py`
-(new handlers + shared config builder + `infer_n_tp_from_tsv`) · `sms_api/simulation/simulation_service_k8s.py`
-(unique job name) · `sms_api/api/routers/sms.py` (routes) · `sms_api/simulation/db_reconcile.py`
-(fingerprint) · `sms_api/analysis/analysis_service.py` (extract `n_tp` helper).
+**Modify:** `viva_api/simulation/tables_orm.py` (nullable columns + `AnalysisStatusDB` enum; extend
+`to_dto()`) · `viva_api/analysis/models.py` (`AVAILABLE_NTP` + extend `ExperimentAnalysisDTO`) ·
+`viva_api/simulation/database_service.py` (extend analysis methods) · `viva_api/common/handlers/simulations.py`
+(new handlers + shared config builder + `infer_n_tp_from_tsv`) · `viva_api/simulation/simulation_service_k8s.py`
+(unique job name) · `viva_api/api/routers/sms.py` (routes) · `viva_api/simulation/db_reconcile.py`
+(fingerprint) · `viva_api/analysis/analysis_service.py` (extract `n_tp` helper).
 
 **Create:** `alembic/versions/<rev>_add_analysis_query_columns.py` · `scripts/backfill_analysis_results.py`
 · tests below.

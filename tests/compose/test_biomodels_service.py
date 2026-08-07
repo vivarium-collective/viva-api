@@ -1,10 +1,10 @@
-"""Unit tests for sms_api/compose/biomodels_service.py (EBI calls mocked)."""
+"""Unit tests for viva_api/compose/biomodels_service.py (EBI calls mocked)."""
 
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sms_api.compose.biomodels_service import (
+from viva_api.compose.biomodels_service import (
     BiomodelLoadResult,
     BiomodelsService,
     UniformTimeCourseSpec,

@@ -17,11 +17,11 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from sms_api.api.main import app
-from sms_api.common.ssh.ssh_service import SSHSessionService
-from sms_api.config import get_settings
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from sms_api.simulation.models import (
+from viva_api.api.main import app
+from viva_api.common.ssh.ssh_service import SSHSessionService
+from viva_api.config import get_settings
+from viva_api.simulation.database_service import DatabaseServiceSQL
+from viva_api.simulation.models import (
     Simulation,
 )
 
@@ -109,7 +109,7 @@ async def test_get_simulation_data(
     """Test GET simulation data endpoint with both response types.
 
     This test manually inserts a simulation into the database that references
-    the existing simulation output at /projects/SMS/sms_api/alex/sims/sms_multigeneration,
+    the existing simulation output at /projects/SMS/viva_api/alex/sims/sms_multigeneration,
     then calls the get_simulation_data endpoint to retrieve the outputs.
 
     Tests both 'file' and 'streaming' response_type modes.
@@ -208,7 +208,7 @@ async def test_archive_contents_match_source(
     """
     Test that archived contents exactly match the source directory.
     """
-    source_dir = Path("/Volumes/SMS/sms_api/alex/sims/sms_multigeneration/analyses")
+    source_dir = Path("/Volumes/SMS/viva_api/alex/sims/sms_multigeneration/analyses")
     transport = ASGITransport(app=fastapi_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.post(f"{base_router}/simulations/{simulation_mock.database_id}/data")

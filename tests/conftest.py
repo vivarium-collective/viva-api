@@ -1,8 +1,8 @@
-# ruff: noqa: E402  (os.environ must be set before any sms_api imports)
+# ruff: noqa: E402  (os.environ must be set before any viva_api imports)
 import os
 import socket
 
-# Set mandatory config before any sms_api imports (module-level code in
+# Set mandatory config before any viva_api imports (module-level code in
 # simulator_defaults.py reads these at import time).
 os.environ.setdefault("COMPUTE_BACKEND", "slurm")
 os.environ.setdefault("PUBLIC_MODE", "false")
@@ -20,7 +20,7 @@ def _hpc_reachable() -> bool:
     on os.path.isfile(key_path) (False for "") makes them skip cleanly instead.
     """
     try:
-        from sms_api.config import get_settings
+        from viva_api.config import get_settings
 
         settings = get_settings()
         host = settings.slurm_submit_host

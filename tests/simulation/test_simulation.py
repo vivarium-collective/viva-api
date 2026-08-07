@@ -7,11 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from sms_api.common.models import JobStatus
-from sms_api.config import get_settings
-from sms_api.simulation.database_service import DatabaseServiceSQL
-from sms_api.simulation.hpc_utils import get_correlation_id
-from sms_api.simulation.models import (
+from tests.fixtures.api_fixtures import SimulatorRepoInfo
+from viva_api.common.models import JobStatus
+from viva_api.config import get_settings
+from viva_api.simulation.database_service import DatabaseServiceSQL
+from viva_api.simulation.hpc_utils import get_correlation_id
+from viva_api.simulation.models import (
     JobType,
     ParcaDatasetRequest,
     ParcaOptions,
@@ -19,8 +20,7 @@ from sms_api.simulation.models import (
     SimulationRequest,
     SimulatorVersion,
 )
-from sms_api.simulation.simulation_service import SimulationServiceHpc
-from tests.fixtures.api_fixtures import SimulatorRepoInfo
+from viva_api.simulation.simulation_service import SimulationServiceHpc
 
 
 @pytest.mark.integration

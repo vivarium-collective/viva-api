@@ -6,16 +6,16 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from sms_api.common.models import JobBackend
-from sms_api.compose import simulation_service_ray as mod
-from sms_api.compose.container_def import ContainerizationFileRepr
-from sms_api.compose.models import (
+from viva_api.common.models import JobBackend
+from viva_api.compose import simulation_service_ray as mod
+from viva_api.compose.container_def import ContainerizationFileRepr
+from viva_api.compose.models import (
     ComposeSimulation,
     ComposeSimulationRequest,
     ComposeSimulatorVersion,
     SimulationFileType,
 )
-from sms_api.compose.simulation_service_ray import ComposeSimulationServiceRay
+from viva_api.compose.simulation_service_ray import ComposeSimulationServiceRay
 
 
 def _settings(**overrides: object) -> types.SimpleNamespace:
@@ -169,7 +169,7 @@ async def test_submit_simulation_job_uses_the_unified_ray_num_nodes_setting(
     fake_file_service = AsyncMock()
     fake_file_service.upload_file = AsyncMock()
 
-    with patch("sms_api.dependencies.get_file_service", return_value=fake_file_service):
+    with patch("viva_api.dependencies.get_file_service", return_value=fake_file_service):
         await svc.submit_simulation_job(simulation, experiment_id="exp-1")
 
     assert captured["num_nodes"] == 24
