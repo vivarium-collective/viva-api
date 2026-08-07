@@ -17,16 +17,3 @@ spec:
     name: ptools
     port: 1555
   targetGroupARN: arn:aws-us-gov:elasticloadbalancing:us-gov-west-1:476270107793:targetgroup/smscdkinternalalb-ptools/fa951d772cbeeae1
----
-# Binds the workbench Service to the sms-cdk workbench target group. The two
-# listener rules /workbench/* and /bigraph-loom/* both forward to this one TG.
-# ARN = `WorkbenchTargetGroupArn` output of the `smscdk-internal-alb` stack.
-apiVersion: elbv2.k8s.aws/v1beta1
-kind: TargetGroupBinding
-metadata:
-  name: workbench-binding
-spec:
-  serviceRef:
-    name: workbench
-    port: 8000
-  targetGroupARN: arn:aws-us-gov:elasticloadbalancing:us-gov-west-1:476270107793:targetgroup/smscdkinternalalb-workbench/209905395673c80f
