@@ -10,7 +10,12 @@ from async_lru import alru_cache
 from viva_api.common.hpc.slurm_service import SlurmService
 from viva_api.common.models import JobBackend, SSHTarget
 from viva_api.compose.database_service import ComposeDatabaseService
-from viva_api.compose.models import ComposeHpcRun, ComposeJobStatus, ComposeWorkerEvent, ComposeWorkerEventMessagePayload
+from viva_api.compose.models import (
+    ComposeHpcRun,
+    ComposeJobStatus,
+    ComposeWorkerEvent,
+    ComposeWorkerEventMessagePayload,
+)
 from viva_api.config import ComputeBackend, get_settings
 from viva_api.dependencies import get_ssh_session_service
 

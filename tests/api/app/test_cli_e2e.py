@@ -54,7 +54,7 @@ def _api_is_reachable() -> bool:
 
 def _aws_credentials_valid() -> bool:
     try:
-        result = subprocess.run(  # noqa: S603
+        result = subprocess.run(
             ["aws", "sts", "get-caller-identity"],  # noqa: S607
             capture_output=True,
             text=True,
