@@ -389,7 +389,7 @@ class TestAnalysisModulesFor:
 
         config = SimulationConfig(
             experiment_id="exp-1",
-            analysis_options=AnalysisOptions(**{
+            analysis_options=AnalysisOptions.model_validate({
                 "multiseed": {"cd1_metabolomics": {"generation_lower_bound": 5}},
                 "cpus": 4,
             }),
@@ -406,7 +406,9 @@ class TestAnalysisModulesFor:
         from sms_api.simulation.models import AnalysisOptions, SimulationConfig
 
         assert analysis_modules_for(SimulationConfig(experiment_id="exp-1")) == "applicable"
-        empty = SimulationConfig(experiment_id="exp-1", analysis_options=AnalysisOptions(**{"multiseed": {}}))
+        empty = SimulationConfig(
+            experiment_id="exp-1", analysis_options=AnalysisOptions.model_validate({"multiseed": {}})
+        )
         assert analysis_modules_for(empty) == "applicable"
 
 
@@ -537,7 +539,7 @@ class TestAnalysisDagNode:
 
         setattr(experiment_request.config, "n_init_sims", 4)  # noqa: B010
         experiment_request.config.generations = 3
-        experiment_request.config.analysis_options = AnalysisOptions(**{
+        experiment_request.config.analysis_options = AnalysisOptions.model_validate({
             "multiseed": {"cd1_fluxomics": {"generation_lower_bound": 5}}
         })
         simulation = await database_service.insert_simulation(sim_request=experiment_request)

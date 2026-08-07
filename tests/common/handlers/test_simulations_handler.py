@@ -397,7 +397,7 @@ async def test_ray_native_default_modules_prefer_the_simulations_own_options() -
     spec.analyses through) must have those re-run on demand, not a generic default
     -- and must match what the dispatch DAG's own analysis node would run."""
     simulation = _make_ray_simulation()
-    simulation.config.analysis_options = AnalysisOptions(**{
+    simulation.config.analysis_options = AnalysisOptions.model_validate({
         "multiseed": {"cd1_proteomics": {"generation_lower_bound": 5}}
     })
     simulation.config.generations = 10
