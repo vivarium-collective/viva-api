@@ -58,8 +58,12 @@ images:
   # an MNP Ray cluster. Ray-MNP unchanged for ParCa, phase0/comparison-ensemble, and
   # colonies. Needs the new RAY_ARRAY_QUEUE/RAY_ARRAY_JOB_DEFINITION shared.env values
   # (smscdk-ray-batch stack's RayArrayJobDef, sms-cdk PR #33, deployed same session).
+  # 0.9.40 (#229): fix _submit_array's dependsOn -- real AWS Batch rejected
+  # {"jobId": ..., "type": "SEQUENTIAL"} for a job that also sets arrayProperties
+  # ("Job Id cannot be set when dependency type is SEQUENTIAL"), caught by the first
+  # real Array-jobs pilot dispatch. Now a plain {"jobId": ...} dependency.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.39
+    newTag: 0.9.40
   # ptools pinned to last-known-good tag — CI only builds sms-api, so there is
   # no newer sms-ptools:0.6.x image on ghcr.io.  0.5.9 is the tag the live Stanford
   # pod has been running successfully; keeping both namespaces pointing here
