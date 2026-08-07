@@ -12,6 +12,11 @@ AWS_REGION=us-gov-west-1
 SCRIPTS_DIR="${REPO_ROOT}/kustomize/scripts"
 SECRETS_DIR="${REPO_ROOT}/kustomize/overlays/${NAMESPACE}"
 MIGRATION_DIR="${REPO_ROOT}/kustomize/overlays/${NAMESPACE}-db-migration"
+# Sibling overlay (backlog item 21 split): vivarium-workbench's own
+# independently-applicable kustomization. It needs its own copy of
+# secret-ghcr.yaml (same pattern as MIGRATION_DIR above) since it doesn't
+# reference secret-shared.yaml at all (workbench has no Postgres creds).
+WORKBENCH_DIR="${REPO_ROOT}/kustomize/overlays/${NAMESPACE}-workbench"
 CONFIG_DIR="${REPO_ROOT}/kustomize/config/${NAMESPACE}"
 
 # Load secrets from data file (not committed to git)
@@ -94,6 +99,7 @@ echo "✓ secret-shared.yaml generated"
 echo "Generating GHCR secrets..."
 ${SCRIPTS_DIR}/sealed_secret_ghcr.sh --cert "${CERT_FILE}" --controller-name sealed-secrets --controller-namespace kube-system ${NAMESPACE} ${GH_USER_NAME} ${GH_USER_EMAIL} ${GH_PAT} > ${SECRETS_DIR}/secret-ghcr.yaml
 cp ${SECRETS_DIR}/secret-ghcr.yaml ${MIGRATION_DIR}/secret-ghcr.yaml
+cp ${SECRETS_DIR}/secret-ghcr.yaml ${WORKBENCH_DIR}/secret-ghcr.yaml
 echo "✓ secret-ghcr.yaml generated"
 
 echo ""
