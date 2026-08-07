@@ -142,8 +142,17 @@ images:
   # would have kept only the first-processed lineage -- same class of bug as
   # #674, recurring one level deeper. _merge_zarr_tree recurses into a
   # collision instead of skipping it, for both zarr conventions.
+  # 0.3.37 (workbench #753/#755/#756/#757/#759): fixes investigations dir
+  # resolution through WorkspacePaths in scaffold mutations (item 22 -- the
+  # investigation 404 bug); adds a UI trigger (Analyses button) to run
+  # analysis on an existing completed simulation instead of only at dispatch
+  # time (item 23, pairs with viva-api 0.9.41's analysis-DAG-node); aligns
+  # server-side canonical-run outcome resolution with the client's
+  # canonical:-flag semantics instead of last-run-wins; and adds a read-only
+  # GET /api/server-version endpoint so a published/readonly bundle can
+  # report what it's actually running.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.36
+    newTag: 0.3.37
 
 replicas:
   # Single writer: workbench holds a git working copy + SQLite on an RWO EBS volume.
