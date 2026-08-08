@@ -14,9 +14,20 @@ Prerequisites:
 - AWS credentials configured (AWS_PROFILE=stanford-sso)
 - Kubeconfig for EKS cluster
 - ECR repository exists (v2ecoli) with a built image for the resolved commit
-  (the LATEST commit on sms-ecoli's main branch, resolved live at test-run
-  time -- not hardcoded, see _get_or_create_sms_ecoli_simulator -- so make
-  sure that commit has actually been built and pushed before running this)
+  (the LATEST commit on AWS_BATCH_E2E_SMS_ECOLI_BRANCH, default "main",
+  resolved live at test-run time -- not hardcoded, see
+  _get_or_create_sms_ecoli_simulator -- so make sure that commit has actually
+  been built and pushed before running this)
+
+Pre-merge verification note (backlog items 33/34): the default branch is
+"main" for ongoing post-merge regression use, but sms-ecoli's own checkpoint/
+resume contract (PR #39 -- the 3 config keys _seed_generation_command always
+sends) isn't on main until that PR merges. Running this against main before
+then will reliably KeyError at container start (the exact bug PR #39's own
+2nd commit fixed) -- that's not a false alarm, it correctly reflects that
+main can't serve this dispatch shape yet. To actually pilot-verify PR #39
+pre-merge, override the branch:
+    AWS_BATCH_E2E_SMS_ECOLI_BRANCH=<PR #39's branch> AWS_BATCH_INTEGRATION=1 ...
 
 What this covers (backlog item 33 -- individual per-seed AWS Batch job
 chains): a genuine, small, real multiseed x multigeneration chain-dispatch
@@ -78,6 +89,9 @@ pytestmark = pytest.mark.skipif(
 # env for a bigger real run without editing this file.
 N_SEEDS = int(os.getenv("AWS_BATCH_E2E_N_SEEDS", "2"))
 N_GENERATIONS = int(os.getenv("AWS_BATCH_E2E_N_GENERATIONS", "2"))
+# "main" for ongoing post-merge regression use; override to pilot-verify an
+# unmerged sms-ecoli PR branch before it lands -- see module docstring.
+SMS_ECOLI_BRANCH = os.getenv("AWS_BATCH_E2E_SMS_ECOLI_BRANCH", "main")
 # A real ParCa + N*G real generation jobs (each its own container start, cache
 # stage, and the actual v2ecoli computation) can take a while end to end even
 # at this small scale; poll generously rather than risk a false failure from
@@ -91,16 +105,18 @@ TEST_EXPERIMENT_ID_PREFIX = "test-e2e-chain-dispatch"
 async def _get_or_create_sms_ecoli_simulator(
     database_service: DatabaseServiceSQL, ray_service: SimulationServiceRay
 ) -> SimulatorVersion:
-    """Resolve the LATEST real sms-ecoli commit live (not a hardcoded value
-    that would drift out of date -- mirrors DEFAULT_COMMIT's own "should be
-    latest" intent for the vEcoli-private default), reusing an existing DB row
-    for that exact commit if a prior run already created one."""
-    commit = await ray_service.get_latest_commit_hash(git_repo_url=RepoUrl.SMS_ECOLI_REPO_URL, git_branch="main")
+    """Resolve the LATEST real sms-ecoli commit live on SMS_ECOLI_BRANCH (not a
+    hardcoded value that would drift out of date -- mirrors DEFAULT_COMMIT's
+    own "should be latest" intent for the vEcoli-private default), reusing an
+    existing DB row for that exact commit if a prior run already created one."""
+    commit = await ray_service.get_latest_commit_hash(
+        git_repo_url=RepoUrl.SMS_ECOLI_REPO_URL, git_branch=SMS_ECOLI_BRANCH
+    )
     for simulator in await database_service.list_simulators():
         if simulator.git_commit_hash == commit and simulator.git_repo_url == RepoUrl.SMS_ECOLI_REPO_URL:
             return simulator
     return await database_service.insert_simulator(
-        git_commit_hash=commit, git_repo_url=RepoUrl.SMS_ECOLI_REPO_URL, git_branch="main"
+        git_commit_hash=commit, git_repo_url=RepoUrl.SMS_ECOLI_REPO_URL, git_branch=SMS_ECOLI_BRANCH
     )
 
 
