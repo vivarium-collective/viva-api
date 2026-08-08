@@ -3,7 +3,7 @@ Running a Sensitivity Campaign on AWS
 
 A **campaign** is a multi-parca run: several ParCa instances, each fed a
 different perturbed RNA-seq dataset, then simulated, analyzed, and compared.
-All of that machinery lives in vEcoli — sms-api just launches it.
+All of that machinery lives in vEcoli — viva-api just launches it.
 
 This tutorial is the shortest path from zero to a running campaign using
 ``atlantis`` and custom data sources. For the design and full data model,
@@ -23,7 +23,7 @@ Three sibling repos in the same parent directory:
 .. code-block:: text
 
    ~/code/
-     sms-api/              (this repo)
+     viva-api/              (this repo)
      vEcoli/               (or CovertLab/vEcoli fork on the accepted list)
      ecoli-sources/        (primary RNA-seq datasets + perturbation operators)
      ecoli-sources-vegas/  (optional private overlay)
@@ -47,14 +47,14 @@ Step 1 — Authenticate to AWS
    aws sts get-caller-identity
 
 If your profile also needs region, set ``AWS_REGION=us-east-1`` (or whatever
-matches the sms-api bucket). The ``--sources`` flag shells out to
+matches the viva-api bucket). The ``--sources`` flag shells out to
 ``aws s3 sync``, so whatever ``aws s3 ls s3://$STORAGE_S3_BUCKET/`` accepts
 will work here.
 
 Step 1b — Open a tunnel (GovCloud / internal-ALB deployments only)
 -------------------------------------------------------------------
 
-If you're targeting a public sms-api deployment (e.g. ``sms.cam.uchc.edu``,
+If you're targeting a public viva-api deployment (e.g. ``sms.cam.uchc.edu``,
 ``sms-dev.cam.uchc.edu``), **skip this step** — atlantis hits the public URL
 directly.
 
@@ -206,7 +206,7 @@ Step 6 — Build the simulator
 
 .. code-block:: bash
 
-   cd ~/code/sms-api
+   cd ~/code/viva-api
    uv run atlantis simulator latest \
        --repo-url https://github.com/CovertLab/vEcoli \
        --branch pilot-expression-noise
