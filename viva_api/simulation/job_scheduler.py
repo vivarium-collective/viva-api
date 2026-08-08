@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import logging
 
 from async_lru import alru_cache
@@ -10,7 +11,8 @@ from viva_api.common.models import JobBackend, JobStatus, SSHTarget
 from viva_api.config import get_settings
 from viva_api.dependencies import get_ssh_session_service
 from viva_api.simulation.database_service import DatabaseService
-from viva_api.simulation.models import WorkerEvent, WorkerEventMessagePayload
+from viva_api.simulation.models import HpcRun, WorkerEvent, WorkerEventMessagePayload
+from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +20,7 @@ logger = logging.getLogger(__name__)
 class JobScheduler:
     database_service: DatabaseService
     slurm_service: SlurmService | None
+    simulation_service_ray: SimulationServiceRay | None
     messaging_service: MessagingService
     _polling_task: asyncio.Task[None] | None = None
     _stop_event: asyncio.Event
@@ -27,10 +30,12 @@ class JobScheduler:
         messaging_service: MessagingService,
         database_service: DatabaseService,
         slurm_service: SlurmService | None = None,
+        simulation_service_ray: SimulationServiceRay | None = None,
     ):
         self.messaging_service = messaging_service
         self.database_service = database_service
         self.slurm_service = slurm_service
+        self.simulation_service_ray = simulation_service_ray
         self._stop_event = asyncio.Event()
 
     @alru_cache
@@ -86,6 +91,10 @@ class JobScheduler:
                 await self.update_running_jobs()
             except Exception:
                 logger.exception("Error during job polling")
+            try:
+                await self.update_chain_campaigns()
+            except Exception:
+                logger.exception("Error during chain-dispatch campaign polling")
             await asyncio.sleep(interval_seconds)
 
     async def update_running_jobs(self) -> None:
@@ -136,6 +145,108 @@ class JobScheduler:
             )
             await self.database_service.update_hpcrun_status(hpcrun_id=hpc_run.database_id, update=update)
             logger.info(f"Updated HpcRun {hpc_run.database_id} status to {new_status}")
+
+    async def update_chain_campaigns(self) -> None:
+        """Poll every active chain-dispatch campaign's tracked final-generation
+        job ids to terminal, then submit the analysis DAG node exactly once per
+        campaign (backlog item 33 rework — individual per-seed job chains,
+        replacing the per-generation-array "wave" design's own per-generation
+        poll-then-advance loop). Unlike that design, there is no "advance to
+        the next generation" step left to do here: AWS Batch's own dependsOn
+        already resolves each seed's chain natively (see
+        ``SimulationServiceRay.submit_chain_dispatch_job``); the only thing
+        left to poll for is "has every seed's chain reached a terminal state,"
+        answered by ``SimulationServiceRay.get_chain_campaign_result``. No-op
+        when no chain campaign is active, or on a deployment with no Ray/Batch
+        backend wired (SLURM-only deployments pass
+        ``simulation_service_ray=None``).
+        """
+        if self.simulation_service_ray is None:
+            return
+        # Narrow simulation_service_ray to non-None ONCE here (rather than a
+        # runtime `assert` inside `_advance_chain_campaign`, which -O would
+        # silently strip) and thread it through explicitly.
+        simulation_service_ray = self.simulation_service_ray
+
+        active_campaigns = await self.database_service.list_active_chain_campaigns()
+        if not active_campaigns:
+            logger.debug("No active chain-dispatch campaigns found for polling.")
+            return
+        for campaign in active_campaigns:
+            try:
+                await self._advance_chain_campaign(campaign, simulation_service_ray)
+            except Exception:
+                logger.exception("Error advancing chain-dispatch campaign HpcRun %s", campaign.database_id)
+
+    async def _advance_chain_campaign(self, campaign: HpcRun, simulation_service_ray: SimulationServiceRay) -> None:
+        """Handle one active chain-dispatch campaign HpcRun: no-op while any
+        tracked seed chain is still unresolved; once every tracked chain has
+        reached a terminal state, mark the campaign row terminal and, if at
+        least one seed chain succeeded, submit the analysis DAG node (see
+        ``update_chain_campaigns`` for the zero-succeeded case).
+
+        This method never marks an INDIVIDUAL chain job failed — a
+        permanently-failed seed's job already shows up as FAILED in
+        ``result.failed_job_ids`` via Batch's own dependency-failure
+        propagation (a later generation's job that depended on a failed one
+        auto-transitions to FAILED with no orchestrator action). The only
+        status write here is to the campaign's own tracking row.
+        """
+        job_ids = campaign.chain_final_job_ids or []
+        result = simulation_service_ray.get_chain_campaign_result(job_ids)
+        if not result.terminal:
+            return
+
+        succeeded = result.succeeded_job_ids
+        await self.database_service.update_hpcrun_status(
+            hpcrun_id=campaign.database_id,
+            update=JobStatusUpdate(
+                job_id=campaign.job_id,
+                status=JobStatus.COMPLETED if succeeded else JobStatus.FAILED,
+                end_time=datetime.datetime.now().isoformat(),
+                error_message=None if succeeded else "chain dispatch: zero seed chains succeeded",
+            ),
+        )
+        if not succeeded:
+            logger.warning(
+                "Chain dispatch: HpcRun %s had zero succeeded seed chains "
+                "(%d tracked, %d failed); campaign ends here, no analysis submitted.",
+                campaign.database_id,
+                len(job_ids),
+                len(result.failed_job_ids),
+            )
+            return
+
+        simulation = await self.database_service.get_simulation(simulation_id=campaign.ref_id)
+        if simulation is None:
+            logger.error("Chain dispatch: Simulation %s not found for HpcRun %s", campaign.ref_id, campaign.database_id)
+            return
+        simulator = await self.database_service.get_simulator(simulator_id=simulation.simulator_id)
+        if simulator is None:
+            logger.error(
+                "Chain dispatch: Simulator %s not found for simulation %s",
+                simulation.simulator_id,
+                campaign.ref_id,
+            )
+            return
+        n_generations = int(campaign.chain_n_generations or simulation.config.generations or 1)
+        total_n_seeds = int(simulation.num_seeds or len(job_ids))
+
+        analysis_job_id = await simulation_service_ray.submit_campaign_analysis(
+            simulation=simulation,
+            database_service=self.database_service,
+            commit=simulator.git_commit_hash,
+            total_n_seeds=total_n_seeds,
+            n_generations=n_generations,
+        )
+        logger.info(
+            "Chain dispatch %s: campaign HpcRun %s all-terminal (%d/%d chains succeeded) -> analysis job %s",
+            simulation.config.experiment_id,
+            campaign.database_id,
+            len(succeeded),
+            len(job_ids),
+            analysis_job_id,
+        )
 
     async def close(self) -> None:
         await self.stop_polling()
