@@ -751,7 +751,7 @@ class SimulationServiceRay(SimulationService):
         env = f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER}"
         return (
             f"OVERRIDES=$(python3 -c '{merge_py}'"
-            f" {static_overrides_json} {seed_indices_json} \"$AWS_BATCH_JOB_ARRAY_INDEX\" {bucket} {state_prefix})"
+            f' {static_overrides_json} {seed_indices_json} "$AWS_BATCH_JOB_ARRAY_INDEX" {bucket} {state_prefix})'
             f" && cd {V2ECOLI_DIR}"
             f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
             f" && {env} python /tmp/run_pbg.py"
@@ -1323,9 +1323,7 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
                 "(use submit_ecoli_simulation_job for single-generation runs)"
             )
         if n_seeds < 2:
-            raise ValueError(
-                "submit_wave_dispatch_job requires n_seeds > 1 (AWS Batch array jobs require size >= 2)"
-            )
+            raise ValueError("submit_wave_dispatch_job requires n_seeds > 1 (AWS Batch array jobs require size >= 2)")
 
         job_def_mnp = self._ensure_mnp_job_def(self._image_uri(commit), commit)
         cache_s3 = self._cache_s3_uri(commit)

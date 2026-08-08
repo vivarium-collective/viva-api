@@ -45,7 +45,10 @@ class TestRayLayout:
         assert RayLayout.parca_cache_uri("abc123", upstream=True) != RayLayout.parca_cache_uri("abc123")
 
     def test_wave_state_uri(self) -> None:
-        assert RayLayout.wave_state_uri("exp-abc", 4, 2) == "s3://my-bucket/vecoli-output/exp-abc/wave-state/seed4/gen2.pkl"
+        assert (
+            RayLayout.wave_state_uri("exp-abc", 4, 2)
+            == "s3://my-bucket/vecoli-output/exp-abc/wave-state/seed4/gen2.pkl"
+        )
 
     def test_wave_state_uri_generation_zero(self) -> None:
         assert RayLayout.wave_state_uri("exp", 0, 0) == "s3://my-bucket/vecoli-output/exp/wave-state/seed0/gen0.pkl"

@@ -764,8 +764,9 @@ class TestGetWaveResult:
         survivors = (4, 5, 9, 10, 14, 15, 16, 18, 20, 27)
         losses = [i for i in range(30) if i not in survivors]
         mock_batch = MagicMock()
+        status_summary = {"SUCCEEDED": 10, "FAILED": 20}
         mock_batch.describe_jobs.return_value = {
-            "jobs": [{"jobId": "wave-1", "arrayProperties": {"size": 30, "statusSummary": {"SUCCEEDED": 10, "FAILED": 20}}}]
+            "jobs": [{"jobId": "wave-1", "arrayProperties": {"size": 30, "statusSummary": status_summary}}]
         }
 
         def _list_jobs(**kwargs: Any) -> dict[str, Any]:

@@ -157,23 +157,27 @@ class JobScheduler:
         """
         if self.simulation_service_ray is None:
             return
+        # Narrow simulation_service_ray to non-None ONCE here (rather than a
+        # runtime `assert` inside `_advance_wave`, which -O would silently
+        # strip) and thread it through explicitly.
+        simulation_service_ray = self.simulation_service_ray
+
         active_waves = await self.database_service.list_active_wave_hpcruns()
         if not active_waves:
             logger.debug("No active wave-dispatch jobs found for polling.")
             return
         for wave in active_waves:
             try:
-                await self._advance_wave(wave)
+                await self._advance_wave(wave, simulation_service_ray)
             except Exception:
                 logger.exception("Error advancing wave HpcRun %s", wave.database_id)
 
-    async def _advance_wave(self, wave: HpcRun) -> None:
+    async def _advance_wave(self, wave: HpcRun, simulation_service_ray: SimulationServiceRay) -> None:
         """Handle one active wave HpcRun: no-op if still running; otherwise mark
         it terminal and, if survivors remain and generations remain, submit the
         next wave (see ``update_wave_jobs`` for what happens on the final wave).
         """
-        assert self.simulation_service_ray is not None  # guarded by update_wave_jobs's caller
-        result = self.simulation_service_ray.get_wave_result(wave.job_id.value)
+        result = simulation_service_ray.get_wave_result(wave.job_id.value)
         if not result.terminal:
             return
 
@@ -214,11 +218,13 @@ class JobScheduler:
 
         simulator = await self.database_service.get_simulator(simulator_id=simulation.simulator_id)
         if simulator is None:
-            logger.error("Wave dispatch: Simulator %s not found for simulation %s", simulation.simulator_id, wave.ref_id)
+            logger.error(
+                "Wave dispatch: Simulator %s not found for simulation %s", simulation.simulator_id, wave.ref_id
+            )
             return
         total_n_seeds = int(simulation.num_seeds or len(seed_indices))
 
-        next_job_id = await self.simulation_service_ray.submit_next_wave(
+        next_job_id = await simulation_service_ray.submit_next_wave(
             simulation=simulation,
             database_service=self.database_service,
             commit=simulator.git_commit_hash,
