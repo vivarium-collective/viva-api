@@ -700,6 +700,30 @@ class SimulationServiceRay(SimulationService):
         it via an offset (unlike ``_array_sim_command``'s BASE_SEED arithmetic,
         which only ever needs a contiguous range).
 
+        CROSS-REPO CONTRACT GAP, confirmed against primary sources this
+        session, NOT yet closed as of sms-ecoli PR #39 (``feat/per-generation-
+        wave-dispatch``): the overrides below set ``initial_generation_index``
+        (and the caller sets ``initial_carry_state_path``/``daughter_state_out
+        _path`` via the merge script) as TOP-LEVEL ``--overrides`` keys, which
+        ``run_pbg.py`` forwards to ``process_bigraph.composite_spec.
+        CompositeSpec.to_document(overrides=...)`` -> ``_merged_params``. That
+        method (verified directly, ``process_bigraph/composite_spec.py``)
+        raises ``KeyError: "unknown override(s): [...]"`` for ANY key not in
+        the composite's OWN declared ``@composite_generator(parameters={...})``
+        dict — it is a strict allowlist, not a passthrough. PR #39 threaded
+        the 3 new keys through ``BatchBaselineRunner.config_schema`` and
+        ``meta_composite.py``'s ``_lineage_node`` (a DIFFERENT, multi-branch
+        composite path), but NOT through ``v2ecoli/composites/batch_baseline.
+        py``'s own ``parameters={...}`` dict / ``batch_baseline()`` signature /
+        ``runner_config`` dict — which is the composite THIS command actually
+        dispatches through (``V2ECOLI_BATCH_BASELINE_COMPOSITE_ID``). Until
+        sms-ecoli adds the same 3 keys there (mirroring the exact pattern
+        already applied to ``BatchBaselineRunner``/``meta_composite.py``), a
+        real wave dispatch will fail fast with that KeyError at container
+        start. This command's shape is correct against the INTENDED full
+        contract; it is blocked on that small companion fix, not on anything
+        wrong here.
+
         ``seed_indices`` is embedded as a bare JSON int array (at most 1000
         ints for the canonical dispatch shape — comfortably under Batch's
         8192-byte containerOverrides.command cap; see
