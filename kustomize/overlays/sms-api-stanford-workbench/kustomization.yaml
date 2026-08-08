@@ -21,10 +21,13 @@ namespace: sms-api-stanford
 # recreate the workbench Deployment and silently wipe in-progress session
 # state. This split narrows that blast radius: a viva-api-only change now
 # renders and applies from ../sms-api-stanford alone, never touching this
-# kustomization's resources. It does NOT fix the underlying ephemeral-cache
-# defect (a legitimate workbench-image bump, node eviction, or OOM-kill still
-# wipes it) -- that requires moving the build-cache onto persistent storage,
-# tracked separately as the real fix for item 21.
+# kustomization's resources. Item 21's other half -- the underlying
+# ephemeral-cache defect itself (a legitimate workbench-image bump, node
+# eviction, or OOM-kill wiping /root/.pbg/build-cache) -- is now closed in
+# base/workbench/workbench.yaml: a second volumeMount of this SAME PVC
+# (subPath: build-cache) makes that path durable too, matching this
+# project's original intent (vivarium-workbench's docs/REFACTOR-PLAN.md
+# §2B.3).
 #
 # Apply independently:
 #   kubectl kustomize kustomize/overlays/sms-api-stanford-workbench | kubectl apply -f -
