@@ -338,12 +338,23 @@ async def run_workflow_legacy(
     job_id = await simulation_service.submit_ecoli_simulation_job(
         ecoli_simulation=simulation, database_service=database_service, correlation_id=correlation_id
     )
-    _ = await database_service.insert_hpcrun(
-        job_id=job_id,
-        job_type=JobType.SIMULATION,
-        ref_id=simulation.database_id,
-        correlation_id=correlation_id,
-    )
+    # Some dispatch shapes (chain-dispatch campaigns — backlog item 33) already
+    # record their OWN HpcRun row internally, using this SAME correlation_id,
+    # because that row needs fields (chain_n_generations/chain_final_job_ids) a
+    # generic caller has no way to populate. Guard against inserting a SECOND,
+    # generic row on top of it: get_hpcrun_by_ref (used by every real status
+    # endpoint) resolves to whichever row was inserted MOST RECENTLY, so a
+    # blind second insert here would permanently shadow the real, pollable
+    # campaign row with a stale one nobody ever updates. For every OTHER
+    # dispatch shape this is a pure no-op (a freshly-generated correlation_id
+    # can never already have a row), so behavior is unchanged for them.
+    if await database_service.get_hpcrun_id_by_correlation_id(correlation_id=correlation_id) is None:
+        _ = await database_service.insert_hpcrun(
+            job_id=job_id,
+            job_type=JobType.SIMULATION,
+            ref_id=simulation.database_id,
+            correlation_id=correlation_id,
+        )
 
     simulation.job_id = str(job_id)
     return simulation
@@ -649,13 +660,23 @@ async def run_simulation_workflow(  # noqa: C901
         ecoli_simulation=simulation, database_service=database_service, correlation_id=correlation_id
     )
 
-    # 8. Record HPC run
-    _ = await database_service.insert_hpcrun(
-        job_id=job_id,
-        job_type=JobType.SIMULATION,
-        ref_id=simulation.database_id,
-        correlation_id=correlation_id,
-    )
+    # 8. Record HPC run -- unless the dispatch shape already recorded its OWN
+    # row internally under this SAME correlation_id (chain-dispatch campaigns,
+    # backlog item 33: that row carries chain_n_generations/chain_final_job_ids,
+    # fields this generic call site has no way to populate). A blind second
+    # insert here would outrank it in get_hpcrun_by_ref (every real status
+    # endpoint's lookup resolves to the MOST RECENTLY inserted row for a given
+    # ref_id), permanently shadowing the real, pollable campaign row with a
+    # stale one nobody ever updates. For every other dispatch shape this check
+    # is a pure no-op (a freshly-generated correlation_id can't already have a
+    # row), so behavior is unchanged for them.
+    if await database_service.get_hpcrun_id_by_correlation_id(correlation_id=correlation_id) is None:
+        _ = await database_service.insert_hpcrun(
+            job_id=job_id,
+            job_type=JobType.SIMULATION,
+            ref_id=simulation.database_id,
+            correlation_id=correlation_id,
+        )
 
     simulation.job_id = str(job_id)
     return simulation

@@ -2,10 +2,7 @@
 and SimulationServiceRay submission/status/cancel (boto3 mocked, Postgres via testcontainers)."""
 
 import json
-import os
 import shlex
-import shutil
-import subprocess
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -53,12 +50,15 @@ def _ray_settings() -> MagicMock:
 
 
 def _fake_batch(submit_ids: list[str]) -> MagicMock:
-    """A boto3 Batch mock that supports the per-commit job-def derivation (both the
-    MNP and Array shapes) + submits.
+    """A boto3 Batch mock that supports the per-commit MNP job-def derivation +
+    submits. (The Array job-def branch this used to also support was removed
+    along with _ensure_array_job_def/_submit_array/_array_sim_command --
+    backlog item 33's canonical-dispatch routing made them dead code, their
+    only caller having been the array branch that rework replaced.)
 
-    describe_job_definitions returns the CDK base (with properties to clone) for
-    either base name, and "no existing revision" for any per-commit name; register
-    returns rev 1.
+    describe_job_definitions returns the CDK MNP base (with properties to
+    clone) for the base name, and "no existing revision" for any per-commit
+    name; register returns rev 1.
     """
     b = MagicMock()
     base_node_props = {
@@ -66,26 +66,11 @@ def _fake_batch(submit_ids: list[str]) -> MagicMock:
         "mainNode": 0,
         "nodeRangeProperties": [{"targetNodes": "0:", "container": {"image": "111.dkr.ecr.x/vecoli:ray", "vcpus": 16}}],
     }
-    base_container_props = {
-        "image": "111.dkr.ecr.x/vecoli:ray",
-        "resourceRequirements": [{"type": "VCPU", "value": "2"}, {"type": "MEMORY", "value": "16384"}],
-    }
 
     def _describe(**kwargs: Any) -> dict[str, Any]:
         name = kwargs.get("jobDefinitionName")
         if name == "smscdk-ray-mnp":  # MNP base
             return {"jobDefinitions": [{"revision": 7, "nodeProperties": base_node_props}]}
-        if name == "smscdk-ray-array":  # Array base
-            return {
-                "jobDefinitions": [
-                    {
-                        "revision": 3,
-                        "containerProperties": base_container_props,
-                        "retryStrategy": {"attempts": 2},
-                        "platformCapabilities": ["EC2"],
-                    }
-                ]
-            }
         return {"jobDefinitions": []}  # per-commit: none yet
 
     b.describe_job_definitions.side_effect = _describe
@@ -107,11 +92,6 @@ def _env_at(call: Any, index: int) -> dict[str, str]:
 def _env_of(call: Any) -> dict[str, str]:
     """Head (node 0) environment dict."""
     return _env_at(call, 0)
-
-
-def _array_env(call: Any) -> dict[str, str]:
-    """Environment dict for an Array job submission (containerOverrides, not nodeOverrides)."""
-    return {e["name"]: e["value"] for e in call.kwargs["containerOverrides"]["environment"]}
 
 
 class TestJobIdRay:
@@ -248,26 +228,137 @@ class TestSimulationServiceRaySubmit:
         reg_images = {nr["container"]["image"] for nr in reg.kwargs["nodeProperties"]["nodeRangeProperties"]}
         assert reg_images == {f"476270107793.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:{commit}"}
 
-    async def test_submit_routes_batch_baseline_to_array_jobs_when_multiseed(
+    async def test_submit_routes_canonical_batch_baseline_to_chain_dispatch_when_multiseed(
         self,
         experiment_request: "SimulationRequest",
         database_service: "DatabaseServiceSQL",
     ) -> None:
-        """The canonical batch_baseline sweep (n_seeds>1, generations>1, no composite
-        override) is Array-jobs-shaped: dispatched as N independent single-seed AWS
-        Batch Array children instead of an MNP Ray cluster -- ray-vs-batch-array-jobs
-        decision: Array jobs for canonical, Ray-MNP stays for colonies/anything that
-        genuinely needs Ray coordination. ParCa itself is unaffected (still a single
-        MNP job -- one deterministic computation, no seed-parallelism to exploit).
-        Also covers what the old MNP-routing test covered: the real request's own
-        experiment_id reaches the overrides (previously silently defaulted), the
-        generic run_pbg.py runner is used (not a v2ecoli-specific script), and the
-        runner is staged to S3 exactly once before the sim job is built."""
-        setattr(experiment_request.config, "n_init_sims", 4)  # noqa: B010
+        """The canonical batch_baseline sweep (composite is None, generations>1)
+        is now delegated ENTIRELY to submit_chain_dispatch_job (backlog item 33
+        rework) -- individual per-seed AWS Batch job chains, never the array-job
+        path (removed: _submit_array/_array_sim_command/_ensure_array_job_def no
+        longer exist at all -- a fresh repo-wide grep confirmed their only
+        caller was the array branch this replaced, before they were deleted).
+
+        This is the test that would have caught the real wiring gap found in
+        review: submit_chain_dispatch_job existed and was fully tested in
+        isolation from the moment it was built, but nothing on the REAL
+        submit_ecoli_simulation_job entrypoint ever called it until this
+        routing landed -- a real request would have silently kept exercising
+        the old array/wave-style path forever."""
+        setattr(experiment_request.config, "n_init_sims", 2)  # noqa: B010
         experiment_request.config.generations = 3
         simulation = await database_service.insert_simulation(sim_request=experiment_request)
 
-        mock_batch = _fake_batch(["parca-123", "sim-456", "analysis-789"])
+        # parca + 2 seeds x 3 generations = 7 real submissions -- not 1 array job.
+        submit_ids = ["parca-1", "s0g0", "s0g1", "s0g2", "s1g0", "s1g1", "s1g2"]
+        mock_batch = _fake_batch(submit_ids)
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+            patch("viva_api.simulation.simulation_service_ray.asyncio.sleep", new=AsyncMock()),
+        ):
+            job_id = await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-real-entry"
+            )
+
+        # Chain-dispatch's own return convention: the ParCa job id, never a
+        # single "sim" job id (there isn't one anymore).
+        assert job_id == JobId.ray("parca-1")
+        assert mock_batch.submit_job.call_count == 7
+        calls = mock_batch.submit_job.call_args_list
+
+        # Every submission is a plain MNP job -- arrayProperties never appears
+        # anywhere in this call sequence.
+        for call in calls:
+            assert "arrayProperties" not in call.kwargs
+        for call in calls[1:]:
+            assert "nodeOverrides" in call.kwargs
+
+        # Dependency chain for a representative seed (seed 0) and confirmation
+        # seed 1's chain is entirely independent, both rooted at the SAME ParCa job.
+        _parca_call, s0g0, s0g1, s0g2, s1g0, s1g1, s1g2 = calls
+        assert s0g0.kwargs["dependsOn"] == [{"jobId": "parca-1", "type": "SEQUENTIAL"}]
+        assert s0g1.kwargs["dependsOn"] == [{"jobId": "s0g0", "type": "SEQUENTIAL"}]
+        assert s0g2.kwargs["dependsOn"] == [{"jobId": "s0g1", "type": "SEQUENTIAL"}]
+        assert s1g0.kwargs["dependsOn"] == [{"jobId": "parca-1", "type": "SEQUENTIAL"}]
+        assert s1g1.kwargs["dependsOn"] == [{"jobId": "s1g0", "type": "SEQUENTIAL"}]
+        assert s1g2.kwargs["dependsOn"] == [{"jobId": "s1g1", "type": "SEQUENTIAL"}]
+
+        # The campaign row was recorded under the CALLER's OWN correlation_id
+        # (threaded through, not a fresh internally-generated one) -- this is
+        # what lets a real status lookup by that id resolve to the actual
+        # campaign row, not a stale duplicate a caller's own generic
+        # insert_hpcrun would otherwise shadow it with (see the idempotent-
+        # insert guard in viva_api.common.handlers.simulations).
+        campaign_hpcrun_id = await database_service.get_hpcrun_id_by_correlation_id(correlation_id="corr-real-entry")
+        assert campaign_hpcrun_id is not None
+        campaign = await database_service.get_hpcrun(campaign_hpcrun_id)
+        assert campaign is not None
+        assert campaign.chain_n_generations == 3
+        assert campaign.chain_final_job_ids == ["s0g2", "s1g2"]
+
+    async def test_submit_routes_canonical_batch_baseline_to_chain_dispatch_when_single_seed(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """Unlike the superseded array-job design (which required n_seeds > 1 --
+        AWS Batch's own array-size floor, verified against the real API model),
+        a single-seed canonical batch_baseline request is now ALSO routed to
+        chain-dispatch: that floor doesn't apply at all to independent per-seed
+        MNP jobs, confirmed here at the REAL entrypoint (not just in
+        TestChainDispatchSubmission's own isolated coverage of the same claim)."""
+        setattr(experiment_request.config, "n_init_sims", 1)  # noqa: B010
+        experiment_request.config.generations = 3
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        submit_ids = ["parca-1", "s0g0", "s0g1", "s0g2"]
+        mock_batch = _fake_batch(submit_ids)
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+            patch("viva_api.simulation.simulation_service_ray.asyncio.sleep", new=AsyncMock()),
+        ):
+            job_id = await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-single-real"
+            )
+
+        assert job_id == JobId.ray("parca-1")
+        assert mock_batch.submit_job.call_count == 4  # parca + 1 seed x 3 generations
+        _parca_call, g0, g1, g2 = mock_batch.submit_job.call_args_list
+        assert "arrayProperties" not in g0.kwargs
+        assert g0.kwargs["dependsOn"] == [{"jobId": "parca-1", "type": "SEQUENTIAL"}]
+        assert g1.kwargs["dependsOn"] == [{"jobId": "s0g0", "type": "SEQUENTIAL"}]
+        assert g2.kwargs["dependsOn"] == [{"jobId": "s0g1", "type": "SEQUENTIAL"}]
+
+    async def test_composite_comparison_ensemble_with_multiple_generations_stays_on_mnp(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """Chain-dispatch is v2ecoli-only (backlog item 33). A composite-driven
+        two-engine comparison-ensemble request must NOT be routed there even
+        with generations > 1 -- guards against the real regression risk this
+        rework's new routing guard could introduce (an over-broad condition
+        that also swallows composite requests)."""
+        setattr(experiment_request.config, "composite", "vecoli")  # noqa: B010
+        experiment_request.config.generations = 3
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        mock_batch = _fake_batch(["parca-123", "sim-456"])
         fake_file_service = AsyncMock()
         fake_file_service.upload_file = AsyncMock()
 
@@ -279,106 +370,19 @@ class TestSimulationServiceRaySubmit:
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             job_id = await service.submit_ecoli_simulation_job(
-                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-2"
+                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-composite"
             )
 
-        fake_file_service.upload_file.assert_awaited_once()
+        # A single MNP sim job, gated on parca -- not chain-dispatch's N*G shape.
         assert job_id == JobId.ray("sim-456")
-        # parca -> sim(array) -> analysis: the analysis DAG node rides along.
-        assert mock_batch.submit_job.call_count == 3
-        parca_call, sim_call, _analysis_call = mock_batch.submit_job.call_args_list
-
-        # ParCa: unchanged -- still a 1-node MNP job, no dependency.
-        assert parca_call.kwargs["nodeOverrides"]["numNodes"] == 1
-        assert "dependsOn" not in parca_call.kwargs
-
-        # Sim: an Array job, NOT MNP -- no nodeOverrides at all.
-        assert "nodeOverrides" not in sim_call.kwargs
-        assert sim_call.kwargs["arrayProperties"] == {"size": 4}
-        assert sim_call.kwargs["jobQueue"] == "smscdk-vecoli-task-amd64"
-        # Plain dependency, NO "type" key -- real AWS Batch rejects {"type": "SEQUENTIAL"}
-        # combined with an explicit jobId when the submitting job itself sets
-        # arrayProperties (live error hit 2026-08-06: "Job Id cannot be set when
-        # dependency type is SEQUENTIAL"). Do not "simplify" this back to match
-        # _submit_mnp's shape -- that's the exact regression this assertion guards.
-        assert sim_call.kwargs["dependsOn"] == [{"jobId": "parca-123"}]
-
-        sim_env = _array_env(sim_call)
-        cmd = sim_env["ARRAY_JOB_CMD"]
-        assert "run_batch_baseline_ray.py" not in cmd
-        assert "run_phase0_xarray_ensemble.py" not in cmd
-        assert "aws s3 cp" in cmd and "/tmp/run_pbg.py" in cmd  # noqa: S108
-        assert "AWS_BATCH_JOB_ARRAY_INDEX" in cmd
-        # Exact match, not a substring check. sms-ecoli has no "ecoli_baseline" module
-        # at all -- two real pilot dispatches (2026-08-06) failed chasing that name
-        # before the real module (v2ecoli/composites/batch_baseline.py, decorated
-        # name="batch_baseline") was confirmed directly against the deployed sms-ecoli
-        # image at commit e38f742, never the separate/diverged local v2ecoli checkout.
-        assert "--composite-id v2ecoli.composites.batch_baseline.batch_baseline " in cmd
-        assert "PBG_CORE_BUILDER=v2ecoli.core:build_core" in cmd
-        assert sim_env["ARRAY_OUT_DIR"] == SIM_OUT_DIR
-        assert sim_env["ARRAY_OUT_S3"] == "s3://mybucket/vecoli-output/" + simulation.config.experiment_id + "/"
-
-        # Cache hand-off: sim stages exactly what parca produced (same ARRAY_*
-        # naming convention as the MNP path's RAY_* staging, renamed so the two
-        # dispatch paths' env vars can never be cross-wired).
-        parca_env = _env_of(parca_call)
-        assert sim_env["ARRAY_STAGE_S3"] == parca_env["RAY_OUT_S3"]
-        assert sim_env["ARRAY_STAGE_DIR"] == PARCA_CACHE_DIR
-
-        # Per-commit Array job-def, cloned from the CDK base with the image swapped
-        # (container jobs can't override the image via containerOverrides either --
-        # verified against the real AWS Batch API, same limitation as MNP).
-        simulator = await database_service.get_simulator(simulator_id=simulation.simulator_id)
-        assert simulator is not None
-        commit = simulator.git_commit_hash
-        assert sim_call.kwargs["jobDefinition"] == f"smscdk-ray-array-{commit}:1"
-        array_reg_calls = [
-            c for c in mock_batch.register_job_definition.call_args_list if c.kwargs["type"] == "container"
-        ]
-        assert len(array_reg_calls) == 1
-        assert array_reg_calls[0].kwargs["containerProperties"]["image"] == (
-            f"476270107793.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:{commit}"
-        )
-        # The CDK base's retryStrategy must survive the clone -- register_job_definition
-        # does not inherit it automatically from an existing revision.
-        assert array_reg_calls[0].kwargs["retryStrategy"] == {"attempts": 2}
-
-    async def test_submit_batch_baseline_single_seed_stays_on_mnp(
-        self,
-        experiment_request: "SimulationRequest",
-        database_service: "DatabaseServiceSQL",
-    ) -> None:
-        """AWS Batch array jobs require size>=2 (verified against the real API);
-        a single-seed batch_baseline request also has no parallelism to gain from
-        Array-izing, so it stays on the existing, already-correct MNP path."""
-        setattr(experiment_request.config, "n_init_sims", 1)  # noqa: B010
-        experiment_request.config.generations = 3
-        simulation = await database_service.insert_simulation(sim_request=experiment_request)
-
-        mock_batch = _fake_batch(["parca-123", "sim-456", "analysis-789"])
-        fake_file_service = AsyncMock()
-        fake_file_service.upload_file = AsyncMock()
-
-        service = SimulationServiceRay()
-        with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
-            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
-        ):
-            await service.submit_ecoli_simulation_job(
-                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-single"
-            )
-
-        _, sim_call, analysis_call = mock_batch.submit_job.call_args_list
+        assert mock_batch.submit_job.call_count == 2
+        parca_call, sim_call = mock_batch.submit_job.call_args_list
         assert "nodeOverrides" in sim_call.kwargs
         assert "arrayProperties" not in sim_call.kwargs
-        assert sim_call.kwargs["jobQueue"] == "smscdk-ray-mnp"
-        assert "--composite-id v2ecoli.composites.batch_baseline.batch_baseline " in _env_of(sim_call)["RAY_JOB_CMD"]
-        # An MNP sim job is NOT array-shaped, so the analysis node keeps the
-        # long-standing SEQUENTIAL dependency shape this path has always used.
-        assert analysis_call.kwargs["dependsOn"] == [{"jobId": "sim-456", "type": "SEQUENTIAL"}]
+        assert sim_call.kwargs["dependsOn"] == [{"jobId": "parca-123", "type": "SEQUENTIAL"}]
+        assert "run_comparison_ensemble.py" in _env_of(sim_call)["RAY_JOB_CMD"]
+        assert "--composite vecoli" in _env_of(sim_call)["RAY_JOB_CMD"]
+        assert parca_call.kwargs["nodeOverrides"]["numNodes"] == 1
 
 
 class TestAnalysisModulesFor:
@@ -473,107 +477,19 @@ class TestAnalysisCommand:
 @pytest.mark.asyncio
 class TestAnalysisDagNode:
     """Item 24: the analysis must fire from the pipeline DAG itself, with no
-    separate manual step and no external watcher."""
+    separate manual step and no external watcher.
 
-    async def test_analysis_job_depends_on_the_array_sim_and_is_recorded(
-        self,
-        experiment_request: "SimulationRequest",
-        database_service: "DatabaseServiceSQL",
-    ) -> None:
-        """REGRESSION (backlog item 24): before this, the Ray backend never read
-        `config.analysis_options` and submitted no analysis at all — a completed
-        remote simulation produced zero cd1_*/ptools_* artifacts until somebody ran
-        the CLI by hand. The analysis is now the DAG's third node, gated on the sim
-        job, and tracked in the same `analyses` table the on-demand trigger uses."""
-        setattr(experiment_request.config, "n_init_sims", 4)  # noqa: B010
-        experiment_request.config.generations = 3
-        simulation = await database_service.insert_simulation(sim_request=experiment_request)
-
-        mock_batch = _fake_batch(["parca-123", "sim-456", "analysis-789"])
-        fake_file_service = AsyncMock()
-        fake_file_service.upload_file = AsyncMock()
-
-        service = SimulationServiceRay()
-        with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
-            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
-        ):
-            await service.submit_ecoli_simulation_job(
-                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-analysis"
-            )
-
-        _parca_call, _sim_call, analysis_call = mock_batch.submit_job.call_args_list
-        experiment_id = simulation.config.experiment_id
-
-        # Gated on the SIM job (not ParCa): the sweep is only whole once every
-        # array child's output has landed in S3.
-        assert analysis_call.kwargs["dependsOn"] == [{"jobId": "sim-456"}]
-        # An array parent id under a SEQUENTIAL type is rejected by real AWS Batch —
-        # this is the shape that guard produces, and must not be "simplified" back.
-        assert "type" not in analysis_call.kwargs["dependsOn"][0]
-        assert analysis_call.kwargs["nodeOverrides"]["numNodes"] == 1
-
-        env = _env_of(analysis_call)
-        assert "run_standalone_analysis.py" in env["RAY_JOB_CMD"]
-        assert f"--out-uri s3://mybucket/vecoli-output/{experiment_id}" in env["RAY_JOB_CMD"]
-        assert "--n-seeds 4" in env["RAY_JOB_CMD"]
-        # No ParCa staging: sim_data is named explicitly as an S3 URI instead.
-        assert "RAY_STAGE_S3" not in env
-        assert "V2ECOLI_SIM_DATA=s3://mybucket/ray-parca-cache/" in env["RAY_JOB_CMD"]
-        assert analysis_call.kwargs["tags"]["Phase"] == "analysis"
-
-        # Tracked: GET /simulations/{id}/analyses and GET /analyses/{id}/status must
-        # both resolve an auto-triggered analysis, exactly like a hand-triggered one.
-        records = await database_service.list_analyses(simulation_id=simulation.database_id)
-        assert len(records) == 1
-        record = records[0]
-        assert record.backend == "ray"
-        assert record.job_id_ext == "analysis-789"
-        assert record.status == JobStatus.RUNNING
-        # result_uri is where the job's own _manifest.json lands — the S3-exists probe
-        # in handle_get_ray_analysis_status reads exactly this path.
-        assert record.result_uri == f"s3://mybucket/vecoli-output/{experiment_id}/analyses/{record.name}"
-        assert f"--analysis-name {record.name}" in env["RAY_JOB_CMD"]
-
-    async def test_configured_analysis_options_reach_the_analysis_job(
-        self,
-        experiment_request: "SimulationRequest",
-        database_service: "DatabaseServiceSQL",
-    ) -> None:
-        """REGRESSION: `config.analysis_options` (set by the run endpoint from the
-        caller's --analysis-options, and by the workbench from a study's
-        spec.analyses) was read by no Ray code path at all."""
-        from viva_api.simulation.models import AnalysisOptions
-
-        setattr(experiment_request.config, "n_init_sims", 4)  # noqa: B010
-        experiment_request.config.generations = 3
-        experiment_request.config.analysis_options = AnalysisOptions.model_validate({
-            "multiseed": {"cd1_fluxomics": {"generation_lower_bound": 5}}
-        })
-        simulation = await database_service.insert_simulation(sim_request=experiment_request)
-
-        mock_batch = _fake_batch(["parca-123", "sim-456", "analysis-789"])
-        fake_file_service = AsyncMock()
-        fake_file_service.upload_file = AsyncMock()
-
-        service = SimulationServiceRay()
-        with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
-            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
-        ):
-            await service.submit_ecoli_simulation_job(
-                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-opts"
-            )
-
-        cmd = _env_of(mock_batch.submit_job.call_args_list[2])["RAY_JOB_CMD"]
-        tokens = shlex.split(cmd.split("&&", 1)[1].replace("V2ECOLI_SIM_DATA=", "", 1))
-        assert json.loads(tokens[tokens.index("--modules") + 1]) == {
-            "multiseed": {"cd1_fluxomics": {"generation_lower_bound": 5}}
-        }
+    Originally this covered the canonical batch_baseline shape too (composite
+    is None, multiseed, multigenerational), reached through
+    submit_ecoli_simulation_job's own inline array-path analysis submission.
+    Backlog item 33 moved that shape's analysis trigger entirely to
+    submit_campaign_analysis (fired by the poller once every seed's chain is
+    terminal, not inline at submission time) -- submit_ecoli_simulation_job no
+    longer submits an analysis job for ANY shape it can still reach (the
+    comparison-ensemble and phase0 paths never did either). That coverage
+    moved to TestSubmitCampaignAnalysis, retargeted at the real mechanism;
+    only the single-generation "no analysis at all" guard still belongs here,
+    since it's still a submit_ecoli_simulation_job-level property."""
 
     async def test_no_analysis_node_for_the_single_generation_ensemble(
         self,
@@ -600,48 +516,6 @@ class TestAnalysisDagNode:
 
         assert mock_batch.submit_job.call_count == 2
         assert await database_service.list_analyses(simulation_id=simulation.database_id) == []
-
-    async def test_a_failed_analysis_submission_is_recorded_not_swallowed(
-        self,
-        experiment_request: "SimulationRequest",
-        database_service: "DatabaseServiceSQL",
-    ) -> None:
-        """The sim job is already running by then, so raising would orphan a real,
-        expensive job — but a silently-missing analysis is the exact failure mode
-        item 24 exists to eliminate. It must land as a FAILED row instead."""
-        setattr(experiment_request.config, "n_init_sims", 4)  # noqa: B010
-        experiment_request.config.generations = 3
-        simulation = await database_service.insert_simulation(sim_request=experiment_request)
-
-        mock_batch = _fake_batch(["parca-123", "sim-456"])
-        submits = [{"jobId": "parca-123"}, {"jobId": "sim-456"}]
-
-        def _submit(**kwargs: Any) -> dict[str, str]:
-            if submits:
-                return submits.pop(0)
-            raise RuntimeError("Batch said no")
-
-        mock_batch.submit_job.side_effect = _submit
-        fake_file_service = AsyncMock()
-        fake_file_service.upload_file = AsyncMock()
-
-        service = SimulationServiceRay()
-        with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
-            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
-        ):
-            job_id = await service.submit_ecoli_simulation_job(
-                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-fail"
-            )
-
-        # The simulation dispatch itself still succeeds and stays tracked.
-        assert job_id == JobId.ray("sim-456")
-        records = await database_service.list_analyses(simulation_id=simulation.database_id)
-        assert len(records) == 1
-        assert records[0].status == JobStatus.FAILED
-        assert "Batch said no" in (records[0].error_message or "")
 
 
 @pytest.mark.asyncio
@@ -950,84 +824,6 @@ class TestSimulationServiceRayBuild:
         assert "--vecoli-source" not in v2ecoli
 
 
-class TestArraySimCommand:
-    """_array_sim_command builds one Array child's run_pbg.py invocation."""
-
-    def test_shape(self) -> None:
-        service = SimulationServiceRay()
-        cmd = service._array_sim_command(
-            n_generations=3,
-            experiment_id="sim47-real-experiment",
-            runner_s3_uri="s3://mybucket/vecoli-output/sim47-real-experiment/run_pbg.py",
-        )
-        assert "run_batch_baseline_ray.py" not in cmd
-        assert "run_phase0_xarray_ensemble.py" not in cmd
-        assert "aws s3 cp s3://mybucket/vecoli-output/sim47-real-experiment/run_pbg.py /tmp/run_pbg.py" in cmd
-        assert "--composite-id v2ecoli.composites.batch_baseline.batch_baseline " in cmd
-        assert "PBG_CORE_BUILDER=v2ecoli.core:build_core" in cmd
-        assert "-n 1" in cmd
-        # base_seed is resolved by the shell at container-start time (AWS_BATCH_JOB_
-        # ARRAY_INDEX is only known once the container starts), not baked in here.
-        assert "BASE_SEED=$((0 + AWS_BATCH_JOB_ARRAY_INDEX))" in cmd
-
-    def test_base_seed_offset_propagates_into_the_arithmetic_expansion(self) -> None:
-        service = SimulationServiceRay()
-        cmd = service._array_sim_command(
-            n_generations=1, experiment_id="exp-1", runner_s3_uri="s3://b/run_pbg.py", base_seed_offset=100
-        )
-        assert "BASE_SEED=$((100 + AWS_BATCH_JOB_ARRAY_INDEX))" in cmd
-
-    def test_merge_produces_correct_overrides_and_is_safe_against_shell_metacharacters(self) -> None:
-        """Actually run the BASE_SEED/OVERRIDES merge prefix through bash + python3
-        (no mocking) with a hostile experiment_id -- experiment_id is a caller-
-        supplied, unconstrained string (no pattern validation at the model/API
-        boundary), so this proves the shlex-quoted static blob keeps arbitrary
-        content as DATA rather than shell syntax, AND that
-        AWS_BATCH_JOB_ARRAY_INDEX correctly resolves into the merged JSON --
-        the actual mechanism the entrypoint runs, not a re-derivation of it."""
-        service = SimulationServiceRay()
-        hostile = "exp'; touch /tmp/array-sim-command-injection-canary; echo '$(echo pwned)"
-        cmd = service._array_sim_command(
-            n_generations=5,
-            experiment_id=hostile,
-            runner_s3_uri="s3://mybucket/vecoli-output/exp/run_pbg.py",
-            base_seed_offset=10,
-        )
-        # Everything before "&& cd {V2ECOLI_DIR}" is the self-contained BASE_SEED/
-        # OVERRIDES merge -- safe to actually execute (arithmetic + one python3
-        # subprocess call, no aws/v2ecoli dependency).
-        merge_prefix = cmd.split(" && cd ", 1)[0]
-        canary = "/tmp/array-sim-command-injection-canary"  # noqa: S108
-        if os.path.exists(canary):
-            os.remove(canary)
-        bash = shutil.which("bash")
-        assert bash is not None, "bash not found on PATH"
-        try:
-            result = subprocess.run(  # noqa: S603 -- test-only, fixed literal args
-                [bash, "-c", merge_prefix + ' && printf "%s" "$OVERRIDES"'],
-                env={**os.environ, "AWS_BATCH_JOB_ARRAY_INDEX": "7"},
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            assert result.returncode == 0, result.stderr
-            assert not os.path.exists(canary), "hostile experiment_id executed as shell syntax, not data"
-            merged = json.loads(result.stdout)
-            assert merged == {
-                "n_seeds": 1,
-                "n_generations": 5,
-                "cache_dir": PARCA_CACHE_DIR,
-                "out_dir": SIM_OUT_DIR,
-                "experiment_id": hostile,
-                "analyses": "none",
-                "parallel": "",
-                "base_seed": 17,  # base_seed_offset(10) + AWS_BATCH_JOB_ARRAY_INDEX(7)
-            }
-        finally:
-            if os.path.exists(canary):
-                os.remove(canary)
-
-
 class TestSeedGenerationCommand:
     """_seed_generation_command builds ONE seed's ONE generation's command —
     replacing the per-generation-array design's own _wave_sim_command. Unlike
@@ -1208,81 +1004,6 @@ class TestEnsureMnpJobDef:
             jd = service._ensure_mnp_job_def(image, "abc1234")
         assert jd == "smscdk-ray-mnp-abc1234:5"
         mock_batch.register_job_definition.assert_not_called()
-
-
-class TestEnsureArrayJobDef:
-    """Per-commit Array job-def derivation. Container jobs can't override the image
-    via containerOverrides either (verified against the real AWS Batch API: only
-    EKS jobs' eksPropertiesOverride has an image field) -- same limitation as MNP,
-    just for a different reason, so this mirrors _ensure_mnp_job_def's shape."""
-
-    def test_reuses_existing_revision_for_same_image(self) -> None:
-        image = "476270107793.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:abc1234"
-        mock_batch = MagicMock()
-        mock_batch.describe_job_definitions.return_value = {
-            "jobDefinitions": [{"revision": 5, "containerProperties": {"image": image}}]
-        }
-        service = SimulationServiceRay()
-        with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
-        ):
-            jd = service._ensure_array_job_def(image, "abc1234")
-        assert jd == "smscdk-ray-array-abc1234:5"
-        mock_batch.register_job_definition.assert_not_called()
-
-    def test_clones_base_and_carries_forward_retry_strategy_and_platform_capabilities(self) -> None:
-        mock_batch = MagicMock()
-
-        def _describe(**kwargs: Any) -> dict[str, Any]:
-            if kwargs.get("jobDefinitionName") == "smscdk-ray-array":
-                return {
-                    "jobDefinitions": [
-                        {
-                            "revision": 3,
-                            "containerProperties": {
-                                "image": "old:tag",
-                                "resourceRequirements": [{"type": "VCPU", "value": "2"}],
-                            },
-                            "retryStrategy": {"attempts": 2},
-                            "platformCapabilities": ["EC2"],
-                        }
-                    ]
-                }
-            return {"jobDefinitions": []}  # per-commit: none yet
-
-        mock_batch.describe_job_definitions.side_effect = _describe
-        mock_batch.register_job_definition.side_effect = lambda **kw: {
-            "jobDefinitionName": kw["jobDefinitionName"],
-            "revision": 1,
-        }
-        service = SimulationServiceRay()
-        new_image = "476270107793.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:def5678"
-        with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
-        ):
-            jd = service._ensure_array_job_def(new_image, "def5678")
-        assert jd == "smscdk-ray-array-def5678:1"
-
-        reg = mock_batch.register_job_definition.call_args
-        assert reg.kwargs["type"] == "container"
-        assert reg.kwargs["containerProperties"]["image"] == new_image
-        # Everything else the base sets survives the clone, not just the image.
-        assert reg.kwargs["containerProperties"]["resourceRequirements"] == [{"type": "VCPU", "value": "2"}]
-        assert reg.kwargs["retryStrategy"] == {"attempts": 2}
-        assert reg.kwargs["platformCapabilities"] == ["EC2"]
-
-    def test_raises_if_base_job_def_missing(self) -> None:
-        mock_batch = MagicMock()
-        mock_batch.describe_job_definitions.return_value = {"jobDefinitions": []}
-        service = SimulationServiceRay()
-        with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
-            pytest.raises(RuntimeError, match="Base Array job definition"),
-        ):
-            service._ensure_array_job_def("some:image", "abc1234")
 
 
 @pytest.mark.asyncio
@@ -1694,3 +1415,75 @@ class TestSubmitCampaignAnalysis:
             )
         env = _env_of(mock_batch.submit_job.call_args_list[0])
         assert "--n-seeds 1000" in env["RAY_JOB_CMD"]
+
+    async def test_configured_analysis_options_reach_the_analysis_job(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """REGRESSION (item 24, retargeted for backlog item 33): config.
+        analysis_options (set by the run endpoint from the caller's
+        --analysis-options, and by the workbench from a study's spec.analyses)
+        must reach the analysis job's --modules flag. Originally verified
+        through submit_ecoli_simulation_job's own inline array-path analysis
+        submission (now removed -- that shape's analysis fires exclusively
+        through submit_campaign_analysis, exercised directly here)."""
+        from viva_api.simulation.models import AnalysisOptions
+
+        experiment_request.config.analysis_options = AnalysisOptions.model_validate({
+            "multiseed": {"cd1_fluxomics": {"generation_lower_bound": 5}}
+        })
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+        mock_batch = _fake_batch(["analysis-789"])
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            await service.submit_campaign_analysis(
+                simulation=simulation,
+                database_service=database_service,
+                commit="abc1234",
+                total_n_seeds=4,
+                n_generations=3,
+            )
+        cmd = _env_of(mock_batch.submit_job.call_args_list[0])["RAY_JOB_CMD"]
+        tokens = shlex.split(cmd.split("&&", 1)[1].replace("V2ECOLI_SIM_DATA=", "", 1))
+        assert json.loads(tokens[tokens.index("--modules") + 1]) == {
+            "multiseed": {"cd1_fluxomics": {"generation_lower_bound": 5}}
+        }
+
+    async def test_a_failed_analysis_submission_is_recorded_not_swallowed(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """By the time this runs, every seed chain the poller was watching has
+        already reached a terminal state -- raising here would just lose the
+        analysis silently. It must land as a FAILED analyses-table row
+        instead (item 24's guarantee, retargeted for backlog item 33: this is
+        now the canonical shape's own analysis trigger, replacing
+        submit_ecoli_simulation_job's removed inline path)."""
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+        mock_batch = _fake_batch([])
+        mock_batch.submit_job.side_effect = RuntimeError("Batch said no")
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            result = await service.submit_campaign_analysis(
+                simulation=simulation,
+                database_service=database_service,
+                commit="abc1234",
+                total_n_seeds=4,
+                n_generations=3,
+            )
+        assert result is None
+        records = await database_service.list_analyses(simulation_id=simulation.database_id)
+        assert len(records) == 1
+        assert records[0].status == JobStatus.FAILED
+        assert "Batch said no" in (records[0].error_message or "")

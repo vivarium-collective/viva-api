@@ -334,54 +334,6 @@ class SimulationServiceRay(SimulationService):
         logger.info("Registered Ray MNP job def %s:%s for image %s", name, response["revision"], image)
         return f"{name}:{response['revision']}"
 
-    def _ensure_array_job_def(self, image: str, commit: str) -> str:
-        """Return an Array job definition (name:revision) whose image is the commit's image.
-
-        Verified directly against the real AWS Batch API (``aws batch submit-job
-        help``): a plain container job's ``--container-overrides`` has no ``image``
-        field (only EKS jobs' ``eksPropertiesOverride`` does) -- container jobs
-        can't override the image per-submission either, same limitation as MNP,
-        just for a different reason. So, symmetric with ``_ensure_mnp_job_def``,
-        derive a per-commit job-def revision: describe the CDK base job def
-        (``ray_array_job_definition``: roles, resources, retry strategy, log
-        config), swap ONLY the container image to ``image``, and register it as
-        ``<base>-<commit>``. An existing active revision already pointing at this
-        image is reused, so resubmits don't churn revisions.
-        """
-        settings = get_settings()
-        batch = self._batch()
-        name = f"{settings.ray_array_job_definition}-{commit}"
-
-        existing = batch.describe_job_definitions(jobDefinitionName=name, status="ACTIVE")
-        for jd in existing.get("jobDefinitions", []):
-            if jd.get("containerProperties", {}).get("image") == image:
-                return f"{name}:{jd['revision']}"
-
-        base = batch.describe_job_definitions(jobDefinitionName=settings.ray_array_job_definition, status="ACTIVE")
-        base_defs = base.get("jobDefinitions", [])
-        if not base_defs:
-            raise RuntimeError(f"Base Array job definition {settings.ray_array_job_definition!r} not found")
-        base_def = max(base_defs, key=lambda d: d["revision"])
-        container_properties = copy.deepcopy(base_def["containerProperties"])
-        container_properties["image"] = image
-
-        register_kwargs: dict[str, Any] = {
-            "jobDefinitionName": name,
-            "type": "container",
-            "containerProperties": container_properties,
-        }
-        # Carry forward everything else the CDK base job def sets (retryStrategy,
-        # platformCapabilities) -- register_job_definition does NOT inherit these
-        # from an existing revision, it only creates exactly what's passed in.
-        if base_def.get("retryStrategy"):
-            register_kwargs["retryStrategy"] = base_def["retryStrategy"]
-        if base_def.get("platformCapabilities"):
-            register_kwargs["platformCapabilities"] = base_def["platformCapabilities"]
-
-        response = batch.register_job_definition(**register_kwargs)
-        logger.info("Registered Array job def %s:%s for image %s", name, response["revision"], image)
-        return f"{name}:{response['revision']}"
-
     def _submit_mnp(
         self,
         *,
@@ -489,72 +441,6 @@ class SimulationServiceRay(SimulationService):
             batch_job_id,
             num_nodes,
             settings.ray_mnp_queue,
-        )
-        return batch_job_id
-
-    def _submit_array(
-        self,
-        *,
-        job_name: str,
-        job_definition: str,
-        array_size: int,
-        array_job_cmd: str,
-        out_s3: str,
-        out_dir: str,
-        stage_s3: str | None = None,
-        stage_dir: str | None = None,
-        depends_on: list[str] | None = None,
-        tags: dict[str, str] | None = None,
-    ) -> str:
-        """Submit an AWS Batch ARRAY job: N independent single-seed children, no
-        Ray cluster (see scripts/batch-array-entrypoint.sh, sms-cdk). Every child
-        gets the SAME containerOverrides -- Batch injects only
-        AWS_BATCH_JOB_ARRAY_INDEX differently per child, which ``array_job_cmd``
-        resolves at container-start time (see ``_array_sim_command``). Env names
-        are ``ARRAY_*`` (not ``RAY_*``) so the two dispatch paths' env vars can
-        never be cross-wired if a caller mixes them up. Returns the AWS Batch job
-        id (the array parent id; child status is queried per-index if needed).
-        """
-        settings = get_settings()
-        env: list[dict[str, str]] = [
-            {"name": "ARRAY_JOB_CMD", "value": array_job_cmd},
-            {"name": "ARRAY_OUT_DIR", "value": out_dir},
-            {"name": "ARRAY_OUT_S3", "value": out_s3},
-            {"name": "ARRAY_REPORT_PATH", "value": REPORT_PATH},
-        ]
-        if stage_s3 and stage_dir:
-            env.append({"name": "ARRAY_STAGE_S3", "value": stage_s3})
-            env.append({"name": "ARRAY_STAGE_DIR", "value": stage_dir})
-        if settings.ray_log_s3_prefix:
-            env.append({"name": "ARRAY_LOG_S3_PREFIX", "value": settings.ray_log_s3_prefix})
-
-        kwargs: dict[str, Any] = {
-            "jobName": job_name,
-            "jobQueue": settings.ray_array_queue,
-            "jobDefinition": job_definition,
-            "arrayProperties": {"size": array_size},
-            "containerOverrides": {"environment": env},
-        }
-        if depends_on:
-            # Plain job dependency (no "type") -- NOT "SEQUENTIAL", unlike _submit_mnp above.
-            # AWS Batch rejects {"jobId": ..., "type": "SEQUENTIAL"} for a job that also sets
-            # arrayProperties: real error, hit live 2026-08-06, "Job Id cannot be set when
-            # dependency type is SEQUENTIAL". SEQUENTIAL is for an array job depending on
-            # itself/other array-shaped dependents, not a targeted jobId wait -- it doesn't
-            # apply here, we just need "don't start any array child until ParCa succeeds".
-            kwargs["dependsOn"] = [{"jobId": jid} for jid in depends_on]
-        if tags:
-            kwargs["tags"] = tags
-            kwargs["propagateTags"] = True
-
-        response = self._batch().submit_job(**kwargs)
-        batch_job_id = str(response["jobId"])
-        logger.info(
-            "Submitted Batch Array job %s (id=%s, size=%d) to %s",
-            job_name,
-            batch_job_id,
-            array_size,
-            settings.ray_array_queue,
         )
         return batch_job_id
 
@@ -710,59 +596,6 @@ class SimulationServiceRay(SimulationService):
         return (
             f"cd {V2ECOLI_DIR} && python scripts/run_phase0_xarray_ensemble.py"
             f" --n-seeds {n_seeds} --n-steps {n_steps} --chunk {chunk} --parallel ray"
-        )
-
-    def _array_sim_command(
-        self,
-        n_generations: int,
-        experiment_id: str,
-        runner_s3_uri: str,
-        base_seed_offset: int = 0,
-    ) -> str:
-        """Build one Array child's run_pbg.py command (the batch_baseline path).
-
-        Every child runs exactly ONE seed (n_seeds=1), which v2ecoli's
-        ``_resolve_parallel()`` deterministically routes to the sequential
-        no-Ray code path (``len(branches) > 1`` is False for a 1-seed,
-        no-variants request, regardless of the ``parallel`` setting) -- so an
-        array child never needs a Ray cluster at all, verified directly
-        against v2ecoli/workflow/run.py at the deployed commit.
-
-        Each child's real seed is ``base_seed_offset + AWS_BATCH_JOB_ARRAY_INDEX``
-        -- only known once the container starts (AWS Batch injects an identical
-        containerOverrides.environment into every child; only
-        AWS_BATCH_JOB_ARRAY_INDEX itself differs per child), so it can't be
-        computed at submission time. The merge happens via a small ``python3 -c``
-        invocation at container-start: BASE_SEED is arithmetic-only (digits, no
-        quoting concerns); the static overrides are shlex-quoted (safe
-        regardless of what ``experiment_id`` contains -- it is a caller-supplied,
-        unconstrained string) and passed as argv, never string-spliced into the
-        JSON -- json.loads/json.dumps do the merge exactly once, so there is no
-        hand-rolled escaping to get wrong.
-        """
-        overrides = {
-            "n_seeds": 1,
-            "n_generations": int(n_generations),
-            "cache_dir": PARCA_CACHE_DIR,
-            "out_dir": SIM_OUT_DIR,
-            "experiment_id": experiment_id,
-            # A child sees only ITS OWN seed, so an inline flush here would run the
-            # cross-seed scales against one seed, N times over. The whole-sweep
-            # analysis is the DAG's third node instead -- see _analysis_command.
-            "analyses": "none",
-            "parallel": "",
-        }
-        static_overrides_json = shlex.quote(json.dumps(overrides))
-        merge_py = 'import json,sys; d=json.loads(sys.argv[1]); d["base_seed"]=int(sys.argv[2]); print(json.dumps(d))'
-        env = f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER}"
-        return (
-            f"BASE_SEED=$(({int(base_seed_offset)} + AWS_BATCH_JOB_ARRAY_INDEX))"
-            f" && OVERRIDES=$(python3 -c '{merge_py}' {static_overrides_json} \"$BASE_SEED\")"
-            f" && cd {V2ECOLI_DIR}"
-            f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
-            f" && {env} python /tmp/run_pbg.py"
-            f" --composite-id {V2ECOLI_BATCH_BASELINE_COMPOSITE_ID}"
-            f' --overrides "$OVERRIDES" -n 1'
         )
 
     def _seed_generation_command(
@@ -1093,9 +926,36 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
 
         The tracked job id is the *simulation* job. Batch will not start it until
         the ParCa job SUCCEEDED, so the cache is in S3 before the sim stages it.
+
+        ROUTING (backlog item 33 rework): the canonical batch_baseline sweep
+        (``composite`` is None, more than one generation) is delegated ENTIRELY
+        to ``submit_chain_dispatch_job`` — individual per-seed AWS Batch job
+        chains, a true v2 analogy of vEcoli-private's own fully-asynchronous
+        per-seed Nextflow execution (Alex's explicit decision). This check runs
+        BEFORE any of the MNP/single-shot setup below, so a canonical request
+        never touches that setup, and never needs Array-job machinery at all —
+        ``_submit_array``/``_array_sim_command``/``_ensure_array_job_def`` were
+        REMOVED as part of this rework once this routing landed made them dead
+        code (their only caller was the array branch this replaced; confirmed
+        via a fresh repo-wide grep before deleting them, not assumed).
+
+        Every OTHER shape still reaches the MNP path below exactly as before:
+        the composite-driven two-engine comparison ensemble (genuinely fans out
+        via Ray actors, at ANY generation count — chain-dispatch is v2ecoli-only
+        and does not apply), and the single-generation phase0 ensemble.
         """
         if database_service is None:
             raise RuntimeError("DatabaseService is not available. Cannot submit Ray simulation job.")
+
+        config = ecoli_simulation.config
+        composite = getattr(config, "composite", None)
+        # config.generations is a real (non-"extra") SimulationConfig field, unlike
+        # the comparison knobs read further below -- read directly, not via getattr.
+        n_generations = int(config.generations or 1)
+        if composite is None and n_generations > 1:
+            return await self.submit_chain_dispatch_job(
+                ecoli_simulation, database_service, correlation_id=correlation_id
+            )
 
         parca_dataset = await database_service.get_parca_dataset(parca_dataset_id=ecoli_simulation.parca_dataset_id)
         if parca_dataset is None:
@@ -1112,24 +972,17 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         # v2ecoli:<commit> (both ParCa and the sim run the same image).
         job_def = self._ensure_mnp_job_def(self._image_uri(commit), commit)
 
-        config = ecoli_simulation.config
         # SimulationConfig is a vEcoli passthrough (extra="allow"); the comparison
         # knobs are validated at the API boundary (Literal Query params) and ride
         # in as extra keys, so they're read here via getattr (present only when the
-        # caller set them). ``composite``/``vecoli_source`` values are already
-        # constrained by the endpoint's CompositeEngine/VecoliSource types.
+        # caller set them). ``vecoli_source`` is already constrained by the
+        # endpoint's VecoliSource type; ``composite`` was already read above.
         n_seeds = ecoli_simulation.num_seeds or getattr(config, "n_init_sims", None) or 1
         n_steps = getattr(config, "ray_n_steps", None) or settings.ray_n_steps
         chunk = getattr(config, "ray_chunk", None) or settings.ray_chunk
-        # Optional two-engine comparison knobs (default phase0 ensemble when unset).
-        composite = getattr(config, "composite", None)
         condition = getattr(config, "condition", None)
         max_generations = getattr(config, "max_generations", None)
         vecoli_source = getattr(config, "vecoli_source", None)
-        # config.generations is a real (non-"extra") SimulationConfig field, unlike
-        # the comparison knobs above -- read directly, not via getattr. Only the
-        # non-composite path branches on it (see _sim_command).
-        n_generations = int(config.generations or 1)
 
         # Engine-specific ParCa source: the pristine upstream wrapper (--composite
         # vecoli) stages an UPSTREAM-built simData (separate cache + build cmd);
@@ -1139,9 +992,11 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         cache_s3 = self._upstream_cache_s3_uri(commit) if is_upstream else self._cache_s3_uri(commit)
         parca_command = self._upstream_parca_command() if is_upstream else self._parca_command()
 
-        # The multi-generation batch path dispatches through the generic run_pbg.py
-        # runner (see _sim_command) instead of a hardcoded CLI script, so it alone
-        # needs the runner staged to S3 first. Every other path is unaffected.
+        # Only the composite-driven comparison-ensemble path can still reach here
+        # with n_generations > 1 (the non-composite canonical shape is routed to
+        # chain-dispatch above, before this line); its own _sim_command branch
+        # never reads runner_s3_uri, but staging it costs nothing and this stays
+        # unconditional on generations alone, matching pre-existing behavior.
         runner_s3_uri = await self._stage_runner(experiment_id) if n_generations > 1 else None
 
         # Cost-allocation tags (propagate to ECS tasks → payer-account Cost
@@ -1167,103 +1022,52 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             tags={**base_tags, "Phase": "parca"},
         )
 
-        # 2. Simulation ensemble, gated on ParCa, staging the cache.
-        #
-        # The canonical batch_baseline sweep (n_seeds independent seeds, only
-        # the within-seed generation chain is sequential -- verified via
-        # v2ecoli.workflow.run._resolve_parallel and run_seeds_parallel's pure
-        # ray.remote() fan-out, zero actors/shared state) is Array-jobs-shaped:
-        # dispatch it as N independent single-seed children instead of an MNP
-        # Ray cluster. Everything else (phase0 ensemble, comparison-ensemble)
-        # keeps using MNP -- those DO fan out via Ray actors internally. A
-        # single-seed batch_baseline request (n_seeds<=1) also stays on MNP:
-        # AWS Batch array jobs require size>=2, and there's no parallelism to
-        # gain from Array-izing a single seed anyway. See the ray-vs-batch-
-        # array-jobs-investigation decision: Array jobs for canonical, Ray-MNP
-        # stays for colonies/anything needing real Ray coordination.
-        is_array_eligible = composite is None and n_generations > 1 and int(n_seeds) > 1
-
-        if is_array_eligible:
-            if not runner_s3_uri:
-                raise RuntimeError("runner_s3_uri is required for batch_baseline array dispatch")
-            array_job_def = self._ensure_array_job_def(self._image_uri(commit), commit)
-            sim_job_id = self._submit_array(
-                job_name=f"array-sim-{experiment_id}-{_rand_suffix()}"[:128],
-                job_definition=array_job_def,
-                array_size=int(n_seeds),
-                array_job_cmd=self._array_sim_command(n_generations, str(experiment_id), runner_s3_uri),
-                out_s3=self._results_s3_uri(experiment_id),
-                out_dir=SIM_OUT_DIR,
-                stage_s3=cache_s3,
-                stage_dir=PARCA_CACHE_DIR,
-                depends_on=[parca_job_id],
-                tags={**base_tags, "Phase": "sim"},
-            )
-            logger.info(
-                "Array simulation %s: parca job %s -> sim job %s (%d array children)",
-                experiment_id,
-                parca_job_id,
-                sim_job_id,
+        # 2. Simulation ensemble (N-node Ray cluster), gated on ParCa, staging the
+        # cache. Always MNP now: the ONE shape that used to need Array jobs here
+        # (canonical batch_baseline, composite is None + multi-generation) is
+        # routed to submit_chain_dispatch_job before this method does ANY of the
+        # setup above (see the routing check at the top) -- every request that
+        # still reaches this point either sets composite (the comparison
+        # ensemble, which genuinely fans out via Ray actors) or requests a
+        # single generation (the phase0 ensemble).
+        sim_job_id = self._submit_mnp(
+            job_name=f"ray-sim-{experiment_id}-{_rand_suffix()}"[:128],
+            job_definition=job_def,
+            num_nodes=settings.ray_num_nodes,
+            ray_job_cmd=self._sim_command(
                 int(n_seeds),
-            )
-        else:
-            sim_job_id = self._submit_mnp(
-                job_name=f"ray-sim-{experiment_id}-{_rand_suffix()}"[:128],
-                job_definition=job_def,
-                num_nodes=settings.ray_num_nodes,
-                ray_job_cmd=self._sim_command(
-                    int(n_seeds),
-                    int(n_steps),
-                    int(chunk),
-                    composite=composite,
-                    condition=condition,
-                    max_generations=max_generations,
-                    vecoli_source=vecoli_source,
-                    n_generations=n_generations,
-                    experiment_id=str(experiment_id),
-                    runner_s3_uri=runner_s3_uri,
-                ),
-                out_s3=self._results_s3_uri(experiment_id),
-                out_dir=SIM_OUT_DIR,
-                stage_s3=cache_s3,
-                stage_dir=PARCA_CACHE_DIR,
-                depends_on=[parca_job_id],
-                tags={**base_tags, "Phase": "sim"},
-            )
-            logger.info(
-                "Ray simulation %s: parca job %s -> sim job %s (%d nodes)",
-                experiment_id,
-                parca_job_id,
-                sim_job_id,
-                settings.ray_num_nodes,
-            )
-
-        # 3. Analysis, gated on the simulation. The multi-generation batch_baseline
-        #    sweep is the shape that emits the hive-parquet the ported cd1_*/ptools_*
-        #    analyses read, so it is the shape that gets the third DAG node. The
-        #    comparison-ensemble and phase0 paths write no such sweep and are
-        #    deliberately untouched.
-        #
-        #    An Array sim job's parent id cannot be waited on under a SEQUENTIAL
-        #    dependency type (real AWS Batch rejection) -- plain {"jobId": …} there.
-        if composite is None and n_generations > 1:
-            analysis_job_id = await self._submit_analysis_job(
-                simulation=ecoli_simulation,
-                database_service=database_service,
-                job_definition=job_def,
-                commit=commit,
-                sim_job_id=sim_job_id,
-                n_seeds=int(n_seeds),
+                int(n_steps),
+                int(chunk),
+                composite=composite,
+                condition=condition,
+                max_generations=max_generations,
+                vecoli_source=vecoli_source,
                 n_generations=n_generations,
-                depends_type=None if is_array_eligible else "SEQUENTIAL",
-                tags={**base_tags, "Phase": "analysis"},
-            )
-            logger.info(
-                "Ray simulation %s: sim job %s -> analysis job %s",
-                experiment_id,
-                sim_job_id,
-                analysis_job_id,
-            )
+                experiment_id=str(experiment_id),
+                runner_s3_uri=runner_s3_uri,
+            ),
+            out_s3=self._results_s3_uri(experiment_id),
+            out_dir=SIM_OUT_DIR,
+            stage_s3=cache_s3,
+            stage_dir=PARCA_CACHE_DIR,
+            depends_on=[parca_job_id],
+            tags={**base_tags, "Phase": "sim"},
+        )
+        logger.info(
+            "Ray simulation %s: parca job %s -> sim job %s (%d nodes)",
+            experiment_id,
+            parca_job_id,
+            sim_job_id,
+            settings.ray_num_nodes,
+        )
+
+        # No inline analysis submission: the ONE shape that used to need it here
+        # (canonical batch_baseline) is entirely handled by chain-dispatch's own
+        # poller-triggered submit_campaign_analysis now (see
+        # JobScheduler.update_chain_campaigns / _advance_chain_campaign). The
+        # comparison-ensemble and phase0 paths that still reach this point write
+        # no cd1_*/ptools_*-ready sweep and never got inline analysis either --
+        # unaffected by this rework.
         return JobId.ray(sim_job_id)
 
     def _chain_base_tags(self, *, simulation: Simulation, commit: str) -> dict[str, str]:
@@ -1280,7 +1084,12 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             "Team": getattr(settings, "cost_team_tag", None) or "covertlab",
         }
 
-    async def submit_chain_dispatch_job(self, ecoli_simulation: Simulation, database_service: DatabaseService) -> JobId:
+    async def submit_chain_dispatch_job(
+        self,
+        ecoli_simulation: Simulation,
+        database_service: DatabaseService,
+        correlation_id: str | None = None,
+    ) -> JobId:
         """Kick off a per-seed chain-dispatch campaign (backlog item 33 rework
         — individual per-seed job chains, replacing the per-generation-array
         "wave" design): submit ParCa (1 node), then EVERY seed's full
@@ -1289,6 +1098,22 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         per-seed Nextflow execution (Alex's explicit decision, 2026-08-08) —
         seed 5 can be on generation 8 while seed 800 is still on generation 1,
         throttled only by available compute, never by a cross-seed barrier.
+
+        ``correlation_id``: this method (unlike a single-shot dispatch) always
+        records its OWN ``HpcRun`` row internally — see the ``insert_hpcrun``
+        call at the end — because the campaign-tracking row needs
+        ``chain_n_generations``/``chain_final_job_ids``, fields a generic
+        caller has no way to populate. When called directly (e.g. by tests, or
+        a future dedicated campaign-kickoff route) with no ``correlation_id``,
+        one is generated fresh here, exactly as before. When called FROM
+        ``submit_ecoli_simulation_job`` (the real dispatch entrypoint), that
+        method's own caller-supplied ``correlation_id`` is threaded through
+        instead, so the ONE row this method inserts uses the SAME
+        correlation_id the router/handler already generated for the request —
+        the row a status lookup by that id resolves to is the real campaign
+        row, not a second, generic one a caller might otherwise insert after
+        the fact (see ``viva_api.common.handlers.simulations``'s own
+        idempotent-insert guard, added alongside this parameter).
 
         For each seed independently: generation 0 ``dependsOn`` ParCa
         (SEQUENTIAL, matching the long-standing ParCa→sim edge shape exactly —
@@ -1459,7 +1284,7 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             job_id=JobId.ray(parca_job_id),
             job_type=JobType.SIMULATION,
             ref_id=ecoli_simulation.database_id,
-            correlation_id=f"chain-campaign-{experiment_id}-{_rand_suffix()}",
+            correlation_id=correlation_id or f"chain-campaign-{experiment_id}-{_rand_suffix()}",
             chain_n_generations=n_generations,
             chain_final_job_ids=final_job_ids,
         )
