@@ -1,0 +1,432 @@
+name: Continuous Deployment
+
+# Deploys the sms-api image to the RKE namespaces (UCONN CCAM) on release
+# or manual dispatch. Dev rolls first; prod only rolls if dev smoke passes.
+# Stanford (GovCloud) is out of scope — it deploys via the CDK/SSO loop
+# documented in CLAUDE.md.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      namespace:
+        description: "Target namespace(s)"
+        default: "both"
+        type: choice
+        options: [rke-dev, rke-prod, both]
+      version:
+        description: "Image tag to deploy (blank = use kustomization.yaml as-is)"
+        required: false
+        default: ""
+      skip_smoke_test:
+        description: "Skip smoke test (emergency use only)"
+        default: "false"
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "cd-rke"
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      target_version: ${{ steps.resolve.outputs.target_version }}
+      deploy_rke_dev: ${{ steps.resolve.outputs.deploy_rke_dev }}
+      deploy_rke_prod: ${{ steps.resolve.outputs.deploy_rke_prod }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version + targets
+        id: resolve
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_NAMESPACE: ${{ inputs.namespace }}
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          # Determine target_version.
+          if [ -n "$INPUT_VERSION" ]; then
+            V="$INPUT_VERSION"
+          elif [ "$EVENT_NAME" = "release" ]; then
+            # Strip leading "v" if present (vX.Y.Z → X.Y.Z)
+            V="${RELEASE_TAG#v}"
+          else
+            # Fall back to sms_api/version.py
+            V=$(grep -oE '__version__\s*=\s*"[^"]+"' sms_api/version.py | grep -oE '"[^"]+"' | tr -d '"')
+          fi
+          if [ -z "$V" ]; then
+            echo "::error::Could not resolve target version"
+            exit 1
+          fi
+
+          # Determine targets.
+          if [ "$EVENT_NAME" = "release" ]; then
+            DEV=true; PROD=true
+          else
+            case "$INPUT_NAMESPACE" in
+              rke-dev)  DEV=true;  PROD=false ;;
+              rke-prod) DEV=false; PROD=true  ;;
+              both|"")  DEV=true;  PROD=true  ;;
+              *) echo "::error::unknown namespace '$INPUT_NAMESPACE'"; exit 1 ;;
+            esac
+          fi
+
+          echo "target_version=$V"           >> "$GITHUB_OUTPUT"
+          echo "deploy_rke_dev=$DEV"         >> "$GITHUB_OUTPUT"
+          echo "deploy_rke_prod=$PROD"       >> "$GITHUB_OUTPUT"
+          echo "── resolved: version=$V  dev=$DEV  prod=$PROD"
+
+      - name: Verify image exists on ghcr.io
+        env:
+          TAG: ${{ steps.resolve.outputs.target_version }}
+          TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::GHCR_TOKEN secret is missing. Add a PAT with read:packages scope."
+            exit 1
+          fi
+          URL="https://ghcr.io/v2/vivarium-collective/sms-api/manifests/$TAG"
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+            "$URL")
+          if [ "$CODE" != "200" ]; then
+            echo "::error::ghcr.io manifest for sms-api:$TAG not found (HTTP $CODE). Run build-and-push.yml first."
+            exit 1
+          fi
+          echo "✓ ghcr.io/vivarium-collective/sms-api:$TAG exists"
+
+  deploy-rke-dev:
+    needs: [validate]
+    if: needs.validate.outputs.deploy_rke_dev == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: rke-dev
+      url: https://sms-dev.cam.uchc.edu
+    outputs:
+      apply_status: ${{ steps.deploy.outputs.apply_status }}
+      rollout_status: ${{ steps.deploy.outputs.rollout_status }}
+      wall_ms: ${{ steps.deploy.outputs.wall_ms }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Patch image tag + apply + rollout
+        id: deploy
+        env:
+          TARGET_VERSION: ${{ needs.validate.outputs.target_version }}
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_RKE_BASE64 }}
+        run: |
+          set -euo pipefail
+          START=$(date +%s%3N)
+
+          if [ -z "$KUBECONFIG_B64" ]; then
+            echo "::error::KUBECONFIG_RKE_BASE64 secret missing"
+            exit 1
+          fi
+          echo "$KUBECONFIG_B64" | base64 -d > /tmp/kubeconfig-rke
+          chmod 600 /tmp/kubeconfig-rke
+          export KUBECONFIG=/tmp/kubeconfig-rke
+          trap 'rm -f /tmp/kubeconfig-rke' EXIT
+
+          # Patch the sms-api tag only (leave sms-ptools pinned at 0.5.9).
+          yq -i \
+            '(.images[] | select(.name == "ghcr.io/vivarium-collective/sms-api") | .newTag) = strenv(TARGET_VERSION)' \
+            kustomize/overlays/sms-api-rke-dev/kustomization.yaml
+          echo "── kustomization after patch:"
+          yq '.images' kustomize/overlays/sms-api-rke-dev/kustomization.yaml
+
+          # Apply
+          if kubectl kustomize kustomize/overlays/sms-api-rke-dev | kubectl apply -f -; then
+            APPLY=PASS
+          else
+            APPLY=FAIL
+          fi
+          echo "apply_status=$APPLY" >> "$GITHUB_OUTPUT"
+          [ "$APPLY" = "PASS" ] || exit 1
+
+          # Roll
+          kubectl rollout restart deployment/api -n sms-api-rke-dev
+          if kubectl rollout status deployment/api -n sms-api-rke-dev --timeout=300s; then
+            ROLLOUT=PASS
+          else
+            ROLLOUT=FAIL
+          fi
+          echo "rollout_status=$ROLLOUT" >> "$GITHUB_OUTPUT"
+
+          END=$(date +%s%3N)
+          echo "wall_ms=$(( END - START ))" >> "$GITHUB_OUTPUT"
+          [ "$ROLLOUT" = "PASS" ]
+
+  smoke-rke-dev:
+    needs: [validate, deploy-rke-dev]
+    if: needs.deploy-rke-dev.result == 'success' && inputs.skip_smoke_test != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      health_status: ${{ steps.smoke.outputs.health_status }}
+      version_status: ${{ steps.smoke.outputs.version_status }}
+      analyses_status: ${{ steps.smoke.outputs.analyses_status }}
+      wall_ms: ${{ steps.smoke.outputs.wall_ms }}
+    steps:
+      - name: Pod warmup
+        run: sleep 30
+
+      - name: Run smoke probes
+        id: smoke
+        env:
+          BASE: https://sms-dev.cam.uchc.edu
+          TARGET_VERSION: ${{ needs.validate.outputs.target_version }}
+          EXP_ID: ${{ secrets.CI_PROBE_EXPERIMENT_ID }}
+        run: |
+          set -uo pipefail
+          START=$(date +%s%3N)
+
+          # 1. Health
+          RESP=$(curl -sf --max-time 30 -w '\n__CODE__%{http_code}' "$BASE/health" || echo "__CODE__000")
+          CODE=$(echo "$RESP" | grep -oE '__CODE__[0-9]+' | grep -oE '[0-9]+')
+          if [ "$CODE" = "200" ]; then HS=PASS; else HS=FAIL; fi
+          echo "health: $CODE → $HS"
+
+          # 2. Version match
+          RESP=$(curl -sf --max-time 10 -w '\n__CODE__%{http_code}' "$BASE/version" || echo "__CODE__000")
+          CODE=$(echo "$RESP" | grep -oE '__CODE__[0-9]+' | grep -oE '[0-9]+')
+          BODY=$(echo "$RESP" | sed '/__CODE__/d' | tr -d '"' | tr -d '\n')
+          if [ "$CODE" = "200" ] && [ "$BODY" = "$TARGET_VERSION" ]; then
+            VS=PASS
+          else
+            VS=FAIL
+          fi
+          echo "version: $CODE  reported=$BODY  expected=$TARGET_VERSION → $VS"
+
+          # 3. Analyses canary (dev only — confirms HPC connectivity)
+          NTP=$(( (RANDOM % 16) + 5 ))
+          BODY_JSON=$(jq -n \
+            --arg eid "$EXP_ID" \
+            --argjson ntp "$NTP" \
+            '{"experiment_id":$eid,"single":[{"name":"ptools_rna","n_tp":$ntp,"variant":0}]}')
+          RESP=$(curl -sf --max-time 130 -w '\n__CODE__%{http_code}' \
+            -X POST "$BASE/api/v1/analyses" \
+            -H 'Content-Type: application/json' \
+            -d "$BODY_JSON" || echo "__CODE__000")
+          CODE=$(echo "$RESP" | grep -oE '__CODE__[0-9]+' | grep -oE '[0-9]+')
+          if [ "$CODE" = "200" ]; then AS=PASS; else AS=FAIL; fi
+          echo "analyses: $CODE → $AS"
+
+          END=$(date +%s%3N)
+          {
+            echo "health_status=$HS"
+            echo "version_status=$VS"
+            echo "analyses_status=$AS"
+            echo "wall_ms=$(( END - START ))"
+          } >> "$GITHUB_OUTPUT"
+
+          # Fail the step if any check failed (gates prod deploy).
+          [ "$HS" = "PASS" ] && [ "$VS" = "PASS" ] && [ "$AS" = "PASS" ]
+
+  deploy-rke-prod:
+    needs: [validate, smoke-rke-dev]
+    if: |
+      always() &&
+      needs.validate.outputs.deploy_rke_prod == 'true' &&
+      (needs.smoke-rke-dev.result == 'success' || (inputs.skip_smoke_test == true && needs.validate.outputs.deploy_rke_dev != 'true'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: rke-prod
+      url: https://sms.cam.uchc.edu
+    outputs:
+      apply_status: ${{ steps.deploy.outputs.apply_status }}
+      rollout_status: ${{ steps.deploy.outputs.rollout_status }}
+      wall_ms: ${{ steps.deploy.outputs.wall_ms }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Patch image tag + apply + rollout
+        id: deploy
+        env:
+          TARGET_VERSION: ${{ needs.validate.outputs.target_version }}
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_RKE_BASE64 }}
+        run: |
+          set -euo pipefail
+          START=$(date +%s%3N)
+
+          if [ -z "$KUBECONFIG_B64" ]; then
+            echo "::error::KUBECONFIG_RKE_BASE64 secret missing"
+            exit 1
+          fi
+          echo "$KUBECONFIG_B64" | base64 -d > /tmp/kubeconfig-rke
+          chmod 600 /tmp/kubeconfig-rke
+          export KUBECONFIG=/tmp/kubeconfig-rke
+          trap 'rm -f /tmp/kubeconfig-rke' EXIT
+
+          yq -i \
+            '(.images[] | select(.name == "ghcr.io/vivarium-collective/sms-api") | .newTag) = strenv(TARGET_VERSION)' \
+            kustomize/overlays/sms-api-rke/kustomization.yaml
+          echo "── kustomization after patch:"
+          yq '.images' kustomize/overlays/sms-api-rke/kustomization.yaml
+
+          if kubectl kustomize kustomize/overlays/sms-api-rke | kubectl apply -f -; then
+            APPLY=PASS
+          else
+            APPLY=FAIL
+          fi
+          echo "apply_status=$APPLY" >> "$GITHUB_OUTPUT"
+          [ "$APPLY" = "PASS" ] || exit 1
+
+          kubectl rollout restart deployment/api -n sms-api-rke
+          if kubectl rollout status deployment/api -n sms-api-rke --timeout=300s; then
+            ROLLOUT=PASS
+          else
+            ROLLOUT=FAIL
+          fi
+          echo "rollout_status=$ROLLOUT" >> "$GITHUB_OUTPUT"
+
+          END=$(date +%s%3N)
+          echo "wall_ms=$(( END - START ))" >> "$GITHUB_OUTPUT"
+          [ "$ROLLOUT" = "PASS" ]
+
+  smoke-rke-prod:
+    needs: [validate, deploy-rke-prod]
+    if: needs.deploy-rke-prod.result == 'success' && inputs.skip_smoke_test != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      health_status: ${{ steps.smoke.outputs.health_status }}
+      version_status: ${{ steps.smoke.outputs.version_status }}
+      db_status: ${{ steps.smoke.outputs.db_status }}
+      wall_ms: ${{ steps.smoke.outputs.wall_ms }}
+    steps:
+      - name: Pod warmup
+        run: sleep 30
+
+      - name: Run smoke probes
+        id: smoke
+        env:
+          BASE: https://sms.cam.uchc.edu
+          TARGET_VERSION: ${{ needs.validate.outputs.target_version }}
+        run: |
+          set -uo pipefail
+          START=$(date +%s%3N)
+
+          # 1. Health
+          RESP=$(curl -sf --max-time 30 -w '\n__CODE__%{http_code}' "$BASE/health" || echo "__CODE__000")
+          CODE=$(echo "$RESP" | grep -oE '__CODE__[0-9]+' | grep -oE '[0-9]+')
+          if [ "$CODE" = "200" ]; then HS=PASS; else HS=FAIL; fi
+
+          # 2. Version match
+          RESP=$(curl -sf --max-time 10 -w '\n__CODE__%{http_code}' "$BASE/version" || echo "__CODE__000")
+          CODE=$(echo "$RESP" | grep -oE '__CODE__[0-9]+' | grep -oE '[0-9]+')
+          BODY=$(echo "$RESP" | sed '/__CODE__/d' | tr -d '"' | tr -d '\n')
+          if [ "$CODE" = "200" ] && [ "$BODY" = "$TARGET_VERSION" ]; then VS=PASS; else VS=FAIL; fi
+
+          # 3. DB connectivity (intentionally lighter than dev — no analyses on prod)
+          RESP=$(curl -sf --max-time 30 -w '\n__CODE__%{http_code}' "$BASE/core/v1/simulator/versions" || echo "__CODE__000")
+          CODE=$(echo "$RESP" | grep -oE '__CODE__[0-9]+' | grep -oE '[0-9]+')
+          if [ "$CODE" = "200" ]; then DS=PASS; else DS=FAIL; fi
+
+          END=$(date +%s%3N)
+          {
+            echo "health_status=$HS"
+            echo "version_status=$VS"
+            echo "db_status=$DS"
+            echo "wall_ms=$(( END - START ))"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "── prod smoke: health=$HS  version=$VS  db=$DS"
+          [ "$HS" = "PASS" ] && [ "$VS" = "PASS" ] && [ "$DS" = "PASS" ]
+
+  generate-report:
+    needs: [validate, deploy-rke-dev, smoke-rke-dev, deploy-rke-prod, smoke-rke-prod]
+    if: always() && needs.validate.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Render report
+        env:
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          TRIGGER: ${{ github.event_name }}
+          TARGET_VERSION: ${{ needs.validate.outputs.target_version }}
+          DEPLOY_DEV_REQUESTED: ${{ needs.validate.outputs.deploy_rke_dev }}
+          DEPLOY_PROD_REQUESTED: ${{ needs.validate.outputs.deploy_rke_prod }}
+
+          DEV_DEPLOY_RESULT: ${{ needs.deploy-rke-dev.result }}
+          DEV_APPLY_STATUS: ${{ needs.deploy-rke-dev.outputs.apply_status }}
+          DEV_ROLLOUT_STATUS: ${{ needs.deploy-rke-dev.outputs.rollout_status }}
+          DEV_DEPLOY_WALL_MS: ${{ needs.deploy-rke-dev.outputs.wall_ms }}
+
+          DEV_SMOKE_RESULT: ${{ needs.smoke-rke-dev.result }}
+          DEV_SMOKE_HEALTH: ${{ needs.smoke-rke-dev.outputs.health_status }}
+          DEV_SMOKE_VERSION: ${{ needs.smoke-rke-dev.outputs.version_status }}
+          DEV_SMOKE_ANALYSES: ${{ needs.smoke-rke-dev.outputs.analyses_status }}
+          DEV_SMOKE_WALL_MS: ${{ needs.smoke-rke-dev.outputs.wall_ms }}
+
+          PROD_DEPLOY_RESULT: ${{ needs.deploy-rke-prod.result }}
+          PROD_APPLY_STATUS: ${{ needs.deploy-rke-prod.outputs.apply_status }}
+          PROD_ROLLOUT_STATUS: ${{ needs.deploy-rke-prod.outputs.rollout_status }}
+          PROD_DEPLOY_WALL_MS: ${{ needs.deploy-rke-prod.outputs.wall_ms }}
+
+          PROD_SMOKE_RESULT: ${{ needs.smoke-rke-prod.result }}
+          PROD_SMOKE_HEALTH: ${{ needs.smoke-rke-prod.outputs.health_status }}
+          PROD_SMOKE_VERSION: ${{ needs.smoke-rke-prod.outputs.version_status }}
+          PROD_SMOKE_DB: ${{ needs.smoke-rke-prod.outputs.db_status }}
+          PROD_SMOKE_WALL_MS: ${{ needs.smoke-rke-prod.outputs.wall_ms }}
+        run: |
+          mkdir -p reports/cd
+          python3 .github/scripts/render_cd_report.py > reports/cd/index.html
+          echo "── reports/cd/index.html written ($(wc -c < reports/cd/index.html) bytes)"
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cd-report
+          path: reports/cd/index.html
+          retention-days: 30
+
+  deploy-report:
+    needs: [generate-report]
+    if: always() && needs.generate-report.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: "pages"
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download report artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cd-report
+          path: reports/cd
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './reports'
+
+      - name: Deploy to Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

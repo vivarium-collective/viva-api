@@ -1,0 +1,529 @@
+name: Continuous Health Monitor
+
+# Scheduled probe of prod + dev REST APIs.
+# Detects analyses-endpoint starvation (HPC queue blocked) by measuring
+# wall time against a configurable threshold. Publishes an HTML report to
+# GitHub Pages and opens a deduplicated issue on regression.
+
+on:
+  schedule:
+    - cron: '0 4 * * *'   # 04:00 UTC nightly
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which environment to probe"
+        default: "both"
+        type: choice
+        options: [prod, dev, both]
+      starvation_threshold_minutes:
+        description: "Max acceptable analyses wall time (minutes)"
+        default: "10"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "ci-health-monitor"
+  cancel-in-progress: false
+
+env:
+  PROD_BASE: https://sms.cam.uchc.edu
+  DEV_BASE: https://sms-dev.cam.uchc.edu
+  THRESHOLD_MIN: ${{ inputs.starvation_threshold_minutes || '10' }}
+  TARGET: ${{ inputs.target || 'both' }}
+
+jobs:
+  probe-prod:
+    if: inputs.target != 'dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      health_status: ${{ steps.summarize.outputs.health_status }}
+      health_time_ms: ${{ steps.summarize.outputs.health_time_ms }}
+      deployed_version: ${{ steps.summarize.outputs.deployed_version }}
+      simulator_status: ${{ steps.summarize.outputs.simulator_status }}
+      simulator_count: ${{ steps.summarize.outputs.simulator_count }}
+      simulator_time_ms: ${{ steps.summarize.outputs.simulator_time_ms }}
+      discovery_status: ${{ steps.summarize.outputs.discovery_status }}
+      discovery_time_ms: ${{ steps.summarize.outputs.discovery_time_ms }}
+      analyses_status: ${{ steps.summarize.outputs.analyses_status }}
+      analyses_time_ms: ${{ steps.summarize.outputs.analyses_time_ms }}
+      starvation_flag: ${{ steps.summarize.outputs.starvation_flag }}
+      overall: ${{ steps.summarize.outputs.overall }}
+    steps:
+      - name: Probe — health
+        id: health
+        run: |
+          URL="${PROD_BASE}/health"
+          START=$(date +%s%3N)
+          RESP=$(curl -sf --max-time 10 -w '\n__CODE__%{http_code}' "$URL" || echo "__CODE__000")
+          END=$(date +%s%3N)
+          WALL=$(( END - START ))
+          CODE=$(echo "$RESP" | grep -oE '__CODE__[0-9]+' | grep -oE '[0-9]+')
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "wall_ms=$WALL" >> "$GITHUB_OUTPUT"
+          echo "▸ GET $URL → $CODE in ${WALL}ms"
+
+      - name: Probe — version
+        id: version
+        run: |
+          URL="${PROD_BASE}/version"
+          RESP=$(curl -sf --max-time 10 -w '\n__CODE__%{http_code}' "$URL" || echo "__CODE__000")
+          CODE=$(echo "$RESP" | grep -oE '__CODE__[0-9]+' | grep -oE '[0-9]+')
+          BODY=$(echo "$RESP" | sed '/__CODE__/d')
+          # Strip surrounding quotes if FastAPI returns a JSON string
+          VERSION=$(echo "$BODY" | tr -d '"' | tr -d '\n' | head -c 32)
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "▸ GET $URL → $CODE ($VERSION)"
+
+      - name: Probe — simulator versions
+        id: simulator
+        run: |
+          URL="${PROD_BASE}/core/v1/simulator/versions"
+          START=$(date +%s%3N)
+          RESP=$(curl -sf --max-time 30 -w '\n__CODE__%{http_code}' "$URL" || echo "__CODE__000")
+          END=$(date +%s%3N)
+          WALL=$(( END - START ))
+          CODE=$(echo "$RESP" | grep -oE '__CODE__[0-9]+' | grep -oE '[0-9]+')
+          BODY=$(echo "$RESP" | sed '/__CODE__/d')
+          if [ "$CODE" = "200" ]; then
+            COUNT=$(echo "$BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d) if isinstance(d,list) else 0)" 2>/dev/null || echo 0)
+          else
+            COUNT=0
+          fi
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "wall_ms=$WALL" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "▸ GET $URL → $CODE ($COUNT records) in ${WALL}ms"
+
+      - name: Probe — discovery
+        id: discovery
+        run: |
+          URL="${PROD_BASE}/api/v1/simulations/discovery"
+          START=$(date +%s%3N)
+          RESP=$(curl -sf --max-time 30 -w '\n__CODE__%{http_code}' "$URL" || echo "__CODE__000")
+          END=$(date +%s%3N)
+          WALL=$(( END - START ))
+          CODE=$(echo "$RESP" | grep -oE '__CODE__[0-9]+' | grep -oE '[0-9]+')
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "wall_ms=$WALL" >> "$GITHUB_OUTPUT"
+          echo "▸ GET $URL → $CODE in ${WALL}ms"
+
+      - name: Probe — analyses (starvation canary)
+        id: analyses
+        env:
+          EXP_ID: ${{ secrets.CI_PROBE_EXPERIMENT_ID }}
+        run: |
+          URL="${PROD_BASE}/api/v1/analyses"
+          THRESHOLD_MS=$(( THRESHOLD_MIN * 60 * 1000 ))
+          MAX_TIME=$(( THRESHOLD_MIN * 60 + 30 ))
+          # Randomize n_tp 5–20 to bypass the analyses cache (mirrors ptools-verification.yml)
+          NTP=$(( (RANDOM % 16) + 5 ))
+          BODY=$(jq -n \
+            --arg eid "$EXP_ID" \
+            --argjson ntp "$NTP" \
+            '{"experiment_id":$eid,"single":[{"name":"ptools_rna","n_tp":$ntp,"variant":0}]}')
+          echo "▸ POST $URL  experiment_id=$EXP_ID  n_tp=$NTP  threshold=${THRESHOLD_MIN}min"
+          START=$(date +%s%3N)
+          RESP=$(curl -sf --max-time "$MAX_TIME" -w '\n__CODE__%{http_code}' \
+            -X POST "$URL" \
+            -H 'Content-Type: application/json' \
+            -d "$BODY" || echo "__CODE__000")
+          END=$(date +%s%3N)
+          WALL=$(( END - START ))
+          CODE=$(echo "$RESP" | grep -oE '__CODE__[0-9]+' | grep -oE '[0-9]+')
+          if [ "$WALL" -gt "$THRESHOLD_MS" ] || [ "$CODE" != "200" ]; then
+            STARVED=true
+          else
+            STARVED=false
+          fi
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "wall_ms=$WALL" >> "$GITHUB_OUTPUT"
+          echo "starved=$STARVED" >> "$GITHUB_OUTPUT"
+          echo "threshold_ms=$THRESHOLD_MS" >> "$GITHUB_OUTPUT"
+          echo "  → $CODE in ${WALL}ms (starved=$STARVED)"
+
+      - name: Summarize probe-prod
+        id: summarize
+        if: always()
+        env:
+          HEALTH_CODE: ${{ steps.health.outputs.code }}
+          HEALTH_WALL: ${{ steps.health.outputs.wall_ms }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SIM_CODE: ${{ steps.simulator.outputs.code }}
+          SIM_WALL: ${{ steps.simulator.outputs.wall_ms }}
+          SIM_COUNT: ${{ steps.simulator.outputs.count }}
+          DISC_CODE: ${{ steps.discovery.outputs.code }}
+          DISC_WALL: ${{ steps.discovery.outputs.wall_ms }}
+          ANA_CODE: ${{ steps.analyses.outputs.code }}
+          ANA_WALL: ${{ steps.analyses.outputs.wall_ms }}
+          ANA_STARVED: ${{ steps.analyses.outputs.starved }}
+        run: |
+          # Default empty values to safe sentinels
+          HC=${HEALTH_CODE:-000}; HW=${HEALTH_WALL:-0}
+          V=${VERSION:-unknown}
+          SC=${SIM_CODE:-000}; SW=${SIM_WALL:-0}; CT=${SIM_COUNT:-0}
+          DC=${DISC_CODE:-000}; DW=${DISC_WALL:-0}
+          AC=${ANA_CODE:-000}; AW=${ANA_WALL:-0}; STARVED=${ANA_STARVED:-true}
+
+          # Health PASS/FAIL
+          if [ "$HC" = "200" ]; then HS=PASS; else HS=FAIL; fi
+          if [ "$SC" = "200" ]; then SS=PASS; else SS=FAIL; fi
+          if [ "$DC" = "200" ]; then DS=PASS; else DS=FAIL; fi
+          if [ "$AC" = "200" ] && [ "$STARVED" = "false" ]; then AS=PASS;
+          elif [ "$AC" = "200" ] && [ "$STARVED" = "true" ]; then AS=WARN;
+          else AS=FAIL; fi
+
+          # Overall classification
+          if [ "$HS" = "FAIL" ] || [ "$SS" = "FAIL" ] || [ "$AS" = "FAIL" ]; then
+            OVERALL=red
+          elif [ "$AS" = "WARN" ] || [ "$DS" = "FAIL" ]; then
+            OVERALL=yellow
+          else
+            OVERALL=green
+          fi
+
+          {
+            echo "health_status=$HS"
+            echo "health_time_ms=$HW"
+            echo "deployed_version=$V"
+            echo "simulator_status=$SS"
+            echo "simulator_count=$CT"
+            echo "simulator_time_ms=$SW"
+            echo "discovery_status=$DS"
+            echo "discovery_time_ms=$DW"
+            echo "analyses_status=$AS"
+            echo "analyses_time_ms=$AW"
+            echo "starvation_flag=$STARVED"
+            echo "overall=$OVERALL"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "── probe-prod summary ──"
+          echo "  health=$HS (${HW}ms)  version=$V"
+          echo "  simulator=$SS (${SW}ms, $CT records)"
+          echo "  discovery=$DS (${DW}ms)"
+          echo "  analyses=$AS (${AW}ms, starved=$STARVED)"
+          echo "  overall=$OVERALL"
+
+  probe-dev:
+    if: inputs.target != 'prod'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    outputs:
+      health_status: ${{ steps.summarize.outputs.health_status }}
+      health_time_ms: ${{ steps.summarize.outputs.health_time_ms }}
+      deployed_version: ${{ steps.summarize.outputs.deployed_version }}
+      simulator_status: ${{ steps.summarize.outputs.simulator_status }}
+      simulator_count: ${{ steps.summarize.outputs.simulator_count }}
+      simulator_time_ms: ${{ steps.summarize.outputs.simulator_time_ms }}
+      discovery_status: ${{ steps.summarize.outputs.discovery_status }}
+      discovery_time_ms: ${{ steps.summarize.outputs.discovery_time_ms }}
+      analyses_status: ${{ steps.summarize.outputs.analyses_status }}
+      analyses_time_ms: ${{ steps.summarize.outputs.analyses_time_ms }}
+      starvation_flag: ${{ steps.summarize.outputs.starvation_flag }}
+      overall: ${{ steps.summarize.outputs.overall }}
+    steps:
+      - name: Probe — health
+        id: health
+        run: |
+          URL="${DEV_BASE}/health"
+          START=$(date +%s%3N)
+          RESP=$(curl -sf --max-time 10 -w '\n__CODE__%{http_code}' "$URL" || echo "__CODE__000")
+          END=$(date +%s%3N)
+          WALL=$(( END - START ))
+          CODE=$(echo "$RESP" | grep -oE '__CODE__[0-9]+' | grep -oE '[0-9]+')
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "wall_ms=$WALL" >> "$GITHUB_OUTPUT"
+
+      - name: Probe — version
+        id: version
+        run: |
+          URL="${DEV_BASE}/version"
+          RESP=$(curl -sf --max-time 10 -w '\n__CODE__%{http_code}' "$URL" || echo "__CODE__000")
+          CODE=$(echo "$RESP" | grep -oE '__CODE__[0-9]+' | grep -oE '[0-9]+')
+          BODY=$(echo "$RESP" | sed '/__CODE__/d')
+          VERSION=$(echo "$BODY" | tr -d '"' | tr -d '\n' | head -c 32)
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Probe — simulator versions
+        id: simulator
+        run: |
+          URL="${DEV_BASE}/core/v1/simulator/versions"
+          START=$(date +%s%3N)
+          RESP=$(curl -sf --max-time 30 -w '\n__CODE__%{http_code}' "$URL" || echo "__CODE__000")
+          END=$(date +%s%3N)
+          WALL=$(( END - START ))
+          CODE=$(echo "$RESP" | grep -oE '__CODE__[0-9]+' | grep -oE '[0-9]+')
+          BODY=$(echo "$RESP" | sed '/__CODE__/d')
+          if [ "$CODE" = "200" ]; then
+            COUNT=$(echo "$BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d) if isinstance(d,list) else 0)" 2>/dev/null || echo 0)
+          else
+            COUNT=0
+          fi
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "wall_ms=$WALL" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Probe — discovery
+        id: discovery
+        run: |
+          URL="${DEV_BASE}/api/v1/simulations/discovery"
+          START=$(date +%s%3N)
+          RESP=$(curl -sf --max-time 30 -w '\n__CODE__%{http_code}' "$URL" || echo "__CODE__000")
+          END=$(date +%s%3N)
+          WALL=$(( END - START ))
+          CODE=$(echo "$RESP" | grep -oE '__CODE__[0-9]+' | grep -oE '[0-9]+')
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "wall_ms=$WALL" >> "$GITHUB_OUTPUT"
+
+      - name: Probe — analyses (starvation canary)
+        id: analyses
+        env:
+          EXP_ID: ${{ secrets.CI_PROBE_EXPERIMENT_ID }}
+        run: |
+          URL="${DEV_BASE}/api/v1/analyses"
+          THRESHOLD_MS=$(( THRESHOLD_MIN * 60 * 1000 ))
+          MAX_TIME=$(( THRESHOLD_MIN * 60 + 30 ))
+          NTP=$(( (RANDOM % 16) + 5 ))
+          BODY=$(jq -n \
+            --arg eid "$EXP_ID" \
+            --argjson ntp "$NTP" \
+            '{"experiment_id":$eid,"single":[{"name":"ptools_rna","n_tp":$ntp,"variant":0}]}')
+          START=$(date +%s%3N)
+          RESP=$(curl -sf --max-time "$MAX_TIME" -w '\n__CODE__%{http_code}' \
+            -X POST "$URL" \
+            -H 'Content-Type: application/json' \
+            -d "$BODY" || echo "__CODE__000")
+          END=$(date +%s%3N)
+          WALL=$(( END - START ))
+          CODE=$(echo "$RESP" | grep -oE '__CODE__[0-9]+' | grep -oE '[0-9]+')
+          if [ "$WALL" -gt "$THRESHOLD_MS" ] || [ "$CODE" != "200" ]; then
+            STARVED=true
+          else
+            STARVED=false
+          fi
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "wall_ms=$WALL" >> "$GITHUB_OUTPUT"
+          echo "starved=$STARVED" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize probe-dev
+        id: summarize
+        if: always()
+        env:
+          HEALTH_CODE: ${{ steps.health.outputs.code }}
+          HEALTH_WALL: ${{ steps.health.outputs.wall_ms }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SIM_CODE: ${{ steps.simulator.outputs.code }}
+          SIM_WALL: ${{ steps.simulator.outputs.wall_ms }}
+          SIM_COUNT: ${{ steps.simulator.outputs.count }}
+          DISC_CODE: ${{ steps.discovery.outputs.code }}
+          DISC_WALL: ${{ steps.discovery.outputs.wall_ms }}
+          ANA_CODE: ${{ steps.analyses.outputs.code }}
+          ANA_WALL: ${{ steps.analyses.outputs.wall_ms }}
+          ANA_STARVED: ${{ steps.analyses.outputs.starved }}
+        run: |
+          HC=${HEALTH_CODE:-000}; HW=${HEALTH_WALL:-0}
+          V=${VERSION:-unknown}
+          SC=${SIM_CODE:-000}; SW=${SIM_WALL:-0}; CT=${SIM_COUNT:-0}
+          DC=${DISC_CODE:-000}; DW=${DISC_WALL:-0}
+          AC=${ANA_CODE:-000}; AW=${ANA_WALL:-0}; STARVED=${ANA_STARVED:-true}
+
+          if [ "$HC" = "200" ]; then HS=PASS; else HS=FAIL; fi
+          if [ "$SC" = "200" ]; then SS=PASS; else SS=FAIL; fi
+          if [ "$DC" = "200" ]; then DS=PASS; else DS=FAIL; fi
+          if [ "$AC" = "200" ] && [ "$STARVED" = "false" ]; then AS=PASS;
+          elif [ "$AC" = "200" ] && [ "$STARVED" = "true" ]; then AS=WARN;
+          else AS=FAIL; fi
+
+          if [ "$HS" = "FAIL" ] || [ "$SS" = "FAIL" ] || [ "$AS" = "FAIL" ]; then
+            OVERALL=red
+          elif [ "$AS" = "WARN" ] || [ "$DS" = "FAIL" ]; then
+            OVERALL=yellow
+          else
+            OVERALL=green
+          fi
+
+          {
+            echo "health_status=$HS"
+            echo "health_time_ms=$HW"
+            echo "deployed_version=$V"
+            echo "simulator_status=$SS"
+            echo "simulator_count=$CT"
+            echo "simulator_time_ms=$SW"
+            echo "discovery_status=$DS"
+            echo "discovery_time_ms=$DW"
+            echo "analyses_status=$AS"
+            echo "analyses_time_ms=$AW"
+            echo "starvation_flag=$STARVED"
+            echo "overall=$OVERALL"
+          } >> "$GITHUB_OUTPUT"
+
+  generate-report:
+    needs: [probe-prod, probe-dev]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Render report
+        env:
+          TRIGGER: ${{ github.event_name }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          THRESHOLD_MIN: ${{ env.THRESHOLD_MIN }}
+          TARGET: ${{ env.TARGET }}
+          PROD_RESULT: ${{ needs.probe-prod.result }}
+          PROD_HEALTH_STATUS: ${{ needs.probe-prod.outputs.health_status }}
+          PROD_HEALTH_TIME_MS: ${{ needs.probe-prod.outputs.health_time_ms }}
+          PROD_VERSION: ${{ needs.probe-prod.outputs.deployed_version }}
+          PROD_SIM_STATUS: ${{ needs.probe-prod.outputs.simulator_status }}
+          PROD_SIM_COUNT: ${{ needs.probe-prod.outputs.simulator_count }}
+          PROD_SIM_TIME_MS: ${{ needs.probe-prod.outputs.simulator_time_ms }}
+          PROD_DISC_STATUS: ${{ needs.probe-prod.outputs.discovery_status }}
+          PROD_DISC_TIME_MS: ${{ needs.probe-prod.outputs.discovery_time_ms }}
+          PROD_ANA_STATUS: ${{ needs.probe-prod.outputs.analyses_status }}
+          PROD_ANA_TIME_MS: ${{ needs.probe-prod.outputs.analyses_time_ms }}
+          PROD_STARVED: ${{ needs.probe-prod.outputs.starvation_flag }}
+          PROD_OVERALL: ${{ needs.probe-prod.outputs.overall }}
+          DEV_RESULT: ${{ needs.probe-dev.result }}
+          DEV_HEALTH_STATUS: ${{ needs.probe-dev.outputs.health_status }}
+          DEV_HEALTH_TIME_MS: ${{ needs.probe-dev.outputs.health_time_ms }}
+          DEV_VERSION: ${{ needs.probe-dev.outputs.deployed_version }}
+          DEV_SIM_STATUS: ${{ needs.probe-dev.outputs.simulator_status }}
+          DEV_SIM_COUNT: ${{ needs.probe-dev.outputs.simulator_count }}
+          DEV_SIM_TIME_MS: ${{ needs.probe-dev.outputs.simulator_time_ms }}
+          DEV_DISC_STATUS: ${{ needs.probe-dev.outputs.discovery_status }}
+          DEV_DISC_TIME_MS: ${{ needs.probe-dev.outputs.discovery_time_ms }}
+          DEV_ANA_STATUS: ${{ needs.probe-dev.outputs.analyses_status }}
+          DEV_ANA_TIME_MS: ${{ needs.probe-dev.outputs.analyses_time_ms }}
+          DEV_STARVED: ${{ needs.probe-dev.outputs.starvation_flag }}
+          DEV_OVERALL: ${{ needs.probe-dev.outputs.overall }}
+        run: |
+          mkdir -p reports/ci
+          python3 .github/scripts/render_ci_report.py > reports/ci/index.html
+          echo "── reports/ci/index.html written ($(wc -c < reports/ci/index.html) bytes)"
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-report
+          path: reports/ci/index.html
+          retention-days: 30
+
+  deploy-report:
+    needs: [generate-report]
+    if: always() && needs.generate-report.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: "pages"
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download report artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-report
+          path: reports/ci
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './reports'
+
+      - name: Deploy to Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
+
+  notify-on-failure:
+    needs: [probe-prod]
+    if: always() && (needs.probe-prod.outputs.overall == 'red' || needs.probe-prod.outputs.starvation_flag == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Create or update health-alert issue
+        uses: actions/github-script@v7
+        env:
+          OVERALL: ${{ needs.probe-prod.outputs.overall }}
+          HEALTH_STATUS: ${{ needs.probe-prod.outputs.health_status }}
+          HEALTH_MS: ${{ needs.probe-prod.outputs.health_time_ms }}
+          VERSION: ${{ needs.probe-prod.outputs.deployed_version }}
+          SIM_STATUS: ${{ needs.probe-prod.outputs.simulator_status }}
+          ANA_STATUS: ${{ needs.probe-prod.outputs.analyses_status }}
+          ANA_MS: ${{ needs.probe-prod.outputs.analyses_time_ms }}
+          STARVED: ${{ needs.probe-prod.outputs.starvation_flag }}
+          THRESHOLD_MIN: ${{ env.THRESHOLD_MIN }}
+        with:
+          script: |
+            const env = process.env;
+            const ts = new Date().toISOString();
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const pagesUrl = `https://vivarium-collective.github.io/sms-api/ci/`;
+
+            const body = [
+              `**Triggered at:** ${ts}`,
+              `**Overall:** \`${env.OVERALL}\``,
+              `**Starvation flag:** \`${env.STARVED}\` (threshold: ${env.THRESHOLD_MIN} min)`,
+              ``,
+              `| Probe | Status | Wall time |`,
+              `|---|---|---|`,
+              `| \`/health\` | ${env.HEALTH_STATUS} | ${env.HEALTH_MS}ms |`,
+              `| \`/core/v1/simulator/versions\` | ${env.SIM_STATUS} | — |`,
+              `| \`/api/v1/analyses\` | ${env.ANA_STATUS} | ${env.ANA_MS}ms |`,
+              ``,
+              `**Deployed version:** \`${env.VERSION}\``,
+              ``,
+              `### Triage steps`,
+              `1. Check the Pages report: ${pagesUrl}`,
+              `2. SSH to the SLURM submit host and run \`squeue -u <api-user>\` to see queue state.`,
+              `3. Inspect API pod logs: \`kubectl logs -n sms-api-rke deployment/api --tail=200\`.`,
+              `4. If queue is blocked, check for failed/hung jobs holding partition capacity.`,
+              ``,
+              `**Run:** ${runUrl}`,
+              ``,
+              `_Close this issue manually when the incident is resolved._`,
+            ].join('\n');
+
+            const { data: openIssues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'health-alert',
+              per_page: 10,
+            });
+
+            if (openIssues.length > 0) {
+              const existing = openIssues[0];
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `### Recurrence — ${ts}\n\n${body}`,
+              });
+              core.info(`Commented on existing issue #${existing.number}`);
+            } else {
+              const { data: created } = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `[ALERT] Production API health degraded — ${ts}`,
+                body,
+                labels: ['health-alert', 'automated'],
+              });
+              core.info(`Created issue #${created.number}`);
+            }

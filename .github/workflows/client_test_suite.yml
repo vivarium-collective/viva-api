@@ -1,0 +1,203 @@
+name: Client Test Suite
+
+# End-to-end test suite for the sms-api client surface — the primary
+# end-user-facing entrypoints to the API. Initially this covers the
+# Atlantis CLI (app.cli); subsequent commits in PR #129 expand it to also
+# cover the ptools dev HTTP path (scripts/test_analyses.mjs) and the
+# hosted marimo apps (app/ui/). Every test runs against the production
+# RKE deployment (sms.cam.uchc.edu).
+#
+# Why a separate workflow instead of folding into main.yml:
+#   • These tests hit a *live* deployment and have wall-time characteristics
+#     that don't belong on every PR push.
+#   • The HTML report is the deliverable — it's the human-facing evidence
+#     that the clients work as advertised.
+#   • End-user-facing only: zero secrets required.
+#
+# All tests are non-destructive: help text, read-only API listings, and
+# error-path probes. Nothing submits a simulation or builds a container.
+
+on:
+  schedule:
+    - cron: '0 8 * * *'   # 08:00 UTC nightly (offset from ci.yml's 04:00 cron)
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "API base URL to target"
+        default: "https://sms.cam.uchc.edu"
+        type: choice
+        options:
+          - "https://sms.cam.uchc.edu"
+          - "https://sms-dev.cam.uchc.edu"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "client-test-suite"
+  cancel-in-progress: false
+
+env:
+  BASE_URL: ${{ inputs.base_url || 'https://sms.cam.uchc.edu' }}
+
+jobs:
+  run-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      total: ${{ steps.summarize.outputs.total }}
+      passed: ${{ steps.summarize.outputs.passed }}
+      failed: ${{ steps.summarize.outputs.failed }}
+      overall: ${{ steps.summarize.outputs.overall }}
+      deployed_version: ${{ steps.summarize.outputs.deployed_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python + uv
+        uses: ./.github/actions/setup-python-env
+
+      - name: Confirm atlantis CLI is installable
+        run: |
+          uv run atlantis --help | head -20
+          echo "── atlantis CLI installed and responding"
+
+      - name: Run client test suite
+        id: suite
+        run: |
+          set -o pipefail
+          uv run python .github/scripts/run_client_tests.py \
+            --base-url "$BASE_URL" \
+            --out client-test-results.json | tee suite.log
+        # Don't fail the whole job on test failures — the report job needs to
+        # render even when some tests failed.
+        continue-on-error: true
+
+      - name: Summarize results
+        id: summarize
+        if: always()
+        run: |
+          if [ ! -f client-test-results.json ]; then
+            {
+              echo "total=0"
+              echo "passed=0"
+              echo "failed=0"
+              echo "overall=FAIL"
+              echo "deployed_version=unknown"
+            } >> "$GITHUB_OUTPUT"
+            echo "::warning::client-test-results.json was not produced — runner crashed before writing"
+            exit 0
+          fi
+
+          TOTAL=$(jq '.summary.total' client-test-results.json)
+          PASSED=$(jq '.summary.passed' client-test-results.json)
+          FAILED=$(jq '.summary.failed' client-test-results.json)
+          OVERALL=$(jq -r '.summary.overall' client-test-results.json)
+          VERSION=$(jq -r '.summary.deployed_version' client-test-results.json)
+
+          {
+            echo "total=$TOTAL"
+            echo "passed=$PASSED"
+            echo "failed=$FAILED"
+            echo "overall=$OVERALL"
+            echo "deployed_version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "── suite summary ──"
+          echo "  total=$TOTAL  passed=$PASSED  failed=$FAILED"
+          echo "  overall=$OVERALL  deployed=$VERSION"
+
+      - name: Upload raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-test-results
+          path: client-test-results.json
+          retention-days: 30
+
+      - name: Upload run log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-test-log
+          path: suite.log
+          retention-days: 30
+
+  generate-report:
+    needs: [run-suite]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download raw results
+        uses: actions/download-artifact@v4
+        with:
+          name: client-test-results
+          path: .
+
+      - name: Render report
+        env:
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          TRIGGER: ${{ github.event_name }}
+        run: |
+          mkdir -p reports/clients
+          if [ -f client-test-results.json ]; then
+            python3 .github/scripts/render_client_test_report.py client-test-results.json \
+              > reports/clients/index.html
+          else
+            # Emit a minimal failure page so the Pages deploy still has content.
+            cat > reports/clients/index.html <<'HTML'
+          <!DOCTYPE html><html><head><title>Client Test Suite — failed to produce results</title></head>
+          <body style="background:#0d0d0d;color:#e0e0e0;font-family:monospace;padding:2rem;">
+            <h1 style="color:#ff3366;">Client test runner crashed before writing results.</h1>
+            <p>See the workflow run log for details.</p>
+          </body></html>
+          HTML
+          fi
+          echo "── reports/clients/index.html written ($(wc -c < reports/clients/index.html) bytes)"
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-test-report
+          path: reports/clients/index.html
+          retention-days: 30
+
+  deploy-report:
+    needs: [generate-report]
+    if: always() && needs.generate-report.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: "pages"
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download report artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: client-test-report
+          path: reports/clients
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './reports'
+
+      - name: Deploy to Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
