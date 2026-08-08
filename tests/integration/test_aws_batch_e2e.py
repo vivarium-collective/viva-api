@@ -63,6 +63,7 @@ from pathlib import Path
 
 import pytest
 
+import viva_api.dependencies as deps
 from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.models import JobId, JobStatus
 from viva_api.common.simulator_defaults import RepoUrl
@@ -168,70 +169,89 @@ async def test_chain_dispatch_multiseed_multigeneration_against_real_aws_batch(
         )
         simulation = await database_service.insert_simulation(sim_request=simulation_request)
 
-    campaign = await database_service.get_hpcrun_by_ref(ref_id=simulation.database_id, job_type=JobType.SIMULATION)
-    if campaign is None or not campaign.chain_final_job_ids:
-        job_id = await ray_service.submit_chain_dispatch_job(simulation, database_service)
-        assert job_id is not None
+    # submit_chain_dispatch_job stages run_pbg.py to S3 via the module-level
+    # FileService dependency (viva_api.dependencies.get_file_service()) -- a
+    # normal request has this set at app startup (dependencies.init_standalone);
+    # this test constructs SimulationServiceRay() directly, bypassing that, so
+    # it must set it up itself. Real S3, not a mock -- this test's whole point
+    # is exercising real infrastructure.
+    saved_file_service = deps.get_file_service()
+    dispatch_file_service = FileServiceS3()
+    deps.set_file_service(dispatch_file_service)
+    try:
         campaign = await database_service.get_hpcrun_by_ref(ref_id=simulation.database_id, job_type=JobType.SIMULATION)
+        if campaign is None or not campaign.chain_final_job_ids:
+            job_id = await ray_service.submit_chain_dispatch_job(simulation, database_service)
+            assert job_id is not None
+            campaign = await database_service.get_hpcrun_by_ref(
+                ref_id=simulation.database_id, job_type=JobType.SIMULATION
+            )
 
-    assert campaign is not None, "No campaign HpcRun row was recorded by submit_chain_dispatch_job"
-    tracked_job_ids = campaign.chain_final_job_ids or []
-    assert tracked_job_ids, "chain-dispatch tracked zero seed chains -- every seed failed generation 0 submission"
-    assert len(tracked_job_ids) == N_SEEDS, (
-        f"expected {N_SEEDS} tracked seed chains, got {len(tracked_job_ids)}: {tracked_job_ids}"
-    )
-
-    # Poll every tracked seed chain's own final job to terminal. Real AWS
-    # Batch dependency resolution advances each chain natively (generation
-    # g+1 doesn't start until generation g SUCCEEDED) -- this loop only
-    # detects completion, exactly like JobScheduler.update_chain_campaigns
-    # does on a real deployment's own polling interval.
-    start_time = time.time()
-    result = ray_service.get_chain_campaign_result(tracked_job_ids)
-    while not result.terminal and time.time() - start_time < POLL_TIMEOUT_SECONDS:
-        await asyncio.sleep(POLL_INTERVAL_SECONDS)
-        result = ray_service.get_chain_campaign_result(tracked_job_ids)
-
-    assert result.terminal, (
-        f"Chain-dispatch campaign did not reach terminal state within {POLL_TIMEOUT_SECONDS}s "
-        f"({len(result.succeeded_job_ids)} succeeded, {len(result.failed_job_ids)} failed so far, "
-        f"{len(tracked_job_ids) - len(result.succeeded_job_ids) - len(result.failed_job_ids)} still pending)"
-    )
-    assert result.succeeded_job_ids, f"Every one of {len(tracked_job_ids)} seed chains failed: {result.failed_job_ids}"
-
-    # Fire (or reuse, if already fired by a prior interrupted run) the
-    # analysis DAG node for real -- exactly what JobScheduler.
-    # _advance_chain_campaign does once its own poll detects all-terminal.
-    existing_analyses = await database_service.list_analyses(simulation_id=simulation.database_id)
-    non_failed = [a for a in existing_analyses if a.status != JobStatus.FAILED]
-    if non_failed:
-        analysis_job_id: str | None = non_failed[-1].job_id_ext
-    else:
-        analysis_job_id = await ray_service.submit_campaign_analysis(
-            simulation=simulation,
-            database_service=database_service,
-            commit=simulator.git_commit_hash,
-            total_n_seeds=N_SEEDS,
-            n_generations=N_GENERATIONS,
+        assert campaign is not None, "No campaign HpcRun row was recorded by submit_chain_dispatch_job"
+        tracked_job_ids = campaign.chain_final_job_ids or []
+        assert tracked_job_ids, "chain-dispatch tracked zero seed chains -- every seed failed generation 0 submission"
+        assert len(tracked_job_ids) == N_SEEDS, (
+            f"expected {N_SEEDS} tracked seed chains, got {len(tracked_job_ids)}: {tracked_job_ids}"
         )
-    assert analysis_job_id is not None, "Analysis DAG node submission failed -- see the recorded FAILED analyses row"
 
-    analysis_start = time.time()
-    analysis_status: JobStatusInfo | None = None
-    while time.time() - analysis_start < POLL_TIMEOUT_SECONDS:
-        analysis_status = await ray_service.get_job_status(JobId.ray(analysis_job_id))
-        if analysis_status is not None and analysis_status.status in (
-            JobStatus.COMPLETED,
-            JobStatus.FAILED,
-            JobStatus.CANCELLED,
-        ):
-            break
-        await asyncio.sleep(POLL_INTERVAL_SECONDS)
+        # Poll every tracked seed chain's own final job to terminal. Real AWS
+        # Batch dependency resolution advances each chain natively (generation
+        # g+1 doesn't start until generation g SUCCEEDED) -- this loop only
+        # detects completion, exactly like JobScheduler.update_chain_campaigns
+        # does on a real deployment's own polling interval.
+        start_time = time.time()
+        result = ray_service.get_chain_campaign_result(tracked_job_ids)
+        while not result.terminal and time.time() - start_time < POLL_TIMEOUT_SECONDS:
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            result = ray_service.get_chain_campaign_result(tracked_job_ids)
 
-    assert analysis_status is not None, "Analysis job status never resolved"
-    assert analysis_status.status == JobStatus.COMPLETED, (
-        f"Analysis job did not succeed: status={analysis_status.status}, error={analysis_status.error_message}"
-    )
+        assert result.terminal, (
+            f"Chain-dispatch campaign did not reach terminal state within {POLL_TIMEOUT_SECONDS}s "
+            f"({len(result.succeeded_job_ids)} succeeded, {len(result.failed_job_ids)} failed so far, "
+            f"{len(tracked_job_ids) - len(result.succeeded_job_ids) - len(result.failed_job_ids)} still pending)"
+        )
+        assert result.succeeded_job_ids, (
+            f"Every one of {len(tracked_job_ids)} seed chains failed: {result.failed_job_ids}"
+        )
+
+        # Fire (or reuse, if already fired by a prior interrupted run) the
+        # analysis DAG node for real -- exactly what JobScheduler.
+        # _advance_chain_campaign does once its own poll detects all-terminal.
+        existing_analyses = await database_service.list_analyses(simulation_id=simulation.database_id)
+        non_failed = [a for a in existing_analyses if a.status != JobStatus.FAILED]
+        if non_failed:
+            analysis_job_id: str | None = non_failed[-1].job_id_ext
+        else:
+            analysis_job_id = await ray_service.submit_campaign_analysis(
+                simulation=simulation,
+                database_service=database_service,
+                commit=simulator.git_commit_hash,
+                total_n_seeds=N_SEEDS,
+                n_generations=N_GENERATIONS,
+            )
+        assert analysis_job_id is not None, (
+            "Analysis DAG node submission failed -- see the recorded FAILED analyses row"
+        )
+
+        analysis_start = time.time()
+        analysis_status: JobStatusInfo | None = None
+        while time.time() - analysis_start < POLL_TIMEOUT_SECONDS:
+            analysis_status = await ray_service.get_job_status(JobId.ray(analysis_job_id))
+            if analysis_status is not None and analysis_status.status in (
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            ):
+                break
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+
+        assert analysis_status is not None, "Analysis job status never resolved"
+        assert analysis_status.status == JobStatus.COMPLETED, (
+            f"Analysis job did not succeed: status={analysis_status.status}, error={analysis_status.error_message}"
+        )
+    finally:
+        deps.set_file_service(saved_file_service)
+        await dispatch_file_service.close()
 
     # Verify real cd1_*/ptools_* artifacts actually landed in S3 -- the whole
     # point of the canonical dispatch (see ecosystem/CLAUDE.md's own MVP
