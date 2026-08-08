@@ -114,6 +114,26 @@ def _array_env(call: Any) -> dict[str, str]:
     return {e["name"]: e["value"] for e in call.kwargs["containerOverrides"]["environment"]}
 
 
+def _run_merge_prefix(cmd: str, array_index: int) -> dict[str, Any]:
+    """Actually execute a wave/array command's BASE_SEED/OVERRIDES merge prefix
+    (everything before ``&& cd {V2ECOLI_DIR}``) through real bash + python3,
+    with ``AWS_BATCH_JOB_ARRAY_INDEX`` set the way AWS Batch would inject it —
+    no mocking, the real mechanism the container runs. Returns the parsed
+    merged OVERRIDES JSON."""
+    merge_prefix = cmd.split(" && cd ", 1)[0]
+    bash = shutil.which("bash")
+    assert bash is not None, "bash not found on PATH"
+    result = subprocess.run(  # noqa: S603 -- test-only, fixed literal args
+        [bash, "-c", merge_prefix + ' && printf "%s" "$OVERRIDES"'],
+        env={**os.environ, "AWS_BATCH_JOB_ARRAY_INDEX": str(array_index)},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    return dict(json.loads(result.stdout))
+
+
 class TestJobIdRay:
     def test_ray_factory(self) -> None:
         job_id = JobId.ray("abc-123")
@@ -689,6 +709,145 @@ class TestSimulationServiceRayStatusCancel:
         assert mock_batch.terminate_job.call_args.kwargs["jobId"] == "sim-456"
 
 
+class TestGetWaveResult:
+    """get_wave_result polls ONE wave's array job: terminal-ness + which local
+    positions SUCCEEDED vs FAILED. The underlying AWS semantics (list_jobs(
+    arrayJobId=..., jobStatus=...) returning exactly the real children in that
+    status) were independently verified live against sim139's real job
+    history (backlog items 33-35 investigation) — these tests lock the LOCAL
+    decision logic built on top of that already-verified mechanism."""
+
+    def test_not_terminal_while_children_still_running(self) -> None:
+        mock_batch = MagicMock()
+        mock_batch.describe_jobs.return_value = {
+            "jobs": [
+                {"jobId": "wave-1", "arrayProperties": {"size": 4, "statusSummary": {"SUCCEEDED": 1, "RUNNING": 3}}}
+            ]
+        }
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            result = service.get_wave_result("wave-1")
+        assert result.terminal is False
+        assert result.succeeded_local_indices == []
+        assert result.failed_local_indices == []
+        mock_batch.list_jobs.assert_not_called()
+
+    def test_terminal_all_succeeded(self) -> None:
+        mock_batch = MagicMock()
+        mock_batch.describe_jobs.return_value = {
+            "jobs": [{"jobId": "wave-1", "arrayProperties": {"size": 3, "statusSummary": {"SUCCEEDED": 3}}}]
+        }
+
+        def _list_jobs(**kwargs: Any) -> dict[str, Any]:
+            if kwargs["jobStatus"] == "SUCCEEDED":
+                return {"jobSummaryList": [{"arrayProperties": {"index": i}} for i in (0, 1, 2)]}
+            return {"jobSummaryList": []}
+
+        mock_batch.list_jobs.side_effect = _list_jobs
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            result = service.get_wave_result("wave-1")
+        assert result.terminal is True
+        assert result.succeeded_local_indices == [0, 1, 2]
+        assert result.failed_local_indices == []
+
+    def test_terminal_partial_failure_is_still_terminal_not_an_error(self) -> None:
+        """FAILED-due-to-partial-loss counts as 'wave finished', matching the
+        closed design: Spot/OOM attrition is expected economics, not an
+        orchestrator error. Mirrors sim139's real 10-survivors-of-30 shape."""
+        survivors = (4, 5, 9, 10, 14, 15, 16, 18, 20, 27)
+        losses = [i for i in range(30) if i not in survivors]
+        mock_batch = MagicMock()
+        mock_batch.describe_jobs.return_value = {
+            "jobs": [{"jobId": "wave-1", "arrayProperties": {"size": 30, "statusSummary": {"SUCCEEDED": 10, "FAILED": 20}}}]
+        }
+
+        def _list_jobs(**kwargs: Any) -> dict[str, Any]:
+            indices = survivors if kwargs["jobStatus"] == "SUCCEEDED" else losses
+            return {"jobSummaryList": [{"arrayProperties": {"index": i}} for i in indices]}
+
+        mock_batch.list_jobs.side_effect = _list_jobs
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            result = service.get_wave_result("wave-1")
+        assert result.terminal is True
+        assert result.succeeded_local_indices == list(survivors)
+        assert result.failed_local_indices == losses
+        # union covers every index with zero gaps/duplicates.
+        assert sorted(result.succeeded_local_indices + result.failed_local_indices) == list(range(30))
+
+    def test_paginates_list_jobs_via_next_token(self) -> None:
+        mock_batch = MagicMock()
+        mock_batch.describe_jobs.return_value = {
+            "jobs": [{"jobId": "wave-1", "arrayProperties": {"size": 2, "statusSummary": {"SUCCEEDED": 2}}}]
+        }
+        pages = [
+            {"jobSummaryList": [{"arrayProperties": {"index": 0}}], "nextToken": "page2"},
+            {"jobSummaryList": [{"arrayProperties": {"index": 1}}]},
+        ]
+
+        def _list_jobs(**kwargs: Any) -> dict[str, Any]:
+            if kwargs["jobStatus"] == "FAILED":
+                return {"jobSummaryList": []}
+            return pages.pop(0)
+
+        mock_batch.list_jobs.side_effect = _list_jobs
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            result = service.get_wave_result("wave-1")
+        assert result.succeeded_local_indices == [0, 1]
+        list_calls = [c for c in mock_batch.list_jobs.call_args_list if c.kwargs["jobStatus"] == "SUCCEEDED"]
+        assert list_calls[1].kwargs["nextToken"] == "page2"
+
+    def test_zero_match_status_returns_empty_list_not_error(self) -> None:
+        """A real 0/30-all-failed job history: jobStatus='SUCCEEDED' returns a
+        clean empty list, not an error -- confirmed live against a second real
+        job this session (items 33-35 investigation)."""
+        mock_batch = MagicMock()
+        mock_batch.describe_jobs.return_value = {
+            "jobs": [{"jobId": "wave-1", "arrayProperties": {"size": 5, "statusSummary": {"FAILED": 5}}}]
+        }
+
+        def _list_jobs(**kwargs: Any) -> dict[str, Any]:
+            if kwargs["jobStatus"] == "SUCCEEDED":
+                return {"jobSummaryList": []}
+            return {"jobSummaryList": [{"arrayProperties": {"index": i}} for i in range(5)]}
+
+        mock_batch.list_jobs.side_effect = _list_jobs
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            result = service.get_wave_result("wave-1")
+        assert result.terminal is True
+        assert result.succeeded_local_indices == []
+        assert result.failed_local_indices == [0, 1, 2, 3, 4]
+
+    def test_raises_if_job_not_found(self) -> None:
+        mock_batch = MagicMock()
+        mock_batch.describe_jobs.return_value = {"jobs": []}
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            pytest.raises(RuntimeError, match="not found"),
+        ):
+            service.get_wave_result("missing")
+
+
 def _v2ecoli_simulator() -> Any:
     from viva_api.simulation.models import SimulatorVersion
 
@@ -894,6 +1053,129 @@ class TestArraySimCommand:
                 os.remove(canary)
 
 
+class TestWaveSimCommand:
+    """_wave_sim_command builds one wave's Array child command: ONE seed's ONE
+    generation, remapped through a sparse seed_indices LOOKUP TABLE (not an
+    offset like _array_sim_command's BASE_SEED) -- after a prior generation's
+    attrition, a later wave's array positions are still dense (0..len-1) but
+    the real seeds they represent are not."""
+
+    def test_shape_generation_zero(self) -> None:
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+        ):
+            cmd = service._wave_sim_command(
+                generation_index=0,
+                experiment_id="sim47-wave-experiment",
+                runner_s3_uri="s3://mybucket/vecoli-output/sim47-wave-experiment/run_pbg.py",
+                seed_indices=[0, 1, 2, 3],
+            )
+        assert "aws s3 cp s3://mybucket/vecoli-output/sim47-wave-experiment/run_pbg.py /tmp/run_pbg.py" in cmd
+        assert "--composite-id v2ecoli.composites.batch_baseline.batch_baseline " in cmd
+        assert "PBG_CORE_BUILDER=v2ecoli.core:build_core" in cmd
+        assert "-n 1" in cmd
+        assert '"initial_generation_index": 0' in cmd
+        assert '"n_generations": 1' in cmd  # one wave = one generation per invocation
+        assert "AWS_BATCH_JOB_ARRAY_INDEX" in cmd
+        # A lookup table, not offset arithmetic -- _array_sim_command's BASE_SEED
+        # pattern can't express a sparse survivor remap.
+        assert "seeds=json.loads(sys.argv[2])" in cmd
+        assert "seed=seeds[int(sys.argv[3])]" in cmd
+
+    def test_merge_resolves_seed_and_gen0_has_no_carry_state(self) -> None:
+        """Actually run the merge prefix through bash + python3 (no mocking) --
+        the same real-execution proof _array_sim_command's own test uses, so
+        this checks the ACTUAL mechanism the container runs, not a
+        re-derivation of it."""
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+        ):
+            cmd = service._wave_sim_command(
+                generation_index=0,
+                experiment_id="exp-a",
+                runner_s3_uri="s3://mybucket/vecoli-output/exp-a/run_pbg.py",
+                seed_indices=[7, 8],
+            )
+        merged = _run_merge_prefix(cmd, array_index=0)
+        assert merged["base_seed"] == 7  # seed_indices[0]
+        assert merged["initial_carry_state_path"] == ""
+        assert merged["daughter_state_out_path"] == "s3://mybucket/vecoli-output/exp-a/wave-state/seed7/gen0.pkl"
+        assert merged["initial_generation_index"] == 0
+
+    def test_merge_resolves_sparse_survivor_position_and_prior_gen_carry_state(self) -> None:
+        """After attrition, position 2 of survivors [4, 5, 9, 10] is seed 9,
+        NOT array index 2 -- the whole point of the lookup table."""
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+        ):
+            cmd = service._wave_sim_command(
+                generation_index=2,
+                experiment_id="exp-b",
+                runner_s3_uri="s3://mybucket/vecoli-output/exp-b/run_pbg.py",
+                seed_indices=[4, 5, 9, 10],
+            )
+        merged = _run_merge_prefix(cmd, array_index=2)
+        assert merged["base_seed"] == 9  # seed_indices[2], NOT array index 2
+        assert merged["initial_carry_state_path"] == "s3://mybucket/vecoli-output/exp-b/wave-state/seed9/gen1.pkl"
+        assert merged["daughter_state_out_path"] == "s3://mybucket/vecoli-output/exp-b/wave-state/seed9/gen2.pkl"
+        assert merged["initial_generation_index"] == 2
+
+    def test_hostile_experiment_id_stays_data_not_shell_syntax(self) -> None:
+        """experiment_id is a caller-supplied, unconstrained string (no pattern
+        validation at the model/API boundary) -- proves the shlex-quoted blob
+        keeps arbitrary content as DATA, mirroring _array_sim_command's own
+        injection-canary proof."""
+        service = SimulationServiceRay()
+        hostile = "exp'; touch /tmp/wave-sim-command-injection-canary; echo '$(echo pwned)"
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+        ):
+            cmd = service._wave_sim_command(
+                generation_index=1,
+                experiment_id=hostile,
+                runner_s3_uri="s3://mybucket/vecoli-output/exp/run_pbg.py",
+                seed_indices=[3, 4],
+            )
+        canary = "/tmp/wave-sim-command-injection-canary"  # noqa: S108
+        if os.path.exists(canary):
+            os.remove(canary)
+        try:
+            merged = _run_merge_prefix(cmd, array_index=1)
+            assert not os.path.exists(canary), "hostile experiment_id executed as shell syntax, not data"
+            assert merged["experiment_id"] == hostile
+            assert hostile in merged["daughter_state_out_path"]
+        finally:
+            if os.path.exists(canary):
+                os.remove(canary)
+
+    def test_stays_under_the_batch_command_size_cap_at_1000_seeds(self) -> None:
+        """AWS Batch caps a container override command at 8192 bytes (see
+        _stage_runner's docstring). The design deliberately embeds the
+        surviving-seed list as bare ints — not precomputed per-seed URIs,
+        which would blow this cap at 1000 seeds — precisely to fit under it.
+        Locks that sizing claim against a real measurement, not an assumption."""
+        service = SimulationServiceRay()
+        long_experiment_id = "sim1000-cd1-baseline-1000x10-" + "x" * 20
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+        ):
+            cmd = service._wave_sim_command(
+                generation_index=9,
+                experiment_id=long_experiment_id,
+                runner_s3_uri=f"s3://mybucket/vecoli-output/{long_experiment_id}/run_pbg.py",
+                seed_indices=list(range(1000)),
+            )
+        assert len(cmd) < 8192, f"wave command is {len(cmd)} bytes, over the real AWS Batch cap"
+
+
 class TestIsUpstreamVecoli:
     """The single routing predicate shared by submit_ecoli_simulation_job and _sim_command."""
 
@@ -1037,3 +1319,263 @@ class TestEnsureArrayJobDef:
             pytest.raises(RuntimeError, match="Base Array job definition"),
         ):
             service._ensure_array_job_def("some:image", "abc1234")
+
+
+@pytest.mark.asyncio
+class TestWaveDispatchSubmission:
+    """submit_wave_dispatch_job kicks off a wave campaign: ParCa + generation
+    0's Array wave over every requested seed (backlog item 33)."""
+
+    async def test_rejects_single_generation(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        setattr(experiment_request.config, "n_init_sims", 4)  # noqa: B010
+        experiment_request.config.generations = 1
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            pytest.raises(ValueError, match="requires generations > 1"),
+        ):
+            await service.submit_wave_dispatch_job(ecoli_simulation=simulation, database_service=database_service)
+
+    async def test_rejects_single_seed(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        setattr(experiment_request.config, "n_init_sims", 1)  # noqa: B010
+        experiment_request.config.generations = 3
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            pytest.raises(ValueError, match="requires n_seeds > 1"),
+        ):
+            await service.submit_wave_dispatch_job(ecoli_simulation=simulation, database_service=database_service)
+
+    async def test_submits_parca_then_wave0_over_all_seeds_not_final(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """3-generation campaign: generation 0 is NOT the final wave, so no
+        analysis node rides along yet -- that only happens once JobScheduler
+        drives the campaign to its last generation (see TestSubmitNextWave)."""
+        setattr(experiment_request.config, "n_init_sims", 4)  # noqa: B010
+        experiment_request.config.generations = 3
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        mock_batch = _fake_batch(["parca-123", "wave0-456"])
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+        ):
+            job_id = await service.submit_wave_dispatch_job(
+                ecoli_simulation=simulation, database_service=database_service
+            )
+
+        assert job_id == JobId.ray("wave0-456")
+        assert mock_batch.submit_job.call_count == 2  # parca + wave0 only (not final -> no analysis)
+        parca_call, wave0_call = mock_batch.submit_job.call_args_list
+
+        assert "dependsOn" not in parca_call.kwargs
+
+        assert "nodeOverrides" not in wave0_call.kwargs
+        assert wave0_call.kwargs["arrayProperties"] == {"size": 4}
+        assert wave0_call.kwargs["dependsOn"] == [{"jobId": "parca-123"}]
+        assert wave0_call.kwargs["tags"]["Wave"] == "0"
+        assert wave0_call.kwargs["tags"]["Phase"] == "sim"
+
+        cmd = _array_env(wave0_call)["ARRAY_JOB_CMD"]
+        assert '"initial_generation_index": 0' in cmd
+        assert "[0, 1, 2, 3]" in cmd
+
+        # The underlying Postgres container is module-scoped (rows from other
+        # tests in this file persist alongside it), so filter to THIS test's
+        # own simulation rather than assume global uniqueness.
+        active_waves = [
+            w for w in await database_service.list_active_wave_hpcruns() if w.ref_id == simulation.database_id
+        ]
+        assert len(active_waves) == 1
+        assert active_waves[0].wave_index == 0
+        assert active_waves[0].wave_seed_indices == [0, 1, 2, 3]
+        assert active_waves[0].job_id == JobId.ray("wave0-456")
+
+        # Not the final wave (generation 0 of 3): no analysis submitted yet.
+        assert await database_service.list_analyses(simulation_id=simulation.database_id) == []
+
+
+@pytest.mark.asyncio
+class TestSubmitNextWave:
+    """submit_next_wave is what JobScheduler calls for generation 1..N-1 once
+    the PREVIOUS wave's survivors are known (backlog item 33)."""
+
+    async def test_submits_wave_with_no_parca_dependency(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """The ParCa cache is already in S3 from generation 0 -- ParCa already
+        SUCCEEDED long before a later wave is submitted, so there's no
+        ordering left to enforce."""
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+        mock_batch = _fake_batch(["wave1-789"])
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+        ):
+            job_id = await service.submit_next_wave(
+                simulation=simulation,
+                database_service=database_service,
+                commit="abc1234",
+                generation_index=1,
+                seed_indices=[4, 5, 9],
+                total_n_seeds=30,
+                n_generations=3,
+            )
+
+        assert job_id == "wave1-789"
+        assert mock_batch.submit_job.call_count == 1
+        (wave_call,) = mock_batch.submit_job.call_args_list
+        assert "dependsOn" not in wave_call.kwargs
+        assert wave_call.kwargs["arrayProperties"] == {"size": 3}  # sparse survivor count, not total_n_seeds
+        assert wave_call.kwargs["tags"]["Wave"] == "1"
+
+    async def test_sparse_seed_indices_drive_array_size_and_are_embedded_verbatim(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+        mock_batch = _fake_batch(["wave2-abc"])
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+        ):
+            await service.submit_next_wave(
+                simulation=simulation,
+                database_service=database_service,
+                commit="abc1234",
+                generation_index=2,
+                seed_indices=[4, 5, 9, 10, 14],
+                total_n_seeds=30,
+                n_generations=10,
+            )
+
+        (wave_call,) = mock_batch.submit_job.call_args_list
+        assert wave_call.kwargs["arrayProperties"] == {"size": 5}
+        cmd = _array_env(wave_call)["ARRAY_JOB_CMD"]
+        assert "[4, 5, 9, 10, 14]" in cmd
+
+        # Module-scoped Postgres container: filter to this test's own simulation.
+        active_waves = [
+            w for w in await database_service.list_active_wave_hpcruns() if w.ref_id == simulation.database_id
+        ]
+        assert len(active_waves) == 1
+        assert active_waves[0].wave_index == 2
+        assert active_waves[0].wave_seed_indices == [4, 5, 9, 10, 14]
+
+    async def test_non_final_wave_does_not_submit_analysis(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+        mock_batch = _fake_batch(["wave1-789"])
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+        ):
+            await service.submit_next_wave(
+                simulation=simulation,
+                database_service=database_service,
+                commit="abc1234",
+                generation_index=1,  # of 3 -- not final (final is index 2)
+                seed_indices=[4, 5, 9],
+                total_n_seeds=30,
+                n_generations=3,
+            )
+
+        assert mock_batch.submit_job.call_count == 1  # wave only, no analysis
+        assert await database_service.list_analyses(simulation_id=simulation.database_id) == []
+
+    async def test_final_wave_also_submits_analysis_depending_on_itself(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """generation_index == n_generations - 1 is the campaign's last wave --
+        the analysis DAG node (item 24's mechanism) must ride along, gated on
+        THIS wave's own array job id via the existing plain {"jobId": ...}
+        shape (no "type"), the same shape the single-shot Array path already
+        uses and that real AWS Batch requires for an array parent id."""
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+        mock_batch = _fake_batch(["wave2-final", "analysis-999"])
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+        ):
+            job_id = await service.submit_next_wave(
+                simulation=simulation,
+                database_service=database_service,
+                commit="abc1234",
+                generation_index=2,  # n_generations - 1 == 2 -- final
+                seed_indices=[4, 5, 9],
+                total_n_seeds=30,
+                n_generations=3,
+            )
+
+        assert job_id == "wave2-final"
+        assert mock_batch.submit_job.call_count == 2
+        wave_call, analysis_call = mock_batch.submit_job.call_args_list
+        assert wave_call.kwargs["arrayProperties"] == {"size": 3}
+
+        # Analysis gated on the just-submitted FINAL wave, plain {"jobId": ...}.
+        assert analysis_call.kwargs["dependsOn"] == [{"jobId": "wave2-final"}]
+        assert "type" not in analysis_call.kwargs["dependsOn"][0]
+        assert analysis_call.kwargs["nodeOverrides"]["numNodes"] == 1  # analysis rides on MNP, not Array
+
+        records = await database_service.list_analyses(simulation_id=simulation.database_id)
+        assert len(records) == 1
+        assert records[0].job_id_ext == "analysis-999"
+        assert records[0].backend == "ray"
+        # n_seeds passed to the analysis is the ORIGINAL requested total, not
+        # the final wave's shrunken survivor count (3) -- the analysis
+        # resolves "applicable" modules against the campaign's intended shape.
+        env = _env_of(analysis_call)
+        assert "--n-seeds 30" in env["RAY_JOB_CMD"]

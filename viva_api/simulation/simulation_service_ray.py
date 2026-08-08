@@ -36,6 +36,7 @@ import random
 import shlex
 import string
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, override
 
@@ -58,6 +59,7 @@ from viva_api.simulation.github_repo import (
 )
 from viva_api.simulation.models import (
     CompositeEngine,
+    JobType,
     ParcaDataset,
     RepoDiscovery,
     Simulation,
@@ -166,6 +168,26 @@ def _is_upstream_vecoli(composite: CompositeEngine | None) -> bool:
     the ``--vecoli-source`` arg in ``_sim_command``.
     """
     return composite == "vecoli"
+
+
+@dataclass
+class WavePollResult:
+    """One wave's (array job's) poll outcome — backlog item 33.
+
+    ``terminal`` means every child has reached a Batch-terminal state
+    (SUCCEEDED or FAILED, per ``arrayProperties.statusSummary``); a wave with
+    children still RUNNABLE/STARTING/RUNNING is NOT terminal and must be
+    polled again next interval. Once terminal, ``succeeded_local_indices`` /
+    ``failed_local_indices`` are the wave's own LOCAL array positions
+    (0..array_size-1) — the caller (JobScheduler) remaps these to real seed
+    numbers via the HpcRun row's ``wave_seed_indices``, since a wave's array
+    positions are dense (0..len(seed_indices)-1) even though the seeds they
+    represent may be sparse after a prior generation's attrition.
+    """
+
+    terminal: bool
+    succeeded_local_indices: list[int] = field(default_factory=list)
+    failed_local_indices: list[int] = field(default_factory=list)
 
 
 class SimulationServiceRay(SimulationService):
@@ -659,6 +681,84 @@ class SimulationServiceRay(SimulationService):
             f' --overrides "$OVERRIDES" -n 1'
         )
 
+    def _wave_sim_command(
+        self,
+        generation_index: int,
+        experiment_id: str,
+        runner_s3_uri: str,
+        seed_indices: list[int],
+    ) -> str:
+        """Build one wave's Array child command: ONE seed's ONE generation
+        (backlog item 33 — per-generation task decomposition, mirroring
+        vEcoli-private's own Nextflow task granularity, ``runscripts/nextflow/
+        sim.nf``). Sibling of ``_array_sim_command``, same inline-shell-plus-
+        python3 per-child resolution pattern, extended for a SPARSE seed set:
+        after a prior wave's attrition (Spot loss, OOM), a later wave's array
+        positions are still dense (0..len(seed_indices)-1) but the REAL seeds
+        they represent are not — so each child must look its real seed up in a
+        lookup table (``seed_indices[AWS_BATCH_JOB_ARRAY_INDEX]``), not compute
+        it via an offset (unlike ``_array_sim_command``'s BASE_SEED arithmetic,
+        which only ever needs a contiguous range).
+
+        ``seed_indices`` is embedded as a bare JSON int array (at most 1000
+        ints for the canonical dispatch shape — comfortably under Batch's
+        8192-byte containerOverrides.command cap; see
+        ``TestWaveSimCommand.test_stays_under_the_batch_command_size_cap`` for
+        the actual byte count at n=1000). The per-seed checkpoint S3 URIs are
+        NOT embedded (1000 full URIs would blow that cap) — the merge script
+        reconstructs them itself using ``RayLayout.wave_state_uri``'s own
+        format, mirrored here since the v2ecoli container has no import path
+        back to this module.
+
+        Generation 0 has no prior wave, so no ``initial_carry_state_path`` is
+        set (LineageProcess defaults it to "", matching a fresh cell —
+        ``initial_generation_index=0`` with no carry state is the validated,
+        non-error case). Every generation writes its own daughter state out,
+        including the final one — a harmless no-op read by nobody if the
+        campaign ends there, cheaper than a special case to skip it.
+        """
+        overrides = {
+            "n_seeds": 1,
+            "n_generations": 1,
+            "cache_dir": PARCA_CACHE_DIR,
+            "out_dir": SIM_OUT_DIR,
+            "experiment_id": experiment_id,
+            "analyses": "none",
+            "parallel": "",
+            "initial_generation_index": int(generation_index),
+        }
+        static_overrides_json = shlex.quote(json.dumps(overrides))
+        seed_indices_json = shlex.quote(json.dumps([int(s) for s in seed_indices]))
+        state_prefix = shlex.quote(data_layout.RayLayout.wave_state_prefix(experiment_id))
+        bucket = shlex.quote(get_settings().s3_work_bucket)
+        # NOTE: every Python string literal inside this snippet MUST use double
+        # quotes, never single — the whole snippet is embedded inside a
+        # single-quoted shell argument (python3 -c '{merge_py}' below), so a
+        # single quote in here would prematurely close the shell string.
+        merge_py = (
+            "import json,sys;"
+            "d=json.loads(sys.argv[1]);"
+            "seeds=json.loads(sys.argv[2]);"
+            "seed=seeds[int(sys.argv[3])];"
+            "bucket=sys.argv[4];"
+            "prefix=sys.argv[5];"
+            'gen=d["initial_generation_index"];'
+            'd["base_seed"]=seed;'
+            'd["daughter_state_out_path"]=f"s3://{bucket}/{prefix}/seed{seed}/gen{gen}.pkl";'
+            'd["initial_carry_state_path"]=f"s3://{bucket}/{prefix}/seed{seed}/gen{gen - 1}.pkl" if gen>0 else "";'
+            "print(json.dumps(d))"
+        )
+        env = f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER}"
+        return (
+            f"OVERRIDES=$(python3 -c '{merge_py}'"
+            f" {static_overrides_json} {seed_indices_json} \"$AWS_BATCH_JOB_ARRAY_INDEX\" {bucket} {state_prefix})"
+            f" && cd {V2ECOLI_DIR}"
+            f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
+            f" && {env} python /tmp/run_pbg.py"
+            f" --composite-id {V2ECOLI_BATCH_BASELINE_COMPOSITE_ID}"
+            f' --overrides "$OVERRIDES" -n 1'
+        )
+
     def _analysis_command(
         self,
         *,
@@ -1083,6 +1183,216 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             )
         return JobId.ray(sim_job_id)
 
+    def _wave_base_tags(self, *, simulation: Simulation, commit: str) -> dict[str, str]:
+        """Cost-allocation tag base shared by every wave + the ParCa job that
+        precedes them, mirroring ``submit_ecoli_simulation_job``'s ``base_tags``
+        (composite/condition don't apply — wave dispatch is v2ecoli-only)."""
+        settings = get_settings()
+        return {
+            "Project": "v2ecoli-comparison",
+            "ExperimentId": str(simulation.config.experiment_id)[:255],
+            "Engine": "v2ecoli",
+            "Commit": str(commit)[:12],
+            "Team": getattr(settings, "cost_team_tag", None) or "covertlab",
+        }
+
+    async def _submit_wave_and_maybe_analysis(
+        self,
+        *,
+        simulation: Simulation,
+        database_service: DatabaseService,
+        commit: str,
+        generation_index: int,
+        seed_indices: list[int],
+        total_n_seeds: int,
+        n_generations: int,
+        depends_on_parca: str | None,
+        base_tags: dict[str, str],
+    ) -> str:
+        """Submit ONE wave (one generation's Array job) over ``seed_indices``,
+        record it, and — if this is the FINAL generation — submit the analysis
+        DAG node right behind it, depending on THIS wave's own array job id via
+        the existing plain ``{"jobId": ...}`` shape (no ``"type"``; an array
+        parent id is rejected by real AWS Batch under a SEQUENTIAL type, see
+        ``_submit_array``). This piggybacks Batch's own ``dependsOn`` instead of
+        polling to detect "did the last wave finish" — the analysis job simply
+        waits on the wave that was JUST submitted, exactly like the existing
+        single-shot Array path's sim -> analysis edge (item 24), just moved to
+        fire at "final wave submitted" time instead of "the only wave
+        submitted" time. Returns the wave's AWS Batch array job id.
+        """
+        experiment_id = simulation.config.experiment_id
+        array_job_def = self._ensure_array_job_def(self._image_uri(commit), commit)
+        runner_s3_uri = await self._stage_runner(experiment_id)
+        cache_s3 = self._cache_s3_uri(commit)
+        is_final_wave = generation_index >= n_generations - 1
+
+        wave_job_id = self._submit_array(
+            job_name=f"wave{generation_index}-sim-{experiment_id}-{_rand_suffix()}"[:128],
+            job_definition=array_job_def,
+            array_size=len(seed_indices),
+            array_job_cmd=self._wave_sim_command(generation_index, experiment_id, runner_s3_uri, seed_indices),
+            out_s3=self._results_s3_uri(experiment_id),
+            out_dir=SIM_OUT_DIR,
+            stage_s3=cache_s3,
+            stage_dir=PARCA_CACHE_DIR,
+            depends_on=[depends_on_parca] if depends_on_parca else None,
+            tags={**base_tags, "Phase": "sim", "Wave": str(generation_index)},
+        )
+        await database_service.insert_hpcrun(
+            job_id=JobId.ray(wave_job_id),
+            job_type=JobType.SIMULATION,
+            ref_id=simulation.database_id,
+            correlation_id=f"wave-{generation_index}-{experiment_id}-{_rand_suffix()}",
+            wave_index=generation_index,
+            wave_seed_indices=list(seed_indices),
+        )
+        logger.info(
+            "Wave dispatch %s: generation %d submitted as array job %s (%d seeds)",
+            experiment_id,
+            generation_index,
+            wave_job_id,
+            len(seed_indices),
+        )
+        if is_final_wave:
+            mnp_job_def = self._ensure_mnp_job_def(self._image_uri(commit), commit)
+            analysis_job_id = await self._submit_analysis_job(
+                simulation=simulation,
+                database_service=database_service,
+                job_definition=mnp_job_def,
+                commit=commit,
+                sim_job_id=wave_job_id,
+                n_seeds=total_n_seeds,
+                n_generations=n_generations,
+                depends_type=None,
+                tags={**base_tags, "Phase": "analysis"},
+            )
+            logger.info(
+                "Wave dispatch %s: final wave %s -> analysis job %s",
+                experiment_id,
+                wave_job_id,
+                analysis_job_id,
+            )
+        return wave_job_id
+
+    async def submit_wave_dispatch_job(self, ecoli_simulation: Simulation, database_service: DatabaseService) -> JobId:
+        """Kick off a wave-dispatch campaign (backlog item 33): submit ParCa (1
+        node) + generation 0's Array wave over every requested seed.
+
+        Sibling entrypoint to ``submit_ecoli_simulation_job``, same return
+        contract (the tracked ``JobId`` is the just-submitted job — here,
+        generation 0's array job) MINUS ``correlation_id``: unlike a single-shot
+        dispatch (one job, one caller-supplied correlation_id, the caller's own
+        follow-up ``insert_hpcrun`` call records it), a wave campaign spans
+        MANY jobs over its lifetime that no single outer caller is present for
+        (generations 1..N-1 are submitted later, from ``JobScheduler``'s poll
+        loop) — so every wave, including generation 0, records its OWN HpcRun
+        with its own freshly-generated correlation_id internally (see
+        ``_submit_wave_and_maybe_analysis``), rather than splitting that
+        bookkeeping between an external caller and this method.
+
+        Subsequent generations are NOT submitted here: ``JobScheduler.
+        update_wave_jobs`` polls generation 0 to terminal, computes survivors,
+        and submits generation 1 itself (``submit_next_wave``) — repeating
+        until the final generation, at which point the analysis DAG node rides
+        along (see ``_submit_wave_and_maybe_analysis``). This mirrors AWS
+        Batch's own confirmed limitation: an array job's ``dependsOn`` can't
+        express "wait for all-terminal, not all-succeeded", so chaining
+        generations natively would let one permanently-failed seed cascade-fail
+        every later generation for the whole campaign.
+
+        Only valid for the shape wave dispatch actually fixes: multiple seeds
+        (AWS Batch array jobs require size>=2) across multiple generations. A
+        single-generation or single-seed request has no attrition-across-
+        generations problem to solve — use ``submit_ecoli_simulation_job``.
+        """
+        parca_dataset = await database_service.get_parca_dataset(parca_dataset_id=ecoli_simulation.parca_dataset_id)
+        if parca_dataset is None:
+            raise ValueError(f"ParcaDataset with ID {ecoli_simulation.parca_dataset_id} not found.")
+        simulator = await database_service.get_simulator(simulator_id=ecoli_simulation.simulator_id)
+        if simulator is None:
+            raise ValueError(f"Simulator {ecoli_simulation.simulator_id} not found")
+
+        commit = simulator.git_commit_hash
+        config = ecoli_simulation.config
+        n_seeds = int(ecoli_simulation.num_seeds or getattr(config, "n_init_sims", None) or 1)
+        n_generations = int(config.generations or 1)
+        if n_generations < 2:
+            raise ValueError(
+                "submit_wave_dispatch_job requires generations > 1 "
+                "(use submit_ecoli_simulation_job for single-generation runs)"
+            )
+        if n_seeds < 2:
+            raise ValueError(
+                "submit_wave_dispatch_job requires n_seeds > 1 (AWS Batch array jobs require size >= 2)"
+            )
+
+        job_def_mnp = self._ensure_mnp_job_def(self._image_uri(commit), commit)
+        cache_s3 = self._cache_s3_uri(commit)
+        base_tags = self._wave_base_tags(simulation=ecoli_simulation, commit=commit)
+
+        parca_job_id = self._submit_mnp(
+            job_name=f"ray-parca-{commit}-{_rand_suffix()}",
+            job_definition=job_def_mnp,
+            num_nodes=1,
+            ray_job_cmd=self._parca_command(),
+            out_s3=cache_s3,
+            out_dir=PARCA_CACHE_DIR,
+            tags={**base_tags, "Phase": "parca"},
+        )
+        wave0_job_id = await self._submit_wave_and_maybe_analysis(
+            simulation=ecoli_simulation,
+            database_service=database_service,
+            commit=commit,
+            generation_index=0,
+            seed_indices=list(range(n_seeds)),
+            total_n_seeds=n_seeds,
+            n_generations=n_generations,
+            depends_on_parca=parca_job_id,
+            base_tags=base_tags,
+        )
+        logger.info(
+            "Wave dispatch %s: parca job %s -> wave 0 job %s (%d seeds, %d generations)",
+            ecoli_simulation.config.experiment_id,
+            parca_job_id,
+            wave0_job_id,
+            n_seeds,
+            n_generations,
+        )
+        return JobId.ray(wave0_job_id)
+
+    async def submit_next_wave(
+        self,
+        *,
+        simulation: Simulation,
+        database_service: DatabaseService,
+        commit: str,
+        generation_index: int,
+        seed_indices: list[int],
+        total_n_seeds: int,
+        n_generations: int,
+    ) -> str:
+        """Submit wave ``generation_index`` for the given SURVIVOR
+        ``seed_indices`` (backlog item 33). No ParCa dependency — the cache is
+        already in S3 from ``submit_wave_dispatch_job``'s generation-0 run, and
+        ParCa already SUCCEEDED long before this call, so there is no ordering
+        left to enforce. Called exclusively by ``JobScheduler.update_wave_jobs``
+        once the PREVIOUS generation's wave reaches a terminal state. Returns
+        the new wave's AWS Batch array job id.
+        """
+        base_tags = self._wave_base_tags(simulation=simulation, commit=commit)
+        return await self._submit_wave_and_maybe_analysis(
+            simulation=simulation,
+            database_service=database_service,
+            commit=commit,
+            generation_index=generation_index,
+            seed_indices=seed_indices,
+            total_n_seeds=total_n_seeds,
+            n_generations=n_generations,
+            depends_on_parca=None,
+            base_tags=base_tags,
+        )
+
     @override
     async def read_config_template(
         self,
@@ -1120,6 +1430,63 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             end_time=str(stopped) if stopped else None,
             exit_code=None,
             error_message=job.get("statusReason") if status == JobStatus.FAILED else None,
+        )
+
+    def _list_array_child_indices(self, array_job_id: str, status: str) -> list[int]:
+        """Every child array position currently in ``status`` (paginated).
+
+        Live AWS semantics verified against a real job history (sim139's parent
+        array job, 2026-08-08): ``list_jobs(arrayJobId=..., jobStatus=
+        "SUCCEEDED")`` returned exactly the real surviving indices,
+        ``jobStatus="FAILED"`` returned exactly the rest, both cross-checked
+        against ``describe_jobs``'s own ``arrayProperties.statusSummary``
+        counts, union = the full contiguous index range with zero gaps or
+        duplicates. Confirmed a second time on an all-failed job (a
+        zero-match status returns a clean empty list, not an error).
+        """
+        batch = self._batch()
+        indices: list[int] = []
+        kwargs: dict[str, Any] = {"arrayJobId": array_job_id, "jobStatus": status}
+        while True:
+            response = batch.list_jobs(**kwargs)
+            for job in response.get("jobSummaryList", []):
+                index = job.get("arrayProperties", {}).get("index")
+                if index is not None:
+                    indices.append(int(index))
+            next_token = response.get("nextToken")
+            if not next_token:
+                break
+            kwargs["nextToken"] = next_token
+        return sorted(indices)
+
+    def get_wave_result(self, array_job_id: str) -> WavePollResult:
+        """Poll ONE wave's array job: terminal-ness + which local array
+        positions SUCCEEDED vs FAILED (backlog item 33).
+
+        "Terminal" means every child has reached a Batch-terminal state — the
+        array PARENT itself may report SUCCEEDED (every child succeeded) or
+        FAILED (at least one child permanently exhausted retries — AWS Batch
+        flips the parent to FAILED the instant that happens, per
+        ``job_states.html``/``array_jobs.html``), but BOTH are "wave finished"
+        from this orchestrator's perspective, not an error: some seeds dying to
+        Spot reclamation or a transient OOM is expected economics, not a bug.
+        The caller (``JobScheduler._advance_wave``) is what decides whether
+        surviving seeds exist to carry forward.
+        """
+        response = self._batch().describe_jobs(jobs=[array_job_id])
+        jobs = response.get("jobs", [])
+        if not jobs:
+            raise RuntimeError(f"Batch array job {array_job_id} not found")
+        array_properties = jobs[0].get("arrayProperties", {})
+        size = int(array_properties.get("size") or 0)
+        status_summary: dict[str, int] = array_properties.get("statusSummary") or {}
+        terminal_count = int(status_summary.get("SUCCEEDED", 0)) + int(status_summary.get("FAILED", 0))
+        if size <= 0 or terminal_count < size:
+            return WavePollResult(terminal=False)
+        return WavePollResult(
+            terminal=True,
+            succeeded_local_indices=self._list_array_child_indices(array_job_id, "SUCCEEDED"),
+            failed_local_indices=self._list_array_child_indices(array_job_id, "FAILED"),
         )
 
     @override

@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import logging
 
 from async_lru import alru_cache
@@ -10,7 +11,8 @@ from viva_api.common.models import JobBackend, JobStatus, SSHTarget
 from viva_api.config import get_settings
 from viva_api.dependencies import get_ssh_session_service
 from viva_api.simulation.database_service import DatabaseService
-from viva_api.simulation.models import WorkerEvent, WorkerEventMessagePayload
+from viva_api.simulation.models import HpcRun, WorkerEvent, WorkerEventMessagePayload
+from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +20,7 @@ logger = logging.getLogger(__name__)
 class JobScheduler:
     database_service: DatabaseService
     slurm_service: SlurmService | None
+    simulation_service_ray: SimulationServiceRay | None
     messaging_service: MessagingService
     _polling_task: asyncio.Task[None] | None = None
     _stop_event: asyncio.Event
@@ -27,10 +30,12 @@ class JobScheduler:
         messaging_service: MessagingService,
         database_service: DatabaseService,
         slurm_service: SlurmService | None = None,
+        simulation_service_ray: SimulationServiceRay | None = None,
     ):
         self.messaging_service = messaging_service
         self.database_service = database_service
         self.slurm_service = slurm_service
+        self.simulation_service_ray = simulation_service_ray
         self._stop_event = asyncio.Event()
 
     @alru_cache
@@ -86,6 +91,10 @@ class JobScheduler:
                 await self.update_running_jobs()
             except Exception:
                 logger.exception("Error during job polling")
+            try:
+                await self.update_wave_jobs()
+            except Exception:
+                logger.exception("Error during wave job polling")
             await asyncio.sleep(interval_seconds)
 
     async def update_running_jobs(self) -> None:
@@ -136,6 +145,96 @@ class JobScheduler:
             )
             await self.database_service.update_hpcrun_status(hpcrun_id=hpc_run.database_id, update=update)
             logger.info(f"Updated HpcRun {hpc_run.database_id} status to {new_status}")
+
+    async def update_wave_jobs(self) -> None:
+        """Poll every active wave-dispatch HpcRun to terminal, then either
+        submit the next generation's wave (remapping survivors, backlog item
+        33) or leave it be — the analysis DAG node for a campaign's FINAL wave
+        is submitted alongside that wave itself (see ``SimulationServiceRay.
+        _submit_wave_and_maybe_analysis``), not from here. No-op when no wave
+        campaign is active, or on a deployment with no Ray/Batch backend wired
+        (SLURM-only deployments pass ``simulation_service_ray=None``).
+        """
+        if self.simulation_service_ray is None:
+            return
+        active_waves = await self.database_service.list_active_wave_hpcruns()
+        if not active_waves:
+            logger.debug("No active wave-dispatch jobs found for polling.")
+            return
+        for wave in active_waves:
+            try:
+                await self._advance_wave(wave)
+            except Exception:
+                logger.exception("Error advancing wave HpcRun %s", wave.database_id)
+
+    async def _advance_wave(self, wave: HpcRun) -> None:
+        """Handle one active wave HpcRun: no-op if still running; otherwise mark
+        it terminal and, if survivors remain and generations remain, submit the
+        next wave (see ``update_wave_jobs`` for what happens on the final wave).
+        """
+        assert self.simulation_service_ray is not None  # guarded by update_wave_jobs's caller
+        result = self.simulation_service_ray.get_wave_result(wave.job_id.value)
+        if not result.terminal:
+            return
+
+        seed_indices = wave.wave_seed_indices or []
+        survivors = [seed_indices[i] for i in result.succeeded_local_indices if i < len(seed_indices)]
+
+        # Terminal is either every child SUCCEEDED, or the array parent went
+        # FAILED-due-to-partial-loss -- both are "wave finished", not an
+        # orchestrator error (Spot/OOM attrition is expected economics). Only a
+        # wave with ZERO survivors is a genuine campaign-ending failure.
+        await self.database_service.update_hpcrun_status(
+            hpcrun_id=wave.database_id,
+            update=JobStatusUpdate(
+                job_id=wave.job_id,
+                status=JobStatus.COMPLETED if survivors else JobStatus.FAILED,
+                end_time=datetime.datetime.now().isoformat(),
+                error_message=None if survivors else "wave dispatch: zero seeds survived this generation",
+            ),
+        )
+        if not survivors:
+            logger.warning(
+                "Wave dispatch: HpcRun %s (generation %s) had zero survivors; campaign ends here.",
+                wave.database_id,
+                wave.wave_index,
+            )
+            return
+
+        simulation = await self.database_service.get_simulation(simulation_id=wave.ref_id)
+        if simulation is None:
+            logger.error("Wave dispatch: Simulation %s not found for HpcRun %s", wave.ref_id, wave.database_id)
+            return
+        n_generations = int(simulation.config.generations or 1)
+        next_generation = int(wave.wave_index or 0) + 1
+        if next_generation >= n_generations:
+            # This WAS already the campaign's final wave -- its analysis node was
+            # submitted alongside it at submission time, not here.
+            return
+
+        simulator = await self.database_service.get_simulator(simulator_id=simulation.simulator_id)
+        if simulator is None:
+            logger.error("Wave dispatch: Simulator %s not found for simulation %s", simulation.simulator_id, wave.ref_id)
+            return
+        total_n_seeds = int(simulation.num_seeds or len(seed_indices))
+
+        next_job_id = await self.simulation_service_ray.submit_next_wave(
+            simulation=simulation,
+            database_service=self.database_service,
+            commit=simulator.git_commit_hash,
+            generation_index=next_generation,
+            seed_indices=survivors,
+            total_n_seeds=total_n_seeds,
+            n_generations=n_generations,
+        )
+        logger.info(
+            "Wave dispatch %s: generation %d (%d survivors) -> generation %d job %s",
+            simulation.config.experiment_id,
+            wave.wave_index,
+            len(survivors),
+            next_generation,
+            next_job_id,
+        )
 
     async def close(self) -> None:
         await self.stop_polling()

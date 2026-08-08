@@ -102,6 +102,31 @@ class RayLayout:
         kind = "ray-upstream-parca-cache" if upstream else "ray-parca-cache"
         return s3_uri(f"{kind}/{commit}/")
 
+    @staticmethod
+    def wave_state_prefix(experiment_id: str) -> str:
+        """Bucket-relative key prefix under which wave-dispatch checkpoints live
+        (backlog item 33: per-generation task decomposition)."""
+        return f"{RayLayout.experiment_prefix(experiment_id)}/wave-state"
+
+    @staticmethod
+    def wave_state_uri(experiment_id: str, seed: int, generation: int) -> str:
+        """Per-seed, per-generation daughter-state checkpoint URI.
+
+        Mirrors vEcoli-private's own Nextflow task I/O hand-off (``sim.nf``): a
+        wave orchestrator writes THIS generation's daughter state here
+        (``LineageProcess.daughter_state_out_path``) so the NEXT wave can load it
+        as its carry-state in (``initial_carry_state_path``) -- task retry at
+        generation granularity IS checkpoint/resume, no in-process pickling
+        needed. Ephemeral hand-off, never browsed/sorted by a human, so unlike
+        ``seed_store_uri`` this deliberately skips zero-padding: the plain
+        ``seed{seed}``/``gen{generation}`` form is what the wave orchestrator
+        (Python, via this function) and the v2ecoli container's own inline
+        ``python3 -c`` merge script (which has no import path back to this
+        module) both reconstruct, so keeping the format trivial keeps the two
+        independent implementations trivially in sync.
+        """
+        return s3_uri(f"{RayLayout.wave_state_prefix(experiment_id)}/seed{seed}/gen{generation}.pkl")
+
 
 class NextflowLayout:
     """vEcoli / parquet output layout (Batch + SLURM)."""

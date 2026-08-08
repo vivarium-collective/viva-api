@@ -44,6 +44,9 @@ class HpcRun(BaseModel):
     start_time: str | None = None  # ISO format datetime string
     end_time: str | None = None  # ISO format datetime string or None if still running
     error_message: str | None = None  # Error message if the simulation failed
+    # Wave-dispatch campaign fields (backlog item 33), None for every non-wave run.
+    wave_index: int | None = None  # 0-based generation this row's Array job ran
+    wave_seed_indices: list[int] | None = None  # real seed at each local array position
 
     @model_validator(mode="before")
     @classmethod

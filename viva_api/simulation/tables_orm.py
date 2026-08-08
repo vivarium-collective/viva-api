@@ -119,6 +119,16 @@ class ORMHpcRun(Base):
         ForeignKey("parca_dataset.id"), nullable=True, index=True
     )
     jobref_simulator_id: Mapped[int | None] = mapped_column(ForeignKey("simulator.id"), nullable=True, index=True)
+    # Wave-dispatch campaign fields (backlog item 33: per-generation task
+    # decomposition). NULL for every non-wave HpcRun (SLURM, K8s, MNP, single-shot
+    # Array) -- additive and backward-compatible, no new table: this model already
+    # supports multiple HpcRun rows per simulation (one row per wave/generation).
+    # ``wave_index`` is the 0-based generation this row's Array job ran;
+    # ``wave_seed_indices`` is the REAL seed number dispatched at each local array
+    # position (position i -> seed wave_seed_indices[i]), needed to remap a sparse
+    # survivor set back to real seeds after attrition.
+    wave_index: Mapped[int | None] = mapped_column(nullable=True)
+    wave_seed_indices: Mapped[list[int] | None] = mapped_column(JSONB, nullable=True)
 
     def _build_job_id(self) -> JobId:
         """Construct a JobId from the ORM columns."""
@@ -140,6 +150,8 @@ class ORMHpcRun(Base):
             error_message=self.error_message,
             start_time=str(self.start_time) if self.start_time else None,
             end_time=str(self.end_time) if self.end_time else None,
+            wave_index=self.wave_index,
+            wave_seed_indices=list(self.wave_seed_indices) if self.wave_seed_indices is not None else None,
         )
 
 

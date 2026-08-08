@@ -295,6 +295,7 @@ def _init_ssh_service(job_backend: str, settings: Settings) -> None:
 async def init_standalone(enable_ssl: bool = True) -> None:
     from viva_api.common.hpc.slurm_service import SlurmService
     from viva_api.simulation.job_scheduler import JobScheduler
+    from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
     _settings = get_settings()
     job_backend = get_job_backend()
@@ -363,12 +364,19 @@ async def init_standalone(enable_ssl: bool = True) -> None:
         logger.info("✓ Messaging service connected")
         set_messaging_service(messaging_service)
 
-        # Initialize JobScheduler
+        # Initialize JobScheduler. Wave-dispatch polling (backlog item 33) only
+        # applies when the Ray/Batch backend is actually configured for this
+        # deployment -- registry-only lookup (no default-backend fallback),
+        # since `simulation_service_ray` must be a real SimulationServiceRay or
+        # None, never some OTHER backend's service standing in for it.
         logger.info("Initializing JobScheduler...")
+        ray_service = global_simulation_services.get(ComputeBackend.RAY)
+        simulation_service_ray = ray_service if isinstance(ray_service, SimulationServiceRay) else None
         job_scheduler = JobScheduler(
             messaging_service=messaging_service,
             database_service=db_service,
             slurm_service=slurm_service,
+            simulation_service_ray=simulation_service_ray,
         )
         set_job_scheduler(job_scheduler)
         logger.info("✓ JobScheduler initialized")
