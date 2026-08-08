@@ -130,18 +130,18 @@ class DatabaseService(ABC):
         job_type: JobType,
         ref_id: int,
         correlation_id: str,
-        wave_index: int | None = None,
-        wave_seed_indices: list[int] | None = None,
+        chain_n_generations: int | None = None,
+        chain_final_job_ids: list[str] | None = None,
     ) -> HpcRun:
         """
         :param job_id: Backend-tagged job identifier.
         :param job_type: (`JobType`) job type to be run. Choose one of the following:
             `JobType.SIMULATION`(/vecoli/run), `JobType.PARCA`(/vecoli/parca), `JobType.BUILD_IMAGE`(/simulator/new)
         :param ref_id: primary key of the object this HPC run is associated with (sim, parca, etc.).
-        :param wave_index: 0-based generation this row's Array job ran (wave-dispatch campaigns only,
-            backlog item 33). Omit for every non-wave HpcRun.
-        :param wave_seed_indices: the real seed dispatched at each local array position (position i ->
-            seed wave_seed_indices[i]). Omit for every non-wave HpcRun.
+        :param chain_n_generations: total generation count G for a chain-dispatch campaign (backlog item
+            33). Omit for every non-campaign HpcRun.
+        :param chain_final_job_ids: the AWS Batch job id of each seed's own last successfully-submitted
+            generation job, for a chain-dispatch campaign. Omit for every non-campaign HpcRun.
         """
         pass
 
@@ -225,10 +225,10 @@ class DatabaseService(ABC):
         pass
 
     @abstractmethod
-    async def list_active_wave_hpcruns(self) -> list[HpcRun]:
-        """Return active (PENDING/RUNNING) HpcRun rows belonging to a wave-dispatch
-        campaign (``wave_index is not None``) -- backlog item 33. The set
-        ``JobScheduler.update_wave_jobs`` polls each interval."""
+    async def list_active_chain_campaigns(self) -> list[HpcRun]:
+        """Return active (PENDING/RUNNING) HpcRun rows tracking a chain-dispatch
+        campaign (``chain_n_generations is not None``) -- backlog item 33. The set
+        ``JobScheduler.update_chain_campaigns`` polls each interval."""
         pass
 
     @abstractmethod
@@ -521,8 +521,8 @@ class DatabaseServiceSQL(DatabaseService):
         job_type: JobType,
         ref_id: int,
         correlation_id: str,
-        wave_index: int | None = None,
-        wave_seed_indices: list[int] | None = None,
+        chain_n_generations: int | None = None,
+        chain_final_job_ids: list[str] | None = None,
     ) -> HpcRun:
         jobref_simulation_id = ref_id if job_type == JobType.SIMULATION else None
         jobref_parca_dataset_id = ref_id if job_type == JobType.PARCA else None
@@ -539,8 +539,8 @@ class DatabaseServiceSQL(DatabaseService):
                 jobref_parca_dataset_id=jobref_parca_dataset_id,
                 start_time=datetime.datetime.now(),
                 correlation_id=correlation_id,
-                wave_index=wave_index,
-                wave_seed_indices=list(wave_seed_indices) if wave_seed_indices is not None else None,
+                chain_n_generations=chain_n_generations,
+                chain_final_job_ids=list(chain_final_job_ids) if chain_final_job_ids is not None else None,
             )
             session.add(orm_hpc_run)
             await session.flush()
@@ -911,11 +911,11 @@ class DatabaseServiceSQL(DatabaseService):
             return [orm_hpcrun.to_hpc_run() for orm_hpcrun in orm_hpcruns]
 
     @override
-    async def list_active_wave_hpcruns(self) -> list[HpcRun]:
+    async def list_active_chain_campaigns(self) -> list[HpcRun]:
         async with self.async_sessionmaker() as session:
             stmt = select(ORMHpcRun).where(
                 ORMHpcRun.status.in_([JobStatusDB.PENDING, JobStatusDB.RUNNING]),
-                ORMHpcRun.wave_index.is_not(None),
+                ORMHpcRun.chain_n_generations.is_not(None),
             )
             result: Result[tuple[ORMHpcRun]] = await session.execute(stmt)
             orm_hpcruns = result.scalars().all()

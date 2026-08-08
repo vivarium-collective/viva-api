@@ -119,16 +119,23 @@ class ORMHpcRun(Base):
         ForeignKey("parca_dataset.id"), nullable=True, index=True
     )
     jobref_simulator_id: Mapped[int | None] = mapped_column(ForeignKey("simulator.id"), nullable=True, index=True)
-    # Wave-dispatch campaign fields (backlog item 33: per-generation task
-    # decomposition). NULL for every non-wave HpcRun (SLURM, K8s, MNP, single-shot
-    # Array) -- additive and backward-compatible, no new table: this model already
-    # supports multiple HpcRun rows per simulation (one row per wave/generation).
-    # ``wave_index`` is the 0-based generation this row's Array job ran;
-    # ``wave_seed_indices`` is the REAL seed number dispatched at each local array
-    # position (position i -> seed wave_seed_indices[i]), needed to remap a sparse
-    # survivor set back to real seeds after attrition.
-    wave_index: Mapped[int | None] = mapped_column(nullable=True)
-    wave_seed_indices: Mapped[list[int] | None] = mapped_column(JSONB, nullable=True)
+    # Chain-dispatch campaign fields (backlog item 33: per-generation task
+    # decomposition via individual per-seed AWS Batch job chains, each generation
+    # its own job chained natively via dependsOn). NULL for every non-campaign
+    # HpcRun (SLURM, K8s, MNP, single-shot Array) -- additive and backward-
+    # compatible, no new table. Unlike the per-generation-array design this
+    # superseded (one HpcRun row per generation), ONE row now tracks the WHOLE
+    # campaign: AWS Batch's own dependsOn resolves each seed's chain natively, so
+    # the only thing left to poll for is "has every seed's chain reached a
+    # terminal state" (JobScheduler.update_chain_campaigns). ``chain_n_generations``
+    # is the campaign's total generation count G (also the "is this row a
+    # chain-campaign tracker" discriminator, via IS NOT NULL); ``chain_final_job_ids``
+    # is the AWS Batch job id of each seed's own LAST successfully-submitted
+    # generation job (normally generation G-1, but truncated early for a seed
+    # whose chain hit a submission failure partway through) -- the exact set the
+    # analysis-fan-in poller watches for all-terminal.
+    chain_n_generations: Mapped[int | None] = mapped_column(nullable=True)
+    chain_final_job_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
 
     def _build_job_id(self) -> JobId:
         """Construct a JobId from the ORM columns."""
@@ -150,8 +157,8 @@ class ORMHpcRun(Base):
             error_message=self.error_message,
             start_time=str(self.start_time) if self.start_time else None,
             end_time=str(self.end_time) if self.end_time else None,
-            wave_index=self.wave_index,
-            wave_seed_indices=list(self.wave_seed_indices) if self.wave_seed_indices is not None else None,
+            chain_n_generations=self.chain_n_generations,
+            chain_final_job_ids=list(self.chain_final_job_ids) if self.chain_final_job_ids is not None else None,
         )
 
 

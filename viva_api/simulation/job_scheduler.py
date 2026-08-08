@@ -92,9 +92,9 @@ class JobScheduler:
             except Exception:
                 logger.exception("Error during job polling")
             try:
-                await self.update_wave_jobs()
+                await self.update_chain_campaigns()
             except Exception:
-                logger.exception("Error during wave job polling")
+                logger.exception("Error during chain-dispatch campaign polling")
             await asyncio.sleep(interval_seconds)
 
     async def update_running_jobs(self) -> None:
@@ -146,100 +146,106 @@ class JobScheduler:
             await self.database_service.update_hpcrun_status(hpcrun_id=hpc_run.database_id, update=update)
             logger.info(f"Updated HpcRun {hpc_run.database_id} status to {new_status}")
 
-    async def update_wave_jobs(self) -> None:
-        """Poll every active wave-dispatch HpcRun to terminal, then either
-        submit the next generation's wave (remapping survivors, backlog item
-        33) or leave it be — the analysis DAG node for a campaign's FINAL wave
-        is submitted alongside that wave itself (see ``SimulationServiceRay.
-        _submit_wave_and_maybe_analysis``), not from here. No-op when no wave
-        campaign is active, or on a deployment with no Ray/Batch backend wired
-        (SLURM-only deployments pass ``simulation_service_ray=None``).
+    async def update_chain_campaigns(self) -> None:
+        """Poll every active chain-dispatch campaign's tracked final-generation
+        job ids to terminal, then submit the analysis DAG node exactly once per
+        campaign (backlog item 33 rework — individual per-seed job chains,
+        replacing the per-generation-array "wave" design's own per-generation
+        poll-then-advance loop). Unlike that design, there is no "advance to
+        the next generation" step left to do here: AWS Batch's own dependsOn
+        already resolves each seed's chain natively (see
+        ``SimulationServiceRay.submit_chain_dispatch_job``); the only thing
+        left to poll for is "has every seed's chain reached a terminal state,"
+        answered by ``SimulationServiceRay.get_chain_campaign_result``. No-op
+        when no chain campaign is active, or on a deployment with no Ray/Batch
+        backend wired (SLURM-only deployments pass
+        ``simulation_service_ray=None``).
         """
         if self.simulation_service_ray is None:
             return
         # Narrow simulation_service_ray to non-None ONCE here (rather than a
-        # runtime `assert` inside `_advance_wave`, which -O would silently
-        # strip) and thread it through explicitly.
+        # runtime `assert` inside `_advance_chain_campaign`, which -O would
+        # silently strip) and thread it through explicitly.
         simulation_service_ray = self.simulation_service_ray
 
-        active_waves = await self.database_service.list_active_wave_hpcruns()
-        if not active_waves:
-            logger.debug("No active wave-dispatch jobs found for polling.")
+        active_campaigns = await self.database_service.list_active_chain_campaigns()
+        if not active_campaigns:
+            logger.debug("No active chain-dispatch campaigns found for polling.")
             return
-        for wave in active_waves:
+        for campaign in active_campaigns:
             try:
-                await self._advance_wave(wave, simulation_service_ray)
+                await self._advance_chain_campaign(campaign, simulation_service_ray)
             except Exception:
-                logger.exception("Error advancing wave HpcRun %s", wave.database_id)
+                logger.exception("Error advancing chain-dispatch campaign HpcRun %s", campaign.database_id)
 
-    async def _advance_wave(self, wave: HpcRun, simulation_service_ray: SimulationServiceRay) -> None:
-        """Handle one active wave HpcRun: no-op if still running; otherwise mark
-        it terminal and, if survivors remain and generations remain, submit the
-        next wave (see ``update_wave_jobs`` for what happens on the final wave).
+    async def _advance_chain_campaign(self, campaign: HpcRun, simulation_service_ray: SimulationServiceRay) -> None:
+        """Handle one active chain-dispatch campaign HpcRun: no-op while any
+        tracked seed chain is still unresolved; once every tracked chain has
+        reached a terminal state, mark the campaign row terminal and, if at
+        least one seed chain succeeded, submit the analysis DAG node (see
+        ``update_chain_campaigns`` for the zero-succeeded case).
+
+        This method never marks an INDIVIDUAL chain job failed — a
+        permanently-failed seed's job already shows up as FAILED in
+        ``result.failed_job_ids`` via Batch's own dependency-failure
+        propagation (a later generation's job that depended on a failed one
+        auto-transitions to FAILED with no orchestrator action). The only
+        status write here is to the campaign's own tracking row.
         """
-        result = simulation_service_ray.get_wave_result(wave.job_id.value)
+        job_ids = campaign.chain_final_job_ids or []
+        result = simulation_service_ray.get_chain_campaign_result(job_ids)
         if not result.terminal:
             return
 
-        seed_indices = wave.wave_seed_indices or []
-        survivors = [seed_indices[i] for i in result.succeeded_local_indices if i < len(seed_indices)]
-
-        # Terminal is either every child SUCCEEDED, or the array parent went
-        # FAILED-due-to-partial-loss -- both are "wave finished", not an
-        # orchestrator error (Spot/OOM attrition is expected economics). Only a
-        # wave with ZERO survivors is a genuine campaign-ending failure.
+        succeeded = result.succeeded_job_ids
         await self.database_service.update_hpcrun_status(
-            hpcrun_id=wave.database_id,
+            hpcrun_id=campaign.database_id,
             update=JobStatusUpdate(
-                job_id=wave.job_id,
-                status=JobStatus.COMPLETED if survivors else JobStatus.FAILED,
+                job_id=campaign.job_id,
+                status=JobStatus.COMPLETED if succeeded else JobStatus.FAILED,
                 end_time=datetime.datetime.now().isoformat(),
-                error_message=None if survivors else "wave dispatch: zero seeds survived this generation",
+                error_message=None if succeeded else "chain dispatch: zero seed chains succeeded",
             ),
         )
-        if not survivors:
+        if not succeeded:
             logger.warning(
-                "Wave dispatch: HpcRun %s (generation %s) had zero survivors; campaign ends here.",
-                wave.database_id,
-                wave.wave_index,
+                "Chain dispatch: HpcRun %s had zero succeeded seed chains "
+                "(%d tracked, %d failed); campaign ends here, no analysis submitted.",
+                campaign.database_id,
+                len(job_ids),
+                len(result.failed_job_ids),
             )
             return
 
-        simulation = await self.database_service.get_simulation(simulation_id=wave.ref_id)
+        simulation = await self.database_service.get_simulation(simulation_id=campaign.ref_id)
         if simulation is None:
-            logger.error("Wave dispatch: Simulation %s not found for HpcRun %s", wave.ref_id, wave.database_id)
+            logger.error("Chain dispatch: Simulation %s not found for HpcRun %s", campaign.ref_id, campaign.database_id)
             return
-        n_generations = int(simulation.config.generations or 1)
-        next_generation = int(wave.wave_index or 0) + 1
-        if next_generation >= n_generations:
-            # This WAS already the campaign's final wave -- its analysis node was
-            # submitted alongside it at submission time, not here.
-            return
-
         simulator = await self.database_service.get_simulator(simulator_id=simulation.simulator_id)
         if simulator is None:
             logger.error(
-                "Wave dispatch: Simulator %s not found for simulation %s", simulation.simulator_id, wave.ref_id
+                "Chain dispatch: Simulator %s not found for simulation %s",
+                simulation.simulator_id,
+                campaign.ref_id,
             )
             return
-        total_n_seeds = int(simulation.num_seeds or len(seed_indices))
+        n_generations = int(campaign.chain_n_generations or simulation.config.generations or 1)
+        total_n_seeds = int(simulation.num_seeds or len(job_ids))
 
-        next_job_id = await simulation_service_ray.submit_next_wave(
+        analysis_job_id = await simulation_service_ray.submit_campaign_analysis(
             simulation=simulation,
             database_service=self.database_service,
             commit=simulator.git_commit_hash,
-            generation_index=next_generation,
-            seed_indices=survivors,
             total_n_seeds=total_n_seeds,
             n_generations=n_generations,
         )
         logger.info(
-            "Wave dispatch %s: generation %d (%d survivors) -> generation %d job %s",
+            "Chain dispatch %s: campaign HpcRun %s all-terminal (%d/%d chains succeeded) -> analysis job %s",
             simulation.config.experiment_id,
-            wave.wave_index,
-            len(survivors),
-            next_generation,
-            next_job_id,
+            campaign.database_id,
+            len(succeeded),
+            len(job_ids),
+            analysis_job_id,
         )
 
     async def close(self) -> None:

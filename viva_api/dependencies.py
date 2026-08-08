@@ -364,9 +364,9 @@ async def init_standalone(enable_ssl: bool = True) -> None:
         logger.info("✓ Messaging service connected")
         set_messaging_service(messaging_service)
 
-        # Initialize JobScheduler. Wave-dispatch polling (backlog item 33) only
-        # applies when the Ray/Batch backend is actually configured for this
-        # deployment -- registry-only lookup (no default-backend fallback),
+        # Initialize JobScheduler. Chain-dispatch campaign polling (backlog item
+        # 33) only applies when the Ray/Batch backend is actually configured for
+        # this deployment -- registry-only lookup (no default-backend fallback),
         # since `simulation_service_ray` must be a real SimulationServiceRay or
         # None, never some OTHER backend's service standing in for it.
         logger.info("Initializing JobScheduler...")

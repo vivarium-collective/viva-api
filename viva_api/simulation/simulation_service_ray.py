@@ -28,6 +28,7 @@ image per submission, we derive a per-commit MNP job-def revision from the sms-c
 base (cloning its node properties, swapping the image to ``v2ecoli:<commit>``).
 """
 
+import asyncio
 import copy
 import importlib.resources as _res
 import json
@@ -36,11 +37,13 @@ import random
 import shlex
 import string
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, override
 
 import boto3
+from botocore.config import Config
 from pydantic import BaseModel
 
 from viva_api.common.hpc.job_service import JobStatusInfo
@@ -130,9 +133,68 @@ ANALYSIS_SCALES = ("single", "multidaughter", "multigeneration", "multiseed", "m
 # than carrying a second, drift-prone copy of the list.
 APPLICABLE_ANALYSES = "applicable"
 
+# ── Chain-dispatch campaign submission (backlog item 33) ────────────────────
+#
+# AWS Batch's SubmitJob is capped at 50 TPS per account, fixed -- not
+# adjustable via a quota increase (AWS Batch service quotas, verified this
+# session). A canonical 1000-seed x 10-generation campaign submits N*G=10,000
+# individual per-seed-per-generation jobs upfront (see
+# ``submit_chain_dispatch_job``), so that loop must stay safely under the cap.
+_SUBMIT_JOB_SAFE_RATE = 40.0  # jobs/sec; headroom below the 50 TPS account cap
+#                               for other concurrent Batch traffic in the same
+#                               account (ParCa/analysis jobs, other campaigns).
+_SUBMIT_JOB_MAX_ATTEMPTS = 5  # botocore "standard" retry attempts per submit_job
+#                               call, for whatever transient/throttling errors
+#                               proactive pacing alone doesn't fully prevent.
+# Per-generation-job retry, matching the (Spot-tolerant) Array job definition's
+# own already-tuned ``arrayRetryAttempts`` default (sms-cdk/lib/ray-batch-
+# stack.ts) -- restores the "checkpoint/resume via the job's own retry" property
+# the per-seed chain design assumes, on the MNP job definition that per-seed
+# jobs actually submit through (see ``_seed_generation_command``'s module-level
+# docstring note for why MNP, not Array, and the cost tradeoff that leaves open).
+_CHAIN_JOB_RETRY_STRATEGY = {"attempts": 2}
+# AWS Batch DescribeJobs accepts at most 100 job ids per call (verified against
+# the real API model this session) -- the analysis-fan-in poller must chunk a
+# campaign's up-to-1000 tracked job ids into batches this size.
+_DESCRIBE_JOBS_MAX_BATCH = 100
+
 
 def _rand_suffix() -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+
+
+class _SubmitJobPacer:
+    """Proactive client-side pacer for AWS Batch SubmitJob.
+
+    Caps outbound ``submit_job`` calls to ``max_per_second``, computed from
+    REAL elapsed wall-clock time since the previous call (not a fixed
+    per-call sleep, which either over-throttles once call latency is added on
+    top, or under-throttles if the guessed interval is even slightly off).
+    Deliberately proactive rather than reactive: botocore's own "adaptive"
+    retry mode only starts throttling client-side AFTER it has already
+    observed a real throttling response, so pacing every call up front is
+    what keeps a fresh several-thousand-call burst from front-loading
+    avoidable 429s in the first place. This pacer and the "standard" retry
+    mode configured on the submitting client (see
+    ``submit_chain_dispatch_job``) are complementary, not redundant: this
+    caps the steady-state rate; retry-on-throttle is the backstop for
+    whatever pacing alone doesn't prevent (concurrent campaigns, other Batch
+    traffic in the same account -- the 50 TPS cap is account-wide, not
+    per-campaign).
+    """
+
+    def __init__(self, max_per_second: float = _SUBMIT_JOB_SAFE_RATE) -> None:
+        self._min_interval = 1.0 / max_per_second
+        self._last_call_at: float | None = None
+
+    async def wait(self) -> None:
+        now = time.monotonic()
+        if self._last_call_at is not None:
+            deficit = self._min_interval - (now - self._last_call_at)
+            if deficit > 0:
+                await asyncio.sleep(deficit)
+                now = time.monotonic()
+        self._last_call_at = now
 
 
 def analysis_modules_for(config: Any) -> dict[str, dict[str, Any]] | str:
@@ -171,23 +233,27 @@ def _is_upstream_vecoli(composite: CompositeEngine | None) -> bool:
 
 
 @dataclass
-class WavePollResult:
-    """One wave's (array job's) poll outcome — backlog item 33.
+class ChainCampaignPollResult:
+    """A chain-dispatch campaign's analysis-fan-in poll outcome — backlog item 33.
 
-    ``terminal`` means every child has reached a Batch-terminal state
-    (SUCCEEDED or FAILED, per ``arrayProperties.statusSummary``); a wave with
-    children still RUNNABLE/STARTING/RUNNING is NOT terminal and must be
-    polled again next interval. Once terminal, ``succeeded_local_indices`` /
-    ``failed_local_indices`` are the wave's own LOCAL array positions
-    (0..array_size-1) — the caller (JobScheduler) remaps these to real seed
-    numbers via the HpcRun row's ``wave_seed_indices``, since a wave's array
-    positions are dense (0..len(seed_indices)-1) even though the seeds they
-    represent may be sparse after a prior generation's attrition.
+    ``terminal`` means every one of the campaign's tracked final-generation job
+    ids (``HpcRun.chain_final_job_ids`` — one per seed, each seed's own LAST
+    successfully-submitted generation job) has reached a Batch-terminal state
+    (SUCCEEDED or FAILED); a campaign with any tracked job still
+    SUBMITTED/PENDING/RUNNABLE/STARTING/RUNNING is NOT terminal and must be
+    polled again next interval. A job id that hasn't shown up in ``describe_jobs``
+    yet (e.g. brief eventual-consistency lag right after submission) is treated
+    as not-yet-terminal, not an error — the caller just polls again.
+
+    Unlike the per-generation-array design this superseded, there is no local
+    array position to remap: each tracked id is already a real, independent AWS
+    Batch job id (one seed's final chain link), so ``succeeded_job_ids`` /
+    ``failed_job_ids`` are real job ids directly, usable as-is.
     """
 
     terminal: bool
-    succeeded_local_indices: list[int] = field(default_factory=list)
-    failed_local_indices: list[int] = field(default_factory=list)
+    succeeded_job_ids: list[str] = field(default_factory=list)
+    failed_job_ids: list[str] = field(default_factory=list)
 
 
 class SimulationServiceRay(SimulationService):
@@ -330,6 +396,8 @@ class SimulationServiceRay(SimulationService):
         depends_on: list[str] | None = None,
         depends_type: str | None = "SEQUENTIAL",
         tags: dict[str, str] | None = None,
+        retry_strategy: dict[str, Any] | None = None,
+        batch_client: Any = None,
     ) -> str:
         """Submit a Ray MNP job via boto3, mirroring sms-cdk scripts/ray_batch_submit.sh.
 
@@ -346,6 +414,19 @@ class SimulationServiceRay(SimulationService):
         wait — required when the DEPENDENCY is an Array job, whose parent id AWS
         Batch will not accept under a SEQUENTIAL type (real API rejection, hit live
         2026-08-06; see ``_submit_array``).
+
+        ``retry_strategy``, passed through verbatim as ``SubmitJob.retryStrategy``,
+        overrides whatever the job definition itself declares (per the real AWS
+        Batch API — confirmed this session) — used by the per-seed chain-dispatch
+        path (backlog item 33) to restore per-job retry on the MNP job definition,
+        which (unlike the Array job definition) declares none of its own; omitted
+        (``None``) everywhere else, unchanged from existing behavior.
+
+        ``batch_client``, when given, is used INSTEAD of ``self._batch()`` for this
+        one call — lets a caller submitting many jobs in a tight loop (chain
+        dispatch) supply its own retry-configured client without changing what
+        every other existing call site in this class gets from the shared
+        ``self._batch()`` factory.
         """
         settings = get_settings()
         # Per-node knobs every node acts on (stage cache in, sync results out, ship logs).
@@ -396,8 +477,11 @@ class SimulationServiceRay(SimulationService):
             # payer account's Cost Explorer can attribute compute per run/engine.
             kwargs["tags"] = tags
             kwargs["propagateTags"] = True
+        if retry_strategy:
+            kwargs["retryStrategy"] = retry_strategy
 
-        response = self._batch().submit_job(**kwargs)
+        batch = batch_client if batch_client is not None else self._batch()
+        response = batch.submit_job(**kwargs)
         batch_job_id = str(response["jobId"])
         logger.info(
             "Submitted Ray MNP job %s (id=%s, nodes=%d) to %s",
@@ -681,66 +765,51 @@ class SimulationServiceRay(SimulationService):
             f' --overrides "$OVERRIDES" -n 1'
         )
 
-    def _wave_sim_command(
+    def _seed_generation_command(
         self,
+        *,
+        seed: int,
         generation_index: int,
         experiment_id: str,
         runner_s3_uri: str,
-        seed_indices: list[int],
     ) -> str:
-        """Build one wave's Array child command: ONE seed's ONE generation
-        (backlog item 33 — per-generation task decomposition, mirroring
-        vEcoli-private's own Nextflow task granularity, ``runscripts/nextflow/
-        sim.nf``). Sibling of ``_array_sim_command``, same inline-shell-plus-
-        python3 per-child resolution pattern, extended for a SPARSE seed set:
-        after a prior wave's attrition (Spot loss, OOM), a later wave's array
-        positions are still dense (0..len(seed_indices)-1) but the REAL seeds
-        they represent are not — so each child must look its real seed up in a
-        lookup table (``seed_indices[AWS_BATCH_JOB_ARRAY_INDEX]``), not compute
-        it via an offset (unlike ``_array_sim_command``'s BASE_SEED arithmetic,
-        which only ever needs a contiguous range).
+        """Build ONE seed's ONE generation's command (backlog item 33 rework —
+        per-seed independent job chains, mirroring vEcoli-private's own
+        Nextflow task granularity, ``runscripts/nextflow/sim.nf``, where task
+        retry at generation granularity IS checkpoint/resume).
 
-        CROSS-REPO CONTRACT GAP, confirmed against primary sources this
-        session, NOT yet closed as of sms-ecoli PR #39 (``feat/per-generation-
-        wave-dispatch``): the overrides below set ``initial_generation_index``
-        (and the caller sets ``initial_carry_state_path``/``daughter_state_out
-        _path`` via the merge script) as TOP-LEVEL ``--overrides`` keys, which
-        ``run_pbg.py`` forwards to ``process_bigraph.composite_spec.
-        CompositeSpec.to_document(overrides=...)`` -> ``_merged_params``. That
-        method (verified directly, ``process_bigraph/composite_spec.py``)
-        raises ``KeyError: "unknown override(s): [...]"`` for ANY key not in
-        the composite's OWN declared ``@composite_generator(parameters={...})``
-        dict — it is a strict allowlist, not a passthrough. PR #39 threaded
-        the 3 new keys through ``BatchBaselineRunner.config_schema`` and
-        ``meta_composite.py``'s ``_lineage_node`` (a DIFFERENT, multi-branch
-        composite path), but NOT through ``v2ecoli/composites/batch_baseline.
-        py``'s own ``parameters={...}`` dict / ``batch_baseline()`` signature /
-        ``runner_config`` dict — which is the composite THIS command actually
-        dispatches through (``V2ECOLI_BATCH_BASELINE_COMPOSITE_ID``). Until
-        sms-ecoli adds the same 3 keys there (mirroring the exact pattern
-        already applied to ``BatchBaselineRunner``/``meta_composite.py``), a
-        real wave dispatch will fail fast with that KeyError at container
-        start. This command's shape is correct against the INTENDED full
-        contract; it is blocked on that small companion fix, not on anything
-        wrong here.
+        SIMPLER than the per-generation-array design this superseded (formerly
+        ``_wave_sim_command``): this job is submitted as its own standalone
+        Batch job (see ``submit_chain_dispatch_job``), not one array child
+        sharing a command across many indices, so BOTH ``seed`` and
+        ``generation_index`` are already known Python-side at SUBMISSION time
+        — no ``AWS_BATCH_JOB_ARRAY_INDEX``, no lookup table, no container-start
+        shell/python3 merge step at all. The full ``--overrides`` payload is
+        computed once, here, and embedded as a single static JSON blob.
 
-        ``seed_indices`` is embedded as a bare JSON int array (at most 1000
-        ints for the canonical dispatch shape — comfortably under Batch's
-        8192-byte containerOverrides.command cap; see
-        ``TestWaveSimCommand.test_stays_under_the_batch_command_size_cap`` for
-        the actual byte count at n=1000). The per-seed checkpoint S3 URIs are
-        NOT embedded (1000 full URIs would blow that cap) — the merge script
-        reconstructs them itself using ``RayLayout.wave_state_uri``'s own
-        format, mirrored here since the v2ecoli container has no import path
-        back to this module.
+        ``initial_carry_state_path``/``daughter_state_out_path`` are exactly
+        ``RayLayout.daughter_state_uri``'s own deterministic per-seed,
+        per-generation S3 path — generation 0 has no prior generation, so
+        ``initial_carry_state_path`` is "" (``LineageProcess`` defaults it to
+        "", matching a fresh cell — the validated, non-error case). Every
+        generation writes its own daughter state out, including the final
+        one — a harmless no-op read by nobody if the chain ends there, cheaper
+        than a special case to skip it.
 
-        Generation 0 has no prior wave, so no ``initial_carry_state_path`` is
-        set (LineageProcess defaults it to "", matching a fresh cell —
-        ``initial_generation_index=0`` with no carry state is the validated,
-        non-error case). Every generation writes its own daughter state out,
-        including the final one — a harmless no-op read by nobody if the
-        campaign ends there, cheaper than a special case to skip it.
+        CROSS-REPO CONTRACT: overrides threading these 3 keys through to
+        ``v2ecoli/composites/batch_baseline.py``'s own ``parameters={...}``
+        declaration (the composite this command dispatches through, via
+        ``V2ECOLI_BATCH_BASELINE_COMPOSITE_ID``) is sms-ecoli PR #39's
+        responsibility, already applied there — see that repo's own history;
+        nothing about that contract is affected by this per-seed rework, only
+        WHICH viva-api command builder emits the same 3 keys.
         """
+        daughter_state_out_path = data_layout.RayLayout.daughter_state_uri(experiment_id, seed, generation_index)
+        initial_carry_state_path = (
+            data_layout.RayLayout.daughter_state_uri(experiment_id, seed, generation_index - 1)
+            if generation_index > 0
+            else ""
+        )
         overrides = {
             "n_seeds": 1,
             "n_generations": 1,
@@ -749,38 +818,18 @@ class SimulationServiceRay(SimulationService):
             "experiment_id": experiment_id,
             "analyses": "none",
             "parallel": "",
+            "base_seed": int(seed),
             "initial_generation_index": int(generation_index),
+            "initial_carry_state_path": initial_carry_state_path,
+            "daughter_state_out_path": daughter_state_out_path,
         }
-        static_overrides_json = shlex.quote(json.dumps(overrides))
-        seed_indices_json = shlex.quote(json.dumps([int(s) for s in seed_indices]))
-        state_prefix = shlex.quote(data_layout.RayLayout.wave_state_prefix(experiment_id))
-        bucket = shlex.quote(get_settings().s3_work_bucket)
-        # NOTE: every Python string literal inside this snippet MUST use double
-        # quotes, never single — the whole snippet is embedded inside a
-        # single-quoted shell argument (python3 -c '{merge_py}' below), so a
-        # single quote in here would prematurely close the shell string.
-        merge_py = (
-            "import json,sys;"
-            "d=json.loads(sys.argv[1]);"
-            "seeds=json.loads(sys.argv[2]);"
-            "seed=seeds[int(sys.argv[3])];"
-            "bucket=sys.argv[4];"
-            "prefix=sys.argv[5];"
-            'gen=d["initial_generation_index"];'
-            'd["base_seed"]=seed;'
-            'd["daughter_state_out_path"]=f"s3://{bucket}/{prefix}/seed{seed}/gen{gen}.pkl";'
-            'd["initial_carry_state_path"]=f"s3://{bucket}/{prefix}/seed{seed}/gen{gen - 1}.pkl" if gen>0 else "";'
-            "print(json.dumps(d))"
-        )
         env = f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER}"
         return (
-            f"OVERRIDES=$(python3 -c '{merge_py}'"
-            f' {static_overrides_json} {seed_indices_json} "$AWS_BATCH_JOB_ARRAY_INDEX" {bucket} {state_prefix})'
-            f" && cd {V2ECOLI_DIR}"
+            f"cd {V2ECOLI_DIR}"
             f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
             f" && {env} python /tmp/run_pbg.py"
             f" --composite-id {V2ECOLI_BATCH_BASELINE_COMPOSITE_ID}"
-            f' --overrides "$OVERRIDES" -n 1'
+            f" --overrides {shlex.quote(json.dumps(overrides))} -n 1"
         )
 
     def _analysis_command(
@@ -852,7 +901,7 @@ class SimulationServiceRay(SimulationService):
         database_service: DatabaseService,
         job_definition: str,
         commit: str,
-        sim_job_id: str,
+        sim_job_id: str | None,
         n_seeds: int,
         n_generations: int,
         depends_type: str | None,
@@ -866,11 +915,21 @@ class SimulationServiceRay(SimulationService):
         auto-triggered analysis must be exactly as discoverable as a hand-triggered
         one, not an invisible side effect.
 
-        Best-effort by design, but never SILENT: the simulation job is already
-        submitted and running by the time this is reached, so raising would orphan a
-        real, expensive job. A submission failure is logged AND written to the
-        analyses table as a FAILED row, so "the analysis never ran" is a visible state
-        rather than an absence.
+        Best-effort by design, but never SILENT: the simulation job(s) this depends
+        on are already submitted and running by the time this is reached, so
+        raising would orphan real, expensive jobs. A submission failure is logged
+        AND written to the analyses table as a FAILED row, so "the analysis never
+        ran" is a visible state rather than an absence.
+
+        ``sim_job_id`` is the single Batch job this analysis should natively
+        ``dependsOn`` (item 24's original single-DAG-edge shape, still used by the
+        single-shot dispatch paths). Pass ``None`` for the chain-dispatch campaign
+        path (backlog item 33 rework), where by construction everything this
+        analysis depends on has ALREADY finished by the time it's submitted — the
+        analysis-fan-in poller's own "all tracked jobs terminal" check (see
+        ``JobScheduler.update_chain_campaigns``) provides the "wait for all"
+        semantics a native ``dependsOn`` can't express at 1000-seed scale (Batch
+        caps a job at 20 dependencies), so no ``dependsOn`` is needed at all here.
         """
         experiment_id = simulation.config.experiment_id
         analysis_name = f"analysis-{experiment_id[:20]}-{_rand_suffix()}"
@@ -907,7 +966,7 @@ class SimulationServiceRay(SimulationService):
                 ),
                 out_s3=self._results_s3_uri(experiment_id),
                 out_dir=ANALYSIS_OUT_DIR,
-                depends_on=[sim_job_id],
+                depends_on=[sim_job_id] if sim_job_id else None,
                 depends_type=depends_type,
                 tags=tags,
             )
@@ -1207,10 +1266,11 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             )
         return JobId.ray(sim_job_id)
 
-    def _wave_base_tags(self, *, simulation: Simulation, commit: str) -> dict[str, str]:
-        """Cost-allocation tag base shared by every wave + the ParCa job that
-        precedes them, mirroring ``submit_ecoli_simulation_job``'s ``base_tags``
-        (composite/condition don't apply — wave dispatch is v2ecoli-only)."""
+    def _chain_base_tags(self, *, simulation: Simulation, commit: str) -> dict[str, str]:
+        """Cost-allocation tag base shared by every per-seed chain job + the
+        ParCa job that precedes them, mirroring ``submit_ecoli_simulation_job``'s
+        ``base_tags`` (composite/condition don't apply — chain dispatch is
+        v2ecoli-only)."""
         settings = get_settings()
         return {
             "Project": "v2ecoli-comparison",
@@ -1220,115 +1280,87 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             "Team": getattr(settings, "cost_team_tag", None) or "covertlab",
         }
 
-    async def _submit_wave_and_maybe_analysis(
-        self,
-        *,
-        simulation: Simulation,
-        database_service: DatabaseService,
-        commit: str,
-        generation_index: int,
-        seed_indices: list[int],
-        total_n_seeds: int,
-        n_generations: int,
-        depends_on_parca: str | None,
-        base_tags: dict[str, str],
-    ) -> str:
-        """Submit ONE wave (one generation's Array job) over ``seed_indices``,
-        record it, and — if this is the FINAL generation — submit the analysis
-        DAG node right behind it, depending on THIS wave's own array job id via
-        the existing plain ``{"jobId": ...}`` shape (no ``"type"``; an array
-        parent id is rejected by real AWS Batch under a SEQUENTIAL type, see
-        ``_submit_array``). This piggybacks Batch's own ``dependsOn`` instead of
-        polling to detect "did the last wave finish" — the analysis job simply
-        waits on the wave that was JUST submitted, exactly like the existing
-        single-shot Array path's sim -> analysis edge (item 24), just moved to
-        fire at "final wave submitted" time instead of "the only wave
-        submitted" time. Returns the wave's AWS Batch array job id.
-        """
-        experiment_id = simulation.config.experiment_id
-        array_job_def = self._ensure_array_job_def(self._image_uri(commit), commit)
-        runner_s3_uri = await self._stage_runner(experiment_id)
-        cache_s3 = self._cache_s3_uri(commit)
-        is_final_wave = generation_index >= n_generations - 1
+    async def submit_chain_dispatch_job(self, ecoli_simulation: Simulation, database_service: DatabaseService) -> JobId:
+        """Kick off a per-seed chain-dispatch campaign (backlog item 33 rework
+        — individual per-seed job chains, replacing the per-generation-array
+        "wave" design): submit ParCa (1 node), then EVERY seed's full
+        G-generation ``dependsOn`` chain, all N*G jobs submitted upfront,
+        TPS-paced. A true v2 analogy of vEcoli-private's own fully-asynchronous
+        per-seed Nextflow execution (Alex's explicit decision, 2026-08-08) —
+        seed 5 can be on generation 8 while seed 800 is still on generation 1,
+        throttled only by available compute, never by a cross-seed barrier.
 
-        wave_job_id = self._submit_array(
-            job_name=f"wave{generation_index}-sim-{experiment_id}-{_rand_suffix()}"[:128],
-            job_definition=array_job_def,
-            array_size=len(seed_indices),
-            array_job_cmd=self._wave_sim_command(generation_index, experiment_id, runner_s3_uri, seed_indices),
-            out_s3=self._results_s3_uri(experiment_id),
-            out_dir=SIM_OUT_DIR,
-            stage_s3=cache_s3,
-            stage_dir=PARCA_CACHE_DIR,
-            depends_on=[depends_on_parca] if depends_on_parca else None,
-            tags={**base_tags, "Phase": "sim", "Wave": str(generation_index)},
-        )
-        await database_service.insert_hpcrun(
-            job_id=JobId.ray(wave_job_id),
-            job_type=JobType.SIMULATION,
-            ref_id=simulation.database_id,
-            correlation_id=f"wave-{generation_index}-{experiment_id}-{_rand_suffix()}",
-            wave_index=generation_index,
-            wave_seed_indices=list(seed_indices),
-        )
-        logger.info(
-            "Wave dispatch %s: generation %d submitted as array job %s (%d seeds)",
-            experiment_id,
-            generation_index,
-            wave_job_id,
-            len(seed_indices),
-        )
-        if is_final_wave:
-            mnp_job_def = self._ensure_mnp_job_def(self._image_uri(commit), commit)
-            analysis_job_id = await self._submit_analysis_job(
-                simulation=simulation,
-                database_service=database_service,
-                job_definition=mnp_job_def,
-                commit=commit,
-                sim_job_id=wave_job_id,
-                n_seeds=total_n_seeds,
-                n_generations=n_generations,
-                depends_type=None,
-                tags={**base_tags, "Phase": "analysis"},
-            )
-            logger.info(
-                "Wave dispatch %s: final wave %s -> analysis job %s",
-                experiment_id,
-                wave_job_id,
-                analysis_job_id,
-            )
-        return wave_job_id
+        For each seed independently: generation 0 ``dependsOn`` ParCa
+        (SEQUENTIAL, matching the long-standing ParCa→sim edge shape exactly —
+        both ends are MNP jobs here); generation g>0 ``dependsOn`` generation
+        g-1's own job id (same SEQUENTIAL shape). All jobs for every seed are
+        submitted immediately, back to back, without waiting for any to
+        actually run — AWS Batch holds a job in ``PENDING`` (no compute, no
+        cost) until its dependency reaches ``SUCCEEDED``; a dependency that
+        permanently FAILS auto-propagates failure to what depends on it, no
+        orchestrator action needed (see ``_SubmitJobPacer``/``_submit_mnp``'s
+        ``retry_strategy`` for the two things this DOES still need to handle
+        itself: staying under the account-wide SubmitJob rate limit, and
+        restoring per-job retry — see below).
 
-    async def submit_wave_dispatch_job(self, ecoli_simulation: Simulation, database_service: DatabaseService) -> JobId:
-        """Kick off a wave-dispatch campaign (backlog item 33): submit ParCa (1
-        node) + generation 0's Array wave over every requested seed.
+        WHY MNP (``_submit_mnp``, ``num_nodes=1``), not a "singleton array job":
+        this session confirmed directly against the real, shipped mechanism
+        (sms-cdk's ``batch-array-entrypoint.sh`` and AWS's own
+        ``job_env_vars.html``) that NEITHER of viva-api's two entrypoint
+        scripts supports a genuinely standalone job with its own independent
+        job id. ``batch-array-entrypoint.sh`` hard-requires
+        ``AWS_BATCH_JOB_ARRAY_INDEX``, which AWS Batch only sets for children
+        of a REAL array job (and ``arrayProperties.size`` has a hard floor of
+        2 — no size-1 "singleton array" exists). A true per-seed dependsOn
+        chain structurally needs each generation to be its OWN job with its
+        OWN id anyway (array children can't dependsOn each other individually
+        — dependsOn operates at the array PARENT level only), so array jobs
+        were never a fit for this design regardless. MNP with ``num_nodes=1``
+        is the one mechanism already proven to submit a genuinely standalone
+        job (ParCa and the analysis job already run this way) — reused as-is,
+        no new job type, no sms-cdk change.
 
-        Sibling entrypoint to ``submit_ecoli_simulation_job``, same return
-        contract (the tracked ``JobId`` is the just-submitted job — here,
-        generation 0's array job) MINUS ``correlation_id``: unlike a single-shot
-        dispatch (one job, one caller-supplied correlation_id, the caller's own
-        follow-up ``insert_hpcrun`` call records it), a wave campaign spans
-        MANY jobs over its lifetime that no single outer caller is present for
-        (generations 1..N-1 are submitted later, from ``JobScheduler``'s poll
-        loop) — so every wave, including generation 0, records its OWN HpcRun
-        with its own freshly-generated correlation_id internally (see
-        ``_submit_wave_and_maybe_analysis``), rather than splitting that
-        bookkeeping between an external caller and this method.
+        KNOWN, FLAGGED COST TRADEOFF (not silently absorbed): the MNP queue's
+        compute environment (``RayBatchOnDemandCE``, confirmed directly against
+        ``sms-cdk/lib/ray-batch-stack.ts``) is ON-DEMAND ONLY — unlike the Array
+        job definition's queue, which is Spot-tolerant and already carries its
+        own ``retryStrategy`` (``arrayRetryAttempts``, default 2) for exactly
+        the "a Spot reclaim IS the job's own retry" property item 34 assumes.
+        The MNP job definition declares NO ``retryStrategy`` of its own, so
+        every per-seed-per-generation submission below passes an explicit
+        ``retry_strategy`` override (``_CHAIN_JOB_RETRY_STRATEGY``, matching
+        the Array job definition's own already-tuned value) to restore that
+        property — real, working, per-job retry, achieved from viva-api alone.
+        What can NOT be restored from viva-api alone is Spot PRICING itself
+        (a property of the compute environment bound to the queue, not
+        anything a submission-time parameter can change) — a real cost-shape
+        difference from the superseded array-child design, left open for a
+        companion sms-cdk change (e.g. a Spot-capable container-type job
+        definition with a relaxed entrypoint), not this PR's scope.
 
-        Subsequent generations are NOT submitted here: ``JobScheduler.
-        update_wave_jobs`` polls generation 0 to terminal, computes survivors,
-        and submits generation 1 itself (``submit_next_wave``) — repeating
-        until the final generation, at which point the analysis DAG node rides
-        along (see ``_submit_wave_and_maybe_analysis``). This mirrors AWS
-        Batch's own confirmed limitation: an array job's ``dependsOn`` can't
-        express "wait for all-terminal, not all-succeeded", so chaining
-        generations natively would let one permanently-failed seed cascade-fail
-        every later generation for the whole campaign.
+        Unlike the superseded per-generation-array design, ``n_seeds >= 2`` is
+        NOT required: that floor was AWS Batch's own array-size minimum, which
+        doesn't apply here (each seed's chain is independent standalone jobs,
+        no array involved at all). ``n_generations >= 2`` is still required —
+        a single-generation request has nothing to chain; use
+        ``submit_ecoli_simulation_job``.
 
-        Only valid for the shape wave dispatch actually fixes: multiple seeds
-        (AWS Batch array jobs require size>=2) across multiple generations. A
-        single-generation or single-seed request has no attrition-across-
-        generations problem to solve — use ``submit_ecoli_simulation_job``.
+        A submission failure partway through one seed's chain (even after
+        real retry-on-throttle is exhausted) truncates JUST that seed's chain
+        — its already-submitted generations still run normally on Batch, but
+        nothing later is submitted for it, and its last successfully-submitted
+        job id (not necessarily generation G-1) is what gets tracked for the
+        analysis-fan-in poll. OTHER seeds are unaffected. This mirrors how a
+        RUNTIME failure is handled (Batch's own dependency propagation, no
+        orchestrator involvement) as closely as a SUBMISSION-time failure can.
+
+        Returns the ParCa job's ``JobId`` — the one well-defined "campaign
+        kickoff" marker (no single job represents N*G independent chains as a
+        whole). The real per-seed tracking lives in the campaign's own
+        ``HpcRun`` row (``chain_final_job_ids``), inserted once at the end of
+        this method — analogous to how the superseded design's every wave
+        recorded its own row, just collapsed to ONE row per campaign now that
+        Batch's own dependsOn (not orchestrator polling) advances each chain.
         """
         parca_dataset = await database_service.get_parca_dataset(parca_dataset_id=ecoli_simulation.parca_dataset_id)
         if parca_dataset is None:
@@ -1343,16 +1375,27 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         n_generations = int(config.generations or 1)
         if n_generations < 2:
             raise ValueError(
-                "submit_wave_dispatch_job requires generations > 1 "
+                "submit_chain_dispatch_job requires generations > 1 "
                 "(use submit_ecoli_simulation_job for single-generation runs)"
             )
-        if n_seeds < 2:
-            raise ValueError("submit_wave_dispatch_job requires n_seeds > 1 (AWS Batch array jobs require size >= 2)")
 
+        experiment_id = str(ecoli_simulation.config.experiment_id)
         job_def_mnp = self._ensure_mnp_job_def(self._image_uri(commit), commit)
         cache_s3 = self._cache_s3_uri(commit)
-        base_tags = self._wave_base_tags(simulation=ecoli_simulation, commit=commit)
+        base_tags = self._chain_base_tags(simulation=ecoli_simulation, commit=commit)
+        runner_s3_uri = await self._stage_runner(experiment_id)
 
+        pacer = _SubmitJobPacer()
+        # A dedicated, retry-configured client for this bulk-submission loop only
+        # -- keeps every OTHER existing call site's behavior (which uses the
+        # shared self._batch() factory, unconfigured) completely unchanged.
+        submit_client = boto3.client(
+            "batch",
+            region_name=get_settings().batch_region,
+            config=Config(retries={"mode": "standard", "max_attempts": _SUBMIT_JOB_MAX_ATTEMPTS}),
+        )
+
+        await pacer.wait()
         parca_job_id = self._submit_mnp(
             job_name=f"ray-parca-{commit}-{_rand_suffix()}",
             job_definition=job_def_mnp,
@@ -1361,58 +1404,112 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             out_s3=cache_s3,
             out_dir=PARCA_CACHE_DIR,
             tags={**base_tags, "Phase": "parca"},
+            batch_client=submit_client,
         )
-        wave0_job_id = await self._submit_wave_and_maybe_analysis(
-            simulation=ecoli_simulation,
-            database_service=database_service,
-            commit=commit,
-            generation_index=0,
-            seed_indices=list(range(n_seeds)),
-            total_n_seeds=n_seeds,
-            n_generations=n_generations,
-            depends_on_parca=parca_job_id,
-            base_tags=base_tags,
+
+        final_job_ids: list[str] = []
+        for seed in range(n_seeds):
+            prev_job_id = parca_job_id
+            seed_final_job_id: str | None = None
+            for generation_index in range(n_generations):
+                await pacer.wait()
+                try:
+                    job_id = self._submit_mnp(
+                        job_name=f"chain-seed{seed}-gen{generation_index}-{experiment_id}-{_rand_suffix()}"[:128],
+                        job_definition=job_def_mnp,
+                        num_nodes=1,
+                        ray_job_cmd=self._seed_generation_command(
+                            seed=seed,
+                            generation_index=generation_index,
+                            experiment_id=experiment_id,
+                            runner_s3_uri=runner_s3_uri,
+                        ),
+                        out_s3=self._results_s3_uri(experiment_id),
+                        out_dir=SIM_OUT_DIR,
+                        stage_s3=cache_s3,
+                        stage_dir=PARCA_CACHE_DIR,
+                        depends_on=[prev_job_id],
+                        depends_type="SEQUENTIAL",
+                        tags={**base_tags, "Phase": "sim", "Seed": str(seed), "Generation": str(generation_index)},
+                        retry_strategy=_CHAIN_JOB_RETRY_STRATEGY,
+                        batch_client=submit_client,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Chain dispatch %s: seed %d generation %d submission failed "
+                        "(even after retry-on-throttle) -- truncating this seed's chain here; "
+                        "other seeds are unaffected",
+                        experiment_id,
+                        seed,
+                        generation_index,
+                    )
+                    break
+                seed_final_job_id = job_id
+                prev_job_id = job_id
+            if seed_final_job_id is not None:
+                final_job_ids.append(seed_final_job_id)
+            else:
+                logger.error(
+                    "Chain dispatch %s: seed %d contributed NO jobs to the campaign (generation 0 submission failed)",
+                    experiment_id,
+                    seed,
+                )
+
+        await database_service.insert_hpcrun(
+            job_id=JobId.ray(parca_job_id),
+            job_type=JobType.SIMULATION,
+            ref_id=ecoli_simulation.database_id,
+            correlation_id=f"chain-campaign-{experiment_id}-{_rand_suffix()}",
+            chain_n_generations=n_generations,
+            chain_final_job_ids=final_job_ids,
         )
         logger.info(
-            "Wave dispatch %s: parca job %s -> wave 0 job %s (%d seeds, %d generations)",
-            ecoli_simulation.config.experiment_id,
+            "Chain dispatch %s: parca job %s -> %d/%d seed chains submitted (%d generations each)",
+            experiment_id,
             parca_job_id,
-            wave0_job_id,
+            len(final_job_ids),
             n_seeds,
             n_generations,
         )
-        return JobId.ray(wave0_job_id)
+        return JobId.ray(parca_job_id)
 
-    async def submit_next_wave(
+    async def submit_campaign_analysis(
         self,
         *,
         simulation: Simulation,
         database_service: DatabaseService,
         commit: str,
-        generation_index: int,
-        seed_indices: list[int],
         total_n_seeds: int,
         n_generations: int,
-    ) -> str:
-        """Submit wave ``generation_index`` for the given SURVIVOR
-        ``seed_indices`` (backlog item 33). No ParCa dependency — the cache is
-        already in S3 from ``submit_wave_dispatch_job``'s generation-0 run, and
-        ParCa already SUCCEEDED long before this call, so there is no ordering
-        left to enforce. Called exclusively by ``JobScheduler.update_wave_jobs``
-        once the PREVIOUS generation's wave reaches a terminal state. Returns
-        the new wave's AWS Batch array job id.
+    ) -> str | None:
+        """Submit the analysis DAG node for a chain-dispatch campaign that the
+        analysis-fan-in poller (``JobScheduler._advance_chain_campaign``) has
+        just confirmed all-terminal — called exactly once per campaign, after
+        every tracked seed chain (whether it fully succeeded or was permanently
+        failed/truncated) has resolved. By construction everything this
+        analysis depends on has ALREADY finished by the time this runs, so it
+        reuses item 24's existing analysis-job submission code
+        (``_submit_analysis_job``) completely as-is, just with ``sim_job_id=
+        None`` — no native ``dependsOn`` needed; the poller's own "all tracked
+        jobs terminal" check already provided the "wait for all" semantics.
+
+        ``total_n_seeds`` is the campaign's ORIGINALLY REQUESTED seed count
+        (not however many chains actually succeeded) — matches the superseded
+        design's own resolved semantics: the analysis resolves "applicable"
+        modules against the campaign's INTENDED shape.
         """
-        base_tags = self._wave_base_tags(simulation=simulation, commit=commit)
-        return await self._submit_wave_and_maybe_analysis(
+        base_tags = self._chain_base_tags(simulation=simulation, commit=commit)
+        mnp_job_def = self._ensure_mnp_job_def(self._image_uri(commit), commit)
+        return await self._submit_analysis_job(
             simulation=simulation,
             database_service=database_service,
+            job_definition=mnp_job_def,
             commit=commit,
-            generation_index=generation_index,
-            seed_indices=seed_indices,
-            total_n_seeds=total_n_seeds,
+            sim_job_id=None,
+            n_seeds=total_n_seeds,
             n_generations=n_generations,
-            depends_on_parca=None,
-            base_tags=base_tags,
+            depends_type=None,
+            tags={**base_tags, "Phase": "analysis"},
         )
 
     @override
@@ -1454,62 +1551,63 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             error_message=job.get("statusReason") if status == JobStatus.FAILED else None,
         )
 
-    def _list_array_child_indices(self, array_job_id: str, status: str) -> list[int]:
-        """Every child array position currently in ``status`` (paginated).
+    def get_chain_campaign_result(self, job_ids: list[str]) -> ChainCampaignPollResult:
+        """Poll a chain-dispatch campaign's tracked final-generation job ids —
+        one per seed, each seed's own last successfully-submitted generation
+        job (``HpcRun.chain_final_job_ids``) — for the analysis-fan-in
+        condition (backlog item 33 rework, replacing the per-generation-array
+        "wave" design's own single-array-job ``get_wave_result``).
 
-        Live AWS semantics verified against a real job history (sim139's parent
-        array job, 2026-08-08): ``list_jobs(arrayJobId=..., jobStatus=
-        "SUCCEEDED")`` returned exactly the real surviving indices,
-        ``jobStatus="FAILED"`` returned exactly the rest, both cross-checked
-        against ``describe_jobs``'s own ``arrayProperties.statusSummary``
-        counts, union = the full contiguous index range with zero gaps or
-        duplicates. Confirmed a second time on an all-failed job (a
-        zero-match status returns a clean empty list, not an error).
+        "Terminal" means EVERY tracked job has reached a Batch-terminal state
+        (SUCCEEDED or FAILED, via the same ``JobStatus.from_batch_state``
+        mapping ``get_job_status`` already uses) — a seed's chain ending in
+        FAILED (that job's own retries exhausted, or an earlier generation in
+        its chain having failed and auto-propagated via Batch's own dependsOn)
+        is expected economics, not an orchestrator error; the caller
+        (``JobScheduler._advance_chain_campaign``) decides whether the
+        campaign as a whole produced anything worth analyzing. A tracked id
+        that hasn't appeared in a ``describe_jobs`` response yet (brief
+        eventual-consistency lag right after submission) is treated as
+        not-yet-terminal, not a hard failure — this poller runs on an
+        interval, it just checks again next time.
+
+        ``describe_jobs`` accepts at most 100 job ids per call (verified
+        against the real API model this session) — a campaign's up to 1000
+        tracked ids are chunked accordingly, unlike the array-job design this
+        superseded (which polled ONE array parent's own
+        ``arrayProperties.statusSummary`` plus paginated ``list_jobs`` calls).
         """
+        if not job_ids:
+            # Nothing tracked at all -- every seed failed even generation 0's
+            # submission. Trivially "terminal" (nothing left to wait for); the
+            # caller's own zero-succeeded handling covers marking the campaign
+            # FAILED without submitting an analysis over an empty sweep.
+            return ChainCampaignPollResult(terminal=True)
+
         batch = self._batch()
-        indices: list[int] = []
-        kwargs: dict[str, Any] = {"arrayJobId": array_job_id, "jobStatus": status}
-        while True:
-            response = batch.list_jobs(**kwargs)
-            for job in response.get("jobSummaryList", []):
-                index = job.get("arrayProperties", {}).get("index")
-                if index is not None:
-                    indices.append(int(index))
-            next_token = response.get("nextToken")
-            if not next_token:
-                break
-            kwargs["nextToken"] = next_token
-        return sorted(indices)
+        statuses: dict[str, str] = {}
+        for i in range(0, len(job_ids), _DESCRIBE_JOBS_MAX_BATCH):
+            chunk = job_ids[i : i + _DESCRIBE_JOBS_MAX_BATCH]
+            response = batch.describe_jobs(jobs=chunk)
+            for job in response.get("jobs", []):
+                job_id = job.get("jobId")
+                if job_id is not None:
+                    statuses[str(job_id)] = str(job.get("status", ""))
 
-    def get_wave_result(self, array_job_id: str) -> WavePollResult:
-        """Poll ONE wave's array job: terminal-ness + which local array
-        positions SUCCEEDED vs FAILED (backlog item 33).
+        succeeded: list[str] = []
+        failed: list[str] = []
+        for jid in job_ids:
+            mapped = JobStatus.from_batch_state(statuses.get(jid, ""))
+            if mapped == JobStatus.COMPLETED:
+                succeeded.append(jid)
+            elif mapped == JobStatus.FAILED:
+                failed.append(jid)
+            # else: still queued/running, or missing from the response
+            # entirely (not yet visible) -- either way, not yet terminal.
 
-        "Terminal" means every child has reached a Batch-terminal state — the
-        array PARENT itself may report SUCCEEDED (every child succeeded) or
-        FAILED (at least one child permanently exhausted retries — AWS Batch
-        flips the parent to FAILED the instant that happens, per
-        ``job_states.html``/``array_jobs.html``), but BOTH are "wave finished"
-        from this orchestrator's perspective, not an error: some seeds dying to
-        Spot reclamation or a transient OOM is expected economics, not a bug.
-        The caller (``JobScheduler._advance_wave``) is what decides whether
-        surviving seeds exist to carry forward.
-        """
-        response = self._batch().describe_jobs(jobs=[array_job_id])
-        jobs = response.get("jobs", [])
-        if not jobs:
-            raise RuntimeError(f"Batch array job {array_job_id} not found")
-        array_properties = jobs[0].get("arrayProperties", {})
-        size = int(array_properties.get("size") or 0)
-        status_summary: dict[str, int] = array_properties.get("statusSummary") or {}
-        terminal_count = int(status_summary.get("SUCCEEDED", 0)) + int(status_summary.get("FAILED", 0))
-        if size <= 0 or terminal_count < size:
-            return WavePollResult(terminal=False)
-        return WavePollResult(
-            terminal=True,
-            succeeded_local_indices=self._list_array_child_indices(array_job_id, "SUCCEEDED"),
-            failed_local_indices=self._list_array_child_indices(array_job_id, "FAILED"),
-        )
+        if len(succeeded) + len(failed) < len(job_ids):
+            return ChainCampaignPollResult(terminal=False)
+        return ChainCampaignPollResult(terminal=True, succeeded_job_ids=succeeded, failed_job_ids=failed)
 
     @override
     async def cancel_job(self, job_id: JobId) -> None:

@@ -33,7 +33,7 @@ from viva_api.simulation.models import (
     SimulationRequest,
     WorkerEventMessagePayload,
 )
-from viva_api.simulation.simulation_service_ray import WavePollResult
+from viva_api.simulation.simulation_service_ray import ChainCampaignPollResult
 
 
 def is_ci_environment() -> bool:
@@ -82,17 +82,17 @@ async def insert_job(database_service: DatabaseServiceSQL, slurmjobid: int) -> t
     return simulation, slurm_job, hpcrun
 
 
-async def insert_wave_job(
+async def insert_chain_campaign_job(
     database_service: DatabaseServiceSQL,
     *,
     job_id_ext: str,
-    wave_index: int,
-    wave_seed_indices: list[int],
-    n_generations: int,
+    chain_n_generations: int,
+    chain_final_job_ids: list[str],
     n_seeds: int | None = None,
 ) -> tuple[Simulation, HpcRun]:
-    """Insert a Simulation + a wave-shaped HpcRun row (backlog item 33), the
-    fixture shape JobScheduler.update_wave_jobs/_advance_wave consumes."""
+    """Insert a Simulation + a chain-dispatch-campaign-shaped HpcRun row
+    (backlog item 33 rework), the fixture shape
+    JobScheduler.update_chain_campaigns/_advance_chain_campaign consumes."""
     latest_commit_hash = str(uuid.uuid4())
     simulator = await database_service.insert_simulator(
         git_commit_hash=latest_commit_hash,
@@ -102,8 +102,8 @@ async def insert_wave_job(
     parca_dataset = await database_service.insert_parca_dataset(
         parca_dataset_request=ParcaDatasetRequest(simulator_version=simulator, parca_config=ParcaOptions())
     )
-    experiment_id = f"test-wave-job-{str(uuid.uuid4())[:8]!s}"
-    config = SimulationConfig(experiment_id=experiment_id, generations=n_generations)
+    experiment_id = f"test-chain-campaign-{str(uuid.uuid4())[:8]!s}"
+    config = SimulationConfig(experiment_id=experiment_id, generations=chain_n_generations)
     if n_seeds is not None:
         setattr(config, "n_init_sims", n_seeds)  # noqa: B010
     simulation_request = SimulationRequest(
@@ -118,23 +118,25 @@ async def insert_wave_job(
         job_id=JobId.ray(job_id_ext),
         job_type=JobType.SIMULATION,
         ref_id=simulation.database_id,
-        correlation_id=f"wave-{wave_index}-{experiment_id}",
-        wave_index=wave_index,
-        wave_seed_indices=wave_seed_indices,
+        correlation_id=f"chain-campaign-{experiment_id}",
+        chain_n_generations=chain_n_generations,
+        chain_final_job_ids=chain_final_job_ids,
     )
     return simulation, hpcrun
 
 
-class TestAdvanceWave:
-    """JobScheduler._advance_wave / update_wave_jobs (backlog item 33): the
-    wave-polling path extending the existing poll-loop + DB-state pattern.
+class TestAdvanceChainCampaign:
+    """JobScheduler._advance_chain_campaign / update_chain_campaigns (backlog
+    item 33 rework — individual per-seed job chains, replacing the
+    per-generation-array design's own TestAdvanceWave): the analysis-fan-in
+    polling path extending the existing poll-loop + DB-state pattern.
     simulation_service_ray is mocked here (its own AWS Batch call shapes are
-    proven for real in TestGetWaveResult/TestSubmitNextWave,
+    proven for real in TestGetChainCampaignResult/TestSubmitCampaignAnalysis,
     tests/simulation/test_ray_backend.py) so these tests isolate JobScheduler's
     OWN orchestration decisions against a REAL Postgres database (testcontainers)."""
 
     @pytest.mark.asyncio
-    async def test_update_wave_jobs_is_a_noop_without_a_ray_service(self) -> None:
+    async def test_update_chain_campaigns_is_a_noop_without_a_ray_service(self) -> None:
         """SLURM-only deployments wire simulation_service_ray=None -- the poll
         loop must not touch the database at all in that case, not just skip
         the AWS calls."""
@@ -144,62 +146,55 @@ class TestAdvanceWave:
             database_service=mock_database,
             simulation_service_ray=None,
         )
-        await scheduler.update_wave_jobs()
-        mock_database.list_active_wave_hpcruns.assert_not_called()
+        await scheduler.update_chain_campaigns()
+        mock_database.list_active_chain_campaigns.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_not_terminal_leaves_the_wave_untouched(self, database_service: DatabaseServiceSQL) -> None:
-        _simulation, hpcrun = await insert_wave_job(
+    async def test_not_terminal_leaves_the_campaign_untouched(self, database_service: DatabaseServiceSQL) -> None:
+        _simulation, hpcrun = await insert_chain_campaign_job(
             database_service,
-            job_id_ext="wave-not-terminal",
-            wave_index=0,
-            wave_seed_indices=[0, 1, 2, 3],
-            n_generations=3,
+            job_id_ext="parca-not-terminal",
+            chain_n_generations=3,
+            chain_final_job_ids=["s0-final", "s1-final", "s2-final", "s3-final"],
         )
         mock_ray = MagicMock()
-        mock_ray.get_wave_result.return_value = WavePollResult(terminal=False)
+        mock_ray.get_chain_campaign_result.return_value = ChainCampaignPollResult(terminal=False)
         scheduler = JobScheduler(
             messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
         )
 
-        await scheduler._advance_wave(hpcrun, mock_ray)
+        await scheduler._advance_chain_campaign(hpcrun, mock_ray)
 
-        mock_ray.get_wave_result.assert_called_once_with("wave-not-terminal")
-        mock_ray.submit_next_wave.assert_not_called()
+        mock_ray.get_chain_campaign_result.assert_called_once_with(["s0-final", "s1-final", "s2-final", "s3-final"])
+        mock_ray.submit_campaign_analysis.assert_not_called()
         refetched = await database_service.get_hpcrun(hpcrun.database_id)
         assert refetched is not None
         assert refetched.status == JobStatus.RUNNING  # unchanged from insert_hpcrun's default
 
     @pytest.mark.asyncio
-    async def test_terminal_with_survivors_submits_the_next_wave_with_sparse_remap(
+    async def test_terminal_with_at_least_one_success_submits_the_analysis(
         self, database_service: DatabaseServiceSQL
     ) -> None:
-        """seed_indices=[4, 5, 9, 10, 14], succeeded_local_indices=[0, 2, 4] ->
-        survivors must be [4, 9, 14] (the REAL seeds at those positions), never
-        [0, 2, 4] (the local array positions themselves)."""
-        simulation, hpcrun = await insert_wave_job(
+        simulation, hpcrun = await insert_chain_campaign_job(
             database_service,
-            job_id_ext="wave-partial",
-            wave_index=1,
-            wave_seed_indices=[4, 5, 9, 10, 14],
-            n_generations=5,
+            job_id_ext="parca-partial",
+            chain_n_generations=5,
+            chain_final_job_ids=["s0-final", "s1-final", "s2-final"],
             n_seeds=30,
         )
         mock_ray = MagicMock()
-        mock_ray.get_wave_result.return_value = WavePollResult(
-            terminal=True, succeeded_local_indices=[0, 2, 4], failed_local_indices=[1, 3]
+        mock_ray.get_chain_campaign_result.return_value = ChainCampaignPollResult(
+            terminal=True, succeeded_job_ids=["s0-final", "s2-final"], failed_job_ids=["s1-final"]
         )
-        mock_ray.submit_next_wave = AsyncMock(return_value="wave2-job-id")
+        mock_ray.submit_campaign_analysis = AsyncMock(return_value="analysis-job-id")
         scheduler = JobScheduler(
             messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
         )
 
-        await scheduler._advance_wave(hpcrun, mock_ray)
+        await scheduler._advance_chain_campaign(hpcrun, mock_ray)
 
-        mock_ray.submit_next_wave.assert_awaited_once()
-        call_kwargs = mock_ray.submit_next_wave.call_args.kwargs
-        assert call_kwargs["generation_index"] == 2
-        assert call_kwargs["seed_indices"] == [4, 9, 14]
+        mock_ray.submit_campaign_analysis.assert_awaited_once()
+        call_kwargs = mock_ray.submit_campaign_analysis.call_args.kwargs
         assert call_kwargs["total_n_seeds"] == 30
         assert call_kwargs["n_generations"] == 5
         assert call_kwargs["simulation"].database_id == simulation.database_id
@@ -213,97 +208,121 @@ class TestAdvanceWave:
         assert refetched.error_message is None
 
     @pytest.mark.asyncio
-    async def test_terminal_final_wave_does_not_submit_a_next_wave(self, database_service: DatabaseServiceSQL) -> None:
-        """generation next_generation >= n_generations means THIS wave (index
-        n_generations - 1) was already the campaign's final wave -- its
-        analysis node was submitted alongside IT at submission time
-        (SimulationServiceRay._submit_wave_and_maybe_analysis), not here."""
-        _simulation, hpcrun = await insert_wave_job(
+    async def test_zero_succeeded_marks_the_campaign_failed_no_analysis(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        _simulation, hpcrun = await insert_chain_campaign_job(
             database_service,
-            job_id_ext="wave-final",
-            wave_index=2,
-            wave_seed_indices=[4, 9],
-            n_generations=3,  # generation 2 IS the final generation (0, 1, 2)
-            n_seeds=30,
+            job_id_ext="parca-wiped-out",
+            chain_n_generations=5,
+            chain_final_job_ids=["s0-final", "s1-final", "s2-final"],
         )
         mock_ray = MagicMock()
-        mock_ray.get_wave_result.return_value = WavePollResult(terminal=True, succeeded_local_indices=[0, 1])
-        mock_ray.submit_next_wave = AsyncMock()
+        mock_ray.get_chain_campaign_result.return_value = ChainCampaignPollResult(
+            terminal=True, failed_job_ids=["s0-final", "s1-final", "s2-final"]
+        )
+        mock_ray.submit_campaign_analysis = AsyncMock()
         scheduler = JobScheduler(
             messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
         )
 
-        await scheduler._advance_wave(hpcrun, mock_ray)
+        await scheduler._advance_chain_campaign(hpcrun, mock_ray)
 
-        mock_ray.submit_next_wave.assert_not_called()
-        refetched = await database_service.get_hpcrun(hpcrun.database_id)
-        assert refetched is not None
-        assert refetched.status == JobStatus.COMPLETED
-
-    @pytest.mark.asyncio
-    async def test_zero_survivors_marks_the_campaign_failed(self, database_service: DatabaseServiceSQL) -> None:
-        _simulation, hpcrun = await insert_wave_job(
-            database_service,
-            job_id_ext="wave-wiped-out",
-            wave_index=1,
-            wave_seed_indices=[4, 5, 9],
-            n_generations=5,
-        )
-        mock_ray = MagicMock()
-        mock_ray.get_wave_result.return_value = WavePollResult(terminal=True, failed_local_indices=[0, 1, 2])
-        mock_ray.submit_next_wave = AsyncMock()
-        scheduler = JobScheduler(
-            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
-        )
-
-        await scheduler._advance_wave(hpcrun, mock_ray)
-
-        mock_ray.submit_next_wave.assert_not_called()
+        mock_ray.submit_campaign_analysis.assert_not_called()
         refetched = await database_service.get_hpcrun(hpcrun.database_id)
         assert refetched is not None
         assert refetched.status == JobStatus.FAILED
-        assert refetched.error_message is not None and "zero seeds survived" in refetched.error_message
+        assert refetched.error_message is not None and "zero seed chains succeeded" in refetched.error_message
 
     @pytest.mark.asyncio
-    async def test_update_wave_jobs_processes_every_active_wave_row(self, database_service: DatabaseServiceSQL) -> None:
-        """End-to-end through update_wave_jobs (not calling _advance_wave
-        directly): two independent wave campaigns, each gets polled and
-        advanced correctly, using list_active_wave_hpcruns's real WHERE
-        clause (status IN (PENDING, RUNNING) AND wave_index IS NOT NULL)."""
-        _sim_a, hpcrun_a = await insert_wave_job(
+    async def test_terminal_with_mixed_results_only_updates_the_campaign_row_never_individual_jobs(self) -> None:
+        """A permanently-failed seed's own final job is ALREADY FAILED via AWS
+        Batch's own dependency-failure propagation (an earlier generation in
+        its chain failed, so the job(s) depending on it auto-transitioned to
+        FAILED with no orchestrator action) -- this method must not duplicate
+        or fight that by writing any PER-JOB status itself. The only database
+        write here is to the campaign's OWN tracking row, exactly once."""
+        mock_database = AsyncMock()
+        mock_database.get_simulation = AsyncMock(
+            return_value=MagicMock(
+                database_id=1,
+                simulator_id=2,
+                config=MagicMock(generations=3, experiment_id="exp"),
+                num_seeds=3,
+            )
+        )
+        mock_database.get_simulator = AsyncMock(return_value=MagicMock(git_commit_hash="abc1234"))
+        campaign = HpcRun(
+            database_id=99,
+            job_id=JobId.ray("parca-1"),
+            correlation_id="chain-campaign-exp",
+            job_type=JobType.SIMULATION,
+            ref_id=1,
+            status=JobStatus.RUNNING,
+            chain_n_generations=3,
+            chain_final_job_ids=["s0-final", "s1-final", "s2-final"],
+        )
+        mock_ray = MagicMock()
+        mock_ray.get_chain_campaign_result.return_value = ChainCampaignPollResult(
+            terminal=True, succeeded_job_ids=["s0-final", "s2-final"], failed_job_ids=["s1-final"]
+        )
+        mock_ray.submit_campaign_analysis = AsyncMock(return_value="analysis-1")
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=mock_database, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_chain_campaign(campaign, mock_ray)
+
+        # Exactly ONE status write -- the campaign row itself, never a
+        # per-seed job (there is no per-job update_hpcrun_status call to
+        # find here at all: the failed seed's job id never appears as an
+        # hpcrun_id argument anywhere).
+        mock_database.update_hpcrun_status.assert_awaited_once()
+        call_kwargs = mock_database.update_hpcrun_status.call_args.kwargs
+        assert call_kwargs["hpcrun_id"] == 99
+        assert call_kwargs["update"].status == JobStatus.COMPLETED
+        mock_ray.submit_campaign_analysis.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_update_chain_campaigns_processes_every_active_campaign_row(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        """End-to-end through update_chain_campaigns (not calling
+        _advance_chain_campaign directly): two independent chain-dispatch
+        campaigns, each gets polled and advanced correctly, using
+        list_active_chain_campaigns's real WHERE clause (status IN (PENDING,
+        RUNNING) AND chain_n_generations IS NOT NULL)."""
+        _sim_a, hpcrun_a = await insert_chain_campaign_job(
             database_service,
-            job_id_ext="camp-a-wave0",
-            wave_index=0,
-            wave_seed_indices=[0, 1],
-            n_generations=2,
+            job_id_ext="camp-a-parca",
+            chain_n_generations=2,
+            chain_final_job_ids=["camp-a-s0-final", "camp-a-s1-final"],
             n_seeds=2,
         )
-        _sim_b, hpcrun_b = await insert_wave_job(
+        _sim_b, hpcrun_b = await insert_chain_campaign_job(
             database_service,
-            job_id_ext="camp-b-wave0",
-            wave_index=0,
-            wave_seed_indices=[0, 1, 2],
-            n_generations=2,
+            job_id_ext="camp-b-parca",
+            chain_n_generations=2,
+            chain_final_job_ids=["camp-b-s0-final", "camp-b-s1-final", "camp-b-s2-final"],
             n_seeds=3,
         )
 
-        def _wave_result(job_id: str) -> WavePollResult:
-            if job_id == "camp-a-wave0":
-                return WavePollResult(terminal=True, succeeded_local_indices=[0, 1])
-            return WavePollResult(terminal=False)
+        def _chain_result(job_ids: list[str]) -> ChainCampaignPollResult:
+            if job_ids == ["camp-a-s0-final", "camp-a-s1-final"]:
+                return ChainCampaignPollResult(terminal=True, succeeded_job_ids=list(job_ids))
+            return ChainCampaignPollResult(terminal=False)
 
         mock_ray = MagicMock()
-        mock_ray.get_wave_result.side_effect = _wave_result
-        mock_ray.submit_next_wave = AsyncMock(return_value="camp-a-wave1")
+        mock_ray.get_chain_campaign_result.side_effect = _chain_result
+        mock_ray.submit_campaign_analysis = AsyncMock(return_value="camp-a-analysis")
         scheduler = JobScheduler(
             messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
         )
 
-        await scheduler.update_wave_jobs()
+        await scheduler.update_chain_campaigns()
 
-        # Campaign A: terminal, generation 1 of 2 is final -> next wave submitted.
-        mock_ray.submit_next_wave.assert_awaited_once()
-        assert mock_ray.submit_next_wave.call_args.kwargs["generation_index"] == 1
+        # Campaign A: terminal, at least one success -> analysis submitted.
+        mock_ray.submit_campaign_analysis.assert_awaited_once()
         refetched_a = await database_service.get_hpcrun(hpcrun_a.database_id)
         assert refetched_a is not None and refetched_a.status == JobStatus.COMPLETED
 

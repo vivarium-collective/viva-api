@@ -103,29 +103,37 @@ class RayLayout:
         return s3_uri(f"{kind}/{commit}/")
 
     @staticmethod
-    def wave_state_prefix(experiment_id: str) -> str:
-        """Bucket-relative key prefix under which wave-dispatch checkpoints live
-        (backlog item 33: per-generation task decomposition)."""
-        return f"{RayLayout.experiment_prefix(experiment_id)}/wave-state"
+    def daughter_state_prefix(experiment_id: str) -> str:
+        """Bucket-relative key prefix under which per-seed chain-dispatch
+        daughter-state checkpoints live (backlog item 33: per-generation task
+        decomposition)."""
+        return f"{RayLayout.experiment_prefix(experiment_id)}/daughter-state"
 
     @staticmethod
-    def wave_state_uri(experiment_id: str, seed: int, generation: int) -> str:
+    def daughter_state_uri(experiment_id: str, seed: int, generation: int) -> str:
         """Per-seed, per-generation daughter-state checkpoint URI.
 
-        Mirrors vEcoli-private's own Nextflow task I/O hand-off (``sim.nf``): a
-        wave orchestrator writes THIS generation's daughter state here
-        (``LineageProcess.daughter_state_out_path``) so the NEXT wave can load it
+        Mirrors vEcoli-private's own Nextflow task I/O hand-off (``sim.nf``):
+        each seed's per-generation Batch job writes THIS generation's daughter
+        state here (``LineageProcess.daughter_state_out_path``) so the NEXT
+        generation's job (chained via that job's own ``dependsOn``) can load it
         as its carry-state in (``initial_carry_state_path``) -- task retry at
         generation granularity IS checkpoint/resume, no in-process pickling
         needed. Ephemeral hand-off, never browsed/sorted by a human, so unlike
         ``seed_store_uri`` this deliberately skips zero-padding: the plain
-        ``seed{seed}``/``gen{generation}`` form is what the wave orchestrator
-        (Python, via this function) and the v2ecoli container's own inline
-        ``python3 -c`` merge script (which has no import path back to this
-        module) both reconstruct, so keeping the format trivial keeps the two
-        independent implementations trivially in sync.
+        ``seed{seed}``/``gen{generation}`` form is what the submitting Python
+        code (via this function) and the v2ecoli container's own command
+        (embedded verbatim at submission time -- see ``_seed_generation_command``)
+        both reference, so keeping the format trivial keeps the two independent
+        call sites trivially in sync.
+
+        Nothing has been dispatched against the old ``wave-state`` key prefix
+        yet (this whole capability is still unwired from any HTTP router --
+        see ``SimulationServiceRay.submit_chain_dispatch_job``), so renaming
+        the prefix alongside the accessor methods costs nothing: there is no
+        already-landed S3 data under the old name to migrate.
         """
-        return s3_uri(f"{RayLayout.wave_state_prefix(experiment_id)}/seed{seed}/gen{generation}.pkl")
+        return s3_uri(f"{RayLayout.daughter_state_prefix(experiment_id)}/seed{seed}/gen{generation}.pkl")
 
 
 class NextflowLayout:
