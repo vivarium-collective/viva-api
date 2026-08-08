@@ -151,6 +151,22 @@ spec:
               value: "http://api:8000"
             - name: VIVARIUM_WORKBENCH_WORKSPACE
               value: "/workspace"
+            # Item 21 (durability): materialized/switched simulator builds, and
+            # each session's own isolated clone of one
+            # (remote_build_source.materialize_build /
+            # .materialize_session_build in vivarium-workbench), used to live
+            # under this container's ephemeral root filesystem -- a legitimate
+            # pod restart (image bump, node eviction, OOM-kill) silently wiped
+            # every in-progress session's build cache (PR #227 fixed the
+            # unrelated-deploy blast radius; this closes the residual root
+            # cause). Points the SAME durable path the code already defaults to
+            # (Path.home()/".pbg"/"build-cache" == /root/.pbg/build-cache at
+            # uid 0) at the second volumeMount below (workbench-workspace PVC,
+            # subPath: build-cache) so it survives restarts. Explicit here even
+            # though it matches the code's own default -- self-documenting, and
+            # still correct if that default ever changes.
+            - name: VIVARIUM_WORKBENCH_BUILD_CACHE
+              value: "/root/.pbg/build-cache"
             # The internal ALB terminating /workbench REWRITES the Host header and
             # does NOT emit X-Forwarded-Host, so the CSRF same-origin check (and
             # --trust-proxy) can never match the browser's Origin. Declare the
@@ -196,10 +212,22 @@ spec:
           volumeMounts:
             - name: workspace
               mountPath: /workspace
+            # Item 21: a SECOND mount of the SAME PVC (no new claim, no new
+            # StorageClass) at a disjoint subPath, so materialized build
+            # caches persist across restarts without touching the existing
+            # /workspace data or requiring an EBS volume expansion up front.
+            # Matches this project's original intent (vivarium-workbench's
+            # docs/REFACTOR-PLAN.md §2B.3: "workspace (git/YAML/SQLite) +
+            # caches (venv, ParCa ~175 MB, `~/.pbg/build-cache`)") -- only the
+            # workspace half had shipped until now.
+            - name: workspace
+              mountPath: /root/.pbg/build-cache
+              subPath: build-cache
       volumes:
-        # Private EBS gp3 PVC (RWO) — workspace + caches. The claim is defined in
-        # the overlay (workbench-pvc.yaml). No shared filesystem with the compute:
-        # run outputs arrive from S3 via sms-api's download endpoints.
+        # Private EBS gp3 PVC (RWO) — workspace + build-cache (via the second
+        # subPath mount on the workbench container above). The claim is defined
+        # in the overlay (workbench-pvc.yaml). No shared filesystem with the
+        # compute: run outputs arrive from S3 via sms-api's download endpoints.
         - name: workspace
           persistentVolumeClaim:
             claimName: workbench-workspace
