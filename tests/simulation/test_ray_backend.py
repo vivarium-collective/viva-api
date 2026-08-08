@@ -791,7 +791,7 @@ class TestGetWaveResult:
         mock_batch.describe_jobs.return_value = {
             "jobs": [{"jobId": "wave-1", "arrayProperties": {"size": 2, "statusSummary": {"SUCCEEDED": 2}}}]
         }
-        pages = [
+        pages: list[dict[str, Any]] = [
             {"jobSummaryList": [{"arrayProperties": {"index": 0}}], "nextToken": "page2"},
             {"jobSummaryList": [{"arrayProperties": {"index": 1}}]},
         ]
