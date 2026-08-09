@@ -869,6 +869,10 @@ class TestSeedGenerationCommand:
         assert overrides["n_seeds"] == 1
         assert overrides["n_generations"] == 1
         assert overrides["analyses"] == "none"
+        # Per-seed S3 prefix, not the flat ensemble one (backlog item 35: every
+        # job sharing the flat prefix clobbered the last job's summary.json/
+        # final_state.json -- the real bug the pilot found).
+        assert overrides["out_dir"] == "s3://mybucket/vecoli-output/sim47-chain-experiment/seed_07"
 
     def test_later_generation_carries_the_prior_generations_state(self) -> None:
         service = SimulationServiceRay()
@@ -914,6 +918,34 @@ class TestSeedGenerationCommand:
         overrides = self._overrides(cmd)
         assert overrides["experiment_id"] == hostile
         assert hostile in overrides["daughter_state_out_path"]
+
+    def test_out_dir_is_shared_within_a_seed_but_isolated_across_seeds(self) -> None:
+        """The real regression test for the item 35 pilot bug: every
+        per-generation job for the SAME seed must share one S3 prefix (so the
+        parquet sweep / zarr store / summary.json accumulate correctly across
+        the chain), but DIFFERENT seeds must never share a prefix (or their
+        jobs clobber each other's summary.json/final_state.json exactly as
+        the 4th pilot fire found -- confirmed via direct S3 reads, not
+        assumed)."""
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+        ):
+            seed0_gen0 = self._overrides(service._seed_generation_command(
+                seed=0, generation_index=0, experiment_id="exp-c",
+                runner_s3_uri="s3://mybucket/vecoli-output/exp-c/run_pbg.py"))
+            seed0_gen5 = self._overrides(service._seed_generation_command(
+                seed=0, generation_index=5, experiment_id="exp-c",
+                runner_s3_uri="s3://mybucket/vecoli-output/exp-c/run_pbg.py"))
+            seed1_gen0 = self._overrides(service._seed_generation_command(
+                seed=1, generation_index=0, experiment_id="exp-c",
+                runner_s3_uri="s3://mybucket/vecoli-output/exp-c/run_pbg.py"))
+
+        assert seed0_gen0["out_dir"] == seed0_gen5["out_dir"] == (
+            "s3://mybucket/vecoli-output/exp-c/seed_00")
+        assert seed1_gen0["out_dir"] == "s3://mybucket/vecoli-output/exp-c/seed_01"
+        assert seed0_gen0["out_dir"] != seed1_gen0["out_dir"]
 
     def test_stays_comfortably_under_the_batch_command_size_cap(self) -> None:
         """AWS Batch caps a container override command at 8192 bytes (see

@@ -636,6 +636,18 @@ class SimulationServiceRay(SimulationService):
         responsibility, already applied there — see that repo's own history;
         nothing about that contract is affected by this per-seed rework, only
         WHICH viva-api command builder emits the same 3 keys.
+
+        ``out_dir`` is ``RayLayout.seed_results_uri`` (an ``s3://`` URI), not a
+        local path: every generation's job for this seed shares it, so the
+        composite's own parquet sweep / zarr store / summary.json (sms-ecoli's
+        ``v2ecoli/cache.py``, ``workflow/lineage.py``, ``workflow/run.py`` —
+        all made S3-URI-aware alongside this) accumulate under one seed-scoped
+        S3 prefix instead of colliding on the flat, ensemble-wide
+        ``experiment_prefix`` every seed's every generation would otherwise
+        share (the real bug item 35's pilot found — every job's ``summary.json``
+        clobbering the last one's). ``daughter_state_out_path``/
+        ``initial_carry_state_path`` already lived under a per-seed prefix
+        (``daughter_state_uri``), unaffected by this.
         """
         daughter_state_out_path = data_layout.RayLayout.daughter_state_uri(experiment_id, seed, generation_index)
         initial_carry_state_path = (
@@ -643,11 +655,12 @@ class SimulationServiceRay(SimulationService):
             if generation_index > 0
             else ""
         )
+        seed_out_dir = data_layout.RayLayout.seed_results_uri(experiment_id, seed).rstrip("/")
         overrides = {
             "n_seeds": 1,
             "n_generations": 1,
             "cache_dir": PARCA_CACHE_DIR,
-            "out_dir": SIM_OUT_DIR,
+            "out_dir": seed_out_dir,
             "experiment_id": experiment_id,
             "analyses": "none",
             "parallel": "",
@@ -1249,7 +1262,16 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
                             experiment_id=experiment_id,
                             runner_s3_uri=runner_s3_uri,
                         ),
-                        out_s3=self._results_s3_uri(experiment_id),
+                        # Per-seed prefix, not the flat ensemble one: matches the
+                        # composite's own out_dir override in
+                        # _seed_generation_command (see there for why) — RAY_OUT_S3
+                        # is now mostly a safety-net catch-all (the emitters/
+                        # summary.json/daughter-state all write directly to S3
+                        # under this same prefix), not the primary mechanism, but
+                        # it must still point at the SAME prefix so anything that
+                        # DOES still land in the local RAY_OUT_DIR scratch dir
+                        # syncs to the right place rather than the old flat one.
+                        out_s3=data_layout.RayLayout.seed_results_uri(experiment_id, seed),
                         out_dir=SIM_OUT_DIR,
                         stage_s3=cache_s3,
                         stage_dir=PARCA_CACHE_DIR,

@@ -91,6 +91,29 @@ class RayLayout:
         return f"{RayLayout.experiment_prefix(experiment_id)}/summary.json"
 
     @staticmethod
+    def seed_results_prefix(experiment_id: str, seed: int) -> str:
+        """Bucket-relative key prefix for ONE seed's own results (backlog item
+        33/35: per-generation chain-dispatch). Every generation's job for a
+        given seed shares this prefix, so the parquet sweep / zarr store /
+        summary.json accumulate under one seed-scoped location instead of the
+        ensemble-wide ``experiment_prefix`` every seed's job would otherwise
+        collide on. ``seed_{seed:02d}`` (zero-padded, underscored) matches the
+        multiseed analysis step's own real, confirmed lookup convention (
+        ``v2ecoli.workflow.analysis_runner``'s per-seed sweep_dir) — a
+        DIFFERENT format from this class's other two per-seed conventions
+        (``seed_store_uri``'s ``v2ecoli_seed{NN}``, ``daughter_state_uri``'s
+        unpadded ``seed{N}``); each pre-dates this one and is owned by a
+        different reader, so unifying them is out of scope here.
+        """
+        return f"{RayLayout.experiment_prefix(experiment_id)}/seed_{seed:02d}"
+
+    @staticmethod
+    def seed_results_uri(experiment_id: str, seed: int) -> str:
+        """Where ONE seed's chain-dispatch jobs write their results (trailing
+        slash = sync/prefix dir). See ``seed_results_prefix``."""
+        return s3_uri(f"{RayLayout.seed_results_prefix(experiment_id, seed)}/")
+
+    @staticmethod
     def parca_cache_uri(commit: str, *, upstream: bool = False) -> str:
         """S3 URI for a commit's ParCa cache (trailing slash = 'directory').
 
