@@ -932,18 +932,32 @@ class TestSeedGenerationCommand:
             patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
-            seed0_gen0 = self._overrides(service._seed_generation_command(
-                seed=0, generation_index=0, experiment_id="exp-c",
-                runner_s3_uri="s3://mybucket/vecoli-output/exp-c/run_pbg.py"))
-            seed0_gen5 = self._overrides(service._seed_generation_command(
-                seed=0, generation_index=5, experiment_id="exp-c",
-                runner_s3_uri="s3://mybucket/vecoli-output/exp-c/run_pbg.py"))
-            seed1_gen0 = self._overrides(service._seed_generation_command(
-                seed=1, generation_index=0, experiment_id="exp-c",
-                runner_s3_uri="s3://mybucket/vecoli-output/exp-c/run_pbg.py"))
+            seed0_gen0 = self._overrides(
+                service._seed_generation_command(
+                    seed=0,
+                    generation_index=0,
+                    experiment_id="exp-c",
+                    runner_s3_uri="s3://mybucket/vecoli-output/exp-c/run_pbg.py",
+                )
+            )
+            seed0_gen5 = self._overrides(
+                service._seed_generation_command(
+                    seed=0,
+                    generation_index=5,
+                    experiment_id="exp-c",
+                    runner_s3_uri="s3://mybucket/vecoli-output/exp-c/run_pbg.py",
+                )
+            )
+            seed1_gen0 = self._overrides(
+                service._seed_generation_command(
+                    seed=1,
+                    generation_index=0,
+                    experiment_id="exp-c",
+                    runner_s3_uri="s3://mybucket/vecoli-output/exp-c/run_pbg.py",
+                )
+            )
 
-        assert seed0_gen0["out_dir"] == seed0_gen5["out_dir"] == (
-            "s3://mybucket/vecoli-output/exp-c/seed_00")
+        assert seed0_gen0["out_dir"] == seed0_gen5["out_dir"] == ("s3://mybucket/vecoli-output/exp-c/seed_00")
         assert seed1_gen0["out_dir"] == "s3://mybucket/vecoli-output/exp-c/seed_01"
         assert seed0_gen0["out_dir"] != seed1_gen0["out_dir"]
 
