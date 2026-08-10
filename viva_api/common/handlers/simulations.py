@@ -50,6 +50,7 @@ from viva_api.simulation.models import (
     VecoliSource,
 )
 from viva_api.simulation.simulation_service import SimulationService
+from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 from viva_api.simulation.tables_orm import AnalysisStatusDB
 
 logger = logging.getLogger(__name__)
@@ -749,6 +750,27 @@ async def get_simulation_status(db_service: DatabaseService, id: int) -> Simulat
     hpc_run = await db_service.get_hpcrun_by_ref(ref_id=id, job_type=JobType.SIMULATION)
     if hpc_run is None:
         raise RuntimeError(f"No HPC run found for simulation {id}")
+
+    # Chain-dispatch campaigns (backlog item 33) track N per-seed job chains, not
+    # one job -- `hpc_run.job_id` is only the ParCa kickoff job. The plain path
+    # below reads THAT job's status and writes it onto the whole campaign row,
+    # which corrupts it: ParCa finishing legitimately marks the entire campaign
+    # COMPLETED while the real per-seed chains are still mid-flight, permanently
+    # dropping it out of JobScheduler.list_active_chain_campaigns()'s poll set
+    # and silently preventing analysis auto-fire forever. Report read-only status
+    # instead for a chain campaign -- mirroring JobScheduler._advance_chain_campaign's
+    # own already-correct terminal-check logic -- and never write here; only the
+    # scheduler's own poll loop may transition a campaign row's status.
+    if hpc_run.chain_final_job_ids is not None:
+        chain_service = get_simulation_service_for_job(hpc_run.job_id)
+        if not isinstance(chain_service, SimulationServiceRay):
+            raise RuntimeError("Chain-dispatch campaign requires the Ray/Batch simulation service")
+        result = chain_service.get_chain_campaign_result(hpc_run.chain_final_job_ids)
+        if not result.terminal:
+            return SimulationRun(id=int(id), status=hpc_run.status or JobStatus.RUNNING)
+        status = JobStatus.COMPLETED if result.succeeded_job_ids else JobStatus.FAILED
+        error_message = None if result.succeeded_job_ids else "chain dispatch: zero seed chains succeeded"
+        return SimulationRun(id=int(id), status=status, error_message=error_message)
 
     # Route to the service that owns this run (by the run's backend), not the global default.
     simulation_service = get_simulation_service_for_job(hpc_run.job_id)

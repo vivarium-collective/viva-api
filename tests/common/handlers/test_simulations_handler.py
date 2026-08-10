@@ -18,14 +18,23 @@ from viva_api.common.handlers.simulations import (
     fetch_omics_outputs,
     get_available_omics_output_paths,
 )
+from viva_api.common.models import JobId, JobStatus
 from viva_api.common.simulator_defaults import RepoUrl
 from viva_api.common.ssh.ssh_service import SSHSessionService
 from viva_api.common.storage.file_paths import HPCFilePath, S3FilePath
 from viva_api.common.storage.file_service import FileService, ListingItem
 from viva_api.config import ComputeBackend, get_settings
 from viva_api.dependencies import get_file_service, set_file_service
-from viva_api.simulation.models import AnalysisOptions, Simulation, SimulationConfig, SimulatorVersion
+from viva_api.simulation.models import (
+    AnalysisOptions,
+    HpcRun,
+    JobType,
+    Simulation,
+    SimulationConfig,
+    SimulatorVersion,
+)
 from viva_api.simulation.simulation_service_k8s import SimulationServiceK8s
+from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 from viva_api.simulation.tables_orm import ORMAnalysis
 
 
@@ -431,3 +440,140 @@ async def test_run_standalone_analysis_ray_native_requires_out_uri() -> None:
             simulator=simulator,
             modules={},
         )
+
+
+def _make_chain_campaign_hpc_run(status: JobStatus = JobStatus.RUNNING) -> HpcRun:
+    return HpcRun(
+        database_id=300,
+        job_id=JobId.ray("parca-job-abc"),
+        correlation_id="N/A",
+        job_type=JobType.SIMULATION,
+        ref_id=214,
+        status=status,
+        chain_n_generations=10,
+        chain_final_job_ids=["seed0-gen9-job", "seed1-gen9-job"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_simulation_status_chain_campaign_not_terminal_does_not_write_db() -> None:
+    """Regression for the severe bug found 2026-08-10: `get_simulation_status` used to read
+    the campaign's stored `job_id` (the ParCa kickoff job, which finishes long before the real
+    per-seed chains) and write ITS status onto the whole campaign row -- corrupting it to
+    COMPLETED while the real chains were still 5% done, permanently dropping the campaign out
+    of JobScheduler.list_active_chain_campaigns()'s poll set and silently killing analysis
+    auto-fire. A chain campaign's status must come from get_chain_campaign_result (polling the
+    real tracked per-seed job ids), and this endpoint must never write to the DB -- only
+    JobScheduler's own poll loop may transition a campaign row's status."""
+    from viva_api.common.handlers.simulations import get_simulation_status
+    from viva_api.simulation.simulation_service_ray import ChainCampaignPollResult
+
+    hpc_run = _make_chain_campaign_hpc_run()
+    mock_db_service = AsyncMock()
+    mock_db_service.get_simulation.return_value = SimpleNamespace(database_id=214)
+    mock_db_service.get_hpcrun_by_ref.return_value = hpc_run
+
+    mock_ray_service = AsyncMock(spec=SimulationServiceRay)
+    mock_ray_service.get_chain_campaign_result = lambda job_ids: ChainCampaignPollResult(terminal=False)
+
+    with patch(
+        "viva_api.common.handlers.simulations.get_simulation_service_for_job",
+        return_value=mock_ray_service,
+    ):
+        result = await get_simulation_status(db_service=mock_db_service, id=214)
+
+    assert result.status == JobStatus.RUNNING
+    mock_db_service.update_hpcrun_status.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_simulation_status_chain_campaign_terminal_success_does_not_write_db() -> None:
+    """A terminal, all-succeeded chain campaign reports COMPLETED without writing the DB --
+    JobScheduler.update_chain_campaigns owns that write, on its own poll interval, not this
+    read path (avoids a race between a status check and the scheduler's own transition)."""
+    from viva_api.common.handlers.simulations import get_simulation_status
+    from viva_api.simulation.simulation_service_ray import ChainCampaignPollResult
+
+    hpc_run = _make_chain_campaign_hpc_run()
+    mock_db_service = AsyncMock()
+    mock_db_service.get_simulation.return_value = SimpleNamespace(database_id=214)
+    mock_db_service.get_hpcrun_by_ref.return_value = hpc_run
+
+    mock_ray_service = AsyncMock(spec=SimulationServiceRay)
+    mock_ray_service.get_chain_campaign_result = lambda job_ids: ChainCampaignPollResult(
+        terminal=True, succeeded_job_ids=["seed0-gen9-job", "seed1-gen9-job"]
+    )
+
+    with patch(
+        "viva_api.common.handlers.simulations.get_simulation_service_for_job",
+        return_value=mock_ray_service,
+    ):
+        result = await get_simulation_status(db_service=mock_db_service, id=214)
+
+    assert result.status == JobStatus.COMPLETED
+    mock_db_service.update_hpcrun_status.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_simulation_status_chain_campaign_terminal_zero_succeeded_reports_failed() -> None:
+    """Every tracked seed chain failed -- reports FAILED with an explanatory message, still
+    without writing the DB (same ownership rule as the success case above)."""
+    from viva_api.common.handlers.simulations import get_simulation_status
+    from viva_api.simulation.simulation_service_ray import ChainCampaignPollResult
+
+    hpc_run = _make_chain_campaign_hpc_run()
+    mock_db_service = AsyncMock()
+    mock_db_service.get_simulation.return_value = SimpleNamespace(database_id=214)
+    mock_db_service.get_hpcrun_by_ref.return_value = hpc_run
+
+    mock_ray_service = AsyncMock(spec=SimulationServiceRay)
+    mock_ray_service.get_chain_campaign_result = lambda job_ids: ChainCampaignPollResult(
+        terminal=True, succeeded_job_ids=[], failed_job_ids=["seed0-gen9-job", "seed1-gen9-job"]
+    )
+
+    with patch(
+        "viva_api.common.handlers.simulations.get_simulation_service_for_job",
+        return_value=mock_ray_service,
+    ):
+        result = await get_simulation_status(db_service=mock_db_service, id=214)
+
+    assert result.status == JobStatus.FAILED
+    assert result.error_message == "chain dispatch: zero seed chains succeeded"
+    mock_db_service.update_hpcrun_status.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_simulation_status_non_chain_run_unaffected() -> None:
+    """A plain (non-chain-campaign) simulation must keep the original behavior exactly --
+    read the single job's status and persist it once terminal. Guards against the chain-aware
+    branch above accidentally swallowing the normal, non-campaign path."""
+    from viva_api.common.handlers.simulations import get_simulation_status
+    from viva_api.common.hpc.job_service import JobStatusInfo
+
+    hpc_run = HpcRun(
+        database_id=99,
+        job_id=JobId.k8s("plain-sim-job"),
+        correlation_id="N/A",
+        job_type=JobType.SIMULATION,
+        ref_id=42,
+        status=JobStatus.RUNNING,
+        chain_n_generations=None,
+        chain_final_job_ids=None,
+    )
+    mock_db_service = AsyncMock()
+    mock_db_service.get_simulation.return_value = SimpleNamespace(database_id=42)
+    mock_db_service.get_hpcrun_by_ref.return_value = hpc_run
+
+    mock_service = AsyncMock()
+    mock_service.get_job_status.return_value = JobStatusInfo(
+        job_id=hpc_run.job_id, status=JobStatus.COMPLETED, start_time="t0", end_time="t1"
+    )
+
+    with patch(
+        "viva_api.common.handlers.simulations.get_simulation_service_for_job",
+        return_value=mock_service,
+    ):
+        result = await get_simulation_status(db_service=mock_db_service, id=42)
+
+    assert result.status == JobStatus.COMPLETED
+    mock_db_service.update_hpcrun_status.assert_called_once()
