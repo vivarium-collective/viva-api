@@ -91,6 +91,25 @@ class SimulationRun(BaseModel):
     error_message: str | None = None
 
 
+class ActiveAnalysis(BaseModel):
+    """A COMPUTING, Ray-backend analysis row, as needed by the OOM-retry-escalation
+    poller (``JobScheduler.update_analysis_retries``, backlog item 38 track B).
+
+    Deliberately NOT ``ExperimentAnalysisDTO``: that DTO's ``config`` field only
+    ever exposes ``config["analysis_options"]`` (the analysis-modules dict), never
+    the sibling keys (``out_uri``, ``n_seeds``, ``n_generations``, ``analysis_name``)
+    a retry needs to reconstruct the exact same Ray job command -- see
+    ``SimulationServiceRay._submit_analysis_job``, which writes all of these as
+    one flat ``config`` dict.
+    """
+
+    database_id: int
+    job_id_ext: str
+    config: dict[str, Any]
+    simulation_id: int
+    attempt: int
+
+
 class Simulator(BaseModel):
     git_commit_hash: str  # Git commit hash for the specific simulator version (first 7 characters)
     git_repo_url: str  # Git repository URL for the simulator
@@ -187,6 +206,11 @@ class WorkerEventMessagePayload(BaseModel):
 class AnalysisOptions(BaseModel):
     model_config = ConfigDict(extra="allow")
     cpus: int | None = None
+    # Workload-declared analysis-stage memory request, in GiB — mirrors vEcoli-private's
+    # own analysis_options.memory_gb (runscripts/nextflow/config.template) field-for-field.
+    # Read by simulation_service_ray.analysis_memory_mib_for(); absent/None means "use
+    # the CDK job definition's default" (today's unchanged behavior, item 38).
+    memory_gb: float | None = None
     # single: dict[str, Any] | None = None
     # multidaughter: dict[str, Any] | None = None
     # multigeneration: dict[str, dict[str, Any]] | None = None

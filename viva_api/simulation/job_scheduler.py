@@ -7,14 +7,23 @@ from async_lru import alru_cache
 from viva_api.common.hpc.job_service import JobStatusUpdate
 from viva_api.common.hpc.slurm_service import SlurmService
 from viva_api.common.messaging.messaging_service import MessagingService
-from viva_api.common.models import JobBackend, JobStatus, SSHTarget
+from viva_api.common.models import JobBackend, JobId, JobStatus, SSHTarget
 from viva_api.config import get_settings
 from viva_api.dependencies import get_ssh_session_service
 from viva_api.simulation.database_service import DatabaseService
-from viva_api.simulation.models import HpcRun, WorkerEvent, WorkerEventMessagePayload
-from viva_api.simulation.simulation_service_ray import SimulationServiceRay
+from viva_api.simulation.models import ActiveAnalysis, HpcRun, WorkerEvent, WorkerEventMessagePayload
+from viva_api.simulation.simulation_service_ray import SimulationServiceRay, analysis_memory_mib_for
+from viva_api.simulation.tables_orm import AnalysisStatusDB
 
 logger = logging.getLogger(__name__)
+
+# Mirrors vEcoli-private's own Nextflow `maxRetries = 3` (runscripts/nextflow/config.template)
+# exactly -- backlog item 38 track B.
+_ANALYSIS_MAX_RETRIES = 3
+# Attempt-1 baseline when no explicit `analysis_options.memory_gb` hint was given, so
+# escalation still has a real starting point: the CDK job def's current default
+# (`nodeMemoryMiB: 60000` in sms-cdk/config/stanford-vpc-test.json) as of item 38.
+_DEFAULT_ANALYSIS_MEMORY_GB = 58.0
 
 
 class JobScheduler:
@@ -95,6 +104,10 @@ class JobScheduler:
                 await self.update_chain_campaigns()
             except Exception:
                 logger.exception("Error during chain-dispatch campaign polling")
+            try:
+                await self.update_analysis_retries()
+            except Exception:
+                logger.exception("Error during analysis OOM-retry-escalation polling")
             await asyncio.sleep(interval_seconds)
 
     async def update_running_jobs(self) -> None:
@@ -247,6 +260,85 @@ class JobScheduler:
             len(job_ids),
             analysis_job_id,
         )
+
+    async def update_analysis_retries(self) -> None:
+        """Poll every COMPUTING Ray-backend analysis DAG node to terminal state and,
+        on an OOM (exit code 137), resubmit at an escalated memory tier -- backlog
+        item 38 track B. Mirrors vEcoli-private's own Nextflow ``scaledMemory``
+        closure + ``maxRetries`` (``runscripts/nextflow/config.template``): each
+        retry multiplies the baseline by ``attempt + 1``, capped at
+        ``_ANALYSIS_MAX_RETRIES`` attempts, then gives up and marks the row FAILED
+        (matching Nextflow's own graceful ``ignore`` after exhausting retries).
+
+        A genuinely NEW watcher: unlike ``update_chain_campaigns``, nothing
+        previously polled a submitted analysis job to terminal state at all --
+        the analysis DAG node's status only ever changed on-demand via
+        ``GET /analyses/{id}/status``.
+        """
+        if self.simulation_service_ray is None:
+            return
+        simulation_service_ray = self.simulation_service_ray
+
+        active_analyses = await self.database_service.list_active_analyses()
+        if not active_analyses:
+            logger.debug("No active analyses found for OOM-retry-escalation polling.")
+            return
+        for analysis in active_analyses:
+            try:
+                await self._advance_analysis_retry(analysis, simulation_service_ray)
+            except Exception:
+                logger.exception("Error advancing analysis retry for analysis %s", analysis.database_id)
+
+    async def _advance_analysis_retry(
+        self, analysis: ActiveAnalysis, simulation_service_ray: SimulationServiceRay
+    ) -> None:
+        job_status = await simulation_service_ray.get_job_status(JobId.ray(analysis.job_id_ext))
+        non_terminal = (JobStatus.WAITING, JobStatus.PENDING, JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.UNKNOWN)
+        if job_status is None or job_status.status in non_terminal:
+            return  # still in flight (or transiently unreadable) -- nothing to do yet
+
+        if job_status.status == JobStatus.COMPLETED:
+            await self.database_service.update_analysis_status(analysis.database_id, AnalysisStatusDB.READY)
+            logger.info("Analysis %s succeeded on attempt %d", analysis.database_id, analysis.attempt)
+            return
+
+        is_oom = job_status.exit_code == "137"
+        if is_oom and analysis.attempt < _ANALYSIS_MAX_RETRIES:
+            simulation = await self.database_service.get_simulation(simulation_id=analysis.simulation_id)
+            base_mib = (analysis_memory_mib_for(simulation.config) if simulation else None) or int(
+                _DEFAULT_ANALYSIS_MEMORY_GB * 1024
+            )
+            next_attempt = analysis.attempt + 1
+            next_mib = base_mib * next_attempt  # mirrors Nextflow's `1.GB * baseMem * task.attempt`
+            new_job_id_ext = await simulation_service_ray.resubmit_analysis(
+                analysis, self.database_service, memory_mib=next_mib
+            )
+            await self.database_service.update_analysis_job_id(
+                analysis.database_id, job_id_ext=new_job_id_ext, attempt=next_attempt
+            )
+            logger.warning(
+                "Analysis %s OOM'd on attempt %d (job %s); resubmitted as attempt %d at %d MiB (job %s)",
+                analysis.database_id,
+                analysis.attempt,
+                analysis.job_id_ext,
+                next_attempt,
+                next_mib,
+                new_job_id_ext,
+            )
+        else:
+            await self.database_service.update_analysis_status(
+                analysis.database_id,
+                AnalysisStatusDB.FAILED,
+                error_message=job_status.error_message
+                or ("OOM: retries exhausted" if is_oom else "analysis job failed"),
+            )
+            logger.error(
+                "Analysis %s permanently failed after attempt %d (oom=%s, job=%s)",
+                analysis.database_id,
+                analysis.attempt,
+                is_oom,
+                analysis.job_id_ext,
+            )
 
     async def close(self) -> None:
         await self.stop_polling()

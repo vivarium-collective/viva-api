@@ -112,6 +112,10 @@ async def _marker_hpcrun_chain_dispatch(conn: AsyncConnection) -> bool:
     return await _column_exists(conn, "hpcrun", "chain_final_job_ids")
 
 
+async def _marker_analysis_attempt(conn: AsyncConnection) -> bool:
+    return await _column_exists(conn, "analysis", "attempt")
+
+
 # (revision, human-readable marker description, async predicate)
 # One marker per revision reachable by a legacy create_all database. New entries
 # are needed ONLY while create_all still bootstraps prod DBs (see module docstring):
@@ -125,6 +129,7 @@ LEGACY_FINGERPRINTS: list[tuple[str, str]] = [
     ("d3f9a1c72b84", "analysis.n_tp column exists"),
     ("e5a7c9d10f21", "compose_hpcrun.job_id_ext column exists"),
     ("f2b8e4a6c9d1", "hpcrun.chain_final_job_ids column exists"),
+    ("b7c9e1a3d5f2", "analysis.attempt column exists"),
 ]
 _LEGACY_PREDICATES = [
     _marker_baseline,
@@ -134,6 +139,7 @@ _LEGACY_PREDICATES = [
     _marker_analysis_query_columns,
     _marker_compose_hpcrun_job_id_ext,
     _marker_hpcrun_chain_dispatch,
+    _marker_analysis_attempt,
 ]
 
 

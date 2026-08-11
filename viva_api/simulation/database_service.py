@@ -12,6 +12,7 @@ from viva_api.analysis.models import AnalysisConfig, ExperimentAnalysisDTO
 from viva_api.common.hpc.job_service import JobStatusUpdate
 from viva_api.common.models import JobId
 from viva_api.simulation.models import (
+    ActiveAnalysis,
     HpcRun,
     JobType,
     ParcaDataset,
@@ -234,6 +235,19 @@ class DatabaseService(ABC):
     @abstractmethod
     async def update_hpcrun_status(self, hpcrun_id: int, update: JobStatusUpdate) -> None:
         """Update the status of a given HpcRun job."""
+        pass
+
+    @abstractmethod
+    async def list_active_analyses(self) -> list[ActiveAnalysis]:
+        """Return COMPUTING, Ray-backend analysis rows (``job_id_ext``/``simulation_id``
+        both set) -- backlog item 38 track B, the set ``JobScheduler.update_analysis_retries``
+        polls each interval. Excludes legacy SLURM rows (no ``job_id_ext``)."""
+        pass
+
+    @abstractmethod
+    async def update_analysis_job_id(self, analysis_id: int, job_id_ext: str, attempt: int) -> None:
+        """Point an existing analysis row at a new physical retry job id and bump
+        its attempt count -- same logical row, new physical job id per attempt."""
         pass
 
     @abstractmethod
@@ -938,6 +952,38 @@ class DatabaseServiceSQL(DatabaseService):
                     orm_hpcrun.end_time = dt.replace(tzinfo=None)
             if update.error_message:
                 orm_hpcrun.error_message = update.error_message
+            await session.flush()
+
+    @override
+    async def list_active_analyses(self) -> list[ActiveAnalysis]:
+        async with self.async_sessionmaker() as session:
+            stmt = select(ORMAnalysis).where(
+                ORMAnalysis.status == AnalysisStatusDB.COMPUTING,
+                ORMAnalysis.job_id_ext.is_not(None),
+                ORMAnalysis.simulation_id.is_not(None),
+            )
+            result: Result[tuple[ORMAnalysis]] = await session.execute(stmt)
+            orm_analyses = result.scalars().all()
+            return [
+                ActiveAnalysis(
+                    database_id=orm_analysis.id,
+                    job_id_ext=orm_analysis.job_id_ext,  # type: ignore[arg-type]  # filtered is_not(None) above
+                    config=orm_analysis.config,
+                    simulation_id=orm_analysis.simulation_id,  # type: ignore[arg-type]  # filtered is_not(None) above
+                    attempt=orm_analysis.attempt,
+                )
+                for orm_analysis in orm_analyses
+            ]
+
+    @override
+    async def update_analysis_job_id(self, analysis_id: int, job_id_ext: str, attempt: int) -> None:
+        async with self.async_sessionmaker() as session, session.begin():
+            orm_analysis = await self._get_orm_analysis(session, database_id=analysis_id)
+            if orm_analysis is None:
+                raise RuntimeError(f"Analysis {analysis_id} not found")
+            orm_analysis.job_id_ext = job_id_ext
+            orm_analysis.attempt = attempt
+            orm_analysis.last_updated = str(datetime.datetime.now())
             await session.flush()
 
     @override
