@@ -266,4 +266,60 @@
 #          _submit_mnp gains an optional depends_type: the analysis node waits on
 #          an ARRAY parent id, which AWS Batch rejects under SEQUENTIAL; the
 #          ParCa -> sim edge keeps its live-verified SEQUENTIAL shape untouched.
-__version__ = "0.9.41"
+# 0.9.42 — backlog item 33 REWORKED from per-generation-array "wave" dispatch to
+#          individual per-seed AWS Batch job chains, matching vEcoli-private's own
+#          fully-asynchronous per-seed Nextflow execution (Alex's explicit decision:
+#          "it must be a true v2 analogy of vEcoli-private"). The wave design made
+#          every seed wait at every generation boundary; this doesn't -- seed 5 can
+#          be on generation 8 while seed 800 is on generation 1, throttled only by
+#          available compute.
+#          submit_chain_dispatch_job (new, replaces submit_wave_dispatch_job/
+#          submit_next_wave) submits ParCa + EVERY seed's full G-generation
+#          dependsOn chain upfront -- N*G individual MNP (num_nodes=1) jobs,
+#          TPS-paced below the account-wide 50 TPS SubmitJob cap (_SubmitJobPacer,
+#          proactive + real elapsed-time-based, not a fixed sleep guess) with real
+#          retry-on-throttle (botocore "standard" retry mode on a dedicated client
+#          for this loop only). _seed_generation_command (replaces _wave_sim_command)
+#          is simpler than the design it replaces: seed + generation are both known
+#          at SUBMISSION time, so the whole --overrides payload is static -- no
+#          AWS_BATCH_JOB_ARRAY_INDEX, no lookup table, no container-start shell/
+#          python3 merge step at all.
+#          WHY MNP, not a "singleton array job": confirmed directly against
+#          sms-cdk's batch-array-entrypoint.sh and AWS's own job_env_vars.html that
+#          NEITHER shipped entrypoint supports a genuinely standalone job --
+#          batch-array-entrypoint.sh hard-requires AWS_BATCH_JOB_ARRAY_INDEX (only
+#          set for array children, and arrayProperties.size has a hard floor of 2 --
+#          no size-1 array exists), and a true per-seed dependsOn chain needs each
+#          generation to be its own job with its own id anyway (array children can't
+#          dependsOn each other). MNP num_nodes=1 is the one already-proven
+#          standalone-job mechanism (ParCa/analysis already use it) -- reused as-is,
+#          no sms-cdk change. _submit_mnp gains an optional retry_strategy override
+#          (restores per-job retry on the MNP job definition, which -- unlike the
+#          Array job definition -- declares none of its own; matches the Array job
+#          def's own already-tuned attempts=2) and an optional batch_client override
+#          (lets the bulk submission loop use its own retry-configured client
+#          without changing any other existing call site's behavior).
+#          FLAGGED, NOT SILENTLY ABSORBED: the MNP queue's compute environment
+#          (RayBatchOnDemandCE, confirmed against sms-cdk/lib/ray-batch-stack.ts) is
+#          ON-DEMAND ONLY, unlike the Array job definition's Spot-tolerant queue --
+#          a real cost-shape difference from the superseded design that the
+#          retry_strategy override can't fix (Spot pricing is a compute-environment
+#          property, not a submission-time parameter). Left open for a companion
+#          sms-cdk change, documented prominently in submit_chain_dispatch_job's own
+#          docstring rather than silently ignored.
+#          JobScheduler.update_wave_jobs/_advance_wave -> update_chain_campaigns/
+#          _advance_chain_campaign: no "advance to next generation" step needed at
+#          all now (Batch's own dependsOn already does that) -- just "has every
+#          seed's chain reached a terminal state," then submit_campaign_analysis
+#          (new, thin wrapper over the unchanged _submit_analysis_job) with NO
+#          native dependsOn, since by construction everything it depends on already
+#          finished by the time the poller fires.
+#          ORMHpcRun.wave_index/wave_seed_indices -> chain_n_generations/
+#          chain_final_job_ids (migration f2b8e4a6c9d1 amended in place -- still
+#          unmerged, nothing deployed against the old names); ONE HpcRun row now
+#          tracks a whole campaign (each seed's own last successfully-submitted job
+#          id), not one row per generation. n_seeds >= 2 is no longer required
+#          (that floor was AWS Batch's own array-size minimum, moot once nothing is
+#          an array job). RayLayout.wave_state_uri/wave_state_prefix ->
+#          daughter_state_uri/daughter_state_prefix (pure rename, same S3 layout).
+__version__ = "0.9.42"

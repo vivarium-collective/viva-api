@@ -5,6 +5,7 @@ import string
 import tempfile
 import uuid
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -32,6 +33,7 @@ from viva_api.simulation.models import (
     SimulationRequest,
     WorkerEventMessagePayload,
 )
+from viva_api.simulation.simulation_service_ray import ChainCampaignPollResult
 
 
 def is_ci_environment() -> bool:
@@ -78,6 +80,255 @@ async def insert_job(database_service: DatabaseServiceSQL, slurmjobid: int) -> t
     )
 
     return simulation, slurm_job, hpcrun
+
+
+async def insert_chain_campaign_job(
+    database_service: DatabaseServiceSQL,
+    *,
+    job_id_ext: str,
+    chain_n_generations: int,
+    chain_final_job_ids: list[str],
+    n_seeds: int | None = None,
+) -> tuple[Simulation, HpcRun]:
+    """Insert a Simulation + a chain-dispatch-campaign-shaped HpcRun row
+    (backlog item 33 rework), the fixture shape
+    JobScheduler.update_chain_campaigns/_advance_chain_campaign consumes."""
+    latest_commit_hash = str(uuid.uuid4())
+    simulator = await database_service.insert_simulator(
+        git_commit_hash=latest_commit_hash,
+        git_repo_url="https://github.com/CovertLabEcoli/sms-ecoli",
+        git_branch="main",
+    )
+    parca_dataset = await database_service.insert_parca_dataset(
+        parca_dataset_request=ParcaDatasetRequest(simulator_version=simulator, parca_config=ParcaOptions())
+    )
+    experiment_id = f"test-chain-campaign-{str(uuid.uuid4())[:8]!s}"
+    config = SimulationConfig(experiment_id=experiment_id, generations=chain_n_generations)
+    if n_seeds is not None:
+        setattr(config, "n_init_sims", n_seeds)  # noqa: B010
+    simulation_request = SimulationRequest(
+        simulation_config_filename="config_filename",
+        experiment_id=experiment_id,
+        parca_dataset_id=parca_dataset.database_id,
+        simulator_id=simulator.database_id,
+        config=config,
+    )
+    simulation = await database_service.insert_simulation(sim_request=simulation_request)
+    hpcrun = await database_service.insert_hpcrun(
+        job_id=JobId.ray(job_id_ext),
+        job_type=JobType.SIMULATION,
+        ref_id=simulation.database_id,
+        correlation_id=f"chain-campaign-{experiment_id}",
+        chain_n_generations=chain_n_generations,
+        chain_final_job_ids=chain_final_job_ids,
+    )
+    return simulation, hpcrun
+
+
+class TestAdvanceChainCampaign:
+    """JobScheduler._advance_chain_campaign / update_chain_campaigns (backlog
+    item 33 rework — individual per-seed job chains, replacing the
+    per-generation-array design's own TestAdvanceWave): the analysis-fan-in
+    polling path extending the existing poll-loop + DB-state pattern.
+    simulation_service_ray is mocked here (its own AWS Batch call shapes are
+    proven for real in TestGetChainCampaignResult/TestSubmitCampaignAnalysis,
+    tests/simulation/test_ray_backend.py) so these tests isolate JobScheduler's
+    OWN orchestration decisions against a REAL Postgres database (testcontainers)."""
+
+    @pytest.mark.asyncio
+    async def test_update_chain_campaigns_is_a_noop_without_a_ray_service(self) -> None:
+        """SLURM-only deployments wire simulation_service_ray=None -- the poll
+        loop must not touch the database at all in that case, not just skip
+        the AWS calls."""
+        mock_database = AsyncMock()
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(),
+            database_service=mock_database,
+            simulation_service_ray=None,
+        )
+        await scheduler.update_chain_campaigns()
+        mock_database.list_active_chain_campaigns.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_not_terminal_leaves_the_campaign_untouched(self, database_service: DatabaseServiceSQL) -> None:
+        _simulation, hpcrun = await insert_chain_campaign_job(
+            database_service,
+            job_id_ext="parca-not-terminal",
+            chain_n_generations=3,
+            chain_final_job_ids=["s0-final", "s1-final", "s2-final", "s3-final"],
+        )
+        mock_ray = MagicMock()
+        mock_ray.get_chain_campaign_result.return_value = ChainCampaignPollResult(terminal=False)
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_chain_campaign(hpcrun, mock_ray)
+
+        mock_ray.get_chain_campaign_result.assert_called_once_with(["s0-final", "s1-final", "s2-final", "s3-final"])
+        mock_ray.submit_campaign_analysis.assert_not_called()
+        refetched = await database_service.get_hpcrun(hpcrun.database_id)
+        assert refetched is not None
+        assert refetched.status == JobStatus.RUNNING  # unchanged from insert_hpcrun's default
+
+    @pytest.mark.asyncio
+    async def test_terminal_with_at_least_one_success_submits_the_analysis(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        simulation, hpcrun = await insert_chain_campaign_job(
+            database_service,
+            job_id_ext="parca-partial",
+            chain_n_generations=5,
+            chain_final_job_ids=["s0-final", "s1-final", "s2-final"],
+            n_seeds=30,
+        )
+        mock_ray = MagicMock()
+        mock_ray.get_chain_campaign_result.return_value = ChainCampaignPollResult(
+            terminal=True, succeeded_job_ids=["s0-final", "s2-final"], failed_job_ids=["s1-final"]
+        )
+        mock_ray.submit_campaign_analysis = AsyncMock(return_value="analysis-job-id")
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_chain_campaign(hpcrun, mock_ray)
+
+        mock_ray.submit_campaign_analysis.assert_awaited_once()
+        call_kwargs = mock_ray.submit_campaign_analysis.call_args.kwargs
+        assert call_kwargs["total_n_seeds"] == 30
+        assert call_kwargs["n_generations"] == 5
+        assert call_kwargs["simulation"].database_id == simulation.database_id
+        simulator = await database_service.get_simulator(simulation.simulator_id)
+        assert simulator is not None
+        assert call_kwargs["commit"] == simulator.git_commit_hash
+
+        refetched = await database_service.get_hpcrun(hpcrun.database_id)
+        assert refetched is not None
+        assert refetched.status == JobStatus.COMPLETED
+        assert refetched.error_message is None
+
+    @pytest.mark.asyncio
+    async def test_zero_succeeded_marks_the_campaign_failed_no_analysis(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        _simulation, hpcrun = await insert_chain_campaign_job(
+            database_service,
+            job_id_ext="parca-wiped-out",
+            chain_n_generations=5,
+            chain_final_job_ids=["s0-final", "s1-final", "s2-final"],
+        )
+        mock_ray = MagicMock()
+        mock_ray.get_chain_campaign_result.return_value = ChainCampaignPollResult(
+            terminal=True, failed_job_ids=["s0-final", "s1-final", "s2-final"]
+        )
+        mock_ray.submit_campaign_analysis = AsyncMock()
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_chain_campaign(hpcrun, mock_ray)
+
+        mock_ray.submit_campaign_analysis.assert_not_called()
+        refetched = await database_service.get_hpcrun(hpcrun.database_id)
+        assert refetched is not None
+        assert refetched.status == JobStatus.FAILED
+        assert refetched.error_message is not None and "zero seed chains succeeded" in refetched.error_message
+
+    @pytest.mark.asyncio
+    async def test_terminal_with_mixed_results_only_updates_the_campaign_row_never_individual_jobs(self) -> None:
+        """A permanently-failed seed's own final job is ALREADY FAILED via AWS
+        Batch's own dependency-failure propagation (an earlier generation in
+        its chain failed, so the job(s) depending on it auto-transitioned to
+        FAILED with no orchestrator action) -- this method must not duplicate
+        or fight that by writing any PER-JOB status itself. The only database
+        write here is to the campaign's OWN tracking row, exactly once."""
+        mock_database = AsyncMock()
+        mock_database.get_simulation = AsyncMock(
+            return_value=MagicMock(
+                database_id=1,
+                simulator_id=2,
+                config=MagicMock(generations=3, experiment_id="exp"),
+                num_seeds=3,
+            )
+        )
+        mock_database.get_simulator = AsyncMock(return_value=MagicMock(git_commit_hash="abc1234"))
+        campaign = HpcRun(
+            database_id=99,
+            job_id=JobId.ray("parca-1"),
+            correlation_id="chain-campaign-exp",
+            job_type=JobType.SIMULATION,
+            ref_id=1,
+            status=JobStatus.RUNNING,
+            chain_n_generations=3,
+            chain_final_job_ids=["s0-final", "s1-final", "s2-final"],
+        )
+        mock_ray = MagicMock()
+        mock_ray.get_chain_campaign_result.return_value = ChainCampaignPollResult(
+            terminal=True, succeeded_job_ids=["s0-final", "s2-final"], failed_job_ids=["s1-final"]
+        )
+        mock_ray.submit_campaign_analysis = AsyncMock(return_value="analysis-1")
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=mock_database, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_chain_campaign(campaign, mock_ray)
+
+        # Exactly ONE status write -- the campaign row itself, never a
+        # per-seed job (there is no per-job update_hpcrun_status call to
+        # find here at all: the failed seed's job id never appears as an
+        # hpcrun_id argument anywhere).
+        mock_database.update_hpcrun_status.assert_awaited_once()
+        call_kwargs = mock_database.update_hpcrun_status.call_args.kwargs
+        assert call_kwargs["hpcrun_id"] == 99
+        assert call_kwargs["update"].status == JobStatus.COMPLETED
+        mock_ray.submit_campaign_analysis.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_update_chain_campaigns_processes_every_active_campaign_row(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        """End-to-end through update_chain_campaigns (not calling
+        _advance_chain_campaign directly): two independent chain-dispatch
+        campaigns, each gets polled and advanced correctly, using
+        list_active_chain_campaigns's real WHERE clause (status IN (PENDING,
+        RUNNING) AND chain_n_generations IS NOT NULL)."""
+        _sim_a, hpcrun_a = await insert_chain_campaign_job(
+            database_service,
+            job_id_ext="camp-a-parca",
+            chain_n_generations=2,
+            chain_final_job_ids=["camp-a-s0-final", "camp-a-s1-final"],
+            n_seeds=2,
+        )
+        _sim_b, hpcrun_b = await insert_chain_campaign_job(
+            database_service,
+            job_id_ext="camp-b-parca",
+            chain_n_generations=2,
+            chain_final_job_ids=["camp-b-s0-final", "camp-b-s1-final", "camp-b-s2-final"],
+            n_seeds=3,
+        )
+
+        def _chain_result(job_ids: list[str]) -> ChainCampaignPollResult:
+            if job_ids == ["camp-a-s0-final", "camp-a-s1-final"]:
+                return ChainCampaignPollResult(terminal=True, succeeded_job_ids=list(job_ids))
+            return ChainCampaignPollResult(terminal=False)
+
+        mock_ray = MagicMock()
+        mock_ray.get_chain_campaign_result.side_effect = _chain_result
+        mock_ray.submit_campaign_analysis = AsyncMock(return_value="camp-a-analysis")
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler.update_chain_campaigns()
+
+        # Campaign A: terminal, at least one success -> analysis submitted.
+        mock_ray.submit_campaign_analysis.assert_awaited_once()
+        refetched_a = await database_service.get_hpcrun(hpcrun_a.database_id)
+        assert refetched_a is not None and refetched_a.status == JobStatus.COMPLETED
+
+        # Campaign B: not terminal -> left untouched.
+        refetched_b = await database_service.get_hpcrun(hpcrun_b.database_id)
+        assert refetched_b is not None and refetched_b.status == JobStatus.RUNNING
 
 
 @pytest.mark.integration

@@ -44,6 +44,13 @@ class HpcRun(BaseModel):
     start_time: str | None = None  # ISO format datetime string
     end_time: str | None = None  # ISO format datetime string or None if still running
     error_message: str | None = None  # Error message if the simulation failed
+    # Chain-dispatch campaign fields (backlog item 33): None for every HpcRun that
+    # isn't a chain-campaign tracker row. chain_n_generations is the campaign's
+    # total generation count G; chain_final_job_ids is the AWS Batch job id of
+    # each seed's own last successfully-submitted generation job -- what the
+    # analysis-fan-in poller (JobScheduler.update_chain_campaigns) watches.
+    chain_n_generations: int | None = None
+    chain_final_job_ids: list[str] | None = None
 
     @model_validator(mode="before")
     @classmethod

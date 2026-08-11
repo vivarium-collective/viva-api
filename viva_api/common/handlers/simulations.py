@@ -50,6 +50,7 @@ from viva_api.simulation.models import (
     VecoliSource,
 )
 from viva_api.simulation.simulation_service import SimulationService
+from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 from viva_api.simulation.tables_orm import AnalysisStatusDB
 
 logger = logging.getLogger(__name__)
@@ -338,12 +339,23 @@ async def run_workflow_legacy(
     job_id = await simulation_service.submit_ecoli_simulation_job(
         ecoli_simulation=simulation, database_service=database_service, correlation_id=correlation_id
     )
-    _ = await database_service.insert_hpcrun(
-        job_id=job_id,
-        job_type=JobType.SIMULATION,
-        ref_id=simulation.database_id,
-        correlation_id=correlation_id,
-    )
+    # Some dispatch shapes (chain-dispatch campaigns — backlog item 33) already
+    # record their OWN HpcRun row internally, using this SAME correlation_id,
+    # because that row needs fields (chain_n_generations/chain_final_job_ids) a
+    # generic caller has no way to populate. Guard against inserting a SECOND,
+    # generic row on top of it: get_hpcrun_by_ref (used by every real status
+    # endpoint) resolves to whichever row was inserted MOST RECENTLY, so a
+    # blind second insert here would permanently shadow the real, pollable
+    # campaign row with a stale one nobody ever updates. For every OTHER
+    # dispatch shape this is a pure no-op (a freshly-generated correlation_id
+    # can never already have a row), so behavior is unchanged for them.
+    if await database_service.get_hpcrun_id_by_correlation_id(correlation_id=correlation_id) is None:
+        _ = await database_service.insert_hpcrun(
+            job_id=job_id,
+            job_type=JobType.SIMULATION,
+            ref_id=simulation.database_id,
+            correlation_id=correlation_id,
+        )
 
     simulation.job_id = str(job_id)
     return simulation
@@ -649,13 +661,23 @@ async def run_simulation_workflow(  # noqa: C901
         ecoli_simulation=simulation, database_service=database_service, correlation_id=correlation_id
     )
 
-    # 8. Record HPC run
-    _ = await database_service.insert_hpcrun(
-        job_id=job_id,
-        job_type=JobType.SIMULATION,
-        ref_id=simulation.database_id,
-        correlation_id=correlation_id,
-    )
+    # 8. Record HPC run -- unless the dispatch shape already recorded its OWN
+    # row internally under this SAME correlation_id (chain-dispatch campaigns,
+    # backlog item 33: that row carries chain_n_generations/chain_final_job_ids,
+    # fields this generic call site has no way to populate). A blind second
+    # insert here would outrank it in get_hpcrun_by_ref (every real status
+    # endpoint's lookup resolves to the MOST RECENTLY inserted row for a given
+    # ref_id), permanently shadowing the real, pollable campaign row with a
+    # stale one nobody ever updates. For every other dispatch shape this check
+    # is a pure no-op (a freshly-generated correlation_id can't already have a
+    # row), so behavior is unchanged for them.
+    if await database_service.get_hpcrun_id_by_correlation_id(correlation_id=correlation_id) is None:
+        _ = await database_service.insert_hpcrun(
+            job_id=job_id,
+            job_type=JobType.SIMULATION,
+            ref_id=simulation.database_id,
+            correlation_id=correlation_id,
+        )
 
     simulation.job_id = str(job_id)
     return simulation
@@ -728,6 +750,27 @@ async def get_simulation_status(db_service: DatabaseService, id: int) -> Simulat
     hpc_run = await db_service.get_hpcrun_by_ref(ref_id=id, job_type=JobType.SIMULATION)
     if hpc_run is None:
         raise RuntimeError(f"No HPC run found for simulation {id}")
+
+    # Chain-dispatch campaigns (backlog item 33) track N per-seed job chains, not
+    # one job -- `hpc_run.job_id` is only the ParCa kickoff job. The plain path
+    # below reads THAT job's status and writes it onto the whole campaign row,
+    # which corrupts it: ParCa finishing legitimately marks the entire campaign
+    # COMPLETED while the real per-seed chains are still mid-flight, permanently
+    # dropping it out of JobScheduler.list_active_chain_campaigns()'s poll set
+    # and silently preventing analysis auto-fire forever. Report read-only status
+    # instead for a chain campaign -- mirroring JobScheduler._advance_chain_campaign's
+    # own already-correct terminal-check logic -- and never write here; only the
+    # scheduler's own poll loop may transition a campaign row's status.
+    if hpc_run.chain_final_job_ids is not None:
+        chain_service = get_simulation_service_for_job(hpc_run.job_id)
+        if not isinstance(chain_service, SimulationServiceRay):
+            raise RuntimeError("Chain-dispatch campaign requires the Ray/Batch simulation service")
+        result = chain_service.get_chain_campaign_result(hpc_run.chain_final_job_ids)
+        if not result.terminal:
+            return SimulationRun(id=int(id), status=hpc_run.status or JobStatus.RUNNING)
+        status = JobStatus.COMPLETED if result.succeeded_job_ids else JobStatus.FAILED
+        error_message = None if result.succeeded_job_ids else "chain dispatch: zero seed chains succeeded"
+        return SimulationRun(id=int(id), status=status, error_message=error_message)
 
     # Route to the service that owns this run (by the run's backend), not the global default.
     simulation_service = get_simulation_service_for_job(hpc_run.job_id)

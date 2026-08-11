@@ -91,6 +91,29 @@ class RayLayout:
         return f"{RayLayout.experiment_prefix(experiment_id)}/summary.json"
 
     @staticmethod
+    def seed_results_prefix(experiment_id: str, seed: int) -> str:
+        """Bucket-relative key prefix for ONE seed's own results (backlog item
+        33/35: per-generation chain-dispatch). Every generation's job for a
+        given seed shares this prefix, so the parquet sweep / zarr store /
+        summary.json accumulate under one seed-scoped location instead of the
+        ensemble-wide ``experiment_prefix`` every seed's job would otherwise
+        collide on. ``seed_{seed:02d}`` (zero-padded, underscored) matches the
+        multiseed analysis step's own real, confirmed lookup convention (
+        ``v2ecoli.workflow.analysis_runner``'s per-seed sweep_dir) — a
+        DIFFERENT format from this class's other two per-seed conventions
+        (``seed_store_uri``'s ``v2ecoli_seed{NN}``, ``daughter_state_uri``'s
+        unpadded ``seed{N}``); each pre-dates this one and is owned by a
+        different reader, so unifying them is out of scope here.
+        """
+        return f"{RayLayout.experiment_prefix(experiment_id)}/seed_{seed:02d}"
+
+    @staticmethod
+    def seed_results_uri(experiment_id: str, seed: int) -> str:
+        """Where ONE seed's chain-dispatch jobs write their results (trailing
+        slash = sync/prefix dir). See ``seed_results_prefix``."""
+        return s3_uri(f"{RayLayout.seed_results_prefix(experiment_id, seed)}/")
+
+    @staticmethod
     def parca_cache_uri(commit: str, *, upstream: bool = False) -> str:
         """S3 URI for a commit's ParCa cache (trailing slash = 'directory').
 
@@ -101,6 +124,39 @@ class RayLayout:
         """
         kind = "ray-upstream-parca-cache" if upstream else "ray-parca-cache"
         return s3_uri(f"{kind}/{commit}/")
+
+    @staticmethod
+    def daughter_state_prefix(experiment_id: str) -> str:
+        """Bucket-relative key prefix under which per-seed chain-dispatch
+        daughter-state checkpoints live (backlog item 33: per-generation task
+        decomposition)."""
+        return f"{RayLayout.experiment_prefix(experiment_id)}/daughter-state"
+
+    @staticmethod
+    def daughter_state_uri(experiment_id: str, seed: int, generation: int) -> str:
+        """Per-seed, per-generation daughter-state checkpoint URI.
+
+        Mirrors vEcoli-private's own Nextflow task I/O hand-off (``sim.nf``):
+        each seed's per-generation Batch job writes THIS generation's daughter
+        state here (``LineageProcess.daughter_state_out_path``) so the NEXT
+        generation's job (chained via that job's own ``dependsOn``) can load it
+        as its carry-state in (``initial_carry_state_path``) -- task retry at
+        generation granularity IS checkpoint/resume, no in-process pickling
+        needed. Ephemeral hand-off, never browsed/sorted by a human, so unlike
+        ``seed_store_uri`` this deliberately skips zero-padding: the plain
+        ``seed{seed}``/``gen{generation}`` form is what the submitting Python
+        code (via this function) and the v2ecoli container's own command
+        (embedded verbatim at submission time -- see ``_seed_generation_command``)
+        both reference, so keeping the format trivial keeps the two independent
+        call sites trivially in sync.
+
+        Nothing has been dispatched against the old ``wave-state`` key prefix
+        yet (this whole capability is still unwired from any HTTP router --
+        see ``SimulationServiceRay.submit_chain_dispatch_job``), so renaming
+        the prefix alongside the accessor methods costs nothing: there is no
+        already-landed S3 data under the old name to migrate.
+        """
+        return s3_uri(f"{RayLayout.daughter_state_prefix(experiment_id)}/seed{seed}/gen{generation}.pkl")
 
 
 class NextflowLayout:

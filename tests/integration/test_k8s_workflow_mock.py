@@ -11,26 +11,32 @@ Prerequisites:
 """
 
 import json
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import func, select
 
+import viva_api.dependencies as deps
 from tests.fixtures.api_fixtures import SimulatorRepoInfo
 from viva_api.common.handlers import simulations as sim_handlers
 from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.models import JobId, JobStatus
 from viva_api.common.simulator_defaults import RepoUrl
-from viva_api.config import ComputeBackend
+from viva_api.config import ComputeBackend, get_settings
 from viva_api.simulation.database_service import DatabaseServiceSQL
 from viva_api.simulation.models import (
     AnalysisOptions,
+    JobType,
     ParcaDatasetRequest,
     ParcaOptions,
     RepoDiscovery,
     SimulatorVersion,
 )
 from viva_api.simulation.simulation_service_k8s import SimulationServiceK8s
+from viva_api.simulation.simulation_service_ray import SimulationServiceRay
+from viva_api.simulation.tables_orm import ORMHpcRun
 
 CONFIG_TEMPLATE = json.dumps({
     "experiment_id": "EXPERIMENT_ID_PLACEHOLDER",
@@ -447,3 +453,127 @@ async def test_discovery_failure_does_not_block_workflow(
         )
     # Should succeed despite discovery failure
     assert simulation.database_id is not None
+
+
+@pytest.mark.asyncio
+async def test_ray_canonical_batch_baseline_routes_through_real_entrypoint_to_chain_dispatch(
+    database_service: DatabaseServiceSQL,
+) -> None:
+    """The REAL dispatch entrypoint (run_simulation_workflow ->
+    SimulationServiceRay.submit_ecoli_simulation_job), not
+    submit_chain_dispatch_job called directly, must reach chain-dispatch for a
+    canonical batch_baseline-shaped (composite unset, multiseed x
+    multigeneration) request against a real v2ecoli/sms-ecoli simulator.
+
+    This is the test that would have caught the real wiring gap found in
+    review: submit_chain_dispatch_job existed and was fully tested in
+    isolation from the moment it was built (tests/simulation/test_ray_backend.py),
+    but nothing on the real request path ever called it until backlog item
+    33's routing fix landed -- a real dispatch would have silently kept
+    exercising the old array-job path forever, since submit_ecoli_simulation_job
+    itself was never touched by the original rework.
+
+    The Ray backend is registered into the SAME per-repo service registry a
+    real deployment uses (viva_api.dependencies.global_simulation_services),
+    keyed by the real sms-ecoli repo URL -- exercising the actual repo-based
+    backend resolution (compute_backend_for_repo / get_simulation_service_for_repo)
+    a real request goes through, not just passing the service in as a raw
+    parameter. AWS Batch itself is mocked; everything else (config assembly,
+    backend routing, chain-dispatch submission, HpcRun bookkeeping) is real.
+    """
+    saved_registry = dict(deps.global_simulation_services)
+    saved_default = deps.get_simulation_service()
+    try:
+        ray_service = SimulationServiceRay()
+        ray_service.read_config_template = AsyncMock(return_value=CONFIG_TEMPLATE)  # type: ignore[method-assign]
+        deps.set_simulation_service_registry({ComputeBackend.RAY: ray_service})
+
+        simulator = await database_service.insert_simulator(
+            git_commit_hash="e2e1234",
+            git_repo_url=RepoUrl.SMS_ECOLI_REPO_URL,
+            git_branch="main",
+        )
+
+        # parca + 2 seeds x 3 generations = 7 real per-seed-generation submissions.
+        submit_ids = ["parca-1", "s0g0", "s0g1", "s0g2", "s1g0", "s1g1", "s1g2"]
+        mnp_base_props = {
+            "numNodes": 4,
+            "mainNode": 0,
+            "nodeRangeProperties": [{"targetNodes": "0:", "container": {"image": "x:tag", "vcpus": 16}}],
+        }
+        mock_batch = MagicMock()
+
+        def _describe(**kwargs: Any) -> dict[str, Any]:
+            if kwargs.get("jobDefinitionName") == get_settings().ray_mnp_job_definition:
+                return {"jobDefinitions": [{"revision": 1, "nodeProperties": mnp_base_props}]}
+            return {"jobDefinitions": []}
+
+        mock_batch.describe_job_definitions.side_effect = _describe
+        mock_batch.register_job_definition.side_effect = lambda **kw: {
+            "jobDefinitionName": kw["jobDefinitionName"],
+            "revision": 1,
+        }
+        mock_batch.submit_job.side_effect = [{"jobId": jid} for jid in submit_ids]
+
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        with (
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+            patch("viva_api.simulation.simulation_service_ray.asyncio.sleep", new=AsyncMock()),
+        ):
+            simulation = await sim_handlers.run_simulation_workflow(
+                database_service=database_service,
+                simulation_service=ray_service,  # fallback only -- the registry above is what actually resolves
+                simulator_id=simulator.database_id,
+                experiment_id="e2e-canonical-batch-baseline",
+                simulation_config_filename="api_simulation_default.json",
+                num_generations=3,
+                num_seeds=2,
+            )
+
+        # Reached chain-dispatch, not the array path: N*G real per-seed
+        # generation jobs, never a single array-shaped submission.
+        assert mock_batch.submit_job.call_count == 7
+        calls = mock_batch.submit_job.call_args_list
+        for call in calls:
+            assert "arrayProperties" not in call.kwargs
+
+        _parca_call, s0g0, s0g1, s0g2, s1g0, s1g1, s1g2 = calls
+        assert s0g0.kwargs["dependsOn"] == [{"jobId": "parca-1", "type": "SEQUENTIAL"}]
+        assert s0g1.kwargs["dependsOn"] == [{"jobId": "s0g0", "type": "SEQUENTIAL"}]
+        assert s0g2.kwargs["dependsOn"] == [{"jobId": "s0g1", "type": "SEQUENTIAL"}]
+        assert s1g0.kwargs["dependsOn"] == [{"jobId": "parca-1", "type": "SEQUENTIAL"}]
+        assert s1g1.kwargs["dependsOn"] == [{"jobId": "s1g0", "type": "SEQUENTIAL"}]
+        assert s1g2.kwargs["dependsOn"] == [{"jobId": "s1g1", "type": "SEQUENTIAL"}]
+
+        # simulation.job_id reflects chain-dispatch's own return convention (the
+        # ParCa job -- there is no single "sim" job for a chain campaign).
+        assert simulation.job_id == "parca-1"
+
+        # Exactly ONE HpcRun row exists for this simulation: the real campaign
+        # row (chain_n_generations/chain_final_job_ids populated), never shadowed
+        # by a second, generic row from the handler's own insert_hpcrun call --
+        # the real, end-to-end proof that the idempotent-insert guard in
+        # viva_api.common.handlers.simulations actually works (not just an
+        # isolated unit-level claim about it). A raw row count, not just
+        # get_hpcrun_by_ref's most-recent-wins lookup, so a regression that
+        # reintroduces a shadowing duplicate can't hide behind "the newest row
+        # happens to look right."
+        async with database_service.async_sessionmaker() as session:
+            result = await session.execute(
+                select(func.count())
+                .select_from(ORMHpcRun)
+                .where(ORMHpcRun.jobref_simulation_id == simulation.database_id)
+            )
+            row_count = result.scalar_one()
+        assert row_count == 1
+
+        hpc_run = await database_service.get_hpcrun_by_ref(ref_id=simulation.database_id, job_type=JobType.SIMULATION)
+        assert hpc_run is not None
+        assert hpc_run.chain_n_generations == 3
+        assert hpc_run.chain_final_job_ids == ["s0g2", "s1g2"]
+    finally:
+        deps.set_simulation_service_registry(saved_registry)
+        deps.set_simulation_service(saved_default)
