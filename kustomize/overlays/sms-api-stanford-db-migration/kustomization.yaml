@@ -7,7 +7,7 @@ images:
   - name: ghcr.io/vivarium-collective/sms-api
     # Must contain viva_api/simulation/db_reconcile.py (the Job runs it). Keep in
     # sync with the app overlay's sms-api tag; do not lower below 0.9.19.
-    newTag: 0.9.26
+    newTag: 0.9.42
 
 resources:
   - alembic-job.yaml
