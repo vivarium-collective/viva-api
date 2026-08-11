@@ -183,10 +183,19 @@ spec:
             # build, many simulation configs — and it sidesteps the pod's
             # unwritable /workspace git remote + protected-main push. Enabled
             # declaratively here; no human GitHub token is embedded.
+            #
+            # repo/branch MUST be CovertLabEcoli/sms-ecoli — the canonical
+            # workflow's own workspace, never vivarium-collective/v2ecoli (a
+            # structurally-diverged sibling repo). This pin originally targeted
+            # v2ecoli (2026-07-13, pre-dates sms-ecoli becoming the canonical
+            # target) and was never updated — caused a real, live workspace-
+            # identity-mismatch dispatch on smscdk (caught 2026-08-11 before
+            # any spend; see the regression test below). Do not revert without
+            # updating tests/test_deploy_config.py too.
             - name: VIVARIUM_WORKBENCH_REMOTE_PINNED
               value: "1"
             - name: VIVARIUM_WORKBENCH_REMOTE_REPO_URL
-              value: "https://github.com/vivarium-collective/v2ecoli"
+              value: "https://github.com/CovertLabEcoli/sms-ecoli"
             - name: VIVARIUM_WORKBENCH_REMOTE_BRANCH
               value: "main"
             # The init container's chown only runs on FIRST seed (it's guarded by
