@@ -77,8 +77,16 @@ images:
   # entrypoint. Also splits the workbench Deployment out of this overlay into the
   # sibling ../sms-api-stanford-workbench overlay (item 21) and completes the
   # sms_api -> viva_api package rename (main/deploy-trunk reunified, #232/#233).
+  # 0.9.42 (#237): per-seed job chain dispatch replaces AWS Batch array jobs for
+  # simulation dispatch (item 33) -- each seed's generations run as their own
+  # sequentially-dependent chain instead of sharing one array job, removing the
+  # >=2-seed array floor and letting a campaign resume per-seed. get_simulation_status
+  # made chain-campaign-aware (item 14). Real-AWS-verified fix for the analysis-stage
+  # OOM (item 38): AnalysisOptions.memory_gb config knob + the new r7i.4xlarge/128GiB
+  # Ray-MNP compute environment (sms-cdk) together let the pilot-scale analysis
+  # complete without the OOM-kill the original bug had (job f87c7d34, exitCode 137).
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.41
+    newTag: 0.9.42
   # ptools pinned to last-known-good tag — CI only builds sms-api, so there is
   # no newer sms-ptools:0.6.x image on ghcr.io.  0.5.9 is the tag the live Stanford
   # pod has been running successfully; keeping both namespaces pointing here
