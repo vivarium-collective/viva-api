@@ -154,8 +154,21 @@ images:
   # canonical:-flag semantics instead of last-run-wins; and adds a read-only
   # GET /api/server-version endpoint so a published/readonly bundle can
   # report what it's actually running.
+  # 0.3.40 (workbench #791/#793/#794/#795/#797, item 39; 0.3.38/0.3.39 were
+  # never deployed here) closes out the workbench image's Fix B: the
+  # Dockerfile stopped git-cloning a workspace repo at build time (0.3.38)
+  # but couldn't actually build on Apple Silicon -- polars needs AVX2, which
+  # QEMU/Rosetta cross-arch emulation can't execute, crashing `Illegal
+  # instruction` even at import time. Extended the existing AWS Batch DooD
+  # build mechanism (already used for v2ecoli's own images) for real amd64
+  # compute instead; found+fixed 3 more real bugs live (stale sanity-check
+  # import, Batch job-name dots, 4 missing git-sourced core deps the
+  # workspace image's own build excludes). Also fixes analysis-name
+  # translation for remote dispatch to resolve against the live served
+  # workspace instead of a build-time-baked snapshot (#791). First image
+  # built via this path, independently verified live on ghcr.io.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.37
+    newTag: 0.3.40
 
 replicas:
   # Single writer: workbench holds a git working copy + SQLite on an RWO EBS volume.
