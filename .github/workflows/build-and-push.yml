@@ -7,15 +7,59 @@ on:
         description: "Version to build and push (optional)"
         required: false
         default: ""
+      skip_tests:
+        description: "EMERGENCY ONLY: build without running the test gate"
+        required: false
+        default: false
+        type: boolean
 
+# The `test` job below is the gate. This workflow is dispatched with an
+# arbitrary `--ref` (the documented deploy loop routinely builds straight from
+# an unmerged feature branch), and `main`'s branch protection has NO required
+# status checks — so before this gate existed, nothing whatsoever guaranteed
+# that a pushed image had passing tests. The image build itself never ran them:
+# scripts/build_action.sh is `docker buildx build --push` and nothing else, and
+# Dockerfile-api's in-image `RUN pytest` had been commented out for a long time.
 jobs:
+  test:
+    # Skipped only via the explicit, auditable skip_tests input.
+    if: ${{ !inputs.skip_tests }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Set up the environment
+        uses: ./.github/actions/setup-python-env
+        with:
+          python-version: "3.13"
+
+      - name: Run tests
+        run: uv run python -m pytest tests
+
+      - name: Check typing
+        run: uv run mypy
+
   build-and-push:
+    needs: test
+    # `always()` is required so this still evaluates when `test` is SKIPPED via
+    # skip_tests; without it a skipped dependency would skip this job too. The
+    # explicit result check keeps a FAILED test job blocking the build.
+    if: ${{ always() && (needs.test.result == 'success' || inputs.skip_tests) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write # Required for pushing to ghcr.io
 
     steps:
+      - name: Warn when the test gate was bypassed
+        if: ${{ inputs.skip_tests }}
+        run: |
+          echo "::warning title=Test gate bypassed::Building and pushing WITHOUT running tests (skip_tests=true), requested by ${{ github.actor }} on ref ${{ github.ref_name }}."
+
       - name: Checkout code
         uses: actions/checkout@v7
 
