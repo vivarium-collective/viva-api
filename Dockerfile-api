@@ -70,11 +70,12 @@ COPY --chown=appuser:appgroup viva_api /app/viva_api
 # Back-compat shim so deployed Jobs still invoking `python -m sms_api.*` keep
 # working across the sms_api -> viva_api rename (see sms_api/__init__.py).
 COPY --chown=appuser:appgroup sms_api /app/sms_api
-COPY --chown=appuser:appgroup tests /app/tests
 COPY --chown=appuser:appgroup app /app/app
 COPY --chown=appuser:appgroup alembic /app/alembic
 COPY --chown=appuser:appgroup clients /app/clients
-COPY --chown=appuser:appgroup pytest.ini alembic.ini README.md /app/
+# README.md is required: pyproject's `readme` points at it, so hatchling fails
+# the project install without it. pytest.ini is NOT copied — see the note below.
+COPY --chown=appuser:appgroup alembic.ini README.md /app/
 COPY --chown=appuser:appgroup assets/simulations /app/assets/simulations
 COPY --chown=appuser:appgroup assets/*.json /app/assets/
 COPY --chown=appuser:appgroup assets/app /app/assets/app
@@ -86,8 +87,22 @@ RUN mkdir -p /app/.results_cache && \
 # Sync the project
 RUN uv sync --frozen --no-default-groups
 
-# Test the project (skip Docker-dependent tests since we're inside a container)
-#RUN SKIP_DOCKER_TESTS=1 uv run python -m pytest
+# NOTE: the test suite is deliberately NOT run here, and `tests/`/`pytest.ini`
+# are deliberately not copied into the image.
+#
+# This used to be `RUN SKIP_DOCKER_TESTS=1 uv run python -m pytest`, whose job
+# was to fail the image build when tests failed. That belongs in CI, not in a
+# build layer: the suite needs testcontainers (Postgres/Redis/NATS), so only the
+# non-Docker subset could ever run here — hence SKIP_DOCKER_TESTS — and it
+# re-ran on every layer-invalidating change for a signal CI already produces
+# faster and in parallel. It is also now impossible: UV_NO_DEFAULT_GROUPS
+# above means pytest is not installed in this image at all.
+#
+# The gate that replaced it lives in .github/workflows/build-and-push.yml,
+# which runs the full suite + mypy and will not build or push an image unless
+# they pass. That closes the real gap this line only nominally covered: that
+# workflow takes an arbitrary `--ref` and previously built whatever was there,
+# tested or not.
 
 # Declare the volume for local cache storage
 VOLUME ["/app/scratch"]
