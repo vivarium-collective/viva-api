@@ -15,9 +15,18 @@ repos:
       - id: end-of-file-fixer
       - id: trailing-whitespace
 
+  # This rev MUST stay equal to the exact `ruff==` pin in pyproject.toml's
+  # dependencies — tests/test_tooling_versions.py enforces it. When they drift,
+  # `uv run ruff` and `pre-commit`/CI disagree about the same file, and
+  # `[tool.ruff] fix = true` means the local run silently REWRITES source to
+  # match its own version. That produced a recurring ping-pong on a single
+  # `# noqa: S603` (see commits 921d532d, d134fd04, 1561af54, each undoing the
+  # previous one). Bump both together, in one commit.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: "v0.11.5"
+    rev: "v0.12.12"
     hooks:
-      - id: ruff
+      # `ruff-check`, not the deprecated `ruff` alias (which warns
+      # "ruff (legacy alias)" on every run).
+      - id: ruff-check
         args: [--exit-non-zero-on-fix]
       - id: ruff-format

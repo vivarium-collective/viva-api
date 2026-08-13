@@ -3787,7 +3787,7 @@ requires-dist = [
     { name = "redis", specifier = ">=5.0.0,<9" },
     { name = "rich-pixels", specifier = ">=3.0.1" },
     { name = "rich-pyfiglet", specifier = ">=1.0.0" },
-    { name = "ruff", specifier = ">=0.12.2,<0.16" },
+    { name = "ruff", specifier = "==0.12.12" },
     { name = "s3fs", specifier = ">=2024.6.0" },
     { name = "seaborn", specifier = ">=0.13.2,<0.14" },
     { name = "simhash", specifier = ">=2.1.2" },
