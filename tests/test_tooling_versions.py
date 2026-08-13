@@ -2,8 +2,8 @@
 
 `ruff` is declared twice in this repo, and both declarations are load-bearing:
 
-* ``pyproject.toml``'s ``ruff==X.Y.Z`` — what ``uv run ruff`` / ``make check``'s
-  mypy-adjacent steps and any developer's local invocation resolve to.
+* ``pyproject.toml``'s ``ruff==X.Y.Z`` (in the ``dev`` dependency group) — what
+  ``uv run ruff`` and any developer's local invocation resolve to.
 * ``.pre-commit-config.yaml``'s ``ruff-pre-commit`` ``rev`` — what pre-commit
   (and therefore CI's ``quality`` job, via ``make check``) actually runs.
 
@@ -28,7 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 PRE_COMMIT_CONFIG = REPO_ROOT / ".pre-commit-config.yaml"
 
-# `"ruff==0.12.12",` in [project] dependencies (trailing comment allowed).
+# `"ruff==0.12.12",` wherever it is declared (currently the `dev` group).
 _PYPROJECT_RUFF = re.compile(r'^\s*"ruff==(?P<version>[0-9][^"]*)"', re.MULTILINE)
 # The `rev: "v0.12.12"` belonging to the ruff-pre-commit repo entry.
 _PRE_COMMIT_RUFF = re.compile(

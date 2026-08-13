@@ -16,7 +16,7 @@ repos:
       - id: trailing-whitespace
 
   # This rev MUST stay equal to the exact `ruff==` pin in pyproject.toml's
-  # dependencies — tests/test_tooling_versions.py enforces it. When they drift,
+  # `dev` group — tests/test_tooling_versions.py enforces it. When they drift,
   # `uv run ruff` and `pre-commit`/CI disagree about the same file, and
   # `[tool.ruff] fix = true` means the local run silently REWRITES source to
   # match its own version. That produced a recurring ping-pong on a single
