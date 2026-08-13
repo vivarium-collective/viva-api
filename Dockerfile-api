@@ -20,6 +20,19 @@ ENV PYTHONUNBUFFERED=1 \
     MKL_NUM_THREADS=1 \
     OPENBLAS_NUM_THREADS=1
 
+# Keep the dev/docs dependency groups out of the runtime image.
+#
+# This MUST be an ENV, not just a `--no-default-groups` flag on the `uv sync`
+# calls below: every command this image actually runs goes through `uv run`
+# (the CMD, and the alembic-migrate Job's
+# `uv run python -m viva_api.simulation.db_reconcile`), and `uv run` re-syncs
+# the environment against `[tool.uv] default-groups = ["dev", "docs"]` before
+# executing. Build-time flags alone are therefore inert — verified: a
+# `--no-default-groups` build followed by a plain `uv run` reinstalls 37 dev
+# packages at container start, which also makes startup depend on network
+# access to the index. The env var is what the runtime `uv run` honors.
+ENV UV_NO_DEFAULT_GROUPS=true
+
 # Install uv from the GitHub Container Registry
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
@@ -48,8 +61,9 @@ WORKDIR /app
 COPY --chown=appuser:appgroup uv.lock /app/uv.lock
 COPY --chown=appuser:appgroup pyproject.toml /app/pyproject.toml
 
-# Install dependencies
-RUN uv sync --frozen --no-install-project --no-dev
+# Install dependencies (--no-dev is redundant under UV_NO_DEFAULT_GROUPS but kept
+# explicit; note --no-dev alone would still install the separate `docs` group)
+RUN uv sync --frozen --no-install-project --no-default-groups
 
 # Copy the rest of the application code
 COPY --chown=appuser:appgroup viva_api /app/viva_api
@@ -70,7 +84,7 @@ RUN mkdir -p /app/.results_cache && \
     chown appuser:appgroup /app/.results_cache
 
 # Sync the project
-RUN uv sync --frozen
+RUN uv sync --frozen --no-default-groups
 
 # Test the project (skip Docker-dependent tests since we're inside a container)
 #RUN SKIP_DOCKER_TESTS=1 uv run python -m pytest
