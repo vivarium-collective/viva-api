@@ -168,7 +168,7 @@ images:
   # workspace instead of a build-time-baked snapshot (#791). First image
   # built via this path, independently verified live on ghcr.io.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.40
+    newTag: 0.3.42
 
 replicas:
   # Single writer: workbench holds a git working copy + SQLite on an RWO EBS volume.
