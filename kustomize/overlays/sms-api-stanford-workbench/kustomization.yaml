@@ -167,8 +167,15 @@ images:
   # translation for remote dispatch to resolve against the live served
   # workspace instead of a build-time-baked snapshot (#791). First image
   # built via this path, independently verified live on ghcr.io.
+  # 0.3.41 (workbench #799/#800) closes item 39 for real: 0.3.40's live
+  # ANALYSIS_REGISTRY check found only 6 of 45 real entries even with a
+  # correctly-pinned, non-stub install -- build_analysis_options() never
+  # imported the sibling v2ecoli.workflow.analyses package, the one that
+  # actually registers every cd1_*/ptools_* analysis via import-time
+  # side effects. env_worker.py already knew to do this for the local run
+  # path; the remote dispatch path (this item's own subject) didn't.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.40
+    newTag: 0.3.41
 
 replicas:
   # Single writer: workbench holds a git working copy + SQLite on an RWO EBS volume.
