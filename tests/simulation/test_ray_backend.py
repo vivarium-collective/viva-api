@@ -1,6 +1,7 @@
 """Tests for the Ray-on-Batch backend: JobId.ray, Batch state mapping, ComputeBackend.RAY,
 and SimulationServiceRay submission/status/cancel (boto3 mocked, Postgres via testcontainers)."""
 
+import asyncio
 import json
 import shlex
 from typing import TYPE_CHECKING, Any
@@ -11,6 +12,7 @@ import pytest
 from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.config import ComputeBackend
+from viva_api.simulation.models import JobType
 from viva_api.simulation.simulation_service_ray import (
     PARCA_CACHE_DIR,
     SIM_OUT_DIR,
@@ -268,9 +270,22 @@ class TestSimulationServiceRaySubmit:
                 ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-real-entry"
             )
 
+            # The entrypoint now returns a LOCAL task id the instant the campaign
+            # is scheduled and issues the real N*G submissions in the background
+            # (_submit_chain_dispatch_background) -- so every downstream invariant
+            # below is checked AFTER awaiting that task, not synchronously on
+            # return. Awaiting the asyncio.Task directly blocks until it is done
+            # and re-raises anything it hit, which is exactly what a test wants;
+            # it has to happen INSIDE the patch context, since the task is what
+            # actually calls boto3.
+            assert job_id.backend == JobBackend.LOCAL
+            campaign_job_id = await service._local._tasks[job_id.value]
+
         # Chain-dispatch's own return convention: the ParCa job id, never a
-        # single "sim" job id (there isn't one anymore).
-        assert job_id == JobId.ray("parca-1")
+        # single "sim" job id (there isn't one anymore). Same invariant as
+        # before; it is now the background task's RESULT rather than
+        # submit_ecoli_simulation_job's own return value.
+        assert campaign_job_id == JobId.ray("parca-1")
         assert mock_batch.submit_job.call_count == 7
         calls = mock_batch.submit_job.call_args_list
 
@@ -293,14 +308,23 @@ class TestSimulationServiceRaySubmit:
 
         # The campaign row was recorded under the CALLER's OWN correlation_id
         # (threaded through, not a fresh internally-generated one) -- this is
-        # what lets a real status lookup by that id resolve to the actual
-        # campaign row, not a stale duplicate a caller's own generic
-        # insert_hpcrun would otherwise shadow it with (see the idempotent-
-        # insert guard in viva_api.common.handlers.simulations).
-        campaign_hpcrun_id = await database_service.get_hpcrun_id_by_correlation_id(correlation_id="corr-real-entry")
-        assert campaign_hpcrun_id is not None
-        campaign = await database_service.get_hpcrun(campaign_hpcrun_id)
+        # what makes the idempotent-insert guard in
+        # viva_api.common.handlers.simulations fire, so the caller never adds a
+        # generic row of its own on top.
+        #
+        # Resolved via get_hpcrun_by_ref (ORDER BY id DESC) rather than
+        # get_hpcrun_id_by_correlation_id: the background dispatch now leaves TWO
+        # rows under this one correlation_id -- the synchronous placeholder and,
+        # once the task finishes, the real campaign row -- and
+        # get_hpcrun_id_by_correlation_id is a bare LIMIT 1 with no ORDER BY, so
+        # which of the two it returns is not defined. Most-recent-row-wins is the
+        # rule every real status read actually uses, and it is what must resolve
+        # to the campaign row.
+        assert await database_service.get_hpcrun_id_by_correlation_id(correlation_id="corr-real-entry") is not None
+        campaign = await database_service.get_hpcrun_by_ref(ref_id=simulation.database_id, job_type=JobType.SIMULATION)
         assert campaign is not None
+        assert campaign.correlation_id == "corr-real-entry"
+        assert campaign.job_id == JobId.ray("parca-1")
         assert campaign.chain_n_generations == 3
         assert campaign.chain_final_job_ids == ["s0g2", "s1g2"]
 
@@ -335,14 +359,144 @@ class TestSimulationServiceRaySubmit:
             job_id = await service.submit_ecoli_simulation_job(
                 ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-single-real"
             )
+            # Background dispatch (see the multiseed test above for the full
+            # rationale): await the spawned task before checking what it did.
+            assert job_id.backend == JobBackend.LOCAL
+            campaign_job_id = await service._local._tasks[job_id.value]
 
-        assert job_id == JobId.ray("parca-1")
+        assert campaign_job_id == JobId.ray("parca-1")
         assert mock_batch.submit_job.call_count == 4  # parca + 1 seed x 3 generations
         _parca_call, g0, g1, g2 = mock_batch.submit_job.call_args_list
         assert "arrayProperties" not in g0.kwargs
         assert g0.kwargs["dependsOn"] == [{"jobId": "parca-1", "type": "SEQUENTIAL"}]
         assert g1.kwargs["dependsOn"] == [{"jobId": "s0g0", "type": "SEQUENTIAL"}]
         assert g2.kwargs["dependsOn"] == [{"jobId": "s0g1", "type": "SEQUENTIAL"}]
+
+    async def test_canonical_chain_dispatch_returns_before_submitting_anything(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """The entrypoint returns a trackable id BEFORE the campaign submits
+        anything -- the property this whole change exists to create, as opposed
+        to the two tests above, which re-check the (unchanged) downstream
+        submission shape after the background task has run.
+
+        The real bug (vivarium-workbench backlog item 51, found during a live
+        1000x10 production dispatch on 2026-08-14): a canonical chain-dispatch
+        request issued all n_seeds*n_generations AWS Batch SubmitJob calls
+        INLINE, inside the single POST /api/v1/simulations the client was
+        awaiting -- about 15 minutes for the real 10,000-job shape. The client's
+        HTTP timeout fired long first and reported a FAILED dispatch, while
+        viva-api went right on submitting the real, AWS-billed campaign. Retrying
+        (the obvious response to being told it failed) would have started a
+        second, duplicate, paid campaign on top of the first.
+
+        The background task is held at a deterministic chokepoint -- the
+        run_pbg.py staging upload, which submit_chain_dispatch_job awaits after
+        its two DB reads and before the pacer and every submit_job call -- so the
+        "nothing has happened yet" assertions below are guarantees rather than a
+        race this test happens to win.
+        """
+        setattr(experiment_request.config, "n_init_sims", 2)  # noqa: B010
+        experiment_request.config.generations = 3
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        submit_ids = ["parca-1", "s0g0", "s0g1", "s0g2", "s1g0", "s1g1", "s1g2"]
+        mock_batch = _fake_batch(submit_ids)
+
+        staging_released = asyncio.Event()
+
+        async def _hold_at_staging(*args: Any, **kwargs: Any) -> None:
+            await staging_released.wait()
+
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock(side_effect=_hold_at_staging)
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+            patch("viva_api.simulation.simulation_service_ray.asyncio.sleep", new=AsyncMock()),
+        ):
+            # The property under test, stated directly: the entrypoint returns
+            # promptly regardless of campaign size. asyncio.wait_for, rather than
+            # a bare await, so that the pre-fix inline behaviour FAILS here in
+            # seconds instead of deadlocking the suite -- submitting inline, it
+            # would park in the submission loop at the staging chokepoint below
+            # and never come back, since only this test body releases it.
+            job_id = await asyncio.wait_for(
+                service.submit_ecoli_simulation_job(
+                    ecoli_simulation=simulation,
+                    database_service=database_service,
+                    correlation_id="corr-fast-return",
+                ),
+                timeout=10,
+            )
+
+            # 1. Returned having submitted NOTHING -- not "fewer calls", zero.
+            assert mock_batch.submit_job.call_count == 0
+            # 2. ...and what came back is a trackable LOCAL task id, which
+            # get_job_status (and cancel_job) already resolve through the shared
+            # LocalTaskService -- the same mechanism submit_build_image_job uses
+            # for the other multi-minute operation this service owns.
+            assert job_id.backend == JobBackend.LOCAL
+            in_flight = await service.get_job_status(job_id)
+            assert in_flight is not None
+            assert in_flight.status == JobStatus.RUNNING
+
+            # 3. A placeholder HpcRun row is already committed, so a status poll
+            # arriving a millisecond later has something real to read -- with
+            # BOTH chain fields left unset.
+            placeholder = await database_service.get_hpcrun_by_ref(
+                ref_id=simulation.database_id, job_type=JobType.SIMULATION
+            )
+            assert placeholder is not None
+            assert placeholder.job_id == job_id
+            assert placeholder.correlation_id == "corr-fast-return"
+            assert placeholder.chain_n_generations is None
+            assert placeholder.chain_final_job_ids is None
+
+            # 4. ...and precisely BECAUSE chain_n_generations is unset, the
+            # scheduler's poll set excludes the placeholder. Were it enrolled,
+            # get_chain_campaign_result([]) would call the campaign trivially
+            # terminal with zero successes and _advance_chain_campaign would mark
+            # it FAILED on the very next tick -- recreating the same false
+            # failure, this time inside viva-api itself.
+            assert [
+                c.database_id
+                for c in await database_service.list_active_chain_campaigns()
+                if c.ref_id == simulation.database_id
+            ] == []
+
+            # Release the chokepoint and let the campaign finish submitting.
+            staging_released.set()
+            campaign_job_id = await service._local._tasks[job_id.value]
+
+        # 5. The real campaign row now supersedes the placeholder for every later
+        # read (get_hpcrun_by_ref is ORDER BY id DESC) and IS in the scheduler's
+        # poll set -- so analysis auto-fire stays wired exactly as before.
+        assert campaign_job_id == JobId.ray("parca-1")
+        assert mock_batch.submit_job.call_count == 7
+        campaign = await database_service.get_hpcrun_by_ref(ref_id=simulation.database_id, job_type=JobType.SIMULATION)
+        assert campaign is not None
+        assert campaign.database_id != placeholder.database_id
+        assert campaign.job_id == JobId.ray("parca-1")
+        assert campaign.chain_n_generations == 3
+        assert campaign.chain_final_job_ids == ["s0g2", "s1g2"]
+        assert [
+            c.database_id
+            for c in await database_service.list_active_chain_campaigns()
+            if c.ref_id == simulation.database_id
+        ] == [campaign.database_id]
+
+        # The completed background task reports COMPLETED, so the plain status
+        # path stops saying RUNNING once submission is genuinely done.
+        done = await service.get_job_status(job_id)
+        assert done is not None
+        assert done.status == JobStatus.COMPLETED
 
     async def test_composite_comparison_ensemble_with_multiple_generations_stays_on_mnp(
         self,

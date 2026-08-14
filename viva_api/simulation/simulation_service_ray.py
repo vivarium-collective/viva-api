@@ -952,6 +952,18 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         code (their only caller was the array branch this replaced; confirmed
         via a fresh repo-wide grep before deleting them, not assumed).
 
+        That delegation runs in the BACKGROUND (via
+        ``_submit_chain_dispatch_background``), so this method returns in
+        seconds no matter how large the campaign is, and the returned id is a
+        ``JobId.local(...)`` rather than the ParCa job's ``JobId.ray(...)``.
+        Submitting a campaign's N*G jobs takes minutes of real wall time
+        (~15 for the canonical 1000x10 shape) and used to happen inline, inside
+        the ``POST /api/v1/simulations`` request — see that method's docstring
+        for the real production failure that caused. Progress stays trackable
+        through the unchanged ``GET /api/v1/simulations/{id}/status``.
+        ``submit_chain_dispatch_job`` itself is untouched and still runs
+        synchronously to completion for its direct callers.
+
         Every OTHER shape still reaches the MNP path below exactly as before:
         the composite-driven two-engine comparison ensemble (genuinely fans out
         via Ray actors, at ANY generation count — chain-dispatch is v2ecoli-only
@@ -966,7 +978,7 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         # the comparison knobs read further below -- read directly, not via getattr.
         n_generations = int(config.generations or 1)
         if composite is None and n_generations > 1:
-            return await self.submit_chain_dispatch_job(
+            return await self._submit_chain_dispatch_background(
                 ecoli_simulation, database_service, correlation_id=correlation_id
             )
 
@@ -1097,6 +1109,114 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             "Team": getattr(settings, "cost_team_tag", None) or "covertlab",
         }
 
+    async def _submit_chain_dispatch_background(
+        self,
+        ecoli_simulation: Simulation,
+        database_service: DatabaseService,
+        *,
+        correlation_id: str,
+    ) -> JobId:
+        """Run ``submit_chain_dispatch_job`` as a background task; return a trackable id at once.
+
+        A chain-dispatch campaign issues ``n_seeds * n_generations`` individual
+        AWS Batch ``SubmitJob`` calls, paced below the account-wide TPS cap. For
+        the canonical 1000x10 shape that is 10,000 calls and roughly 15 minutes
+        of wall time — all of it inside the single ``POST /api/v1/simulations``
+        request while the submission loop runs inline. A real production
+        dispatch (2026-08-14) proved the consequence: the calling client's HTTP
+        timeout fired long before the loop finished, so the user was told the
+        dispatch had FAILED while viva-api went right on submitting the real,
+        AWS-billed campaign. The obvious reaction to that message — retry —
+        would have started a second, duplicate, paid campaign on top of the
+        first.
+
+        The fix reuses the pattern this service already uses for the other
+        multi-minute operation it owns, the DooD image build
+        (``submit_build_image_job``): hand the slow coroutine to
+        ``LocalTaskService``, return its ``JobId.local(...)`` immediately, let
+        the caller poll. No new machinery is involved — because every backend
+        service shares ONE process-wide ``LocalTaskService`` (see
+        ``viva_api.dependencies._init_simulation_service``), ``get_job_status``
+        — and therefore ``GET /api/v1/simulations/{id}/status`` — already
+        resolves such an id, reporting RUNNING while the submission loop is
+        still going and FAILED if it crashes outright. ``cancel_job`` already
+        routes LOCAL ids to ``LocalTaskService.cancel``, so cancelling a
+        still-submitting campaign comes along for free.
+
+        ``submit_chain_dispatch_job`` itself is UNCHANGED and still runs
+        synchronously to completion for its direct callers (its own unit tests
+        and the real-AWS integration test); only this one call site is
+        asynchronous.
+
+        THE PLACEHOLDER ROW, and why its chain fields must stay ``None``: the
+        campaign's REAL ``HpcRun`` row is inserted by
+        ``submit_chain_dispatch_job`` itself, as its very last action — minutes
+        from now. Until then a status lookup would find nothing at all, so this
+        method records a placeholder row carrying the LOCAL task id. It
+        deliberately leaves BOTH ``chain_n_generations`` and
+        ``chain_final_job_ids`` unset:
+
+          - ``DatabaseService.list_active_chain_campaigns`` (the scheduler's
+            poll set) discriminates on ``chain_n_generations IS NOT NULL``
+            ALONE. Setting it here would enroll the placeholder in that poll set
+            before a single per-seed job exists.
+          - ``get_chain_campaign_result([])`` returns ``terminal=True`` with
+            zero successes by definition, so ``JobScheduler._advance_chain_campaign``
+            would then immediately mark the campaign FAILED — recreating, inside
+            viva-api this time, the very false-failure this method exists to
+            eliminate.
+
+        With both left ``None``, ``get_simulation_status`` takes its ordinary
+        non-campaign branch and reports the LOCAL task's own status, which is
+        the honest answer while submission is in flight. Once the background
+        task finishes, the campaign row it inserts (a SECOND real row, under the
+        same ``correlation_id``) supersedes this placeholder for every later
+        read: ``get_hpcrun_by_ref`` resolves the highest ``id``. The handler's
+        own idempotent-insert guard (``viva_api.common.handlers.simulations``,
+        keyed on ``correlation_id``) sees this placeholder and correctly skips
+        adding a third, generic row.
+        """
+        # Gate the background task on the placeholder being committed. Without
+        # the gate, `create_task` followed by `await insert_hpcrun(...)` lets the
+        # campaign coroutine run during that await, and the two inserts can land
+        # in either order. The wrong order is NOT benign: `get_hpcrun_by_ref`
+        # resolves the highest id, so a placeholder written AFTER the real
+        # campaign row would shadow it permanently, and the plain status path
+        # would report the whole campaign COMPLETED the moment the submission
+        # loop finished — while every one of its N*G real jobs was still queued
+        # or running. An asyncio.Event makes the ordering a guarantee instead of
+        # a race the mocked-out test environment happens to usually win.
+        placeholder_recorded = asyncio.Event()
+
+        async def _run() -> JobId:
+            await placeholder_recorded.wait()
+            return await self.submit_chain_dispatch_job(
+                ecoli_simulation, database_service, correlation_id=correlation_id
+            )
+
+        task_job_id = self._local.submit(_run(), name=f"chain-dispatch-{ecoli_simulation.config.experiment_id}")
+        try:
+            await database_service.insert_hpcrun(
+                job_id=task_job_id,
+                job_type=JobType.SIMULATION,
+                ref_id=ecoli_simulation.database_id,
+                correlation_id=correlation_id,
+            )
+        except Exception:
+            # Nothing was recorded, so nothing may run: releasing the gate here
+            # would dispatch a real, billed campaign for a request whose caller
+            # is about to be handed an error.
+            self._local.cancel(task_job_id.value)
+            raise
+        placeholder_recorded.set()
+        logger.info(
+            "Chain dispatch %s: submitting the campaign in the background as local task %s "
+            "(request returns now; poll GET /simulations/{id}/status for progress)",
+            ecoli_simulation.config.experiment_id,
+            task_job_id.value,
+        )
+        return task_job_id
+
     async def submit_chain_dispatch_job(
         self,
         ecoli_simulation: Simulation,
@@ -1111,6 +1231,15 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         per-seed Nextflow execution (Alex's explicit decision, 2026-08-08) —
         seed 5 can be on generation 8 while seed 800 is still on generation 1,
         throttled only by available compute, never by a cross-seed barrier.
+
+        This method is SYNCHRONOUS: it returns only once every one of the N*G
+        submissions has been issued, which for a real canonical campaign is
+        minutes of wall time. That contract is unchanged and its direct callers
+        (this repo's unit tests and the real-AWS integration test) still rely on
+        it. The real request entrypoint no longer awaits it inline, though —
+        ``submit_ecoli_simulation_job`` reaches it through
+        ``_submit_chain_dispatch_background``, which runs it as a background
+        task so the HTTP request returns in seconds; see that method for why.
 
         ``correlation_id``: this method (unlike a single-shot dispatch) always
         records its OWN ``HpcRun`` row internally — see the ``insert_hpcrun``

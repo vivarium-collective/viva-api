@@ -16,13 +16,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 import viva_api.dependencies as deps
 from tests.fixtures.api_fixtures import SimulatorRepoInfo
 from viva_api.common.handlers import simulations as sim_handlers
 from viva_api.common.hpc.job_service import JobStatusInfo
-from viva_api.common.models import JobId, JobStatus
+from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.common.simulator_defaults import RepoUrl
 from viva_api.config import ComputeBackend, get_settings
 from viva_api.simulation.database_service import DatabaseServiceSQL
@@ -533,6 +533,20 @@ async def test_ray_canonical_batch_baseline_routes_through_real_entrypoint_to_ch
                 num_seeds=2,
             )
 
+            # The real entrypoint now returns as soon as the campaign is
+            # SCHEDULED, issuing the N*G submissions on a background task
+            # (SimulationServiceRay._submit_chain_dispatch_background), so
+            # simulation.job_id is the LOCAL task id rather than the ParCa Batch
+            # job id. Await that task -- inside the patch context, since the task
+            # is what actually calls boto3 -- before checking anything it is
+            # responsible for. Awaiting the asyncio.Task directly blocks until it
+            # is done and re-raises whatever it hit. Only the TIMING of the
+            # checks below changes; every invariant is the one this test has
+            # always asserted.
+            assert simulation.job_id is not None
+            assert simulation.job_id in ray_service._local._tasks
+            campaign_job_id = await ray_service._local._tasks[simulation.job_id]
+
         # Reached chain-dispatch, not the array path: N*G real per-seed
         # generation jobs, never a single array-shaped submission.
         assert mock_batch.submit_job.call_count == 7
@@ -548,30 +562,47 @@ async def test_ray_canonical_batch_baseline_routes_through_real_entrypoint_to_ch
         assert s1g1.kwargs["dependsOn"] == [{"jobId": "s1g0", "type": "SEQUENTIAL"}]
         assert s1g2.kwargs["dependsOn"] == [{"jobId": "s1g1", "type": "SEQUENTIAL"}]
 
-        # simulation.job_id reflects chain-dispatch's own return convention (the
-        # ParCa job -- there is no single "sim" job for a chain campaign).
-        assert simulation.job_id == "parca-1"
+        # Chain-dispatch's own return convention (the ParCa job -- there is no
+        # single "sim" job for a chain campaign) is now the BACKGROUND TASK's
+        # result. The API response's own job_id is the LOCAL task id, which is
+        # what GET /simulations/{id}/status resolves while submission is still in
+        # flight.
+        assert campaign_job_id == JobId.ray("parca-1")
 
-        # Exactly ONE HpcRun row exists for this simulation: the real campaign
-        # row (chain_n_generations/chain_final_job_ids populated), never shadowed
-        # by a second, generic row from the handler's own insert_hpcrun call --
-        # the real, end-to-end proof that the idempotent-insert guard in
-        # viva_api.common.handlers.simulations actually works (not just an
-        # isolated unit-level claim about it). A raw row count, not just
-        # get_hpcrun_by_ref's most-recent-wins lookup, so a regression that
-        # reintroduces a shadowing duplicate can't hide behind "the newest row
-        # happens to look right."
+        # TWO HpcRun rows exist for this simulation, and this test now pins what
+        # each one is. Previously there was exactly one; the second is the
+        # synchronous placeholder _submit_chain_dispatch_background commits
+        # before returning, so a status poll arriving during the (minutes-long)
+        # submission has a real row to read. The invariant this raw row count was
+        # written to protect is unchanged and still checked: the handler in
+        # viva_api.common.handlers.simulations must NOT add a generic row of its
+        # own on top -- its idempotent-insert guard sees the placeholder's
+        # correlation_id and skips. A THIRD row here would mean that guard broke.
+        # Counting rows rather than trusting get_hpcrun_by_ref's
+        # most-recent-wins lookup, so such a regression cannot hide behind "the
+        # newest row happens to look right."
         async with database_service.async_sessionmaker() as session:
             result = await session.execute(
-                select(func.count())
-                .select_from(ORMHpcRun)
-                .where(ORMHpcRun.jobref_simulation_id == simulation.database_id)
+                select(ORMHpcRun).where(ORMHpcRun.jobref_simulation_id == simulation.database_id).order_by(ORMHpcRun.id)
             )
-            row_count = result.scalar_one()
-        assert row_count == 1
+            rows = list(result.scalars().all())
+        assert len(rows) == 2
+        placeholder_row, campaign_row = rows
+        # The placeholder: LOCAL backend, both chain fields unset (so the
+        # scheduler's chain_n_generations IS NOT NULL poll set skips it).
+        assert placeholder_row.job_backend == JobBackend.LOCAL
+        assert placeholder_row.job_id_ext == simulation.job_id
+        assert placeholder_row.chain_n_generations is None
+        assert placeholder_row.chain_final_job_ids is None
+        # The real campaign row, inserted last and therefore the one every later
+        # status read resolves to. Same correlation_id as the placeholder, which
+        # is exactly what makes the handler's guard fire.
+        assert campaign_row.correlation_id == placeholder_row.correlation_id
 
         hpc_run = await database_service.get_hpcrun_by_ref(ref_id=simulation.database_id, job_type=JobType.SIMULATION)
         assert hpc_run is not None
+        assert hpc_run.database_id == campaign_row.id
+        assert hpc_run.job_id == JobId.ray("parca-1")
         assert hpc_run.chain_n_generations == 3
         assert hpc_run.chain_final_job_ids == ["s0g2", "s1g2"]
     finally:
