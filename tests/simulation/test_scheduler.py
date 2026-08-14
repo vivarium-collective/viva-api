@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.hpc.models import SlurmJob
 from viva_api.common.hpc.slurm_service import SlurmService
 from viva_api.common.messaging.messaging_service_redis import MessagingServiceRedis
@@ -24,6 +25,7 @@ from viva_api.simulation.database_service import DatabaseServiceSQL
 from viva_api.simulation.hpc_utils import get_correlation_id
 from viva_api.simulation.job_scheduler import JobScheduler
 from viva_api.simulation.models import (
+    ActiveAnalysis,
     HpcRun,
     JobType,
     ParcaDatasetRequest,
@@ -34,6 +36,7 @@ from viva_api.simulation.models import (
     WorkerEventMessagePayload,
 )
 from viva_api.simulation.simulation_service_ray import ChainCampaignPollResult
+from viva_api.simulation.tables_orm import AnalysisStatusDB
 
 
 def is_ci_environment() -> bool:
@@ -329,6 +332,152 @@ class TestAdvanceChainCampaign:
         # Campaign B: not terminal -> left untouched.
         refetched_b = await database_service.get_hpcrun(hpcrun_b.database_id)
         assert refetched_b is not None and refetched_b.status == JobStatus.RUNNING
+
+
+class TestAdvanceAnalysisRetry:
+    """JobScheduler._advance_analysis_retry / update_analysis_retries (backlog
+    item 38 track B): OOM-retry-escalation for the analysis DAG node.
+    simulation_service_ray is mocked here (its own AWS Batch call shapes are
+    proven for real in TestSimulationServiceRayStatusCancel/TestResubmitAnalysis,
+    tests/simulation/test_ray_backend.py) so these tests isolate JobScheduler's
+    OWN retry-vs-give-up decisions."""
+
+    @pytest.mark.asyncio
+    async def test_update_analysis_retries_is_a_noop_without_a_ray_service(self) -> None:
+        mock_database = AsyncMock()
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=mock_database, simulation_service_ray=None
+        )
+        await scheduler.update_analysis_retries()
+        mock_database.list_active_analyses.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_terminal_job_is_left_untouched(self) -> None:
+        analysis = ActiveAnalysis(database_id=1, job_id_ext="job-1", simulation_id=10, attempt=1, config={})
+        mock_ray = MagicMock()
+        mock_ray.get_job_status = AsyncMock(
+            return_value=JobStatusInfo(job_id=JobId.ray("job-1"), status=JobStatus.RUNNING)
+        )
+        mock_ray.resubmit_analysis = AsyncMock()
+        mock_database = AsyncMock()
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=mock_database, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_analysis_retry(analysis, mock_ray)
+
+        mock_database.update_analysis_status.assert_not_called()
+        mock_ray.resubmit_analysis.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_succeeded_job_marks_the_row_ready(self) -> None:
+        analysis = ActiveAnalysis(database_id=1, job_id_ext="job-1", simulation_id=10, attempt=1, config={})
+        mock_ray = MagicMock()
+        mock_ray.get_job_status = AsyncMock(
+            return_value=JobStatusInfo(job_id=JobId.ray("job-1"), status=JobStatus.COMPLETED)
+        )
+        mock_ray.resubmit_analysis = AsyncMock()
+        mock_database = AsyncMock()
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=mock_database, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_analysis_retry(analysis, mock_ray)
+
+        mock_database.update_analysis_status.assert_awaited_once_with(1, AnalysisStatusDB.READY)
+        mock_ray.resubmit_analysis.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_oom_on_attempt_one_resubmits_at_double_the_baseline(self) -> None:
+        """No memory_gb hint on the simulation -> baseline defaults to the CDK
+        job def's own current default (58 GiB); attempt 1 -> 2 doubles it,
+        mirroring Nextflow's own `1.GB * baseMem * task.attempt`."""
+        analysis = ActiveAnalysis(database_id=1, job_id_ext="job-1", simulation_id=10, attempt=1, config={})
+        mock_ray = MagicMock()
+        mock_ray.get_job_status = AsyncMock(
+            return_value=JobStatusInfo(job_id=JobId.ray("job-1"), status=JobStatus.FAILED, exit_code="137")
+        )
+        mock_ray.resubmit_analysis = AsyncMock(return_value="job-2")
+        mock_database = AsyncMock()
+        mock_database.get_simulation = AsyncMock(return_value=MagicMock(config=MagicMock(analysis_options=None)))
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=mock_database, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_analysis_retry(analysis, mock_ray)
+
+        mock_ray.resubmit_analysis.assert_awaited_once()
+        call_args = mock_ray.resubmit_analysis.call_args
+        assert call_args.args[0] is analysis
+        assert call_args.kwargs["memory_mib"] == 58 * 1024 * 2
+        mock_database.update_analysis_job_id.assert_awaited_once_with(1, job_id_ext="job-2", attempt=2)
+        mock_database.update_analysis_status.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_oom_at_max_retries_gives_up_and_marks_failed(self) -> None:
+        analysis = ActiveAnalysis(database_id=1, job_id_ext="job-1", simulation_id=10, attempt=3, config={})
+        mock_ray = MagicMock()
+        mock_ray.get_job_status = AsyncMock(
+            return_value=JobStatusInfo(job_id=JobId.ray("job-1"), status=JobStatus.FAILED, exit_code="137")
+        )
+        mock_ray.resubmit_analysis = AsyncMock()
+        mock_database = AsyncMock()
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=mock_database, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_analysis_retry(analysis, mock_ray)
+
+        mock_ray.resubmit_analysis.assert_not_called()
+        mock_database.update_analysis_status.assert_awaited_once()
+        call_args = mock_database.update_analysis_status.call_args
+        assert call_args.args[0] == 1
+        assert call_args.args[1] == AnalysisStatusDB.FAILED
+
+    @pytest.mark.asyncio
+    async def test_non_oom_failure_gives_up_immediately_regardless_of_attempt(self) -> None:
+        analysis = ActiveAnalysis(database_id=1, job_id_ext="job-1", simulation_id=10, attempt=1, config={})
+        mock_ray = MagicMock()
+        mock_ray.get_job_status = AsyncMock(
+            return_value=JobStatusInfo(
+                job_id=JobId.ray("job-1"), status=JobStatus.FAILED, exit_code="1", error_message="segfault"
+            )
+        )
+        mock_ray.resubmit_analysis = AsyncMock()
+        mock_database = AsyncMock()
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=mock_database, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_analysis_retry(analysis, mock_ray)
+
+        mock_ray.resubmit_analysis.assert_not_called()
+        mock_database.update_analysis_status.assert_awaited_once_with(
+            1, AnalysisStatusDB.FAILED, error_message="segfault"
+        )
+
+    @pytest.mark.asyncio
+    async def test_update_analysis_retries_processes_every_active_row(self) -> None:
+        a1 = ActiveAnalysis(database_id=1, job_id_ext="job-1", simulation_id=10, attempt=1, config={})
+        a2 = ActiveAnalysis(database_id=2, job_id_ext="job-2", simulation_id=11, attempt=1, config={})
+        mock_database = AsyncMock()
+        mock_database.list_active_analyses = AsyncMock(return_value=[a1, a2])
+
+        def _status(job_id: JobId) -> JobStatusInfo:
+            if job_id.value == "job-1":
+                return JobStatusInfo(job_id=job_id, status=JobStatus.COMPLETED)
+            return JobStatusInfo(job_id=job_id, status=JobStatus.RUNNING)
+
+        mock_ray = MagicMock()
+        mock_ray.get_job_status = AsyncMock(side_effect=_status)
+        mock_ray.resubmit_analysis = AsyncMock()
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=mock_database, simulation_service_ray=mock_ray
+        )
+
+        await scheduler.update_analysis_retries()
+
+        mock_database.update_analysis_status.assert_awaited_once_with(1, AnalysisStatusDB.READY)
 
 
 @pytest.mark.integration

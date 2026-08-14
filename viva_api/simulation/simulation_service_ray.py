@@ -61,6 +61,7 @@ from viva_api.simulation.github_repo import (
     fetch_repo_discovery,
 )
 from viva_api.simulation.models import (
+    ActiveAnalysis,
     CompositeEngine,
     JobType,
     ParcaDataset,
@@ -221,6 +222,61 @@ def analysis_modules_for(config: Any) -> dict[str, dict[str, Any]] | str:
     return modules or APPLICABLE_ANALYSES
 
 
+def analysis_memory_mib_for(config: Any) -> int | None:
+    """The analysis DAG node's memory override, in MiB, or ``None`` for the CDK default.
+
+    Reads the SAME ``config.analysis_options`` dict ``analysis_modules_for`` already
+    reads, for a sibling ``memory_gb`` key — the workload's own declared resource need,
+    matching vEcoli-private's real ``analysis_options.memory_gb`` Nextflow task resource
+    request (``runscripts/nextflow/config.template``) field-for-field. Item 38's root
+    cause was the analysis DAG node silently inheriting the per-generation simulation
+    job's fixed memory sizing with no dedicated, workload-declared knob at all — this is
+    that knob, read generically (any future simulator can populate the same field; this
+    function has zero sms-ecoli-specific knowledge). Absent/non-numeric is ``None``
+    (today's unchanged CDK-default behavior), never an error — a missing hint should
+    never block dispatch.
+    """
+    options: Any = getattr(config, "analysis_options", None)
+    raw: dict[str, Any] = options.model_dump() if isinstance(options, BaseModel) else dict(options or {})
+    memory_gb = raw.get("memory_gb")
+    if memory_gb is None:
+        return None
+    try:
+        return int(float(memory_gb) * 1024)
+    except (TypeError, ValueError):
+        logger.warning("analysis_options.memory_gb=%r is not numeric; ignoring", memory_gb)
+        return None
+
+
+def _node_range_memory_value(node_range: dict[str, Any]) -> str | None:
+    """The MEMORY resourceRequirement's value on one MNP node range, or ``None``."""
+    for req in node_range.get("container", {}).get("resourceRequirements", []):
+        if req.get("type") == "MEMORY":
+            value = req.get("value")
+            return str(value) if value is not None else None
+    return None
+
+
+def _set_memory_requirement(container: dict[str, Any], memory_mib: int) -> None:
+    """Overwrite a node range container's MEMORY resourceRequirement in place."""
+    for req in container.get("resourceRequirements", []):
+        if req.get("type") == "MEMORY":
+            req["value"] = str(memory_mib)
+
+
+def _job_def_matches(job_def: dict[str, Any], *, image: str, memory_mib: int | None) -> bool:
+    """Whether an existing job-def revision already targets ``image`` (and, when
+    ``memory_mib`` is given, that exact memory override) on every node range —
+    the reuse check ``_ensure_mnp_job_def`` uses to avoid churning revisions."""
+    node_ranges = job_def.get("nodeProperties", {}).get("nodeRangeProperties", [])
+    images = {nr.get("container", {}).get("image") for nr in node_ranges}
+    if images != {image}:
+        return False
+    if memory_mib is None:
+        return True
+    return all(_node_range_memory_value(nr) == str(memory_mib) for nr in node_ranges)
+
+
 def _is_upstream_vecoli(composite: CompositeEngine | None) -> bool:
     """The pristine upstream-vEcoli engine (``--composite vecoli``).
 
@@ -293,7 +349,7 @@ class SimulationServiceRay(SimulationService):
         registry = f"{settings.ecr_account_id}.dkr.ecr.{settings.batch_region}.amazonaws.com"
         return f"{registry}/{settings.ray_ecr_repository}:{commit}"
 
-    def _ensure_mnp_job_def(self, image: str, commit: str) -> str:
+    def _ensure_mnp_job_def(self, image: str, commit: str, memory_mib: int | None = None) -> str:
         """Return an MNP job definition (name:revision) whose image is the commit's image.
 
         Batch MNP can't override the image per-submission, so — symmetric with how K8s
@@ -302,22 +358,31 @@ class SimulationServiceRay(SimulationService):
         node count), swap ONLY every node range's container image to ``image``, and
         register it as ``<base>-<commit>``. An existing active revision already pointing
         at this image is reused, so resubmits don't churn revisions.
+
+        ``memory_mib``, when given, ALSO overrides every node range's container memory
+        resource requirement, and is folded into the job-def name (``<base>-<commit>-mem
+        <memory_mib>``) so it caches as its own distinct revision rather than colliding
+        with the un-overridden one — callers that never pass it (parca, simulation jobs)
+        keep the exact name/behavior they've always had. This is the workload-declared
+        resource hint from ``analysis_options.memory_gb`` (see ``analysis_memory_mib_for``)
+        — item 38's real fix, matching vEcoli-private's own ``analysis_options.memory_gb``
+        Nextflow task resource request rather than a DuckDB-side memory_limit guess.
         """
         settings = get_settings()
         batch = self._batch()
         name = f"{settings.ray_mnp_job_definition}-{commit}"
+        if memory_mib is not None:
+            name = f"{name}-mem{memory_mib}"
 
-        # Reuse an existing active revision that already targets this exact image.
+        # Reuse an existing active revision that already targets this exact image
+        # (and, when requested, this exact memory override).
         existing = batch.describe_job_definitions(jobDefinitionName=name, status="ACTIVE")
         for jd in existing.get("jobDefinitions", []):
-            images = {
-                nr.get("container", {}).get("image")
-                for nr in jd.get("nodeProperties", {}).get("nodeRangeProperties", [])
-            }
-            if images == {image}:
+            if _job_def_matches(jd, image=image, memory_mib=memory_mib):
                 return f"{name}:{jd['revision']}"
 
-        # Otherwise clone the base job def's node properties and swap the image.
+        # Otherwise clone the base job def's node properties and swap the image
+        # (and, when requested, the memory resource requirement).
         base = batch.describe_job_definitions(jobDefinitionName=settings.ray_mnp_job_definition, status="ACTIVE")
         base_defs = base.get("jobDefinitions", [])
         if not base_defs:
@@ -325,13 +390,21 @@ class SimulationServiceRay(SimulationService):
         node_properties = copy.deepcopy(max(base_defs, key=lambda d: d["revision"])["nodeProperties"])
         for nr in node_properties.get("nodeRangeProperties", []):
             nr.setdefault("container", {})["image"] = image
+            if memory_mib is not None:
+                _set_memory_requirement(nr["container"], memory_mib)
 
         response = batch.register_job_definition(
             jobDefinitionName=name,
             type="multinode",
             nodeProperties=node_properties,
         )
-        logger.info("Registered Ray MNP job def %s:%s for image %s", name, response["revision"], image)
+        logger.info(
+            "Registered Ray MNP job def %s:%s for image %s (memory_mib=%s)",
+            name,
+            response["revision"],
+            image,
+            memory_mib,
+        )
         return f"{name}:{response['revision']}"
 
     def _submit_mnp(
@@ -1346,7 +1419,8 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         modules against the campaign's INTENDED shape.
         """
         base_tags = self._chain_base_tags(simulation=simulation, commit=commit)
-        mnp_job_def = self._ensure_mnp_job_def(self._image_uri(commit), commit)
+        memory_mib = analysis_memory_mib_for(simulation.config)
+        mnp_job_def = self._ensure_mnp_job_def(self._image_uri(commit), commit, memory_mib=memory_mib)
         return await self._submit_analysis_job(
             simulation=simulation,
             database_service=database_service,
@@ -1357,6 +1431,61 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             n_generations=n_generations,
             depends_type=None,
             tags={**base_tags, "Phase": "analysis"},
+        )
+
+    async def resubmit_analysis(
+        self, analysis: ActiveAnalysis, database_service: DatabaseService, memory_mib: int
+    ) -> str:
+        """Resubmit an OOM'd analysis DAG node at a higher memory tier -- backlog
+        item 38 track B (OOM-retry-escalation), the resubmit half of
+        ``JobScheduler.update_analysis_retries``.
+
+        Same logical analysis (``analysis.database_id`` is unchanged; the caller
+        updates ``job_id_ext``/``attempt`` on that same row via
+        ``DatabaseService.update_analysis_job_id`` afterward), a new physical Batch
+        job id -- mirrors vEcoli-private's own Nextflow trace (one logical task, an
+        incrementing attempt, a new native job id each retry).
+
+        Reuses ``_ensure_mnp_job_def``'s job-def-per-(commit, memory_mib) caching
+        (the same mechanism item 38's ``memory_gb`` config knob already exercises)
+        and replays the exact command ``_submit_analysis_job`` originally built from
+        ``analysis.config`` (``n_seeds``/``n_generations``/``modules``/
+        ``analysis_name`` -- the flat dict shape ``_submit_analysis_job`` writes; see
+        ``ActiveAnalysis``'s docstring for why this isn't read via ``ExperimentAnalysisDTO``).
+        ``analysis_name`` is reused UNCHANGED (not regenerated) so the retry's
+        output lands in the SAME S3 result prefix as the original attempt --
+        ``out_s3``/``result_uri`` are therefore recomputed from the simulation's
+        own ``experiment_id`` exactly as ``_submit_analysis_job`` originally did,
+        not read back from ``analysis.config``.
+        """
+        simulation = await database_service.get_simulation(simulation_id=analysis.simulation_id)
+        if simulation is None:
+            raise RuntimeError(f"Simulation {analysis.simulation_id} not found for analysis retry")
+        simulator = await database_service.get_simulator(simulator_id=simulation.simulator_id)
+        if simulator is None:
+            raise RuntimeError(f"Simulator {simulation.simulator_id} not found for analysis retry")
+        commit = simulator.git_commit_hash
+        params = analysis.config
+
+        job_definition = self._ensure_mnp_job_def(self._image_uri(commit), commit, memory_mib=memory_mib)
+        base_tags = self._chain_base_tags(simulation=simulation, commit=commit)
+        return self._submit_mnp(
+            job_name=f"ray-analysis-retry-{params['analysis_name']}"[:128],
+            job_definition=job_definition,
+            num_nodes=1,
+            ray_job_cmd=self._analysis_command(
+                experiment_id=simulation.config.experiment_id,
+                n_seeds=params["n_seeds"],
+                n_generations=params["n_generations"],
+                modules=params["modules"],
+                analysis_name=params["analysis_name"],
+                commit=commit,
+            ),
+            out_s3=self._results_s3_uri(simulation.config.experiment_id),
+            out_dir=ANALYSIS_OUT_DIR,
+            depends_on=None,
+            depends_type=None,
+            tags={**base_tags, "Phase": "analysis-retry"},
         )
 
     @override
@@ -1389,13 +1518,24 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         status = JobStatus.from_batch_state(job.get("status", ""))
         started = job.get("startedAt")
         stopped = job.get("stoppedAt")
+        # Multi-node-parallel jobs (every Ray job this backend submits) never
+        # populate the top-level `container` -- container status only lands in
+        # `attempts[]` (confirmed against a real failed MNP job's describe-jobs
+        # response, item 38: top-level container was None, attempts[-1].container
+        # held exitCode=137 + the OOM reason). Fall back to the last attempt.
+        container = job.get("container") or {}
+        attempts = job.get("attempts") or []
+        if not container and attempts:
+            container = attempts[-1].get("container") or {}
+        exit_code = container.get("exitCode")
+        reason = container.get("reason") or job.get("statusReason")
         return JobStatusInfo(
             job_id=job_id,
             status=status,
             start_time=str(started) if started else None,
             end_time=str(stopped) if stopped else None,
-            exit_code=None,
-            error_message=job.get("statusReason") if status == JobStatus.FAILED else None,
+            exit_code=str(exit_code) if exit_code is not None else None,
+            error_message=reason if status == JobStatus.FAILED else None,
         )
 
     def get_chain_campaign_result(self, job_ids: list[str]) -> ChainCampaignPollResult:

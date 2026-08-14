@@ -276,6 +276,11 @@ class ORMAnalysis(Base):
     updated_at: Mapped[datetime.datetime | None] = mapped_column(
         nullable=True, server_default=func.now(), onupdate=func.now()
     )
+    # OOM-retry-escalation (backlog item 38 track B): which attempt this row is
+    # currently on. One logical row, physical job_id_ext swapped per attempt on
+    # resubmit -- mirrors vEcoli-private's own Nextflow trace (one logical task,
+    # incrementing attempt, new native job id each retry). Legacy rows default to 1.
+    attempt: Mapped[int] = mapped_column(nullable=False, server_default="1")
 
     def to_dto(self) -> ExperimentAnalysisDTO:
         options = AnalysisConfigOptions(**self.config["analysis_options"])

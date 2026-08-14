@@ -11,10 +11,12 @@ import pytest
 from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.config import ComputeBackend
+from viva_api.simulation.models import ActiveAnalysis
 from viva_api.simulation.simulation_service_ray import (
     PARCA_CACHE_DIR,
     SIM_OUT_DIR,
     SimulationServiceRay,
+    analysis_memory_mib_for,
     analysis_modules_for,
 )
 
@@ -416,6 +418,48 @@ class TestAnalysisModulesFor:
         assert analysis_modules_for(empty) == "applicable"
 
 
+class TestAnalysisMemoryMibFor:
+    """analysis_memory_mib_for reads the workload's OWN declared memory_gb hint —
+    item 38's real fix: the analysis DAG node previously had no dedicated,
+    workload-declared memory knob at all, silently inheriting the per-generation
+    simulation job's fixed sizing (backlog item 38, sms-ecoli #39 real-container
+    OOM). Mirrors vEcoli-private's analysis_options.memory_gb field-for-field."""
+
+    def test_declared_memory_gb_converts_to_mib(self) -> None:
+        from viva_api.simulation.models import AnalysisOptions, SimulationConfig
+
+        config = SimulationConfig(
+            experiment_id="exp-1", analysis_options=AnalysisOptions.model_validate({"memory_gb": 45})
+        )
+        assert analysis_memory_mib_for(config) == 45 * 1024
+
+    def test_fractional_memory_gb_converts_to_mib(self) -> None:
+        from viva_api.simulation.models import AnalysisOptions, SimulationConfig
+
+        config = SimulationConfig(
+            experiment_id="exp-1", analysis_options=AnalysisOptions.model_validate({"memory_gb": 2.5})
+        )
+        assert analysis_memory_mib_for(config) == int(2.5 * 1024)
+
+    def test_absent_hint_is_none_not_an_error(self) -> None:
+        from viva_api.simulation.models import SimulationConfig
+
+        assert analysis_memory_mib_for(SimulationConfig(experiment_id="exp-1")) is None
+
+    def test_non_numeric_hint_is_ignored_not_raised(self) -> None:
+        """A malformed hint must never block dispatch (best-effort by design,
+        same posture as the rest of the analysis DAG node). Exercises the
+        plain-dict branch specifically: a real pydantic AnalysisOptions already
+        rejects a non-numeric memory_gb at construction time, so this defensive
+        fallback only matters for a config whose analysis_options arrives as an
+        unvalidated dict (analysis_memory_mib_for's own dual-path handling,
+        mirroring analysis_modules_for)."""
+        from types import SimpleNamespace
+
+        config = SimpleNamespace(analysis_options={"memory_gb": "lots"})
+        assert analysis_memory_mib_for(config) is None
+
+
 class TestAnalysisCommand:
     """_analysis_command builds the analysis DAG node's workload."""
 
@@ -550,6 +594,67 @@ class TestSimulationServiceRayStatusCancel:
         info = await service.get_job_status(JobId.local("t"))
         assert info is not None and info.status == JobStatus.COMPLETED
         local.get_status.assert_called_once_with("t")
+
+    async def test_get_job_status_mnp_oom_exit_code_from_attempts(self) -> None:
+        """Multi-node-parallel jobs (every Ray job this backend submits) never
+        populate the top-level `container` -- only `attempts[]` does, confirmed
+        against a real failed item 38 MNP job's describe-jobs response (top-level
+        container was None, attempts[-1].container held exitCode=137 + the OOM
+        reason). This is the exit_code path backlog item 38 track B's
+        OOM-retry-escalation depends on."""
+        mock_batch = MagicMock()
+        mock_batch.describe_jobs.return_value = {
+            "jobs": [
+                {
+                    "jobId": "analysis-oom",
+                    "status": "FAILED",
+                    "statusReason": "Essential container in task exited",
+                    "container": None,
+                    "attempts": [
+                        {
+                            "container": {
+                                "exitCode": 137,
+                                "reason": "OutOfMemoryError: Container killed due to memory usage",
+                            }
+                        }
+                    ],
+                }
+            ]
+        }
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            info = await service.get_job_status(JobId.ray("analysis-oom"))
+        assert info is not None
+        assert info.status == JobStatus.FAILED
+        assert info.exit_code == "137"
+        assert info.error_message == "OutOfMemoryError: Container killed due to memory usage"
+
+    async def test_get_job_status_top_level_container_takes_precedence(self) -> None:
+        """attempts[] is only a fallback for the MNP shape where the top-level
+        field is empty -- a populated top-level container must win."""
+        mock_batch = MagicMock()
+        mock_batch.describe_jobs.return_value = {
+            "jobs": [
+                {
+                    "jobId": "single-container",
+                    "status": "FAILED",
+                    "container": {"exitCode": 1, "reason": "top-level reason"},
+                    "attempts": [{"container": {"exitCode": 137, "reason": "stale attempt reason"}}],
+                }
+            ]
+        }
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            info = await service.get_job_status(JobId.ray("single-container"))
+        assert info is not None
+        assert info.exit_code == "1"
+        assert info.error_message == "top-level reason"
 
     async def test_cancel_terminates_batch_job(self) -> None:
         mock_batch = MagicMock()
@@ -1051,6 +1156,159 @@ class TestEnsureMnpJobDef:
         assert jd == "smscdk-ray-mnp-abc1234:5"
         mock_batch.register_job_definition.assert_not_called()
 
+    def test_memory_mib_none_is_byte_for_byte_todays_behavior(self) -> None:
+        """The default (no memory hint) call site must be completely unaffected
+        by this change — same job-def name, same reuse-check, no new AWS call
+        shape. Regression guard against item 38's fix accidentally touching the
+        parca/simulation job-def paths, which never pass memory_mib."""
+        image = "476270107793.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:abc1234"
+        mock_batch = MagicMock()
+        mock_batch.describe_job_definitions.return_value = {
+            "jobDefinitions": [
+                {"revision": 5, "nodeProperties": {"nodeRangeProperties": [{"container": {"image": image}}]}}
+            ]
+        }
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            jd = service._ensure_mnp_job_def(image, "abc1234", memory_mib=None)
+        assert jd == "smscdk-ray-mnp-abc1234:5"
+        mock_batch.register_job_definition.assert_not_called()
+
+    def test_memory_mib_override_registers_a_distinctly_named_revision(self) -> None:
+        """Item 38's real fix: an analysis job with a workload-declared memory
+        hint gets its OWN job-def revision (name folds in the memory value),
+        with the node range's container memory resource requirement patched to
+        match — not just the image, unlike every other existing call site."""
+        image = "476270107793.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:abc1234"
+        mock_batch = MagicMock()
+        # No existing "-mem46080" revision yet.
+        mock_batch.describe_job_definitions.side_effect = [
+            {"jobDefinitions": []},  # the -mem46080 name: nothing registered yet
+            {
+                "jobDefinitions": [
+                    {
+                        "revision": 3,
+                        "nodeProperties": {
+                            "nodeRangeProperties": [
+                                {
+                                    "container": {
+                                        "image": "old:image",
+                                        "resourceRequirements": [
+                                            {"type": "VCPU", "value": "16"},
+                                            {"type": "MEMORY", "value": "60000"},
+                                        ],
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },  # the base job def, to clone from
+        ]
+        mock_batch.register_job_definition.return_value = {"revision": 1}
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            jd = service._ensure_mnp_job_def(image, "abc1234", memory_mib=46080)
+        assert jd == "smscdk-ray-mnp-abc1234-mem46080:1"
+        registered = mock_batch.register_job_definition.call_args.kwargs
+        assert registered["jobDefinitionName"] == "smscdk-ray-mnp-abc1234-mem46080"
+        node_range = registered["nodeProperties"]["nodeRangeProperties"][0]
+        assert node_range["container"]["image"] == image
+        reqs = {r["type"]: r["value"] for r in node_range["container"]["resourceRequirements"]}
+        assert reqs["MEMORY"] == "46080"
+        assert reqs["VCPU"] == "16"  # untouched — only MEMORY is overridden
+
+    def test_memory_mib_override_reuses_a_matching_existing_revision(self) -> None:
+        """A second submission with the SAME (commit, memory_mib) must reuse the
+        already-registered revision, not churn a new one every call — same
+        caching discipline the image-only path already has."""
+        image = "476270107793.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:abc1234"
+        mock_batch = MagicMock()
+        mock_batch.describe_job_definitions.return_value = {
+            "jobDefinitions": [
+                {
+                    "revision": 2,
+                    "nodeProperties": {
+                        "nodeRangeProperties": [
+                            {
+                                "container": {
+                                    "image": image,
+                                    "resourceRequirements": [{"type": "MEMORY", "value": "46080"}],
+                                }
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            jd = service._ensure_mnp_job_def(image, "abc1234", memory_mib=46080)
+        assert jd == "smscdk-ray-mnp-abc1234-mem46080:2"
+        mock_batch.register_job_definition.assert_not_called()
+
+    def test_memory_mib_mismatch_against_an_existing_same_named_revision_registers_a_new_one(self) -> None:
+        """Defensive: if a same-named revision exists but its actual memory value
+        doesn't match (shouldn't normally happen since the value is IN the name,
+        but the check must not silently trust the name alone), a new revision is
+        registered rather than incorrectly reused."""
+        image = "476270107793.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:abc1234"
+        mock_batch = MagicMock()
+        mock_batch.describe_job_definitions.side_effect = [
+            {
+                "jobDefinitions": [
+                    {
+                        "revision": 2,
+                        "nodeProperties": {
+                            "nodeRangeProperties": [
+                                {
+                                    "container": {
+                                        "image": image,
+                                        "resourceRequirements": [{"type": "MEMORY", "value": "12345"}],
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+            {
+                "jobDefinitions": [
+                    {
+                        "revision": 2,
+                        "nodeProperties": {
+                            "nodeRangeProperties": [
+                                {
+                                    "container": {
+                                        "image": image,
+                                        "resourceRequirements": [{"type": "MEMORY", "value": "12345"}],
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+        ]
+        mock_batch.register_job_definition.return_value = {"revision": 3}
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            jd = service._ensure_mnp_job_def(image, "abc1234", memory_mib=46080)
+        assert jd == "smscdk-ray-mnp-abc1234-mem46080:3"
+        mock_batch.register_job_definition.assert_called_once()
+
 
 @pytest.mark.asyncio
 class TestSubmitJobPacer:
@@ -1533,3 +1791,73 @@ class TestSubmitCampaignAnalysis:
         assert len(records) == 1
         assert records[0].status == JobStatus.FAILED
         assert "Batch said no" in (records[0].error_message or "")
+
+
+@pytest.mark.asyncio
+class TestResubmitAnalysis:
+    """resubmit_analysis is what JobScheduler.update_analysis_retries calls to
+    resubmit an OOM'd analysis DAG node at an escalated memory tier (backlog
+    item 38 track B) -- reuses _ensure_mnp_job_def's job-def-per-(commit,
+    memory_mib) caching (the exact mechanism track A's fix already exercises)
+    and replays the same command _submit_analysis_job originally built, at the
+    SAME analysis_name/S3 output location as the original attempt."""
+
+    async def test_replays_the_original_command_at_the_new_memory_tier(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+        simulator = await database_service.get_simulator(simulation.simulator_id)
+        assert simulator is not None
+        mock_batch = _fake_batch(["analysis-retry-1"])
+        service = SimulationServiceRay()
+
+        analysis = ActiveAnalysis(
+            database_id=1,
+            job_id_ext="analysis-original-attempt1",
+            simulation_id=simulation.database_id,
+            attempt=1,
+            config={
+                "out_uri": "s3://mybucket/vecoli-output/some-other-experiment",  # deliberately stale/unused
+                "n_seeds": 2,
+                "n_generations": 10,
+                "modules": "applicable",
+                "analysis_name": "analysis-exp-abcd1234",
+                "trigger": "dispatch-dag",
+                "analysis_options": {"experiment_id": [simulation.config.experiment_id]},
+            },
+        )
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            new_job_id = await service.resubmit_analysis(analysis, database_service, memory_mib=116000)
+
+        assert new_job_id == "analysis-retry-1"
+        register_call = mock_batch.register_job_definition.call_args
+        assert register_call.kwargs["jobDefinitionName"] == f"smscdk-ray-mnp-{simulator.git_commit_hash}-mem116000"
+
+        submit_call = mock_batch.submit_job.call_args_list[0]
+        env = _env_of(submit_call)
+        assert "--analysis-name analysis-exp-abcd1234" in env["RAY_JOB_CMD"]
+        assert "--n-seeds 2" in env["RAY_JOB_CMD"]
+        assert "--n-generations 10" in env["RAY_JOB_CMD"]
+        # out_s3 is recomputed from the simulation's OWN experiment_id (matching
+        # the original _submit_analysis_job semantics) -- NOT read back from the
+        # stale/unused analysis.config["out_uri"] above.
+        assert simulation.config.experiment_id in env["RAY_JOB_CMD"]
+        assert "some-other-experiment" not in env["RAY_JOB_CMD"]
+
+    async def test_raises_when_the_simulation_no_longer_exists(self, database_service: "DatabaseServiceSQL") -> None:
+        service = SimulationServiceRay()
+        analysis = ActiveAnalysis(
+            database_id=1,
+            job_id_ext="analysis-orphan",
+            simulation_id=999999,
+            attempt=1,
+            config={"n_seeds": 1, "n_generations": 1, "modules": "applicable", "analysis_name": "orphan"},
+        )
+        with pytest.raises(RuntimeError, match="Simulation 999999 not found"):
+            await service.resubmit_analysis(analysis, database_service, memory_mib=60000)

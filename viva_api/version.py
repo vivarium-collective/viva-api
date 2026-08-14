@@ -322,4 +322,15 @@
 #          (that floor was AWS Batch's own array-size minimum, moot once nothing is
 #          an array job). RayLayout.wave_state_uri/wave_state_prefix ->
 #          daughter_state_uri/daughter_state_prefix (pure rename, same S3 layout).
-__version__ = "0.9.42"
+# 0.9.43: OOM-retry-escalation for the analysis DAG node (item 38 track B) --
+#          JobScheduler.update_analysis_retries() polls every COMPUTING Ray-backend
+#          analysis job to terminal state and, on an OOM (exit code 137), resubmits
+#          at an escalated memory_gb tier (baseline x (attempt+1), capped at 3
+#          attempts, then marks the row FAILED) -- mirrors vEcoli-private's own
+#          Nextflow scaledMemory/maxRetries exactly. New Analysis.attempt column
+#          (migration b7c9e1a3d5f2) tracks retry count per row. Not yet needed in
+#          practice (the CDK instance-size fix that resolved item 38 for real made
+#          this unnecessary at pilot scale) -- ships as a real, tested safety net
+#          for when memory pressure genuinely scales with campaign size, not
+#          activated by any change in default behavior.
+__version__ = "0.9.43"
