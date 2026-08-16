@@ -37,19 +37,19 @@ from collections.abc import AsyncGenerator, Generator
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
-from alembic import command
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
+from alembic import command
 from tests.docker_utils import SKIP_DOCKER_REASON, SKIP_DOCKER_TESTS
 from viva_api.common.hpc.job_service import JobStatusUpdate
 from viva_api.common.models import JobId, JobStatus
+from viva_api.compose.tables_orm import ComposeBase
 from viva_api.simulation.database_service import DatabaseServiceSQL
 from viva_api.simulation.db_reconcile import _alembic_config
 from viva_api.simulation.models import JobType
-from viva_api.compose.tables_orm import ComposeBase
 from viva_api.simulation.tables_orm import ORMHpcRun
 
 # The buggy migration itself: real, currently-deployed enum shape.
@@ -161,7 +161,9 @@ async def _shim_missing_hpcrun_columns(engine: AsyncEngine) -> None:
 
 
 @pytest_asyncio.fixture(scope="function")
-async def hpcrun_capable_engine_pre_fix(fresh_postgres_url: str, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncEngine]:
+async def hpcrun_capable_engine_pre_fix(
+    fresh_postgres_url: str, monkeypatch: pytest.MonkeyPatch
+) -> AsyncGenerator[AsyncEngine]:
     """Real migrations up to the buggy revision, plus the column shim needed
     for ``DatabaseServiceSQL`` to operate (see ``_shim_missing_hpcrun_columns``).
     Unrelated to backlog item 40; not fixed here."""
@@ -173,7 +175,9 @@ async def hpcrun_capable_engine_pre_fix(fresh_postgres_url: str, monkeypatch: py
 
 
 @pytest_asyncio.fixture(scope="function")
-async def hpcrun_capable_engine_fixed(fresh_postgres_url: str, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncEngine]:
+async def hpcrun_capable_engine_fixed(
+    fresh_postgres_url: str, monkeypatch: pytest.MonkeyPatch
+) -> AsyncGenerator[AsyncEngine]:
     """Same as above, migrated all the way to backlog item 40's fix."""
     await _migrate_to(fresh_postgres_url, FIX_REVISION, monkeypatch)
     engine = create_async_engine(fresh_postgres_url)
