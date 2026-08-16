@@ -705,6 +705,67 @@ class TestSimulationServiceRayStatusCancel:
         assert info is not None and info.status == JobStatus.COMPLETED
         local.get_status.assert_called_once_with("t")
 
+    async def test_get_job_status_mnp_oom_exit_code_from_attempts(self) -> None:
+        """Multi-node-parallel jobs (every Ray job this backend submits) never
+        populate the top-level `container` -- only `attempts[]` does, confirmed
+        against a real failed item 38 MNP job's describe-jobs response (top-level
+        container was None, attempts[-1].container held exitCode=137 + the OOM
+        reason). This is the exit_code path item 50 Gap 6's OOM-retry-escalation
+        (folded in from viva-api PR #239) depends on."""
+        mock_batch = MagicMock()
+        mock_batch.describe_jobs.return_value = {
+            "jobs": [
+                {
+                    "jobId": "analysis-oom",
+                    "status": "FAILED",
+                    "statusReason": "Essential container in task exited",
+                    "container": None,
+                    "attempts": [
+                        {
+                            "container": {
+                                "exitCode": 137,
+                                "reason": "OutOfMemoryError: Container killed due to memory usage",
+                            }
+                        }
+                    ],
+                }
+            ]
+        }
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            info = await service.get_job_status(JobId.ray("analysis-oom"))
+        assert info is not None
+        assert info.status == JobStatus.FAILED
+        assert info.exit_code == "137"
+        assert info.error_message == "OutOfMemoryError: Container killed due to memory usage"
+
+    async def test_get_job_status_top_level_container_takes_precedence(self) -> None:
+        """attempts[] is only a fallback for the MNP shape where the top-level
+        field is empty -- a populated top-level container must win."""
+        mock_batch = MagicMock()
+        mock_batch.describe_jobs.return_value = {
+            "jobs": [
+                {
+                    "jobId": "single-container",
+                    "status": "FAILED",
+                    "container": {"exitCode": 1, "reason": "top-level reason"},
+                    "attempts": [{"container": {"exitCode": 137, "reason": "stale attempt reason"}}],
+                }
+            ]
+        }
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            info = await service.get_job_status(JobId.ray("single-container"))
+        assert info is not None
+        assert info.exit_code == "1"
+        assert info.error_message == "top-level reason"
+
     async def test_cancel_terminates_batch_job(self) -> None:
         mock_batch = MagicMock()
         service = SimulationServiceRay()

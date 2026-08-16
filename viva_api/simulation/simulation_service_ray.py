@@ -1536,13 +1536,24 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         status = JobStatus.from_batch_state(job.get("status", ""))
         started = job.get("startedAt")
         stopped = job.get("stoppedAt")
+        # Multi-node-parallel jobs (every Ray job this backend submits) never
+        # populate the top-level `container` -- container status only lands in
+        # `attempts[]` (confirmed against a real failed MNP job's describe-jobs
+        # response, item 38: top-level container was None, attempts[-1].container
+        # held exitCode=137 + the OOM reason). Fall back to the last attempt.
+        container = job.get("container") or {}
+        attempts = job.get("attempts") or []
+        if not container and attempts:
+            container = attempts[-1].get("container") or {}
+        exit_code = container.get("exitCode")
+        reason = container.get("reason") or job.get("statusReason")
         return JobStatusInfo(
             job_id=job_id,
             status=status,
             start_time=str(started) if started else None,
             end_time=str(stopped) if stopped else None,
-            exit_code=None,
-            error_message=job.get("statusReason") if status == JobStatus.FAILED else None,
+            exit_code=str(exit_code) if exit_code is not None else None,
+            error_message=reason if status == JobStatus.FAILED else None,
         )
 
     def get_chain_campaign_result(self, job_ids: list[str]) -> ChainCampaignPollResult:

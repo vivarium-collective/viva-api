@@ -105,6 +105,40 @@ class ComposeHpcRun(BaseModel):
     error_message: str | None = None
 
 
+class ComposeAnalysisStatus(StrEnum):
+    """Coarse readiness of a compose-triggered analysis result set — mirrors the legacy
+    ``AnalysisStatusDB`` (COMPUTING/READY/FAILED) one-for-one, deliberately NOT imported
+    from ``viva_api.simulation.*``: the compose subsystem keeps its own self-contained
+    enums (see ``ComposeJobStatus`` vs. the legacy ``JobStatus``), never cross-importing
+    the legacy data model (item 50 Part 1's "don't collapse the two" boundary)."""
+
+    COMPUTING = "computing"
+    READY = "ready"
+    FAILED = "failed"
+
+
+class ComposeAnalysis(BaseModel):
+    """A compose-triggered analysis DAG node — item 50 Gap 6. Mirrors the legacy
+    ``ExperimentAnalysisDTO``/``ORMAnalysis`` shape (``config`` is the authoritative,
+    replayable dispatch payload; ``attempt`` tracks OOM-retry-escalation, folded in from
+    viva-api PR #239) but keyed to ``compose_simulation`` instead of the legacy
+    ``simulation`` table, and dispatched by ``ComposeSimulationServiceRay`` instead of
+    ``SimulationServiceRay`` directly."""
+
+    database_id: int
+    name: str
+    config: dict[str, Any]
+    simulation_id: int
+    job_id_ext: str | None = None
+    job_backend: str = "ray"
+    status: ComposeAnalysisStatus = ComposeAnalysisStatus.COMPUTING
+    result_uri: str | None = None
+    attempt: int = 1
+    error_message: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # BiGraph compute registry
 # ---------------------------------------------------------------------------

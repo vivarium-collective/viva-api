@@ -7,6 +7,7 @@ the existing sms-api tables.
 import datetime
 import enum
 import logging
+from typing import Any
 
 from sqlalchemy import ForeignKey, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
@@ -20,6 +21,8 @@ from viva_api.compose.models import (
     BiGraphComputeType,
     BiGraphProcess,
     BiGraphStep,
+    ComposeAnalysis,
+    ComposeAnalysisStatus,
     ComposeHpcRun,
     ComposeJobStatus,
     ComposeJobType,
@@ -75,6 +78,19 @@ class ComposeJobTypeDB(enum.Enum):
     @classmethod
     def from_job_type(cls, job_type: ComposeJobType) -> "ComposeJobTypeDB":
         return ComposeJobTypeDB(job_type.value)
+
+
+class ComposeAnalysisStatusDB(enum.Enum):
+    COMPUTING = "computing"
+    READY = "ready"
+    FAILED = "failed"
+
+    def to_status(self) -> ComposeAnalysisStatus:
+        return ComposeAnalysisStatus(self.value)
+
+    @classmethod
+    def from_status(cls, status: ComposeAnalysisStatus) -> "ComposeAnalysisStatusDB":
+        return ComposeAnalysisStatusDB(status.value)
 
 
 class PackageTypeDB(enum.Enum):
@@ -194,6 +210,52 @@ class ORMComposeHpcRun(ComposeBase):
             error_message=self.error_message,
             start_time=str(self.start_time) if self.start_time else None,
             end_time=str(self.end_time) if self.end_time else None,
+        )
+
+
+class ORMComposeAnalysis(ComposeBase):
+    """A compose-triggered analysis DAG node — item 50 Gap 6. Deliberately its own
+    table, not folded into ``ORMComposeHpcRun``: that table's ``job_type`` only has
+    SIMULATION/BUILD_CONTAINER variants and no ``config``/``attempt``/``result_uri``
+    columns, and forcing analysis's real shape (one logical row, config replayable
+    for retries, multiple physical job ids across attempts — see the legacy
+    ``ORMAnalysis``, which this mirrors) into that shape would fight it. Same
+    reasoning ``ORMAnalysis`` itself already embodies, one layer over in the legacy
+    data model.
+    """
+
+    __tablename__ = "compose_analysis"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(nullable=False)
+    config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    simulation_id: Mapped[int] = mapped_column(ForeignKey("compose_simulation.id"), nullable=False, index=True)
+    job_id_ext: Mapped[str | None] = mapped_column(nullable=True)
+    job_backend: Mapped[str] = mapped_column(nullable=False, server_default=JobBackend.RAY)
+    status: Mapped[ComposeAnalysisStatusDB] = mapped_column(nullable=False)
+    result_uri: Mapped[str | None] = mapped_column(nullable=True)
+    # OOM-retry-escalation (folded in from viva-api PR #239 / backlog item 38 track B):
+    # one logical row tracks multiple physical retry submissions, ``job_id_ext`` swapped
+    # in place on each retry — mirrors ``ORMAnalysis.attempt`` exactly.
+    attempt: Mapped[int] = mapped_column(nullable=False, server_default="1")
+    error_message: Mapped[str | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+    def to_analysis(self) -> ComposeAnalysis:
+        return ComposeAnalysis(
+            database_id=self.id,
+            name=self.name,
+            config=self.config,
+            simulation_id=self.simulation_id,
+            job_id_ext=self.job_id_ext,
+            job_backend=self.job_backend,
+            status=self.status.to_status(),
+            result_uri=self.result_uri,
+            attempt=self.attempt,
+            error_message=self.error_message,
+            created_at=str(self.created_at) if self.created_at else None,
+            updated_at=str(self.updated_at) if self.updated_at else None,
         )
 
 
