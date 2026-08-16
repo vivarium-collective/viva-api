@@ -921,12 +921,13 @@ class TestSimulationServiceRayBuild:
         assert "run_phase0_xarray_ensemble.py" not in cmd
         assert "aws s3 cp s3://mybucket/vecoli-output/sim47-real-experiment/run_pbg.py /tmp/run_pbg.py" in cmd
         assert "python /tmp/run_pbg.py" in cmd
-        # Exact match, not a substring check. sms-ecoli has no "ecoli_baseline" module
-        # at all -- two real pilot dispatches (2026-08-06) failed chasing that name
-        # before the real module (v2ecoli/composites/batch_baseline.py, decorated
-        # name="batch_baseline") was confirmed directly against the deployed sms-ecoli
-        # image at commit e38f742, never the separate/diverged local v2ecoli checkout.
-        assert "--composite-id v2ecoli.composites.batch_baseline.batch_baseline " in cmd
+        # Exact match, not a substring check. Verified directly against the deployed
+        # sms-ecoli image (commit c44b69a, build 63) -- v2ecoli #373 folded the old
+        # standalone batch_baseline composite into ecoli_baseline.py's baseline()
+        # (backlog item 55; the old id now fails loudly instead of silently drifting,
+        # by the composite registry's own deliberate design -- see the constant's
+        # own comment in simulation_service_ray.py for the full incident history).
+        assert "--composite-id v2ecoli.composites.ecoli_baseline.ecoli_baseline " in cmd
         assert "PBG_CORE_BUILDER=v2ecoli.core:build_core" in cmd
         assert "-n 1" in cmd
 
@@ -1006,7 +1007,7 @@ class TestSeedGenerationCommand:
                 runner_s3_uri="s3://mybucket/vecoli-output/sim47-chain-experiment/run_pbg.py",
             )
         assert "aws s3 cp s3://mybucket/vecoli-output/sim47-chain-experiment/run_pbg.py /tmp/run_pbg.py" in cmd
-        assert "--composite-id v2ecoli.composites.batch_baseline.batch_baseline " in cmd
+        assert "--composite-id v2ecoli.composites.ecoli_baseline.ecoli_baseline " in cmd
         assert "PBG_CORE_BUILDER=v2ecoli.core:build_core" in cmd
         assert "-n 1" in cmd
         # No array-index resolution left anywhere -- the whole point of the rework.
@@ -1014,7 +1015,12 @@ class TestSeedGenerationCommand:
         assert "python3 -c" not in cmd
 
         overrides = self._overrides(cmd)
-        assert overrides["base_seed"] == 7
+        # ecoli_baseline.baseline()'s own param is `seed`, not `base_seed` (backlog
+        # item 55) -- a real regression: passing base_seed here is an unexpected-
+        # kwarg TypeError against the composite actually registered in the deployed
+        # image, exactly the failure a real dispatch (sim 152) hit on 2026-08-16.
+        assert overrides["seed"] == 7
+        assert "base_seed" not in overrides
         assert overrides["initial_generation_index"] == 0
         assert overrides["initial_carry_state_path"] == ""
         assert overrides["daughter_state_out_path"] == (
@@ -1041,7 +1047,7 @@ class TestSeedGenerationCommand:
                 runner_s3_uri="s3://mybucket/vecoli-output/exp-b/run_pbg.py",
             )
         overrides = self._overrides(cmd)
-        assert overrides["base_seed"] == 42
+        assert overrides["seed"] == 42
         assert overrides["initial_generation_index"] == 3
         assert overrides["initial_carry_state_path"] == (
             "s3://mybucket/vecoli-output/exp-b/daughter-state/seed42/gen2.pkl"
@@ -1367,7 +1373,7 @@ class TestChainDispatchSubmission:
         env = _env_of(s0g1)
         tokens = shlex.split(env["RAY_JOB_CMD"])
         overrides = json.loads(tokens[tokens.index("--overrides") + 1])
-        assert overrides["base_seed"] == 0
+        assert overrides["seed"] == 0
         assert overrides["initial_generation_index"] == 1
         assert overrides["initial_carry_state_path"] == (
             f"s3://mybucket/vecoli-output/{experiment_id}/daughter-state/seed0/gen0.pkl"

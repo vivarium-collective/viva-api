@@ -93,18 +93,30 @@ _RUNNER_SRC = (_res.files("viva_api.compose") / "run_pbg.py").read_text()
 # it was verified directly against the DEPLOYED sms-ecoli image (commit e38f742,
 # `git show`/`git grep` against that exact commit — never the local v2ecoli
 # checkout, a separate, structurally-diverged repo that is NOT a mirror of what's
-# actually in this simulator image):
-#   1st: "v2ecoli.composites.ecoli_baseline" — missing the id scheme's trailing
-#     name-repeat.
-#   2nd: "...ecoli_baseline.ecoli_baseline" — correctly SHAPED, but sms-ecoli has
-#     no "ecoli_baseline" module at all (zero matches anywhere in that repo at the
-#     deployed commit) — it was chasing a module name from a different codebase.
-# The real module is v2ecoli/composites/batch_baseline.py: decorated function
-# `batch_baseline`, name="batch_baseline". Its declared parameters (n_seeds,
-# n_generations, cache_dir, out_dir, experiment_id, analyses, parallel) match the
-# `overrides` dict below exactly. sms-ecoli's separate baseline.py is single-run
-# only (no n_seeds/n_generations param at all) — not a candidate for this path.
-V2ECOLI_BATCH_BASELINE_COMPOSITE_ID = "v2ecoli.composites.batch_baseline.batch_baseline"
+# actually in this simulator image). At that commit the real module was
+# v2ecoli/composites/batch_baseline.py (decorated function `batch_baseline`,
+# name="batch_baseline") — this constant was correctly set to
+# "v2ecoli.composites.batch_baseline.batch_baseline" and worked through build 62
+# (commit 8d50ff0, item 1's real 1000x10 campaign).
+#
+# UPDATED 2026-08-16 (backlog item 55): sms-ecoli PR #56 (the sync that also
+# carried item 52's wall-time fix) finally synced a v2ecoli upstream refactor that
+# had been sitting unsynced since 2026-07-25 (v2ecoli #373, "Unify composites into
+# baseline: knockouts + media + batch (n_seeds)") — it deleted
+# composites/batch_baseline.py and folded its batch/lineage behavior into
+# composites/ecoli_baseline.py's `baseline()` function (n_seeds/n_generations > 1
+# switches it into what used to be the standalone batch_baseline composite).
+# v2ecoli/composites/__init__.py deliberately registers NO legacy-id alias for the
+# old name ("a stale `baseline` id resolving silently would only hide a missed
+# reference") — so the old id now fails LOUDLY (confirmed via a real dispatch,
+# sim 152, 2026-08-16: "no composite registered as
+# 'v2ecoli.composites.batch_baseline.batch_baseline'"), exactly as its authors
+# intended, rather than silently drifting. Re-verified the SAME way the 2026-08-06
+# incident above did — `git show`/`git grep` directly against the real deployed
+# commit (sms-ecoli c44b69a, build 63), never the separately-diverged local v2ecoli
+# checkout. `baseline()`'s real signature (checked directly) is a strict superset
+# of the old `batch_baseline` params EXCEPT one rename: `base_seed` -> `seed`.
+V2ECOLI_BATCH_BASELINE_COMPOSITE_ID = "v2ecoli.composites.ecoli_baseline.ecoli_baseline"
 V2ECOLI_CORE_BUILDER = "v2ecoli.core:build_core"
 
 # Absolute paths inside the v2ecoli Ray image (WORKDIR=/app/v2ecoli). The
@@ -557,14 +569,14 @@ class SimulationServiceRay(SimulationService):
             # entirely and only ever runs one generation per seed.
             #
             # Dispatched as a registered process-bigraph composite (sms-ecoli's
-            # v2ecoli/composites/batch_baseline.py, which wires in BatchBaselineRunner
-            # directly — a dedicated always-batch-shaped composite, not a conditional
-            # branch of the single-run baseline.py) run through the SAME generic
-            # run_pbg.py every compose-on-Batch job already uses — not a
-            # v2ecoli-specific CLI script. See backlog items 26/27: this is the one
-            # execution mechanism both the ensemble endpoint and the generic compose
-            # endpoint dispatch through; only the composite id + overrides differ per
-            # caller.
+            # v2ecoli/composites/ecoli_baseline.py's `baseline()` — n_seeds/
+            # n_generations > 1 switches it into the batch/lineage shape that used
+            # to be the standalone batch_baseline composite before it was folded in
+            # here, backlog item 55) run through the SAME generic run_pbg.py every
+            # compose-on-Batch job already uses — not a v2ecoli-specific CLI script.
+            # See backlog items 26/27: this is the one execution mechanism both the
+            # ensemble endpoint and the generic compose endpoint dispatch through;
+            # only the composite id + overrides differ per caller.
             if not experiment_id:
                 raise RuntimeError("experiment_id is required for multi-generation batch dispatch")
             if not runner_s3_uri:
@@ -630,12 +642,14 @@ class SimulationServiceRay(SimulationService):
         than a special case to skip it.
 
         CROSS-REPO CONTRACT: overrides threading these 3 keys through to
-        ``v2ecoli/composites/batch_baseline.py``'s own ``parameters={...}``
-        declaration (the composite this command dispatches through, via
-        ``V2ECOLI_BATCH_BASELINE_COMPOSITE_ID``) is sms-ecoli PR #39's
-        responsibility, already applied there — see that repo's own history;
-        nothing about that contract is affected by this per-seed rework, only
-        WHICH viva-api command builder emits the same 3 keys.
+        ``v2ecoli/composites/ecoli_baseline.py``'s ``baseline()`` signature (the
+        composite this command dispatches through, via
+        ``V2ECOLI_BATCH_BASELINE_COMPOSITE_ID`` — formerly a dedicated
+        ``composites/batch_baseline.py``, folded into ``ecoli_baseline.py`` by
+        v2ecoli #373 and finally synced into sms-ecoli by PR #56, backlog item 55)
+        is v2ecoli's own responsibility; nothing about that contract is affected by
+        this per-seed rework, only WHICH viva-api command builder emits the same
+        keys.
 
         ``out_dir`` is ``RayLayout.seed_results_uri`` (an ``s3://`` URI), not a
         local path: every generation's job for this seed shares it, so the
@@ -664,7 +678,10 @@ class SimulationServiceRay(SimulationService):
             "experiment_id": experiment_id,
             "analyses": "none",
             "parallel": "",
-            "base_seed": int(seed),
+            # ecoli_baseline.baseline()'s own param is `seed`, not `base_seed` --
+            # the latter was correct for the old, now-deleted batch_baseline
+            # composite (backlog item 55) but is an unexpected-kwarg TypeError here.
+            "seed": int(seed),
             "initial_generation_index": int(generation_index),
             "initial_carry_state_path": initial_carry_state_path,
             "daughter_state_out_path": daughter_state_out_path,
@@ -691,7 +708,8 @@ class SimulationServiceRay(SimulationService):
         """Build the analysis DAG node's command: the ported analyses over the S3 sweep.
 
         WHY A THIRD DAG NODE, not the composite's own inline flush. The composite
-        (``v2ecoli.composites.batch_baseline``) does ship a post-simulation flush that
+        (``v2ecoli.composites.ecoli_baseline``, formerly the standalone
+        ``batch_baseline`` — backlog item 55) does ship a post-simulation flush that
         runs exactly these analyses, and the sim overrides deliberately disable it
         (``"analyses": "none"``). That is not a workaround for a broken flush — it is
         forced by the sweep's SHAPE on this backend:
