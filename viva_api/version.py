@@ -361,4 +361,19 @@
 #          outranks the placeholder in get_hpcrun_by_ref's ORDER BY id DESC
 #          lookup; the reverse order would report a whole campaign COMPLETED the
 #          moment submission finished, with every real job still queued.
-__version__ = "0.9.43"
+# 0.9.44 — fix V2ECOLI_BATCH_BASELINE_COMPOSITE_ID: stale after an upstream v2ecoli
+#          composite consolidation (v2ecoli #373, folded composites/batch_baseline.py
+#          into ecoli_baseline.py's baseline()) finally reached sms-ecoli via PR #56
+#          on 2026-08-16 (the same sync that carried backlog item 52's wall-time
+#          fix). A real pilot dispatch (sim 152) failed both seeds identically:
+#          "no composite registered as 'v2ecoli.composites.batch_baseline.
+#          batch_baseline'" -- confirmed via the actual CloudWatch job logs, not
+#          assumed. Re-verified the new id directly against the deployed sms-ecoli
+#          image at the real built commit (c44b69a, build 63) via git show/git grep
+#          -- never the separately-diverged local v2ecoli checkout, same discipline
+#          the 0.9.38 incident (see above) already established. New id:
+#          "v2ecoli.composites.ecoli_baseline.ecoli_baseline". baseline()'s real
+#          signature is a strict superset of the old params except one rename:
+#          base_seed -> seed (renamed in _seed_generation_command's overrides
+#          dict). Backlog item 55.
+__version__ = "0.9.44"
