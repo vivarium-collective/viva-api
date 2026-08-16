@@ -85,8 +85,23 @@ images:
   # OOM (item 38): AnalysisOptions.memory_gb config knob + the new r7i.4xlarge/128GiB
   # Ray-MNP compute environment (sms-cdk) together let the pilot-scale analysis
   # complete without the OOM-kill the original bug had (job f87c7d34, exitCode 137).
+  # 0.9.43 (#247, item 51): chain-dispatch campaign submission now runs in the
+  # background (LocalTaskService) instead of blocking the HTTP response on the full
+  # campaign-size submission loop -- a 1000x10 campaign's ~15min submission loop
+  # exceeded the calling client's 30s timeout, reporting a spurious failure while
+  # the real dispatch kept running server-side (real incident, risked an accidental
+  # duplicate campaign on retry).
+  # 0.9.44 (#248, item 55): fixes V2ECOLI_BATCH_BASELINE_COMPOSITE_ID, stale after an
+  # upstream v2ecoli composite refactor (v2ecoli #373, folded batch_baseline into
+  # ecoli_baseline.py's baseline(), no legacy-id alias by design) finally synced into
+  # sms-ecoli via PR #56 -- a real pilot dispatch (sim 152) failed both seeds at
+  # generation 0 with "no composite registered as
+  # v2ecoli.composites.batch_baseline.batch_baseline". New id verified directly
+  # against the deployed image at the real built commit (c44b69a). Also renames
+  # base_seed -> seed in the per-seed chain-dispatch overrides (a second real
+  # incompatibility with the new composite's signature).
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.42
+    newTag: 0.9.44
   # ptools pinned to last-known-good tag — CI only builds sms-api, so there is
   # no newer sms-ptools:0.6.x image on ghcr.io.  0.5.9 is the tag the live Stanford
   # pod has been running successfully; keeping both namespaces pointing here
