@@ -322,4 +322,43 @@
 #          (that floor was AWS Batch's own array-size minimum, moot once nothing is
 #          an array job). RayLayout.wave_state_uri/wave_state_prefix ->
 #          daughter_state_uri/daughter_state_prefix (pure rename, same S3 layout).
-__version__ = "0.9.42"
+# 0.9.43 — POST /api/v1/simulations returns in seconds for a chain-dispatch
+#          campaign of ANY size. submit_chain_dispatch_job issues n_seeds *
+#          n_generations individual AWS Batch SubmitJob calls, TPS-paced --
+#          ~10,000 calls and ~15 minutes of wall time for the canonical 1000x10
+#          shape -- and submit_ecoli_simulation_job awaited all of it INLINE,
+#          inside the single HTTP request. Found during a real production
+#          dispatch on the smscdk GovCloud deployment (2026-08-14): the calling
+#          client (vivarium-workbench, 30s HTTP timeout) gave up long before the
+#          loop finished and reported a FAILED dispatch to the user, while
+#          viva-api went right on submitting the real, AWS-billed campaign. The
+#          obvious response to being told it failed -- retry -- would have
+#          started a second, duplicate, paid campaign on top of the first. Only
+#          caught by reading kubectl logs on the live pod.
+#          The one call site now goes through _submit_chain_dispatch_background,
+#          which hands the UNCHANGED submit_chain_dispatch_job coroutine to the
+#          LocalTaskService the service already uses for the other multi-minute
+#          operation it owns (submit_build_image_job's DooD image build) and
+#          returns its JobId.local(...) immediately. No new machinery: every
+#          backend service shares ONE process-wide LocalTaskService, so
+#          get_job_status -- and therefore GET /simulations/{id}/status --
+#          already resolves that id (RUNNING while submitting, FAILED if the
+#          submission loop crashes), and cancel_job already routes LOCAL ids to
+#          LocalTaskService.cancel, making a still-submitting campaign
+#          cancellable for free. submit_chain_dispatch_job itself is untouched
+#          and still synchronous for its direct callers (unit tests, the
+#          real-AWS integration test).
+#          A placeholder HpcRun row is committed synchronously before returning
+#          so an immediate status poll has something real to read. It leaves
+#          BOTH chain_n_generations and chain_final_job_ids None on purpose:
+#          list_active_chain_campaigns discriminates on chain_n_generations IS
+#          NOT NULL alone, and get_chain_campaign_result([]) is terminal with
+#          zero successes by definition -- so setting either would have
+#          _advance_chain_campaign mark the campaign FAILED on the next poll
+#          tick, recreating the very false-failure this release removes, this
+#          time inside viva-api. The background task is gated on that row being
+#          committed, so the real campaign row it inserts at the end always
+#          outranks the placeholder in get_hpcrun_by_ref's ORDER BY id DESC
+#          lookup; the reverse order would report a whole campaign COMPLETED the
+#          moment submission finished, with every real job still queued.
+__version__ = "0.9.43"
