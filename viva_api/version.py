@@ -376,4 +376,36 @@
 #          signature is a strict superset of the old params except one rename:
 #          base_seed -> seed (renamed in _seed_generation_command's overrides
 #          dict). Backlog item 55.
-__version__ = "0.9.44"
+# 0.9.45 — backlog item 40: POST /api/v1/simulations/{id}/cancel raised a real
+#          Postgres InvalidTextRepresentationError writing the terminal job status
+#          ("CANCELLED"). Root cause: ORMHpcRun.status has no values_callable, so
+#          SQLAlchemy's default Enum type binds a Python enum.Enum member by its
+#          NAME (upper-case), not its .value -- confirmed directly against a real
+#          Postgres 15 database built from this repo's own Alembic migration chain
+#          (not create_all, which always reflects the current model and so can
+#          never catch a migration-shaped defect like this one). The real,
+#          migration-produced jobstatusdb enum never had upper-case 'CANCELLED'
+#          (the prior migration, a1c3e5f7b9d2, added the wrong case: lower-case
+#          'cancelled', which the app never writes) and never had 'PENDING' at
+#          all, despite list_active_hpcruns/list_active_chain_campaigns (the
+#          chain-dispatch campaign poller) both binding it against this same
+#          column -- the identical failure, already live, not hypothetical. New
+#          migration 44335812e447 adds both real values. Also corrects
+#          db_reconcile.py's a1c3e5f7b9d2 LEGACY-fingerprint marker, which checked
+#          ONLY the lower-case spelling and was therefore permanently False for
+#          any create_all-bootstrapped database (upper-case 'CANCELLED' from the
+#          Python enum's .name, never lower-case) -- empirically confirmed this
+#          misclassified a fresh create_all database as INCONSISTENT, refusing to
+#          auto-reconcile; now accepts either spelling, and a new marker covers
+#          44335812e447 per this repo's own fingerprint-maintenance contract.
+#          Investigated (not fixed, per backlog item 53's own explicit scope):
+#          whether this fix alone makes POST /cancel a real campaign-wide
+#          cancel for a chain-dispatch campaign. It does not -- cancel_simulation
+#          -> SimulationServiceRay.cancel_job acts on exactly ONE JobId
+#          (HpcRun.job_id / job_id_ext), which for a chain campaign's own HpcRun
+#          row is the ParCa job's id (see submit_chain_dispatch_job's final
+#          insert_hpcrun call), never chain_final_job_ids and never a dependsOn
+#          walk. None of a campaign's real N*G per-seed-per-generation jobs are
+#          touched. Item 53's walk-back-through-dependsOn design remains the
+#          correct fix for that, deliberately not implemented here.
+__version__ = "0.9.45"

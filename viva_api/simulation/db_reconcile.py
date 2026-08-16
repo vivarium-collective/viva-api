@@ -93,7 +93,25 @@ async def _marker_hpcrun_k8s(conn: AsyncConnection) -> bool:
 
 
 async def _marker_jobstatus_cancelled(conn: AsyncConnection) -> bool:
-    return await _enum_has_value(conn, "jobstatusdb", "cancelled")
+    """True once jobstatusdb has a cancelled-capable value, either spelling.
+
+    Historically checked ONLY the lower-case 'cancelled' that a1c3e5f7b9d2
+    itself adds via literal migration. That undercounts a create_all-
+    bootstrapped database: create_all's DDL always derives enum labels from
+    the Python JobStatusDB enum's .name (upper-case; SQLAlchemy's default for
+    a plain enum.Enum with no values_callable — see 44335812e447's docstring),
+    so such a database has had upper-case 'CANCELLED' since CANCELLED became
+    a JobStatusDB member, and NEVER has the lower-case spelling — this marker
+    was therefore permanently False for it. That broke the LEGACY walk's
+    contiguous-True-run assumption for every later, real, create_all-
+    producible marker: empirically, a fresh create_all database was
+    misclassified INCONSISTENT (not LEGACY) before this fix, refusing to
+    reconcile automatically. Both spellings now count as "reached this
+    revision's real effect".
+    """
+    return await _enum_has_value(conn, "jobstatusdb", "cancelled") or await _enum_has_value(
+        conn, "jobstatusdb", "CANCELLED"
+    )
 
 
 async def _marker_simulation_tags(conn: AsyncConnection) -> bool:
@@ -112,6 +130,22 @@ async def _marker_hpcrun_chain_dispatch(conn: AsyncConnection) -> bool:
     return await _column_exists(conn, "hpcrun", "chain_final_job_ids")
 
 
+async def _marker_jobstatus_pending_and_cancelled_uppercase(conn: AsyncConnection) -> bool:
+    """True once jobstatusdb has BOTH 'PENDING' and upper-case 'CANCELLED'.
+
+    The two real values backlog item 40's fix (44335812e447) adds. A database
+    genuinely stopped exactly at a1c3e5f7b9d2 has neither (only the baseline's
+    5 upper-case values plus the stray lower-case 'cancelled'), so this
+    correctly discriminates "reached 44335812e447" from "reached only
+    a1c3e5f7b9d2" for the LEGACY walk, while also being satisfied for free by
+    any create_all-bootstrapped database (PENDING/CANCELLED are permanent
+    JobStatusDB members).
+    """
+    return await _enum_has_value(conn, "jobstatusdb", "PENDING") and await _enum_has_value(
+        conn, "jobstatusdb", "CANCELLED"
+    )
+
+
 # (revision, human-readable marker description, async predicate)
 # One marker per revision reachable by a legacy create_all database. New entries
 # are needed ONLY while create_all still bootstraps prod DBs (see module docstring):
@@ -120,11 +154,12 @@ async def _marker_hpcrun_chain_dispatch(conn: AsyncConnection) -> bool:
 LEGACY_FINGERPRINTS: list[tuple[str, str]] = [
     ("fb7621a73e24", "baseline: table 'simulation' exists"),
     ("0f991fad32ba", "hpcrun.job_id_ext present and hpcrun.slurmjobid dropped"),
-    ("a1c3e5f7b9d2", "enum jobstatusdb has value 'cancelled'"),
+    ("a1c3e5f7b9d2", "enum jobstatusdb has a cancelled-capable value ('cancelled' or 'CANCELLED')"),
     ("c1a2b3d4e5f6", "simulation.tags column exists"),
     ("d3f9a1c72b84", "analysis.n_tp column exists"),
     ("e5a7c9d10f21", "compose_hpcrun.job_id_ext column exists"),
     ("f2b8e4a6c9d1", "hpcrun.chain_final_job_ids column exists"),
+    ("44335812e447", "enum jobstatusdb has values 'PENDING' and 'CANCELLED'"),
 ]
 _LEGACY_PREDICATES = [
     _marker_baseline,
@@ -134,6 +169,7 @@ _LEGACY_PREDICATES = [
     _marker_analysis_query_columns,
     _marker_compose_hpcrun_job_id_ext,
     _marker_hpcrun_chain_dispatch,
+    _marker_jobstatus_pending_and_cancelled_uppercase,
 ]
 
 
