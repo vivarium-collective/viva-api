@@ -433,7 +433,16 @@
 #          non-mocked local composite run (real process_bigraph, v2ecoli,
 #          viva_emitters, ParCa cache) -- produced a real history/*.pq file
 #          with all 206 real biology columns intact.
-# 0.9.48 — backlog item 65: _submit_mnp routes a standalone (numNodes=1)
+# 0.9.49 — backlog item 6: real per-seed aggregate progress for a chain-dispatch
+#          campaign. New GET /simulations/{id}/chain-progress, reusing
+#          SimulationServiceRay.get_chain_campaign_result (the SAME data
+#          get_simulation_status already computes and collapses into one
+#          coarse phase) to expose seeds_total/succeeded/failed/in_progress
+#          instead. Read-only, no DB writes -- only JobScheduler's own poll
+#          loop transitions a campaign row. (0.9.48 is sms-cdk PR #37's
+#          companion viva-api PR #256, from a parallel session -- bumped past
+#          it here to avoid a version collision between the two open PRs.)
+# 0.9.50 — backlog item 65: _submit_mnp routes a standalone (numNodes=1)
 #          submission to settings.ray_mnp_standalone_queue instead of
 #          ray_mnp_queue, when configured. Chain-dispatch's per-seed-per-
 #          generation jobs and ParCa are numNodes=1 with no inter-node
@@ -443,4 +452,7 @@
 #          more ready. Automatic per-call routing keyed on num_nodes, no
 #          call-site changes; empty (default) = unchanged behavior, safe to
 #          deploy before the standalone queue exists (sms-cdk PR #37).
-__version__ = "0.9.48"
+#          Renumbered from this branch's original 0.9.48 -> 0.9.50: item 6
+#          (PR #257) merged first and independently claimed 0.9.49, so this
+#          lands second in real merge order.
+__version__ = "0.9.50"

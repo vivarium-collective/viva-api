@@ -91,6 +91,24 @@ class SimulationRun(BaseModel):
     error_message: str | None = None
 
 
+class ChainProgress(BaseModel):
+    """Backlog item 6: aggregate per-seed progress for a chain-dispatch campaign
+    (backlog item 33) — the data ``get_simulation_status`` already computes via
+    ``SimulationServiceRay.get_chain_campaign_result`` and then collapses into
+    one coarse ``JobStatus``, exposed at its real granularity instead. Not a new
+    data source — the SAME already-tracked ``HpcRun.chain_final_job_ids`` and
+    the SAME ``describe_jobs`` polling ``JobScheduler.update_chain_campaigns``
+    already runs, just returned unflattened."""
+
+    id: int
+    seeds_total: int
+    seeds_succeeded: int
+    seeds_failed: int
+    seeds_in_progress: int
+    terminal: bool
+    status: JobStatus
+
+
 class Simulator(BaseModel):
     git_commit_hash: str  # Git commit hash for the specific simulator version (first 7 characters)
     git_repo_url: str  # Git repository URL for the simulator
