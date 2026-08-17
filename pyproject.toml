@@ -141,7 +141,7 @@ strict = true
 exclude = ['^notes/', '^viva_api/api/client/.*', '^app/ui/.*', '^app/gui\\.py$', '^app/tui\\.py$', '^home/*', "^scratchpads/*", "^simulation_configs/*", "^viva_api/simulation_data_service\\.py$", '^sms_api/.*']
 
 [[tool.mypy.overrides]]
-module = ["kubernetes.*", "textual", "textual.*", "boto3", "boto3.*", "botocore.*", "process_bigraph", "process_bigraph.*", "bigraph_schema", "bigraph_schema.*", "pbg_emitters", "pbg_emitters.*", "viva_emitters", "viva_emitters.*", "biosimulators_utils.*", "libsedml.*", "libsbml.*", "spython.*", "nats.*", "biomodels", "biomodels.*", "fsspec", "fsspec.*"]
+module = ["kubernetes.*", "textual", "textual.*", "boto3", "boto3.*", "botocore.*", "process_bigraph", "process_bigraph.*", "bigraph_schema", "bigraph_schema.*", "pbg_emitters", "pbg_emitters.*", "viva_emitters", "viva_emitters.*", "v2ecoli", "v2ecoli.*", "biosimulators_utils.*", "libsedml.*", "libsbml.*", "spython.*", "nats.*", "biomodels", "biomodels.*", "fsspec", "fsspec.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

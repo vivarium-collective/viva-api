@@ -109,6 +109,127 @@ def test_flush_emitters_is_a_noop_without_parquet_extra(monkeypatch: pytest.Monk
     run_pbg._flush_emitters(composite=object())  # must not raise
 
 
+# --- _v2ecoli_parquet_emitter_override: item 61 follow-up ---
+#
+# The flush fix above (test_run_flushes_parquet_emitters_after_composite_run)
+# mocks viva_emitters.ParquetEmitter.flush_all_in_composite entirely, so it
+# proved run()'s driver *calls* the flush at the right point — it could not
+# and did not prove the flush finds real, correctly-located data to flush.
+# A real AWS re-dispatch against that merged fix (PR #251) showed zero
+# parquet output, unchanged from before the fix. Root cause (full evidence
+# chain in vivarium-workbench/.todo/backlog/61.md): v2ecoli composites built
+# via @composite_generator(emitters=[...]) (ecoli_baseline/batch_baseline)
+# eagerly construct their default ParquetEmitter *inside* to_document() —
+# v2ecoli.composites._helpers._build_declared_emitter resolves out_dir from
+# a workspace-relative default (_find_workspace_root()) at that point,
+# before this runner's own _redirect_emitters() document-mutation ever runs
+# — so mutating the document afterward has nothing left to act on.
+#
+# These tests verify the real, load-bearing CONTRACT instead: the exact
+# keyword arguments this runner passes to v2ecoli's own parquet_vecoli()
+# preset builder, and that set_parquet_emitter_override() receives that
+# preset's real return value verbatim (not a hand-built dict — confirmed by
+# reading _helpers.py directly: the override is spread straight into
+# ParquetEmitter's config, `cfg = {'emit': ..., **parquet_override}`, never
+# run through parquet_vecoli() itself unless the CALLER does that). v2ecoli
+# is not a viva-api dependency, so parquet_vecoli/set_parquet_emitter_override
+# are still real fakes here, not the genuine installed functions — full,
+# non-mocked confirmation was done separately: a real local composite run
+# (real process_bigraph, real bigraph_schema, real v2ecoli, real ParCa
+# cache, real viva_emitters.ParquetEmitter) produced zero output without
+# this fix and real hive-partitioned history/*.pq (with the real
+# experiment_id/lineage_seed/generation partition columns intact) with it —
+# see 61.md's evidence chain. Treat that local run, and the real AWS
+# verification dispatch this fix still needs, as the actual proof; these
+# unit tests only guard the argument-passing contract from silently drifting.
+
+
+def test_v2ecoli_emitter_override_calls_parquet_vecoli_with_real_run_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_parquet_vecoli(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return {"the": "real preset", **kwargs}
+
+    set_calls: list[Any] = []
+    fake_presets_mod = types.ModuleType("v2ecoli.library.emitter_presets")
+    fake_presets_mod.parquet_vecoli = fake_parquet_vecoli  # type: ignore[attr-defined]
+    fake_helpers_mod = types.ModuleType("v2ecoli.composites._helpers")
+    fake_helpers_mod.set_parquet_emitter_override = lambda cfg: set_calls.append(cfg)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "v2ecoli.library.emitter_presets", fake_presets_mod)
+    monkeypatch.setitem(sys.modules, "v2ecoli.composites._helpers", fake_helpers_mod)
+
+    with run_pbg._v2ecoli_parquet_emitter_override(
+        tmp_path / "out",
+        {"experiment_id": "sim69-real-9c6d", "seed": 3, "initial_generation_index": 1},
+    ):
+        pass
+
+    assert len(calls) == 1
+    assert calls[0] == {
+        "out_dir": str(tmp_path / "out"),
+        "experiment_id": "sim69-real-9c6d",
+        "lineage_seed": 3,
+        "generation": 1,
+    }
+    # set_parquet_emitter_override must receive parquet_vecoli's own return
+    # value verbatim (not a dict reconstructed by this runner) on entry, and
+    # be cleared to None on exit.
+    assert set_calls == [{"the": "real preset", **calls[0]}, None]
+
+
+def test_v2ecoli_emitter_override_defaults_when_overrides_missing_seed_or_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A static-document run (no composite-id, no per-job overrides) must not
+    crash resolving seed/generation — 0/None are v2ecoli's own defaults."""
+    calls: list[dict[str, Any]] = []
+    fake_presets_mod = types.ModuleType("v2ecoli.library.emitter_presets")
+    fake_presets_mod.parquet_vecoli = lambda **kw: calls.append(kw) or kw  # type: ignore[attr-defined]
+    fake_helpers_mod = types.ModuleType("v2ecoli.composites._helpers")
+    fake_helpers_mod.set_parquet_emitter_override = lambda cfg: None  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "v2ecoli.library.emitter_presets", fake_presets_mod)
+    monkeypatch.setitem(sys.modules, "v2ecoli.composites._helpers", fake_helpers_mod)
+
+    with run_pbg._v2ecoli_parquet_emitter_override(tmp_path / "out", None):
+        pass
+
+    assert calls == [{
+        "out_dir": str(tmp_path / "out"), "experiment_id": "default",
+        "lineage_seed": 0, "generation": None,
+    }]
+
+
+def test_v2ecoli_emitter_override_clears_even_when_the_body_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    set_calls: list[Any] = []
+    fake_presets_mod = types.ModuleType("v2ecoli.library.emitter_presets")
+    fake_presets_mod.parquet_vecoli = lambda **kw: kw  # type: ignore[attr-defined]
+    fake_helpers_mod = types.ModuleType("v2ecoli.composites._helpers")
+    fake_helpers_mod.set_parquet_emitter_override = lambda cfg: set_calls.append(cfg)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "v2ecoli.library.emitter_presets", fake_presets_mod)
+    monkeypatch.setitem(sys.modules, "v2ecoli.composites._helpers", fake_helpers_mod)
+
+    with pytest.raises(ValueError, match="boom"), run_pbg._v2ecoli_parquet_emitter_override(tmp_path / "out", {}):
+        raise ValueError("boom")
+
+    assert set_calls[-1] is None  # cleared in the finally, not left dangling
+
+
+def test_v2ecoli_emitter_override_is_a_noop_without_v2ecoli_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Most compose images have no v2ecoli at all (it's one workspace among
+    many this generic runner serves) — degrade silently, matching every
+    other optional-dependency guard in this module."""
+    monkeypatch.setitem(sys.modules, "v2ecoli.library.emitter_presets", None)
+    with run_pbg._v2ecoli_parquet_emitter_override(tmp_path / "out", {}):
+        pass  # must not raise
+
+
 # --- _redirect_emitters: emitter output must land in the S3-synced results dir ---
 
 
