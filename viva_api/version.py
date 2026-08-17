@@ -408,4 +408,16 @@
 #          walk. None of a campaign's real N*G per-seed-per-generation jobs are
 #          touched. Item 53's walk-back-through-dependsOn design remains the
 #          correct fix for that, deliberately not implemented here.
-__version__ = "0.9.45"
+# 0.9.46 — backlog item 61: chain-dispatch simulation output had no
+#          analysis-consumable history data -- every seed/generation only ever
+#          wrote final_state.json, zero parquet/zarr, because a ParquetEmitter
+#          built deep inside a composite's step factory was never flushed
+#          before the run_pbg.py driver exited (its __del__ finalizer is
+#          explicitly best-effort, not a guarantee). Fixed by calling
+#          viva_emitters.ParquetEmitter.flush_all_in_composite() after
+#          composite.run(steps), mirroring v2ecoli's own
+#          composites/_helpers.py::flush_parquet() -- same call, reused, not
+#          reinvented. Directly unblocks item 1: every cd1_*/ptools_* analysis
+#          module is an Analysis subclass and routes through the
+#          DuckDB/history-parquet path this now actually populates.
+__version__ = "0.9.46"
