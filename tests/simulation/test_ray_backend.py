@@ -17,6 +17,7 @@ from viva_api.simulation.simulation_service_ray import (
     PARCA_CACHE_DIR,
     SIM_OUT_DIR,
     SimulationServiceRay,
+    analysis_memory_mib_for,
     analysis_modules_for,
 )
 
@@ -1271,6 +1272,176 @@ class TestEnsureMnpJobDef:
             jd = service._ensure_mnp_job_def(image, "abc1234")
         assert jd == "smscdk-ray-mnp-abc1234:5"
         mock_batch.register_job_definition.assert_not_called()
+
+    def test_memory_mib_none_is_byte_for_byte_todays_behavior(self) -> None:
+        """The default (no memory hint) call site must be completely unaffected by
+        this change — same job-def name, same reuse-check, no new AWS call shape.
+        Regression guard against item 50 Gap 6's fix accidentally touching the
+        parca/simulation job-def paths, which never pass memory_mib."""
+        image = "476270107793.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:abc1234"
+        mock_batch = MagicMock()
+        mock_batch.describe_job_definitions.return_value = {
+            "jobDefinitions": [
+                {"revision": 5, "nodeProperties": {"nodeRangeProperties": [{"container": {"image": image}}]}}
+            ]
+        }
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            jd = service._ensure_mnp_job_def(image, "abc1234", memory_mib=None)
+        assert jd == "smscdk-ray-mnp-abc1234:5"
+        mock_batch.register_job_definition.assert_not_called()
+
+    def test_memory_mib_override_registers_a_distinctly_named_revision(self) -> None:
+        """A workload-declared memory hint gets its OWN job-def revision (name folds
+        in the memory value), with the node range's container memory resource
+        requirement patched to match — not just the image, unlike every other
+        existing call site."""
+        image = "476270107793.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:abc1234"
+        mock_batch = MagicMock()
+        mock_batch.describe_job_definitions.side_effect = [
+            {"jobDefinitions": []},  # the -mem46080 name: nothing registered yet
+            {
+                "jobDefinitions": [
+                    {
+                        "revision": 3,
+                        "nodeProperties": {
+                            "nodeRangeProperties": [
+                                {
+                                    "container": {
+                                        "image": "old:image",
+                                        "resourceRequirements": [
+                                            {"type": "VCPU", "value": "16"},
+                                            {"type": "MEMORY", "value": "60000"},
+                                        ],
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },  # the base job def, to clone from
+        ]
+        mock_batch.register_job_definition.return_value = {"revision": 1}
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            jd = service._ensure_mnp_job_def(image, "abc1234", memory_mib=46080)
+        assert jd == "smscdk-ray-mnp-abc1234-mem46080:1"
+        registered = mock_batch.register_job_definition.call_args.kwargs
+        assert registered["jobDefinitionName"] == "smscdk-ray-mnp-abc1234-mem46080"
+        node_range = registered["nodeProperties"]["nodeRangeProperties"][0]
+        assert node_range["container"]["image"] == image
+        reqs = {r["type"]: r["value"] for r in node_range["container"]["resourceRequirements"]}
+        assert reqs["MEMORY"] == "46080"
+        assert reqs["VCPU"] == "16"  # untouched — only MEMORY is overridden
+
+    def test_memory_mib_override_reuses_a_matching_existing_revision(self) -> None:
+        """A second submission with the SAME (commit, memory_mib) must reuse the
+        already-registered revision, not churn a new one every call — same caching
+        discipline the image-only path already has."""
+        image = "476270107793.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:abc1234"
+        mock_batch = MagicMock()
+        mock_batch.describe_job_definitions.return_value = {
+            "jobDefinitions": [
+                {
+                    "revision": 2,
+                    "nodeProperties": {
+                        "nodeRangeProperties": [
+                            {
+                                "container": {
+                                    "image": image,
+                                    "resourceRequirements": [{"type": "MEMORY", "value": "46080"}],
+                                }
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            jd = service._ensure_mnp_job_def(image, "abc1234", memory_mib=46080)
+        assert jd == "smscdk-ray-mnp-abc1234-mem46080:2"
+        mock_batch.register_job_definition.assert_not_called()
+
+    def test_memory_mib_mismatch_against_an_existing_same_named_revision_registers_a_new_one(self) -> None:
+        """Defensive: if a same-named revision exists but its actual memory value
+        doesn't match (shouldn't normally happen since the value is IN the name, but
+        the check must not silently trust the name alone), a new revision is
+        registered rather than incorrectly reused."""
+        image = "476270107793.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:abc1234"
+        mock_batch = MagicMock()
+        stale_revision = {
+            "jobDefinitions": [
+                {
+                    "revision": 2,
+                    "nodeProperties": {
+                        "nodeRangeProperties": [
+                            {
+                                "container": {
+                                    "image": image,
+                                    "resourceRequirements": [{"type": "MEMORY", "value": "12345"}],
+                                }
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+        mock_batch.describe_job_definitions.side_effect = [stale_revision, stale_revision]
+        mock_batch.register_job_definition.return_value = {"revision": 3}
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            jd = service._ensure_mnp_job_def(image, "abc1234", memory_mib=46080)
+        assert jd == "smscdk-ray-mnp-abc1234-mem46080:3"
+        mock_batch.register_job_definition.assert_called_once()
+
+
+class TestAnalysisMemoryMibFor:
+    """analysis_memory_mib_for reads the workload's OWN declared memory_gb hint —
+    item 50 Gap 6 / PR #239's real fix: the analysis DAG node previously had no
+    dedicated, workload-declared memory knob at all. Mirrors vEcoli-private's
+    analysis_options.memory_gb field-for-field."""
+
+    def test_declared_memory_gb_converts_to_mib(self) -> None:
+        from viva_api.simulation.models import AnalysisOptions, SimulationConfig
+
+        config = SimulationConfig(
+            experiment_id="exp-1", analysis_options=AnalysisOptions.model_validate({"memory_gb": 45})
+        )
+        assert analysis_memory_mib_for(config) == 45 * 1024
+
+    def test_fractional_memory_gb_converts_to_mib(self) -> None:
+        from viva_api.simulation.models import AnalysisOptions, SimulationConfig
+
+        config = SimulationConfig(
+            experiment_id="exp-1", analysis_options=AnalysisOptions.model_validate({"memory_gb": 2.5})
+        )
+        assert analysis_memory_mib_for(config) == int(2.5 * 1024)
+
+    def test_absent_hint_is_none_not_an_error(self) -> None:
+        from viva_api.simulation.models import SimulationConfig
+
+        assert analysis_memory_mib_for(SimulationConfig(experiment_id="exp-1")) is None
+
+    def test_non_numeric_hint_is_ignored_not_raised(self) -> None:
+        """A malformed hint must never block dispatch (best-effort by design, same
+        posture as the rest of the analysis DAG node)."""
+        from types import SimpleNamespace
+
+        config = SimpleNamespace(analysis_options={"memory_gb": "lots"})
+        assert analysis_memory_mib_for(config) is None
 
 
 @pytest.mark.asyncio
