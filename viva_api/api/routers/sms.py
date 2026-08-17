@@ -36,6 +36,7 @@ from viva_api.simulation.database_service import DatabaseService
 from viva_api.simulation.github_repo import open_repo_tarball_stream
 from viva_api.simulation.models import (
     AnalysisOptions,
+    ChainProgress,
     CompositeEngine,
     ObservableInfoModel,
     RepoDiscovery,
@@ -343,6 +344,36 @@ async def get_simulation_status(id: int = FastAPIPath(...)) -> SimulationRun:
                 Are you sure that you've passed the experiment_tag? (not the experiment id)
             """
         )
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@config.router.get(
+    path="/simulations/{id}/chain-progress",
+    response_model=ChainProgress,
+    operation_id="get-ecoli-simulation-chain-progress",
+    tags=["Simulations"],
+    dependencies=[Depends(get_database_service)],
+    summary="Get real per-seed aggregate progress for a chain-dispatch campaign",
+)
+async def get_simulation_chain_progress(id: int = FastAPIPath(...)) -> ChainProgress:
+    """Backlog item 6: real seed-level progress (succeeded/failed/in-progress
+    counts) for a chain-dispatch campaign (backlog item 33) — the SAME data
+    ``/simulations/{id}/status`` already computes internally and collapses to
+    one coarse phase, exposed at its real granularity. 404 when the
+    simulation/HpcRun doesn't exist; 409 when it exists but isn't a
+    chain-dispatch campaign (a plain single-shot run has nothing to
+    aggregate — callers should use ``/status`` for those instead)."""
+    db_service = get_database_service()
+    if db_service is None:
+        raise HTTPException(status_code=404, detail="Database not found")
+    try:
+        return await handlers.simulations.get_simulation_chain_progress(db_service=db_service, id=id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Error getting simulation chain progress")
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
