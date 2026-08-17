@@ -2,14 +2,17 @@
 
 import types
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from viva_api.common.models import JobBackend
+from viva_api.common.hpc.job_service import JobStatusInfo
+from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.compose import simulation_service_ray as mod
 from viva_api.compose.container_def import ContainerizationFileRepr
 from viva_api.compose.models import (
+    ComposeAnalysis,
+    ComposeAnalysisStatus,
     ComposeSimulation,
     ComposeSimulationRequest,
     ComposeSimulatorVersion,
@@ -173,3 +176,169 @@ async def test_submit_simulation_job_uses_the_unified_ray_num_nodes_setting(
         await svc.submit_simulation_job(simulation, experiment_id="exp-1")
 
     assert captured["num_nodes"] == 24
+
+
+@pytest.mark.asyncio
+class TestGetJobStatusInfo:
+    """get_job_status_info surfaces the full JobStatusInfo (incl. exit_code/
+    error_message) — item 50 Gap 6's OOM-retry-escalation poller needs this; the
+    existing get_job_status only returns the coarse ComposeJobStatus enum."""
+
+    async def test_delegates_to_the_shared_ray_service_and_returns_full_info(self) -> None:
+        svc = ComposeSimulationServiceRay()
+        expected = JobStatusInfo(
+            job_id=JobId.ray("job-1"),
+            status=JobStatus.FAILED,
+            start_time=None,
+            end_time=None,
+            exit_code="137",
+            error_message="OOM killed",
+        )
+        svc._ray.get_job_status = AsyncMock(return_value=expected)  # type: ignore[method-assign]
+
+        info = await svc.get_job_status_info("job-1")
+
+        assert info is expected
+        svc._ray.get_job_status.assert_awaited_once_with(JobId.ray("job-1"))
+
+    async def test_none_when_the_underlying_job_is_not_found(self) -> None:
+        svc = ComposeSimulationServiceRay()
+        svc._ray.get_job_status = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        assert await svc.get_job_status_info("nope") is None
+
+
+@pytest.mark.asyncio
+class TestSubmitAnalysis:
+    """submit_analysis: the compose-native analysis-DAG-node submit, item 50 Gap 6."""
+
+    async def test_submits_the_v2ecoli_analysis_command_and_records_a_compose_analysis_row(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        svc = ComposeSimulationServiceRay()
+        monkeypatch.setattr(mod, "get_settings", lambda: _settings(compose_ray_image_tag="commit123"))
+
+        job_def_calls: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            svc._ray,
+            "_ensure_mnp_job_def",
+            lambda image, commit, memory_mib=None: (
+                job_def_calls.append({"image": image, "commit": commit, "memory_mib": memory_mib}),
+                "smscdk-ray-mnp-commit123:1",
+            )[1],
+        )
+
+        captured_command: dict[str, object] = {}
+        monkeypatch.setattr(
+            svc._ray,
+            "_analysis_command",
+            lambda **kwargs: (captured_command.update(kwargs), "cd /app/v2ecoli && python scripts/run...")[1],
+        )
+
+        captured_submit: dict[str, object] = {}
+
+        def _capture_submit_mnp(**kwargs: object) -> str:
+            captured_submit.update(kwargs)
+            return "analysis-batch-job-id"
+
+        monkeypatch.setattr(svc._ray, "_submit_mnp", _capture_submit_mnp)
+
+        # a plain MagicMock, not AsyncMock: get_analysis_db() is a SYNC accessor on
+        # the real ComposeDatabaseService (returns the sub-service directly, not a
+        # coroutine) — only insert_analysis itself is async.
+        db_service = MagicMock()
+        inserted = ComposeAnalysis(
+            database_id=7,
+            name="analysis-exp-1-abcdef",
+            config={},
+            simulation_id=42,
+            job_id_ext="analysis-batch-job-id",
+            status=ComposeAnalysisStatus.COMPUTING,
+        )
+        db_service.get_analysis_db.return_value.insert_analysis = AsyncMock(return_value=inserted)
+
+        result = await svc.submit_analysis(
+            experiment_id="exp-1",
+            simulation_id=42,
+            db_service=db_service,
+            n_seeds=2,
+            n_generations=2,
+            modules="applicable",
+        )
+
+        assert result is inserted
+        # the job def is derived from the compose image tag, no memory override on a
+        # first-attempt submit
+        assert job_def_calls[0]["commit"] == "commit123"
+        assert job_def_calls[0]["memory_mib"] is None
+        # the analysis command was built with the caller's real params
+        assert captured_command["experiment_id"] == "exp-1"
+        assert captured_command["n_seeds"] == 2
+        assert captured_command["n_generations"] == 2
+        assert captured_command["modules"] == "applicable"
+        assert captured_command["commit"] == "commit123"
+        # the Batch job was submitted with no dependency (analysis has nothing
+        # upstream to natively dependsOn at submit time)
+        assert captured_submit["depends_on"] is None
+        assert captured_submit["depends_type"] is None
+        assert captured_submit["out_dir"] == mod.ANALYSIS_OUT_DIR
+        # recorded against the compose_analysis table with the real returned job id
+        insert_kwargs = db_service.get_analysis_db.return_value.insert_analysis.call_args.kwargs
+        assert insert_kwargs["job_id_ext"] == "analysis-batch-job-id"
+        assert insert_kwargs["simulation_id"] == 42
+        assert insert_kwargs["job_backend"] == JobBackend.RAY.value
+        assert insert_kwargs["config"]["n_seeds"] == 2
+        assert insert_kwargs["config"]["analysis_name"] == captured_command["analysis_name"]
+
+
+@pytest.mark.asyncio
+class TestResubmitAnalysis:
+    """resubmit_analysis: the OOM-retry-escalation resubmit half, item 50 Gap 6."""
+
+    async def test_resubmits_at_escalated_memory_reusing_the_original_analysis_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        svc = ComposeSimulationServiceRay()
+        monkeypatch.setattr(mod, "get_settings", lambda: _settings(compose_ray_image_tag="commit123"))
+
+        job_def_calls: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            svc._ray,
+            "_ensure_mnp_job_def",
+            lambda image, commit, memory_mib=None: (
+                job_def_calls.append({"memory_mib": memory_mib}),
+                "smscdk-ray-mnp-commit123-mem120000:1",
+            )[1],
+        )
+
+        captured_command: dict[str, object] = {}
+        monkeypatch.setattr(
+            svc._ray,
+            "_analysis_command",
+            lambda **kwargs: (captured_command.update(kwargs), "cd /app/v2ecoli && python scripts/run...")[1],
+        )
+        monkeypatch.setattr(svc._ray, "_submit_mnp", lambda **kwargs: "retry-batch-job-id")
+
+        analysis = ComposeAnalysis(
+            database_id=7,
+            name="analysis-exp-1-abcdef",
+            config={
+                "experiment_id": "exp-1",
+                "n_seeds": 2,
+                "n_generations": 2,
+                "modules": "applicable",
+                "analysis_name": "analysis-exp-1-abcdef",
+            },
+            simulation_id=42,
+            job_id_ext="analysis-batch-job-id",
+            status=ComposeAnalysisStatus.COMPUTING,
+            attempt=1,
+        )
+
+        new_job_id = await svc.resubmit_analysis(analysis, memory_mib=120000)
+
+        assert new_job_id == "retry-batch-job-id"
+        assert job_def_calls[0]["memory_mib"] == 120000
+        # replays the SAME analysis_name -- retry output lands in the same S3 prefix
+        assert captured_command["analysis_name"] == "analysis-exp-1-abcdef"
+        assert captured_command["n_seeds"] == 2
+        assert captured_command["n_generations"] == 2

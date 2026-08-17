@@ -18,15 +18,25 @@ import importlib.resources as _res
 import logging
 import tempfile
 from pathlib import Path
-from typing import override
+from typing import TYPE_CHECKING, override
 
 from viva_api.common.models import JobBackend, JobStatus
 from viva_api.common.storage import data_layout
 from viva_api.common.storage.file_paths import S3FilePath
 from viva_api.compose.database_service import ComposeDatabaseService
-from viva_api.compose.models import ComposeHpcRun, ComposeJobStatus, ComposeSimulation, ComposeSimulatorVersion
+from viva_api.compose.models import (
+    ComposeAnalysis,
+    ComposeHpcRun,
+    ComposeJobStatus,
+    ComposeSimulation,
+    ComposeSimulatorVersion,
+)
 from viva_api.compose.simulation_service import ComposeSimulationService
 from viva_api.config import get_settings
+from viva_api.simulation.simulation_service_ray import ANALYSIS_OUT_DIR, _rand_suffix
+
+if TYPE_CHECKING:
+    from viva_api.common.hpc.job_service import JobStatusInfo
 
 logger = logging.getLogger(__name__)
 
@@ -188,3 +198,107 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         if info is None:
             return None
         return _JOBSTATUS_TO_COMPOSE.get(info.status, ComposeJobStatus.UNKNOWN)
+
+    async def get_job_status_info(self, job_id_ext: str) -> "JobStatusInfo | None":
+        """The full ``JobStatusInfo`` (status + exit_code + error_message) for one
+        Batch job — item 50 Gap 6's OOM-retry-escalation poller needs the exit code
+        `get_job_status` (above) intentionally discards behind the coarse
+        ``ComposeJobStatus`` enum. A new, additive method rather than widening
+        ``get_job_status``'s own return type: that method is on the ``ComposeSimulationService``
+        ABC and every existing caller (``ComposeJobMonitor._update_backend_jobs``)
+        depends on its current bare-enum contract."""
+        from viva_api.common.models import JobId
+
+        return await self._ray.get_job_status(JobId.ray(job_id_ext))
+
+    async def submit_analysis(
+        self,
+        *,
+        experiment_id: str,
+        simulation_id: int,
+        db_service: ComposeDatabaseService,
+        n_seeds: int,
+        n_generations: int,
+        modules: dict[str, dict[str, object]] | str = "applicable",
+    ) -> ComposeAnalysis:
+        """Submit the analysis DAG node for a compose-dispatched v2ecoli composite —
+        item 50 Gap 6, the compose-native equivalent of ``submit_campaign_analysis``.
+
+        Reuses the legacy service's own command construction (``_analysis_command``,
+        which invokes ``run_standalone_analysis.py`` — the same script item 60 fixed)
+        and job submission (``_ensure_mnp_job_def``, ``_submit_mnp``) verbatim rather
+        than duplicating them — this analysis targets the SAME v2ecoli cd1_*/ptools_*
+        analysis suite the legacy path already runs, just dispatched through the
+        compose subsystem's own tracking (``compose_analysis``, not the legacy
+        ``analyses`` table). ``n_seeds``/``n_generations``/``modules`` are explicit
+        params (not read off the composite's own declared shape) — the composite-
+        driven resolution gaps 1-4 will eventually provide doesn't exist yet.
+        """
+        commit = get_settings().compose_ray_image_tag
+        analysis_name = f"analysis-{experiment_id[:20]}-{_rand_suffix()}"
+        out_uri = data_layout.RayLayout.results_uri(experiment_id).rstrip("/")
+        result_uri = f"{out_uri}/analyses/{analysis_name}"
+        job_definition = self._ray._ensure_mnp_job_def(self._image_uri(), commit)
+        batch_job_id = self._ray._submit_mnp(
+            job_name=f"compose-analysis-{experiment_id}-{_rand_suffix()}"[:128],
+            job_definition=job_definition,
+            num_nodes=1,
+            ray_job_cmd=self._ray._analysis_command(
+                experiment_id=experiment_id,
+                n_seeds=n_seeds,
+                n_generations=n_generations,
+                modules=modules,
+                analysis_name=analysis_name,
+                commit=commit,
+            ),
+            out_s3=out_uri,
+            out_dir=ANALYSIS_OUT_DIR,
+            depends_on=None,
+            depends_type=None,
+        )
+        return await db_service.get_analysis_db().insert_analysis(
+            name=analysis_name,
+            config={
+                "experiment_id": experiment_id,
+                "n_seeds": n_seeds,
+                "n_generations": n_generations,
+                "modules": modules,
+                "analysis_name": analysis_name,
+            },
+            simulation_id=simulation_id,
+            job_id_ext=batch_job_id,
+            job_backend=JobBackend.RAY.value,
+            result_uri=result_uri,
+        )
+
+    async def resubmit_analysis(self, analysis: ComposeAnalysis, *, memory_mib: int) -> str:
+        """Resubmit an OOM'd compose analysis DAG node at a higher memory tier — item
+        50 Gap 6's compose-side half of the shared retry-escalation algorithm
+        (``viva_api.common.analysis_retry.decide_analysis_retry``). Same logical
+        analysis row (the caller updates ``job_id_ext``/``attempt`` afterward via
+        ``AnalysisDatabaseService.update_analysis_job_id``), a new physical Batch job
+        id. Replays the exact command the original submission built from
+        ``analysis.config`` (mirrors the legacy ``resubmit_analysis``, PR #239) — the
+        SAME ``analysis_name``/S3 output prefix as the original attempt.
+        """
+        commit = get_settings().compose_ray_image_tag
+        params = analysis.config
+        experiment_id = params["experiment_id"]
+        job_definition = self._ray._ensure_mnp_job_def(self._image_uri(), commit, memory_mib=memory_mib)
+        return self._ray._submit_mnp(
+            job_name=f"compose-analysis-retry-{params['analysis_name']}"[:128],
+            job_definition=job_definition,
+            num_nodes=1,
+            ray_job_cmd=self._ray._analysis_command(
+                experiment_id=experiment_id,
+                n_seeds=params["n_seeds"],
+                n_generations=params["n_generations"],
+                modules=params["modules"],
+                analysis_name=params["analysis_name"],
+                commit=commit,
+            ),
+            out_s3=data_layout.RayLayout.results_uri(experiment_id),
+            out_dir=ANALYSIS_OUT_DIR,
+            depends_on=None,
+            depends_type=None,
+        )
