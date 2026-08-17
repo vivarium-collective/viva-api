@@ -17,6 +17,8 @@ from viva_api.compose.models import (
     BiGraphComputeType,
     BiGraphProcess,
     BiGraphStep,
+    ComposeAnalysis,
+    ComposeAnalysisStatus,
     ComposeHpcRun,
     ComposeJobStatus,
     ComposeJobType,
@@ -33,9 +35,11 @@ from viva_api.compose.models import (
 )
 from viva_api.compose.tables_orm import (
     BiGraphComputeTypeDB,
+    ComposeAnalysisStatusDB,
     ComposeJobStatusDB,
     ComposeJobTypeDB,
     ORMComposeAllowList,
+    ORMComposeAnalysis,
     ORMComposeBiGraphCompute,
     ORMComposeHpcRun,
     ORMComposePackage,
@@ -480,6 +484,142 @@ class HPCORMExecutor(HPCDatabaseService):
 
 
 # ---------------------------------------------------------------------------
+# Analysis database service — item 50 Gap 6
+# ---------------------------------------------------------------------------
+
+
+class AnalysisDatabaseService(ABC):
+    @abstractmethod
+    async def insert_analysis(
+        self,
+        *,
+        name: str,
+        config: dict[str, Any],
+        simulation_id: int,
+        job_id_ext: str | None,
+        job_backend: str,
+        result_uri: str | None = None,
+    ) -> ComposeAnalysis:
+        pass
+
+    @abstractmethod
+    async def get_analysis(self, analysis_id: int) -> ComposeAnalysis | None:
+        pass
+
+    @abstractmethod
+    async def list_active_analyses(self) -> list[ComposeAnalysis]:
+        """COMPUTING rows with both ``job_id_ext``/``simulation_id`` set — the set
+        the OOM-retry-escalation poller (``ComposeJobMonitor.update_analysis_retries``)
+        polls each interval. Mirrors the legacy ``list_active_analyses`` (PR #239)."""
+        pass
+
+    @abstractmethod
+    async def update_analysis_status(
+        self,
+        analysis_id: int,
+        status: ComposeAnalysisStatus,
+        *,
+        result_uri: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        pass
+
+    @abstractmethod
+    async def update_analysis_job_id(self, analysis_id: int, *, job_id_ext: str, attempt: int) -> None:
+        """Point an existing analysis row at a new physical retry job id and bump its
+        attempt count — same logical row, new physical job id per attempt (mirrors
+        the legacy ``update_analysis_job_id``, PR #239)."""
+        pass
+
+
+class AnalysisORMExecutor(AnalysisDatabaseService):
+    async_session_maker: async_sessionmaker[AsyncSession]
+
+    def __init__(self, session_maker: async_sessionmaker[AsyncSession]) -> None:
+        self.async_session_maker = session_maker
+
+    async def _get_orm_analysis(self, session: AsyncSession, analysis_id: int) -> ORMComposeAnalysis | None:
+        return (
+            (await session.execute(select(ORMComposeAnalysis).where(ORMComposeAnalysis.id == analysis_id)))
+            .scalars()
+            .first()
+        )
+
+    @override
+    async def insert_analysis(
+        self,
+        *,
+        name: str,
+        config: dict[str, Any],
+        simulation_id: int,
+        job_id_ext: str | None,
+        job_backend: str,
+        result_uri: str | None = None,
+    ) -> ComposeAnalysis:
+        async with self.async_session_maker() as session, session.begin():
+            orm = ORMComposeAnalysis(
+                name=name,
+                config=config,
+                simulation_id=simulation_id,
+                job_id_ext=job_id_ext,
+                job_backend=job_backend,
+                status=ComposeAnalysisStatusDB.COMPUTING,
+                result_uri=result_uri,
+                attempt=1,
+            )
+            session.add(orm)
+            await session.flush()
+            return orm.to_analysis()
+
+    @override
+    async def get_analysis(self, analysis_id: int) -> ComposeAnalysis | None:
+        async with self.async_session_maker() as session:
+            orm = await self._get_orm_analysis(session, analysis_id)
+            return orm.to_analysis() if orm else None
+
+    @override
+    async def list_active_analyses(self) -> list[ComposeAnalysis]:
+        async with self.async_session_maker() as session:
+            result = await session.execute(
+                select(ORMComposeAnalysis).where(
+                    ORMComposeAnalysis.status == ComposeAnalysisStatusDB.COMPUTING,
+                    ORMComposeAnalysis.job_id_ext.is_not(None),
+                )
+            )
+            return [orm.to_analysis() for orm in result.scalars().all()]
+
+    @override
+    async def update_analysis_status(
+        self,
+        analysis_id: int,
+        status: ComposeAnalysisStatus,
+        *,
+        result_uri: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        async with self.async_session_maker() as session, session.begin():
+            orm = await self._get_orm_analysis(session, analysis_id)
+            if orm is None:
+                raise RuntimeError(f"ComposeAnalysis {analysis_id} not found")
+            orm.status = ComposeAnalysisStatusDB.from_status(status)
+            if result_uri is not None:
+                orm.result_uri = result_uri
+            if error_message is not None:
+                orm.error_message = error_message[:2000]
+            await session.flush()
+
+    @override
+    async def update_analysis_job_id(self, analysis_id: int, *, job_id_ext: str, attempt: int) -> None:
+        async with self.async_session_maker() as session, session.begin():
+            orm = await self._get_orm_analysis(session, analysis_id)
+            if orm is None:
+                raise RuntimeError(f"ComposeAnalysis {analysis_id} not found")
+            orm.job_id_ext = job_id_ext
+            orm.attempt = attempt
+            await session.flush()
+
+
+# ---------------------------------------------------------------------------
 # Package database service
 # ---------------------------------------------------------------------------
 
@@ -611,12 +751,14 @@ class ComposeDatabaseService:
     hpc_db: HPCDatabaseService
     package_db: PackageDatabaseService
     allow_list_db: AllowListDatabaseService
+    analysis_db: AnalysisDatabaseService
 
     def __init__(self, session_maker: async_sessionmaker[AsyncSession]) -> None:
         self.simulator_db = SimulatorORMExecutor(session_maker)
         self.hpc_db = HPCORMExecutor(session_maker)
         self.package_db = PackageORMExecutor(session_maker)
         self.allow_list_db = AllowListORMExecutor(session_maker)
+        self.analysis_db = AnalysisORMExecutor(session_maker)
 
     def get_simulator_db(self) -> SimulatorDatabaseService:
         return self.simulator_db
@@ -629,3 +771,6 @@ class ComposeDatabaseService:
 
     def get_allow_list_db(self) -> AllowListDatabaseService:
         return self.allow_list_db
+
+    def get_analysis_db(self) -> AnalysisDatabaseService:
+        return self.analysis_db
