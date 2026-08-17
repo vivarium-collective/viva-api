@@ -420,4 +420,17 @@
 #          reinvented. Directly unblocks item 1: every cd1_*/ptools_* analysis
 #          module is an Analysis subclass and routes through the
 #          DuckDB/history-parquet path this now actually populates.
-__version__ = "0.9.46"
+# 0.9.47 — backlog item 61 (real fix): PR #251's flush fix never mattered
+#          because v2ecoli's ecoli_baseline/batch_baseline composites eagerly
+#          construct their default ParquetEmitter *inside* to_document(),
+#          resolving a workspace-relative out_dir before run_pbg.py's own
+#          document-mutation redirect ever ran. Fixed by using v2ecoli's own
+#          real override hook (set_parquet_emitter_override(), built via
+#          parquet_vecoli() -- the same preset the eager path itself uses,
+#          not a bare dict, which was empirically found to drop the
+#          variant/lineage_seed/generation/agent_id hive-partition columns)
+#          before the document is built, not after. Verified against a real,
+#          non-mocked local composite run (real process_bigraph, v2ecoli,
+#          viva_emitters, ParCa cache) -- produced a real history/*.pq file
+#          with all 206 real biology columns intact.
+__version__ = "0.9.47"
