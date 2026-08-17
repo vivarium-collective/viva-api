@@ -139,6 +139,18 @@ class ComposeAnalysis(BaseModel):
     updated_at: str | None = None
 
 
+class ComposeAnalysisRunRequest(BaseModel):
+    """POST body for ``/compose/v1/analysis/run`` — item 50 Gap 6. ``n_seeds``/
+    ``n_generations``/``modules`` are explicit (not read off the composite's own
+    declared shape): the composite-driven resolution gaps 1-4's
+    ``CompositeSpec.dispatch`` mechanism would eventually provide doesn't exist yet."""
+
+    simulation_id: int
+    n_seeds: int
+    n_generations: int
+    modules: dict[str, dict[str, Any]] | str = "applicable"
+
+
 # ---------------------------------------------------------------------------
 # BiGraph compute registry
 # ---------------------------------------------------------------------------

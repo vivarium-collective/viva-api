@@ -13,15 +13,20 @@ from viva_api.config import ComputeBackend
 
 
 def _analysis(**overrides: object) -> ComposeAnalysis:
-    base: dict[str, object] = dict(
-        database_id=1,
-        name="analysis-exp-1-abcdef",
-        config={"n_seeds": 2, "n_generations": 2, "modules": "applicable", "analysis_name": "analysis-exp-1-abcdef"},
-        simulation_id=42,
-        job_id_ext="batch-job-1",
-        status=ComposeAnalysisStatus.COMPUTING,
-        attempt=1,
-    )
+    base: dict[str, object] = {
+        "database_id": 1,
+        "name": "analysis-exp-1-abcdef",
+        "config": {
+            "n_seeds": 2,
+            "n_generations": 2,
+            "modules": "applicable",
+            "analysis_name": "analysis-exp-1-abcdef",
+        },
+        "simulation_id": 42,
+        "job_id_ext": "batch-job-1",
+        "status": ComposeAnalysisStatus.COMPUTING,
+        "attempt": 1,
+    }
     base.update(overrides)
     return ComposeAnalysis(**base)  # type: ignore[arg-type]
 

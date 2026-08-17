@@ -16,6 +16,8 @@ from viva_api.compose.database_service import ComposeDatabaseService
 from viva_api.compose.hpc_utils import get_compose_correlation_id, get_compose_experiment_id
 from viva_api.compose.job_monitor import ComposeJobMonitor
 from viva_api.compose.models import (
+    ComposeAnalysis,
+    ComposeAnalysisRunRequest,
     ComposeHpcRun,
     ComposeJobStatus,
     ComposeJobType,
@@ -28,6 +30,7 @@ from viva_api.compose.models import (
     get_singularity_hash,
 )
 from viva_api.compose.simulation_service import ComposeSimulationService
+from viva_api.compose.simulation_service_ray import ComposeSimulationServiceRay
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +87,38 @@ def _extract_document_content(sim_request: ComposeSimulationRequest) -> str | No
 async def get_compose_simulator_versions(db_service: ComposeDatabaseService) -> ComposeRegisteredSimulators:
     simulators = await db_service.get_simulator_db().list_simulators()
     return ComposeRegisteredSimulators(versions=simulators)
+
+
+async def run_compose_analysis(
+    request: ComposeAnalysisRunRequest,
+    database_service: ComposeDatabaseService,
+    simulation_service: ComposeSimulationService,
+) -> ComposeAnalysis:
+    """Submit the analysis DAG node for a compose-dispatched v2ecoli composite —
+    item 50 Gap 6. Awaited synchronously (unlike ``run_compose_simulation``'s
+    ``background_tasks`` dispatch): the underlying work here is a single
+    ``_submit_mnp`` Batch API call plus a DB insert, not a multi-minute build/
+    dispatch sequence, so the caller gets the real ``database_id``/``job_id_ext``
+    back immediately rather than having to poll for them to appear.
+    """
+    # submit_analysis is Ray/Batch-specific (OOM-retry-escalation has no SLURM
+    # equivalent — see ComposeSimulationServiceRay's own docstring), so it's not
+    # on the ComposeSimulationService ABC. A real isinstance check, not a bare
+    # hasattr, so this also type-narrows for the call below.
+    if not isinstance(simulation_service, ComposeSimulationServiceRay):
+        raise HTTPException(400, "Analysis dispatch requires a compose backend that supports it (Ray/Batch)")
+
+    experiment_id = await database_service.get_simulator_db().get_simulations_experiment_id(
+        simulation_id=request.simulation_id
+    )
+    return await simulation_service.submit_analysis(
+        experiment_id=experiment_id,
+        simulation_id=request.simulation_id,
+        db_service=database_service,
+        n_seeds=request.n_seeds,
+        n_generations=request.n_generations,
+        modules=request.modules,
+    )
 
 
 async def run_compose_simulation(

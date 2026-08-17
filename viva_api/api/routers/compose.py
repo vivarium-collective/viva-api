@@ -12,6 +12,7 @@ from starlette.responses import FileResponse
 from viva_api.compose.database_service import ComposeDatabaseService
 from viva_api.compose.handlers import (
     get_compose_simulator_versions,
+    run_compose_analysis,
     run_compose_curated,
     run_compose_simulation,
 )
@@ -28,6 +29,8 @@ from viva_api.compose.models import (
     BiomodelsRegressionResult,
     BiomodelsRunRequest,
     BiomodelsRunResult,
+    ComposeAnalysis,
+    ComposeAnalysisRunRequest,
     ComposeHpcRun,
     ComposeJobType,
     ComposeRegisteredSimulators,
@@ -133,6 +136,42 @@ async def submit_simulation(
         background_tasks=background_tasks,
         extra_pip_deps=extra_pip_deps,
     )
+
+
+# ---------------------------------------------------------------------------
+# Analysis endpoints — item 50 Gap 6
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    path="/analysis/run",
+    operation_id="compose-run-analysis",
+    response_model=ComposeAnalysis,
+    tags=["Compose Simulation"],
+    summary="Submit the analysis DAG node for a compose-dispatched v2ecoli composite",
+)
+async def submit_analysis(request: ComposeAnalysisRunRequest) -> ComposeAnalysis:
+    db = _require_db()
+    try:
+        return await run_compose_analysis(
+            request=request, database_service=db, simulation_service=_require_sim()
+        )
+    except LookupError:
+        raise HTTPException(404, f"Compose simulation {request.simulation_id} not found")
+
+
+@router.get(
+    path="/analysis/{analysis_id}/status",
+    operation_id="compose-get-analysis-status",
+    response_model=ComposeAnalysis,
+    tags=["Compose Results"],
+    summary="Get compose analysis job status",
+)
+async def get_analysis_status(analysis_id: int) -> ComposeAnalysis:
+    analysis = await _require_db().get_analysis_db().get_analysis(analysis_id)
+    if analysis is None:
+        raise HTTPException(404, f"Compose analysis {analysis_id} not found")
+    return analysis
 
 
 # ---------------------------------------------------------------------------
