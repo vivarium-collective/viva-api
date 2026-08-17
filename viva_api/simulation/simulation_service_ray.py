@@ -119,6 +119,56 @@ _RUNNER_SRC = (_res.files("viva_api.compose") / "run_pbg.py").read_text()
 V2ECOLI_BATCH_BASELINE_COMPOSITE_ID = "v2ecoli.composites.ecoli_baseline.ecoli_baseline"
 V2ECOLI_CORE_BUILDER = "v2ecoli.core:build_core"
 
+# Backlog item 50, gaps 1-2: the naming-convention names a chain-dispatchable
+# composite must declare (see vivarium-workbench/.todo/backlog/50.md Part 1 --
+# "leaning (a) [a documented naming convention]" over a new CompositeSpec field,
+# which would be a real contribution to process_bigraph itself; this ecosystem
+# has a standing rule against that unless absolutely unavoidable). A composite
+# opts into chain-dispatch purely by declaring both names in its own
+# @composite_generator(parameters={...}) -- no framework change, no new field.
+_CHAIN_DISPATCH_PARAM_NAMES = ("n_seeds", "n_generations")
+
+
+def _resolve_chain_dispatch_spec(composite_id: str) -> "Any | None":
+    """Resolve *composite_id* through the shared process_bigraph registry and
+    return its CompositeSpec if -- and only if -- it declares both
+    ``_CHAIN_DISPATCH_PARAM_NAMES`` (the chain-dispatch naming convention).
+
+    Mirrors ``viva_api/compose/run_pbg.py::_resolve_document``'s own
+    resolution exactly (``get_spec`` -> on-miss ``discover_specs()`` -> retry
+    once) -- same registry, same fallback shape, not reinvented.
+
+    Gap 1's real fix: the ROUTING decision (item 50's own scope) previously
+    keyed off ``composite is None`` alone, an incidental request field, never
+    the composite's own declared shape. This makes that decision derive from
+    the actual resolved composite instead -- while leaving gaps 1-4's own
+    scope boundary intact (Part 2, point 3: "only the routing decision
+    changes", the per-seed/per-generation submission mechanism in
+    ``_seed_generation_command`` is untouched).
+
+    Deliberately fails soft (returns ``None``) on ANY resolution problem --
+    unresolvable id, ``process_bigraph`` not installed in this environment,
+    missing convention keys -- so a caller can safely fall back to the
+    pre-existing ``composite is None`` behavior. This routing decision gates
+    real production dispatch; a registry hiccup must never silently break it.
+    """
+    try:
+        from process_bigraph.composite_spec import discover_specs
+        from process_bigraph.composite_spec import get as get_spec
+    except ImportError:
+        return None
+    spec = get_spec(composite_id)
+    if spec is None:
+        discover_specs()
+        spec = get_spec(composite_id)
+    if spec is None:
+        return None
+    params = getattr(spec, "parameters", None) or {}
+    if not all(name in params for name in _CHAIN_DISPATCH_PARAM_NAMES):
+        return None
+    return spec
+
+
 # Absolute paths inside the v2ecoli Ray image (WORKDIR=/app/v2ecoli). The
 # entrypoint runs RAY_JOB_CMD on the head; v2ecoli reads the cache from
 # CACHE_DIR and writes the ensemble outputs under OUT_DIR.
@@ -1062,6 +1112,23 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         # the comparison knobs read further below -- read directly, not via getattr.
         n_generations = int(config.generations or 1)
         if composite is None and n_generations > 1:
+            # Gap 1 (backlog item 50): confirm the composite this dispatch actually
+            # targets is still genuinely chain-dispatchable (declares n_seeds/
+            # n_generations per the naming convention -- see
+            # _resolve_chain_dispatch_spec) rather than trusting the incidental
+            # `composite is None` field alone. Deliberately still dispatches on
+            # resolution failure (process_bigraph unavailable, or the composite id
+            # gone stale the way item 55 found) -- this check's value right now is
+            # making that exact failure mode LOUD via the warning below, not yet
+            # blocking on it; a registry hiccup must never silently break a request
+            # that would have dispatched correctly before this check existed.
+            if _resolve_chain_dispatch_spec(V2ECOLI_BATCH_BASELINE_COMPOSITE_ID) is None:
+                logger.warning(
+                    "chain-dispatch routing: %s did not resolve as chain-dispatchable "
+                    "(process_bigraph unavailable, or the composite no longer declares "
+                    "n_seeds/n_generations) -- dispatching anyway on legacy routing",
+                    V2ECOLI_BATCH_BASELINE_COMPOSITE_ID,
+                )
             return await self._submit_chain_dispatch_background(
                 ecoli_simulation, database_service, correlation_id=correlation_id
             )

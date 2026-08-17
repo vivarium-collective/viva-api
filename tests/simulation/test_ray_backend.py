@@ -4,6 +4,8 @@ and SimulationServiceRay submission/status/cancel (boto3 mocked, Postgres via te
 import asyncio
 import json
 import shlex
+import sys
+import types
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,7 +18,9 @@ from viva_api.simulation.models import JobType
 from viva_api.simulation.simulation_service_ray import (
     PARCA_CACHE_DIR,
     SIM_OUT_DIR,
+    V2ECOLI_BATCH_BASELINE_COMPOSITE_ID,
     SimulationServiceRay,
+    _resolve_chain_dispatch_spec,
     analysis_memory_mib_for,
     analysis_modules_for,
 )
@@ -1925,3 +1929,135 @@ class TestSubmitCampaignAnalysis:
         assert len(records) == 1
         assert records[0].status == JobStatus.FAILED
         assert "Batch said no" in (records[0].error_message or "")
+
+
+# --- _resolve_chain_dispatch_spec: backlog item 50, gaps 1-2 ---
+#
+# process_bigraph is not a real viva-api dependency (container-only, same
+# situation as v2ecoli/viva_emitters for item 61's fix) -- these verify the
+# real resolve/retry/naming-convention CONTRACT against a fake
+# process_bigraph.composite_spec module, matching tests/compose/test_run_pbg.py's
+# own established `_install_fake_composite_spec` pattern exactly (not
+# reinvented). Real end-to-end confirmation needs either a real dispatch or a
+# test run in an environment where process_bigraph is actually installed --
+# same honest limitation item 61's own tests already carry.
+
+
+class _FakeChainSpec:
+    def __init__(self, parameters: dict[str, Any]) -> None:
+        self.parameters = parameters
+
+
+def _install_fake_composite_spec_registry(monkeypatch: pytest.MonkeyPatch, registry: dict[str, Any]) -> list[str]:
+    """Inject a fake process_bigraph.composite_spec module; returns discover_specs() call count."""
+    discover_calls: list[str] = []
+    fake_mod = types.ModuleType("process_bigraph.composite_spec")
+    fake_mod.get = lambda spec_id: registry.get(spec_id)  # type: ignore[attr-defined]
+    fake_mod.discover_specs = lambda: discover_calls.append("called")  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "process_bigraph.composite_spec", fake_mod)
+    return discover_calls
+
+
+def test_resolve_chain_dispatch_spec_returns_spec_when_convention_declared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _FakeChainSpec({"n_seeds": {"default": 1}, "n_generations": {"default": 1}, "seed": {"default": 0}})
+    _install_fake_composite_spec_registry(monkeypatch, {"v2ecoli.composites.ecoli_baseline.ecoli_baseline": spec})
+
+    result = _resolve_chain_dispatch_spec("v2ecoli.composites.ecoli_baseline.ecoli_baseline")
+
+    assert result is spec
+
+
+def test_resolve_chain_dispatch_spec_none_when_convention_keys_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A resolvable composite that doesn't declare BOTH n_seeds and n_generations
+    is not chain-dispatchable per the naming convention -- e.g. the single-cell
+    default shape, or an unrelated composite that happens to share the id prefix."""
+    spec = _FakeChainSpec({"seed": {"default": 0}})
+    _install_fake_composite_spec_registry(monkeypatch, {"some.other.composite": spec})
+
+    assert _resolve_chain_dispatch_spec("some.other.composite") is None
+
+
+def test_resolve_chain_dispatch_spec_retries_after_discover_specs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mirrors run_pbg._resolve_document's own retry shape: a composite's defining
+    module may not be imported yet on first lookup."""
+    spec = _FakeChainSpec({"n_seeds": {}, "n_generations": {}})
+    registry: dict[str, Any] = {}
+    discover_calls = _install_fake_composite_spec_registry(monkeypatch, registry)
+
+    def _discover_and_populate() -> None:
+        discover_calls.append("called")
+        registry["late.module.ecoli_baseline"] = spec
+
+    sys.modules["process_bigraph.composite_spec"].discover_specs = _discover_and_populate  # type: ignore[attr-defined]
+
+    assert _resolve_chain_dispatch_spec("late.module.ecoli_baseline") is spec
+    assert discover_calls == ["called"]
+
+
+def test_resolve_chain_dispatch_spec_none_when_unresolvable(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_composite_spec_registry(monkeypatch, {})
+    assert _resolve_chain_dispatch_spec("missing.id") is None
+
+
+def test_resolve_chain_dispatch_spec_none_when_process_bigraph_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Most environments running this module (viva-api's own test/CI env included)
+    don't have process_bigraph installed at all -- degrade silently, matching every
+    other optional-dependency guard in this codebase (e.g. run_pbg.py's _build_core)."""
+    monkeypatch.setitem(sys.modules, "process_bigraph.composite_spec", None)
+    assert _resolve_chain_dispatch_spec(V2ECOLI_BATCH_BASELINE_COMPOSITE_ID) is None
+
+
+# --- routing conditional: gap 1's real integration point, submit_ecoli_simulation_job ---
+
+
+@pytest.mark.asyncio
+async def test_chain_dispatch_routes_when_composite_resolves_as_chain_dispatchable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The routing conditional's real, currently-live case: composite=None,
+    generations>1, and the resolved composite genuinely declares the convention
+    keys -- must still route to chain-dispatch, now via a verified resolution
+    rather than the incidental field alone."""
+    spec = _FakeChainSpec({"n_seeds": {}, "n_generations": {}})
+    _install_fake_composite_spec_registry(monkeypatch, {V2ECOLI_BATCH_BASELINE_COMPOSITE_ID: spec})
+
+    service = SimulationServiceRay.__new__(SimulationServiceRay)
+    background = AsyncMock(return_value=JobId.local("bg-job"))
+    service._submit_chain_dispatch_background = background  # type: ignore[method-assign]
+
+    config = MagicMock(composite=None, generations=2)
+    simulation = MagicMock(config=config)
+    database_service = MagicMock()
+
+    result = await SimulationServiceRay.submit_ecoli_simulation_job(
+        service, simulation, database_service, correlation_id="corr-1"
+    )
+
+    background.assert_awaited_once_with(simulation, database_service, correlation_id="corr-1")
+    assert result == JobId.local("bg-job")
+
+
+@pytest.mark.asyncio
+async def test_chain_dispatch_still_routes_when_resolution_fails_soft(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A registry hiccup (process_bigraph unavailable, or the composite id gone
+    stale the way item 55 found) must not silently break a request that would
+    have dispatched correctly on the pre-existing composite=None + generations>1
+    check alone -- this is the deliberate fail-soft behavior, not yet a hard gate."""
+    _install_fake_composite_spec_registry(monkeypatch, {})  # unresolvable
+
+    service = SimulationServiceRay.__new__(SimulationServiceRay)
+    background = AsyncMock(return_value=JobId.local("bg-job"))
+    service._submit_chain_dispatch_background = background  # type: ignore[method-assign]
+
+    config = MagicMock(composite=None, generations=2)
+    simulation = MagicMock(config=config)
+    database_service = MagicMock()
+
+    result = await SimulationServiceRay.submit_ecoli_simulation_job(
+        service, simulation, database_service, correlation_id="corr-2"
+    )
+
+    background.assert_awaited_once()
+    assert result == JobId.local("bg-job")
