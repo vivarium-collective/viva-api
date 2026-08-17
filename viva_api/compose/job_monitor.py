@@ -7,10 +7,13 @@ from typing import Any
 
 from async_lru import alru_cache
 
+from viva_api.common.analysis_retry import AnalysisRetryAction, decide_analysis_retry
 from viva_api.common.hpc.slurm_service import SlurmService
 from viva_api.common.models import JobBackend, SSHTarget
 from viva_api.compose.database_service import ComposeDatabaseService
 from viva_api.compose.models import (
+    ComposeAnalysis,
+    ComposeAnalysisStatus,
     ComposeHpcRun,
     ComposeJobStatus,
     ComposeWorkerEvent,
@@ -20,6 +23,12 @@ from viva_api.config import ComputeBackend, get_settings
 from viva_api.dependencies import get_ssh_session_service
 
 logger = logging.getLogger(__name__)
+
+# Attempt-1 baseline when the analysis config carries no explicit memory hint, so
+# escalation still has a real starting point — mirrors the legacy poller's own
+# default (PR #239 / backlog item 38 track B), itself the CDK job def's current
+# default node memory for the Ray MNP queue.
+_DEFAULT_ANALYSIS_MEMORY_MIB = 58 * 1024
 
 
 class ComposeJobMonitor:
@@ -84,6 +93,10 @@ class ComposeJobMonitor:
                 await self.update_running_jobs()
             except Exception:
                 logger.exception("Error during compose job polling")
+            try:
+                await self.update_analysis_retries()
+            except Exception:
+                logger.exception("Error during compose analysis OOM-retry-escalation polling")
             await asyncio.sleep(interval_seconds)
 
     async def update_running_jobs(self) -> None:
@@ -151,6 +164,87 @@ class ComposeJobMonitor:
 
             if slurm_job.job_id in self.internal_listeners:
                 self.internal_listeners[slurm_job.job_id].put_nowait(hpc_run)
+
+    async def update_analysis_retries(self) -> None:
+        """Poll every COMPUTING, Ray-backend compose_analysis row to terminal state
+        and, on an OOM (exit code 137), resubmit at an escalated memory tier — item
+        50 Gap 6, the compose-side half of the shared retry-escalation algorithm
+        (mirrors the legacy ``JobScheduler.update_analysis_retries``, PR #239 /
+        backlog item 38 track B). A genuinely new watcher: nothing previously polled
+        a compose analysis job to terminal state at all.
+
+        Duck-typed rather than an isinstance check against ``ComposeSimulationServiceRay``
+        (avoids importing it here — this file otherwise treats every backend generically
+        via ``sim_registry``/``Any``): OOM-retry-escalation is a Batch/Ray-specific
+        concept (SLURM's fixed ``--mem=`` sbatch sizing has no equivalent dynamic
+        escalation), so a registry entry without ``resubmit_analysis``/
+        ``get_job_status_info`` simply can't run this poller — skip cleanly.
+        """
+        ray_service = self.sim_registry.get(ComputeBackend.RAY)
+        if ray_service is None or not (
+            hasattr(ray_service, "resubmit_analysis") and hasattr(ray_service, "get_job_status_info")
+        ):
+            return
+
+        active_analyses = await self.database_service.get_analysis_db().list_active_analyses()
+        if not active_analyses:
+            return
+        for analysis in active_analyses:
+            try:
+                await self._advance_analysis_retry(analysis, ray_service)
+            except Exception:
+                logger.exception("Error advancing compose analysis retry for analysis %s", analysis.database_id)
+
+    async def _advance_analysis_retry(self, analysis: ComposeAnalysis, ray_service: Any) -> None:
+        if analysis.job_id_ext is None:
+            return  # list_active_analyses already filters this, but stay defensive
+        analysis_db = self.database_service.get_analysis_db()
+        job_status_info = await ray_service.get_job_status_info(analysis.job_id_ext)
+
+        base_memory_mib = analysis.config.get("memory_mib") or _DEFAULT_ANALYSIS_MEMORY_MIB
+        decision = decide_analysis_retry(
+            status=job_status_info.status if job_status_info else None,
+            exit_code=job_status_info.exit_code if job_status_info else None,
+            error_message=job_status_info.error_message if job_status_info else None,
+            current_attempt=analysis.attempt,
+            base_memory_mib=base_memory_mib,
+        )
+
+        if decision.action == AnalysisRetryAction.WAIT:
+            return
+
+        if decision.action == AnalysisRetryAction.SUCCEED:
+            await analysis_db.update_analysis_status(analysis.database_id, ComposeAnalysisStatus.READY)
+            logger.info("Compose analysis %s succeeded on attempt %d", analysis.database_id, analysis.attempt)
+            return
+
+        if decision.action == AnalysisRetryAction.ESCALATE:
+            assert decision.next_memory_mib is not None and decision.next_attempt is not None
+            new_job_id_ext = await ray_service.resubmit_analysis(analysis, memory_mib=decision.next_memory_mib)
+            await analysis_db.update_analysis_job_id(
+                analysis.database_id, job_id_ext=new_job_id_ext, attempt=decision.next_attempt
+            )
+            logger.warning(
+                "Compose analysis %s OOM'd on attempt %d (job %s); resubmitted as attempt %d at %d MiB (job %s)",
+                analysis.database_id,
+                analysis.attempt,
+                analysis.job_id_ext,
+                decision.next_attempt,
+                decision.next_memory_mib,
+                new_job_id_ext,
+            )
+            return
+
+        # FAIL
+        await analysis_db.update_analysis_status(
+            analysis.database_id, ComposeAnalysisStatus.FAILED, error_message=decision.error_message
+        )
+        logger.error(
+            "Compose analysis %s permanently failed after attempt %d (job=%s)",
+            analysis.database_id,
+            analysis.attempt,
+            analysis.job_id_ext,
+        )
 
     def internal_subscribe(self, queue: Queue[ComposeHpcRun], job_id: int) -> None:
         self.internal_listeners[job_id] = queue
