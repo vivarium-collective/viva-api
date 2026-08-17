@@ -33,6 +33,7 @@ def _ray_settings() -> MagicMock:
         s3_output_prefix="vecoli-output",
         ray_mnp_queue="smscdk-ray-mnp",
         ray_mnp_job_definition="smscdk-ray-mnp",
+        ray_mnp_standalone_queue="",  # unconfigured by default -- real fallback behavior (item 65)
         ray_array_queue="smscdk-vecoli-task-amd64",
         ray_array_job_definition="smscdk-ray-array",
         ray_num_nodes=3,
@@ -537,6 +538,78 @@ class TestSimulationServiceRaySubmit:
         assert "run_comparison_ensemble.py" in _env_of(sim_call)["RAY_JOB_CMD"]
         assert "--composite vecoli" in _env_of(sim_call)["RAY_JOB_CMD"]
         assert parca_call.kwargs["nodeOverrides"]["numNodes"] == 1
+
+
+class TestSubmitMnpStandaloneQueueRouting:
+    """Backlog item 65: a genuinely standalone (numNodes=1) MNP submission has no
+    inter-node traffic to protect, so it gains nothing from ray_mnp_queue's
+    cluster-placement-group compute environment and pays its full concurrency
+    cost for nothing. _submit_mnp routes such a job to ray_mnp_standalone_queue
+    instead, when one is configured -- automatic, no call-site changes needed."""
+
+    def _settings(self, *, standalone_queue: str) -> MagicMock:
+        s = _ray_settings()
+        s.ray_mnp_standalone_queue = standalone_queue
+        return s
+
+    def test_standalone_submission_routes_to_standalone_queue_when_configured(self) -> None:
+        settings = self._settings(standalone_queue="smscdk-ray-standalone")
+        mock_batch = MagicMock()
+        mock_batch.submit_job.return_value = {"jobId": "job-1"}
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", return_value=settings):
+            service._submit_mnp(
+                job_name="standalone-test",
+                job_definition="smscdk-ray-mnp",
+                num_nodes=1,
+                ray_job_cmd="echo hi",
+                out_s3="s3://bucket/out/",
+                out_dir="/out",
+                batch_client=mock_batch,
+            )
+        assert mock_batch.submit_job.call_args.kwargs["jobQueue"] == "smscdk-ray-standalone"
+        # Reuses the SAME job definition passed in -- no new job type needed.
+        assert mock_batch.submit_job.call_args.kwargs["jobDefinition"] == "smscdk-ray-mnp"
+
+    def test_standalone_submission_falls_back_when_not_configured(self) -> None:
+        """Empty (the real default) = no behavior change -- safe to deploy before
+        the standalone queue exists in the target AWS account."""
+        settings = self._settings(standalone_queue="")
+        mock_batch = MagicMock()
+        mock_batch.submit_job.return_value = {"jobId": "job-1"}
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", return_value=settings):
+            service._submit_mnp(
+                job_name="standalone-test",
+                job_definition="smscdk-ray-mnp",
+                num_nodes=1,
+                ray_job_cmd="echo hi",
+                out_s3="s3://bucket/out/",
+                out_dir="/out",
+                batch_client=mock_batch,
+            )
+        assert mock_batch.submit_job.call_args.kwargs["jobQueue"] == "smscdk-ray-mnp"
+
+    def test_genuine_multi_node_submission_stays_on_mnp_queue_even_when_standalone_configured(self) -> None:
+        """A REAL multi-node request (numNodes > 1, e.g. a colony sim) must never
+        be rerouted -- it's exactly the case the placement group's low-latency
+        inter-node networking still matters for. Guards against an over-broad
+        routing condition swallowing genuine multi-node jobs."""
+        settings = self._settings(standalone_queue="smscdk-ray-standalone")
+        mock_batch = MagicMock()
+        mock_batch.submit_job.return_value = {"jobId": "job-1"}
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", return_value=settings):
+            service._submit_mnp(
+                job_name="multinode-test",
+                job_definition="smscdk-ray-mnp",
+                num_nodes=4,
+                ray_job_cmd="echo hi",
+                out_s3="s3://bucket/out/",
+                out_dir="/out",
+                batch_client=mock_batch,
+            )
+        assert mock_batch.submit_job.call_args.kwargs["jobQueue"] == "smscdk-ray-mnp"
 
 
 class TestAnalysisModulesFor:

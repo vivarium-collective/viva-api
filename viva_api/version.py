@@ -433,4 +433,14 @@
 #          non-mocked local composite run (real process_bigraph, v2ecoli,
 #          viva_emitters, ParCa cache) -- produced a real history/*.pq file
 #          with all 206 real biology columns intact.
-__version__ = "0.9.47"
+# 0.9.48 — backlog item 65: _submit_mnp routes a standalone (numNodes=1)
+#          submission to settings.ray_mnp_standalone_queue instead of
+#          ray_mnp_queue, when configured. Chain-dispatch's per-seed-per-
+#          generation jobs and ParCa are numNodes=1 with no inter-node
+#          traffic to protect, but were paying the full concurrency cost of
+#          ray_mnp_queue's cluster-placement-group compute environment for
+#          nothing -- confirmed live, stuck at 1 concurrent job with ~1000
+#          more ready. Automatic per-call routing keyed on num_nodes, no
+#          call-site changes; empty (default) = unchanged behavior, safe to
+#          deploy before the standalone queue exists (sms-cdk PR #37).
+__version__ = "0.9.48"
