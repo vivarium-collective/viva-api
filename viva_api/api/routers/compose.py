@@ -153,9 +153,7 @@ async def submit_simulation(
 async def submit_analysis(request: ComposeAnalysisRunRequest) -> ComposeAnalysis:
     db = _require_db()
     try:
-        return await run_compose_analysis(
-            request=request, database_service=db, simulation_service=_require_sim()
-        )
+        return await run_compose_analysis(request=request, database_service=db, simulation_service=_require_sim())
     except LookupError:
         raise HTTPException(404, f"Compose simulation {request.simulation_id} not found")
 

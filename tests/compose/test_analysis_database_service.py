@@ -54,9 +54,7 @@ async def compose_simulation_id(compose_db_service: ComposeDatabaseService) -> i
 
 
 @pytest.mark.asyncio
-async def test_insert_and_get_analysis(
-    compose_db_service: ComposeDatabaseService, compose_simulation_id: int
-) -> None:
+async def test_insert_and_get_analysis(compose_db_service: ComposeDatabaseService, compose_simulation_id: int) -> None:
     db = compose_db_service.get_analysis_db()
     inserted = await db.insert_analysis(
         name="analysis-exp-1",
@@ -118,9 +116,7 @@ async def test_update_analysis_status_to_ready_with_result_uri(
     inserted = await db.insert_analysis(
         name="a1", config={}, simulation_id=compose_simulation_id, job_id_ext="job-1", job_backend="ray"
     )
-    await db.update_analysis_status(
-        inserted.database_id, ComposeAnalysisStatus.READY, result_uri="s3://bucket/final"
-    )
+    await db.update_analysis_status(inserted.database_id, ComposeAnalysisStatus.READY, result_uri="s3://bucket/final")
     fetched = await db.get_analysis(inserted.database_id)
     assert fetched is not None
     assert fetched.status == ComposeAnalysisStatus.READY

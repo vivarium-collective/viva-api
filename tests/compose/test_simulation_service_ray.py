@@ -19,6 +19,7 @@ from viva_api.compose.models import (
     SimulationFileType,
 )
 from viva_api.compose.simulation_service_ray import ComposeSimulationServiceRay
+from viva_api.simulation.simulation_service_ray import ANALYSIS_OUT_DIR
 
 
 def _settings(**overrides: object) -> types.SimpleNamespace:
@@ -222,7 +223,7 @@ class TestSubmitAnalysis:
             svc._ray,
             "_ensure_mnp_job_def",
             lambda image, commit, memory_mib=None: (
-                job_def_calls.append({"image": image, "commit": commit, "memory_mib": memory_mib}),
+                job_def_calls.append({"image": image, "commit": commit, "memory_mib": memory_mib}),  # type: ignore[func-returns-value]
                 "smscdk-ray-mnp-commit123:1",
             )[1],
         )
@@ -280,7 +281,7 @@ class TestSubmitAnalysis:
         # upstream to natively dependsOn at submit time)
         assert captured_submit["depends_on"] is None
         assert captured_submit["depends_type"] is None
-        assert captured_submit["out_dir"] == mod.ANALYSIS_OUT_DIR
+        assert captured_submit["out_dir"] == ANALYSIS_OUT_DIR
         # recorded against the compose_analysis table with the real returned job id
         insert_kwargs = db_service.get_analysis_db.return_value.insert_analysis.call_args.kwargs
         assert insert_kwargs["job_id_ext"] == "analysis-batch-job-id"
@@ -305,7 +306,7 @@ class TestResubmitAnalysis:
             svc._ray,
             "_ensure_mnp_job_def",
             lambda image, commit, memory_mib=None: (
-                job_def_calls.append({"memory_mib": memory_mib}),
+                job_def_calls.append({"memory_mib": memory_mib}),  # type: ignore[func-returns-value]
                 "smscdk-ray-mnp-commit123-mem120000:1",
             )[1],
         )
