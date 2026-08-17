@@ -219,7 +219,11 @@ class ComposeJobMonitor:
             return
 
         if decision.action == AnalysisRetryAction.ESCALATE:
-            assert decision.next_memory_mib is not None and decision.next_attempt is not None
+            if decision.next_memory_mib is None or decision.next_attempt is None:
+                # decide_analysis_retry's own contract guarantees these are set
+                # together with ESCALATE — a real, not-strippable-by-`-O` guard,
+                # not a defensive assert.
+                raise RuntimeError(f"ESCALATE decision missing next_memory_mib/next_attempt: {decision!r}")
             new_job_id_ext = await ray_service.resubmit_analysis(analysis, memory_mib=decision.next_memory_mib)
             await analysis_db.update_analysis_job_id(
                 analysis.database_id, job_id_ext=new_job_id_ext, attempt=decision.next_attempt
