@@ -114,6 +114,30 @@ def _build_core() -> Any:
 _EMITTER_OUT_KEYS = ("out_dir", "out_uri")
 
 
+def _flush_emitters(composite: Any) -> None:
+    """Flush any ParquetEmitter steps' buffered rows before the process exits.
+
+    A ParquetEmitter is typically constructed deep inside a composite's step
+    factory (see ``viva_emitters.lifecycle``'s own docstring) — this generic
+    runner never sees the instance directly, so it cannot call ``close()`` on
+    it itself. Without an explicit flush, the trailing partial batch (rows
+    since the last ``batch_size`` flush) stays in memory and is lost when the
+    process exits: ``ParquetEmitter.__del__``'s finalizer is a best-effort,
+    non-blocking safety net (by its own docstring), not a guarantee, and
+    interpreter shutdown does not reliably run `__del__` on module-level
+    instances. Mirrors v2ecoli's own ``composites._helpers.flush_parquet()``,
+    reimplemented generically here since ``run_pbg.py`` has no v2ecoli-specific
+    knowledge — same ``viva_emitters.ParquetEmitter.flush_all_in_composite``
+    call, guarded the same way ``_build_core()`` guards every pbg-emitters
+    import (the ``[parquet]`` extra need not be installed in every image).
+    """
+    try:
+        from viva_emitters import ParquetEmitter
+    except ImportError:
+        return  # [parquet] extra not installed in this image
+    ParquetEmitter.flush_all_in_composite(composite, success=True)
+
+
 def _redirect_emitters(node: Any, results_dir: Path) -> int:
     """Point every emitter step's output location at *results_dir*, recursively.
 
@@ -219,6 +243,7 @@ def run(
     _redirect_emitters(document, results_dir)
     composite = Composite(document, core=core)  # full-path local:! addresses resolve via importlib
     composite.run(steps)
+    _flush_emitters(composite)
     out = results_dir / "final_state.json"
     out.write_text(json.dumps(composite.serialize_state(), default=str))
     return out

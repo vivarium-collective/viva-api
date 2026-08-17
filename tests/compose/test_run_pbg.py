@@ -51,6 +51,64 @@ def test_run_writes_final_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert json.loads(out.read_text())["ran"] == 5
 
 
+# --- _flush_emitters: ParquetEmitter's trailing batch must land on disk before exit ---
+
+
+def test_run_flushes_parquet_emitters_after_composite_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test for item 61: a ParquetEmitter is built deep inside a
+    composite's step factory, so run() never sees the instance and can't call
+    close() on it directly. Without an explicit flush_all_in_composite() call,
+    the trailing partial batch stays in memory and is silently lost — the run
+    "succeeds" and produces zero readable output. Fails pre-fix (flush_calls
+    stays empty); passes post-fix."""
+
+    class FakeComposite:
+        def __init__(self, doc: Any, core: Any = None) -> None:
+            self.doc = doc
+
+        def run(self, n: int) -> None:
+            pass
+
+        def serialize_state(self) -> dict[str, int]:
+            return {"ran": 1}
+
+    fake_pbg_mod = types.ModuleType("process_bigraph")
+    fake_pbg_mod.Composite = FakeComposite  # type: ignore[attr-defined]
+    fake_pbg_mod.register_types = lambda core: core  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "process_bigraph", fake_pbg_mod)
+    fake_schema_mod = types.ModuleType("bigraph_schema")
+    fake_schema_mod.allocate_core = FakeCore  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "bigraph_schema", fake_schema_mod)
+
+    flush_calls: list[tuple[Any, bool]] = []
+
+    class FakeParquetEmitter:
+        @staticmethod
+        def flush_all_in_composite(composite: Any, success: bool = True) -> int:
+            flush_calls.append((composite, success))
+            return 1
+
+    fake_emitters_mod = types.ModuleType("viva_emitters")
+    fake_emitters_mod.ParquetEmitter = FakeParquetEmitter  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "viva_emitters", fake_emitters_mod)
+
+    pbg = tmp_path / "m.pbg"
+    pbg.write_text(json.dumps({"state": {}, "composition": {}}))
+    run_pbg.run(str(pbg), steps=5, results_dir=tmp_path / "output")
+
+    assert len(flush_calls) == 1
+    composite_seen, success = flush_calls[0]
+    assert isinstance(composite_seen, FakeComposite)
+    assert success is True
+
+
+def test_flush_emitters_is_a_noop_without_parquet_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[parquet] need not be installed in every compose image — degrade silently,
+    matching _build_core()'s own per-emitter ImportError guard."""
+    monkeypatch.setitem(sys.modules, "viva_emitters", None)  # forces `import viva_emitters` to raise ImportError
+    run_pbg._flush_emitters(composite=object())  # must not raise
+
+
 # --- _redirect_emitters: emitter output must land in the S3-synced results dir ---
 
 
