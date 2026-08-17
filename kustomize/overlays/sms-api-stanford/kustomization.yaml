@@ -101,7 +101,7 @@ images:
   # base_seed -> seed in the per-seed chain-dispatch overrides (a second real
   # incompatibility with the new composite's signature).
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.46
+    newTag: 0.9.47
   # ptools pinned to last-known-good tag — CI only builds sms-api, so there is
   # no newer sms-ptools:0.6.x image on ghcr.io.  0.5.9 is the tag the live Stanford
   # pod has been running successfully; keeping both namespaces pointing here
