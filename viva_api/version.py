@@ -433,4 +433,13 @@
 #          non-mocked local composite run (real process_bigraph, v2ecoli,
 #          viva_emitters, ParCa cache) -- produced a real history/*.pq file
 #          with all 206 real biology columns intact.
-__version__ = "0.9.47"
+# 0.9.49 — backlog item 6: real per-seed aggregate progress for a chain-dispatch
+#          campaign. New GET /simulations/{id}/chain-progress, reusing
+#          SimulationServiceRay.get_chain_campaign_result (the SAME data
+#          get_simulation_status already computes and collapses into one
+#          coarse phase) to expose seeds_total/succeeded/failed/in_progress
+#          instead. Read-only, no DB writes -- only JobScheduler's own poll
+#          loop transitions a campaign row. (0.9.48 is sms-cdk PR #37's
+#          companion viva-api PR #256, from a parallel session -- bumped past
+#          it here to avoid a version collision between the two open PRs.)
+__version__ = "0.9.49"

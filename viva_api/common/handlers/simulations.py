@@ -36,6 +36,7 @@ from viva_api.simulation.database_service import DatabaseService
 from viva_api.simulation.hpc_utils import get_correlation_id
 from viva_api.simulation.models import (
     AnalysisOptions,
+    ChainProgress,
     CompositeEngine,
     HpcRun,
     JobType,
@@ -794,6 +795,76 @@ async def get_simulation_status(db_service: DatabaseService, id: int) -> Simulat
         await db_service.update_hpcrun_status(hpcrun_id=hpc_run.database_id, update=update)
 
     return SimulationRun(id=int(id), status=job_status_info.status, error_message=job_status_info.error_message)
+
+
+async def get_simulation_chain_progress(db_service: DatabaseService, id: int) -> ChainProgress:
+    """Backlog item 6: real per-seed aggregate progress for a chain-dispatch
+    campaign (backlog item 33) — ``n`` seeds' worth of ``chain_final_job_ids``,
+    resolved to real/terminal/succeeded/failed counts.
+
+    404 (via ``ValueError``, matching ``get_simulation_status``'s own
+    not-found convention) when the simulation or its HpcRun doesn't exist.
+    409 (via ``RuntimeError``) when the simulation exists but isn't a
+    chain-dispatch campaign at all (a plain single-shot run has no
+    ``chain_final_job_ids`` to aggregate) — callers should fall back to the
+    plain ``get_simulation_status`` phase for those, not treat this as a
+    500. Never writes to the DB (mirrors ``get_simulation_status``'s own
+    read-only handling for the chain-campaign case) — only
+    ``JobScheduler._advance_chain_campaign``'s own poll loop may transition
+    a campaign row's terminal status.
+    """
+    sim_record = await db_service.get_simulation(simulation_id=id)
+    if sim_record is None:
+        raise ValueError(f"Simulation with id {id} not found.")
+
+    hpc_run = await db_service.get_hpcrun_by_ref(ref_id=id, job_type=JobType.SIMULATION)
+    if hpc_run is None:
+        raise ValueError(f"No HPC run found for simulation {id}.")
+
+    job_ids = hpc_run.chain_final_job_ids
+    if job_ids is None:
+        raise RuntimeError(f"Simulation {id} is not a chain-dispatch campaign (no chain_final_job_ids tracked).")
+
+    chain_service = get_simulation_service_for_job(hpc_run.job_id)
+    if not isinstance(chain_service, SimulationServiceRay):
+        # Matches get_simulation_status's own established convention for this
+        # exact check (same message, same file) -- kept as RuntimeError for
+        # consistency rather than TypeError, which would diverge from it.
+        raise RuntimeError("Chain-dispatch campaign requires the Ray/Batch simulation service")  # noqa: TRY004
+
+    seeds_total = len(job_ids)
+    if seeds_total == 0:
+        # Every seed failed even generation 0's submission -- trivially
+        # terminal with nothing that ever ran (mirrors
+        # JobScheduler._advance_chain_campaign's own zero-tracked handling).
+        return ChainProgress(
+            id=int(id),
+            seeds_total=0,
+            seeds_succeeded=0,
+            seeds_failed=0,
+            seeds_in_progress=0,
+            terminal=True,
+            status=JobStatus.FAILED,
+        )
+
+    result = chain_service.get_chain_campaign_result(job_ids)
+    seeds_succeeded = len(result.succeeded_job_ids)
+    seeds_failed = len(result.failed_job_ids)
+    seeds_in_progress = seeds_total - seeds_succeeded - seeds_failed
+    status = (
+        (JobStatus.COMPLETED if seeds_succeeded else JobStatus.FAILED)
+        if result.terminal
+        else hpc_run.status or JobStatus.RUNNING
+    )
+    return ChainProgress(
+        id=int(id),
+        seeds_total=seeds_total,
+        seeds_succeeded=seeds_succeeded,
+        seeds_failed=seeds_failed,
+        seeds_in_progress=seeds_in_progress,
+        terminal=result.terminal,
+        status=status,
+    )
 
 
 async def cancel_simulation(

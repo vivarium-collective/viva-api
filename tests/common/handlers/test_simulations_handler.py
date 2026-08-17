@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
@@ -577,3 +577,152 @@ async def test_get_simulation_status_non_chain_run_unaffected() -> None:
 
     assert result.status == JobStatus.COMPLETED
     mock_db_service.update_hpcrun_status.assert_called_once()
+
+
+# ─── get_simulation_chain_progress (backlog item 6) ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_chain_progress_not_terminal_reports_in_progress_split() -> None:
+    """Mid-campaign: 5 seeds succeeded, 1 failed, the rest still running/pending --
+    all three counts must sum to seeds_total, and terminal must be False."""
+    from viva_api.common.handlers.simulations import get_simulation_chain_progress
+    from viva_api.simulation.simulation_service_ray import ChainCampaignPollResult
+
+    job_ids = [f"seed{i}-gen9-job" for i in range(10)]
+    hpc_run = HpcRun(
+        database_id=300,
+        job_id=JobId.ray("parca-job-abc"),
+        correlation_id="N/A",
+        job_type=JobType.SIMULATION,
+        ref_id=214,
+        status=JobStatus.RUNNING,
+        chain_n_generations=10,
+        chain_final_job_ids=job_ids,
+    )
+    mock_db_service = AsyncMock()
+    mock_db_service.get_simulation.return_value = SimpleNamespace(database_id=214)
+    mock_db_service.get_hpcrun_by_ref.return_value = hpc_run
+
+    mock_ray_service = AsyncMock(spec=SimulationServiceRay)
+    mock_ray_service.get_chain_campaign_result = lambda ids: ChainCampaignPollResult(
+        terminal=False,
+        succeeded_job_ids=job_ids[:5],
+        failed_job_ids=job_ids[5:6],
+    )
+
+    with patch(
+        "viva_api.common.handlers.simulations.get_simulation_service_for_job",
+        return_value=mock_ray_service,
+    ):
+        result = await get_simulation_chain_progress(db_service=mock_db_service, id=214)
+
+    assert result.seeds_total == 10
+    assert result.seeds_succeeded == 5
+    assert result.seeds_failed == 1
+    assert result.seeds_in_progress == 4
+    assert result.terminal is False
+    assert result.status == JobStatus.RUNNING
+    mock_db_service.update_hpcrun_status.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_chain_progress_terminal_all_succeeded() -> None:
+    from viva_api.common.handlers.simulations import get_simulation_chain_progress
+    from viva_api.simulation.simulation_service_ray import ChainCampaignPollResult
+
+    job_ids = ["seed0-gen9-job", "seed1-gen9-job"]
+    hpc_run = _make_chain_campaign_hpc_run()
+    mock_db_service = AsyncMock()
+    mock_db_service.get_simulation.return_value = SimpleNamespace(database_id=214)
+    mock_db_service.get_hpcrun_by_ref.return_value = hpc_run
+
+    mock_ray_service = AsyncMock(spec=SimulationServiceRay)
+    mock_ray_service.get_chain_campaign_result = lambda ids: ChainCampaignPollResult(
+        terminal=True,
+        succeeded_job_ids=job_ids,
+    )
+
+    with patch(
+        "viva_api.common.handlers.simulations.get_simulation_service_for_job",
+        return_value=mock_ray_service,
+    ):
+        result = await get_simulation_chain_progress(db_service=mock_db_service, id=214)
+
+    assert result.seeds_total == 2 and result.seeds_succeeded == 2
+    assert result.seeds_failed == 0 and result.seeds_in_progress == 0
+    assert result.terminal is True
+    assert result.status == JobStatus.COMPLETED
+    mock_db_service.update_hpcrun_status.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_chain_progress_zero_tracked_is_trivially_terminal_failed() -> None:
+    """Every seed failed even generation 0's submission -- nothing tracked at all.
+    Mirrors JobScheduler._advance_chain_campaign's own zero-tracked handling:
+    trivially terminal, reported FAILED, no AWS Batch call made."""
+    from viva_api.common.handlers.simulations import get_simulation_chain_progress
+
+    hpc_run = HpcRun(
+        database_id=301,
+        job_id=JobId.ray("parca-job-xyz"),
+        correlation_id="N/A",
+        job_type=JobType.SIMULATION,
+        ref_id=215,
+        status=JobStatus.RUNNING,
+        chain_n_generations=10,
+        chain_final_job_ids=[],
+    )
+    mock_db_service = AsyncMock()
+    mock_db_service.get_simulation.return_value = SimpleNamespace(database_id=215)
+    mock_db_service.get_hpcrun_by_ref.return_value = hpc_run
+
+    mock_ray_service = AsyncMock(spec=SimulationServiceRay)
+    mock_ray_service.get_chain_campaign_result = MagicMock(
+        side_effect=AssertionError("must not call AWS Batch for zero tracked ids")
+    )
+
+    with patch(
+        "viva_api.common.handlers.simulations.get_simulation_service_for_job",
+        return_value=mock_ray_service,
+    ):
+        result = await get_simulation_chain_progress(db_service=mock_db_service, id=215)
+
+    assert result.seeds_total == 0
+    assert result.terminal is True
+    assert result.status == JobStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_chain_progress_non_chain_run_raises_runtime_error() -> None:
+    """A plain (non-chain-campaign) simulation has nothing to aggregate --
+    the route maps this to 409, distinct from the 404 not-found case."""
+    from viva_api.common.handlers.simulations import get_simulation_chain_progress
+
+    hpc_run = HpcRun(
+        database_id=99,
+        job_id=JobId.k8s("plain-sim-job"),
+        correlation_id="N/A",
+        job_type=JobType.SIMULATION,
+        ref_id=42,
+        status=JobStatus.RUNNING,
+        chain_n_generations=None,
+        chain_final_job_ids=None,
+    )
+    mock_db_service = AsyncMock()
+    mock_db_service.get_simulation.return_value = SimpleNamespace(database_id=42)
+    mock_db_service.get_hpcrun_by_ref.return_value = hpc_run
+
+    with pytest.raises(RuntimeError, match="not a chain-dispatch campaign"):
+        await get_simulation_chain_progress(db_service=mock_db_service, id=42)
+
+
+@pytest.mark.asyncio
+async def test_chain_progress_unknown_simulation_raises_value_error() -> None:
+    from viva_api.common.handlers.simulations import get_simulation_chain_progress
+
+    mock_db_service = AsyncMock()
+    mock_db_service.get_simulation.return_value = None
+
+    with pytest.raises(ValueError, match="not found"):
+        await get_simulation_chain_progress(db_service=mock_db_service, id=9999)
