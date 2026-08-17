@@ -237,6 +237,17 @@ class Settings(BaseSettings):
     # Provisioned by sms-cdk lib/ray-batch-stack.ts (the <prefix>-ray-mnp queue/job-def).
     ray_mnp_queue: str = ""  # Batch MNP job queue (e.g. "smscdk-ray-mnp")
     ray_mnp_job_definition: str = ""  # Batch MNP job definition (e.g. "smscdk-ray-mnp")
+    # Backlog item 65: a SEPARATE queue for genuinely standalone (numNodes=1) MNP
+    # submissions -- chain-dispatch's per-seed-per-generation jobs and ParCa, which
+    # have no inter-node traffic to protect and were paying the full concurrency
+    # cost of ray_mnp_queue's cluster-placement-group compute environment for
+    # nothing (confirmed live: stuck at 1 concurrent job with ~1000 more ready).
+    # Provisioned by sms-cdk's RayStandaloneCE/ray-standalone queue, reusing the
+    # SAME ray_mnp_job_definition (job definitions and queues are independently
+    # addressable AWS Batch resources). Empty (default) = no behavior change,
+    # _submit_mnp falls back to ray_mnp_queue for every submission, numNodes
+    # included -- safe to deploy before the new queue exists; set once it's live.
+    ray_mnp_standalone_queue: str = ""  # Batch MNP standalone queue (e.g. "smscdk-ray-standalone")
     # MNP node count for BOTH the vEcoli ensemble sim and generic compose runs (1 head
     # + N-1 workers; single node = head is also worker, per the ray-batch-entrypoint
     # --num-cpus conditional). One setting, not two: compose and the ensemble sim

@@ -426,9 +426,23 @@ class SimulationServiceRay(SimulationService):
             "numNodes": num_nodes,
             "nodePropertyOverrides": node_property_overrides,
         }
+        # Backlog item 65: a standalone (numNodes=1) submission has no inter-node
+        # traffic to protect, so it gains nothing from ray_mnp_queue's cluster-
+        # placement-group compute environment and pays its full concurrency cost
+        # for nothing -- route it to the dedicated no-placement-group queue
+        # instead, when one is configured. Automatic and transparent to every
+        # caller (chain-dispatch, ParCa, compose): both already pass their real
+        # num_nodes here, no call-site changes needed. Falls back to
+        # ray_mnp_queue unchanged for a genuine multi-node request (num_nodes >
+        # 1, e.g. colony sims) or when ray_mnp_standalone_queue isn't set yet.
+        job_queue = (
+            settings.ray_mnp_standalone_queue
+            if num_nodes == 1 and settings.ray_mnp_standalone_queue
+            else settings.ray_mnp_queue
+        )
         kwargs: dict[str, Any] = {
             "jobName": job_name,
-            "jobQueue": settings.ray_mnp_queue,
+            "jobQueue": job_queue,
             "jobDefinition": job_definition,
             "nodeOverrides": node_overrides,
         }
@@ -452,7 +466,7 @@ class SimulationServiceRay(SimulationService):
             job_name,
             batch_job_id,
             num_nodes,
-            settings.ray_mnp_queue,
+            job_queue,
         )
         return batch_job_id
 

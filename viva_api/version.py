@@ -442,4 +442,17 @@
 #          loop transitions a campaign row. (0.9.48 is sms-cdk PR #37's
 #          companion viva-api PR #256, from a parallel session -- bumped past
 #          it here to avoid a version collision between the two open PRs.)
-__version__ = "0.9.49"
+# 0.9.50 — backlog item 65: _submit_mnp routes a standalone (numNodes=1)
+#          submission to settings.ray_mnp_standalone_queue instead of
+#          ray_mnp_queue, when configured. Chain-dispatch's per-seed-per-
+#          generation jobs and ParCa are numNodes=1 with no inter-node
+#          traffic to protect, but were paying the full concurrency cost of
+#          ray_mnp_queue's cluster-placement-group compute environment for
+#          nothing -- confirmed live, stuck at 1 concurrent job with ~1000
+#          more ready. Automatic per-call routing keyed on num_nodes, no
+#          call-site changes; empty (default) = unchanged behavior, safe to
+#          deploy before the standalone queue exists (sms-cdk PR #37).
+#          Renumbered from this branch's original 0.9.48 -> 0.9.50: item 6
+#          (PR #257) merged first and independently claimed 0.9.49, so this
+#          lands second in real merge order.
+__version__ = "0.9.50"
