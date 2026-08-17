@@ -187,7 +187,7 @@ def test_v2ecoli_emitter_override_defaults_when_overrides_missing_seed_or_genera
     crash resolving seed/generation — 0/None are v2ecoli's own defaults."""
     calls: list[dict[str, Any]] = []
     fake_presets_mod = types.ModuleType("v2ecoli.library.emitter_presets")
-    fake_presets_mod.parquet_vecoli = lambda **kw: calls.append(kw) or kw  # type: ignore[attr-defined]
+    fake_presets_mod.parquet_vecoli = lambda **kw: calls.append(kw) or kw  # type: ignore[attr-defined,func-returns-value]
     fake_helpers_mod = types.ModuleType("v2ecoli.composites._helpers")
     fake_helpers_mod.set_parquet_emitter_override = lambda cfg: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "v2ecoli.library.emitter_presets", fake_presets_mod)
@@ -196,10 +196,14 @@ def test_v2ecoli_emitter_override_defaults_when_overrides_missing_seed_or_genera
     with run_pbg._v2ecoli_parquet_emitter_override(tmp_path / "out", None):
         pass
 
-    assert calls == [{
-        "out_dir": str(tmp_path / "out"), "experiment_id": "default",
-        "lineage_seed": 0, "generation": None,
-    }]
+    assert calls == [
+        {
+            "out_dir": str(tmp_path / "out"),
+            "experiment_id": "default",
+            "lineage_seed": 0,
+            "generation": None,
+        }
+    ]
 
 
 def test_v2ecoli_emitter_override_clears_even_when_the_body_raises(
