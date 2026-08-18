@@ -104,7 +104,7 @@ def test_get_data_service_persists_default_base_url_when_none_passed() -> None:
 
 
 def test_get_data_service_accepts_a_preset_value_passed_as_a_plain_string() -> None:
-    """"http://localhost:1111" happens to equal BaseUrl.RKE_DEV_FORWARDED — this
+    """ "http://localhost:1111" happens to equal BaseUrl.RKE_DEV_FORWARDED — this
     only proves a *known* URL works when passed as str, not that arbitrary ones
     do. See test_get_data_service_accepts_an_arbitrary_non_preset_url below for
     that (regression test for a real bug found via live verification against a

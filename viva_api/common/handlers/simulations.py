@@ -1538,7 +1538,7 @@ def workflow_log(simulation_id: int, base_url: str = "http://localhost:8080", ti
     from app.cli_theme import get_console
 
     console = get_console()
-    svc = E2EDataService(base_url=base_url, timeout=timeout)  # type: ignore[arg-type]
+    svc = E2EDataService(base_url=base_url, timeout=timeout)
 
     with console.status("[memphis.spinner]Fetching status..."):
         run = svc.get_workflow_status(simulation_id=simulation_id)
