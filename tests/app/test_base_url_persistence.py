@@ -103,9 +103,33 @@ def test_get_data_service_persists_default_base_url_when_none_passed() -> None:
     assert recall_base_url() == ads.DEFAULT_BASE_URL.value
 
 
-def test_get_data_service_accepts_str_base_url_and_persists_it() -> None:
+def test_get_data_service_accepts_a_preset_value_passed_as_a_plain_string() -> None:
+    """"http://localhost:1111" happens to equal BaseUrl.RKE_DEV_FORWARDED — this
+    only proves a *known* URL works when passed as str, not that arbitrary ones
+    do. See test_get_data_service_accepts_an_arbitrary_non_preset_url below for
+    that (regression test for a real bug found via live verification against a
+    real SSM tunnel on a non-preset port — see item 72 Phase 1's PR)."""
     get_data_service(base_url="http://localhost:1111")
     assert recall_base_url() == "http://localhost:1111"
+
+
+def test_get_data_service_accepts_an_arbitrary_non_preset_url() -> None:
+    """Regression test: get_data_service() used to hard-coerce every base_url
+    through BaseUrl(...), so any URL not exactly matching one of its ~8 preset
+    values raised ValueError — e.g. a custom `sms-proxy.sh -p <port>` tunnel.
+    A client must be able to point at any real server, not just the presets."""
+    svc = get_data_service(base_url="http://localhost:18080")
+    assert svc.base_url == "http://localhost:18080"
+    assert recall_base_url() == "http://localhost:18080"
+
+
+def test_resolve_base_url_keeps_presets_typed_as_baseurl() -> None:
+    """A preset string still resolves to the real BaseUrl member (not just an
+    equal-valued plain str) so callers relying on .name (e.g. the TUI's server
+    label) keep working."""
+    resolved = ads.resolve_base_url("http://localhost:8888")
+    assert resolved is BaseUrl.LOCAL
+    assert isinstance(resolved, BaseUrl)
 
 
 def test_get_data_service_second_call_overwrites_persisted_value() -> None:

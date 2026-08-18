@@ -112,8 +112,20 @@ def _parse_content_disposition_filename(header_value: str) -> str | None:
     return None
 
 
+def resolve_base_url(value: BaseUrl | str) -> BaseUrl | str:
+    """Return *value* as a ``BaseUrl`` when it matches a known preset, else the
+    raw string unchanged. ``BaseUrl`` is a documented set of shortcuts for
+    common deployments, not a closed domain — any URL a client actually wants
+    to talk to must work, matching how ``VIVA_API_BASE`` is already handled on
+    the vivarium-workbench side of this same feature (backlog item 72 Phase 1)."""
+    try:
+        return BaseUrl(value)
+    except ValueError:
+        return str(value)
+
+
 @asynccontextmanager
-async def async_client(base_url: BaseUrl, timeout: int = 300) -> AsyncIterator[AsyncClient]:
+async def async_client(base_url: BaseUrl | str, timeout: int = 300) -> AsyncIterator[AsyncClient]:
     try:
         async with AsyncClient(base_url=base_url, timeout=timeout) as client:
             yield client
@@ -122,10 +134,10 @@ async def async_client(base_url: BaseUrl, timeout: int = 300) -> AsyncIterator[A
 
 
 class E2EDataService:
-    base_url: BaseUrl
+    base_url: BaseUrl | str
     client: httpx.Client
 
-    def __init__(self, base_url: BaseUrl, timeout: int = 300) -> None:
+    def __init__(self, base_url: BaseUrl | str, timeout: int = 300) -> None:
         self.base_url = base_url
         self.client = httpx.Client(base_url=self.base_url, timeout=timeout)
 
@@ -899,7 +911,7 @@ class E2EDataService:
 
 
 def get_data_service(base_url: BaseUrl | str | None = None, timeout: int | None = None) -> E2EDataService:
-    resolved = BaseUrl(base_url) if base_url else DEFAULT_BASE_URL
+    resolved = resolve_base_url(base_url) if base_url else DEFAULT_BASE_URL
     # Single funnel point for CLI + TUI + GUI: remember whichever base_url this
     # call actually resolved to (explicit or defaulted) as "last used," so the
     # NEXT invocation's default (app.cli's API_BASE_URL, via recall_base_url())
