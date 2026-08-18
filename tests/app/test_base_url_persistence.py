@@ -118,7 +118,7 @@ def test_get_data_service_second_call_overwrites_persisted_value() -> None:
 
 
 @pytest.fixture
-def _reloaded_cli(monkeypatch: pytest.MonkeyPatch) -> Generator[Callable[[], ModuleType], None, None]:
+def _reloaded_cli(monkeypatch: pytest.MonkeyPatch) -> Generator[Callable[[], ModuleType]]:
     """Reload app.cli under controlled env so its module-level API_BASE_URL
     (computed once at import time) reflects the current XDG_CONFIG_HOME /
     API_BASE_URL env fixture state, then restore real state afterward so this
