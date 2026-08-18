@@ -17,7 +17,9 @@ Pure/offline — no network, no live server. Verifies:
 from __future__ import annotations
 
 import importlib
+from collections.abc import Callable, Generator
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -116,7 +118,7 @@ def test_get_data_service_second_call_overwrites_persisted_value() -> None:
 
 
 @pytest.fixture
-def _reloaded_cli(monkeypatch: pytest.MonkeyPatch):
+def _reloaded_cli(monkeypatch: pytest.MonkeyPatch) -> Generator[Callable[[], ModuleType], None, None]:
     """Reload app.cli under controlled env so its module-level API_BASE_URL
     (computed once at import time) reflects the current XDG_CONFIG_HOME /
     API_BASE_URL env fixture state, then restore real state afterward so this
@@ -124,7 +126,7 @@ def _reloaded_cli(monkeypatch: pytest.MonkeyPatch):
     the same session."""
     import app.cli as cli_mod
 
-    def _reload():
+    def _reload() -> ModuleType:
         return importlib.reload(cli_mod)
 
     yield _reload
@@ -132,27 +134,31 @@ def _reloaded_cli(monkeypatch: pytest.MonkeyPatch):
     _reload()  # restore app.cli to its natural (real-XDG-config) state
 
 
-def test_cli_default_falls_back_to_hardcoded_default_when_nothing_persisted(_reloaded_cli) -> None:
+def test_cli_default_falls_back_to_hardcoded_default_when_nothing_persisted(
+    _reloaded_cli: Callable[[], ModuleType],
+) -> None:
     from app.cli import ApiBaseUrl
 
     mod = _reloaded_cli()
     assert mod.API_BASE_URL == ApiBaseUrl.LOCAL_8080
 
 
-def test_cli_default_uses_persisted_value_when_no_env_override(_reloaded_cli) -> None:
+def test_cli_default_uses_persisted_value_when_no_env_override(_reloaded_cli: Callable[[], ModuleType]) -> None:
     ads._remember_base_url("http://localhost:1111")
     mod = _reloaded_cli()
     assert mod.API_BASE_URL == "http://localhost:1111"
 
 
-def test_cli_default_prefers_env_var_over_persisted_value(monkeypatch: pytest.MonkeyPatch, _reloaded_cli) -> None:
+def test_cli_default_prefers_env_var_over_persisted_value(
+    monkeypatch: pytest.MonkeyPatch, _reloaded_cli: Callable[[], ModuleType]
+) -> None:
     ads._remember_base_url("http://localhost:1111")
     monkeypatch.setenv("API_BASE_URL", "http://localhost:62505")
     mod = _reloaded_cli()
     assert mod.API_BASE_URL == "http://localhost:62505"
 
 
-def test_cli_second_invocation_reuses_first_invocations_base_url(_reloaded_cli) -> None:
+def test_cli_second_invocation_reuses_first_invocations_base_url(_reloaded_cli: Callable[[], ModuleType]) -> None:
     """End-to-end shape of the behavior this phase adds: a first invocation
     that resolves --base-url (explicitly or by default) makes the NEXT
     invocation's default converge to it, with no --base-url passed."""
