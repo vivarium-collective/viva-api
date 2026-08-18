@@ -455,4 +455,21 @@
 #          Renumbered from this branch's original 0.9.48 -> 0.9.50: item 6
 #          (PR #257) merged first and independently claimed 0.9.49, so this
 #          lands second in real merge order.
-__version__ = "0.9.50"
+# 0.9.51 — backlog item 72 Phase 1: the atlantis CLI/TUI/GUI now persist the
+#          last-used --base-url to an XDG config hint file
+#          (~/.config/atlantis/last_base_url, or $XDG_CONFIG_HOME), so a
+#          second invocation with no --base-url reuses it instead of always
+#          falling back to the hardcoded http://localhost:8080 default.
+#          Mirrors vivarium-workbench's lib/github_auth.py
+#          _last_login_path()/_remember_login() pattern (same XDG-hint-file
+#          convention, new file, no shared code between the two repos). Single
+#          funnel point: app_data_service.get_data_service() -- called by
+#          every CLI command, the TUI's launch AND its in-app server-select
+#          dropdown, and the GUI -- persists whichever base_url it actually
+#          resolves (explicit or defaulted); app.cli's module-level
+#          API_BASE_URL (fed into every command's --base-url Option default)
+#          now resolves API_BASE_URL env var > persisted value > hardcoded
+#          default. Live-verified via the real atlantis binary (`--help`
+#          output's shown default flips after a prior invocation), not just
+#          mocked unit tests.
+__version__ = "0.9.51"

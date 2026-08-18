@@ -23,7 +23,7 @@ import httpx
 import typer
 from typer import Argument, Option
 
-from app.app_data_service import get_data_service
+from app.app_data_service import get_data_service, recall_base_url
 from app.cli_theme import display_json, get_console, print_banner, status_border, status_style
 from app.tui import AtlantisTUI
 
@@ -223,7 +223,12 @@ class ApiBaseUrl(StrEnumBase):
     LOCAL_8080 = "http://localhost:8080"
 
 
-API_BASE_URL = os.getenv("API_BASE_URL", ApiBaseUrl.LOCAL_8080)
+# Default for every command's --base-url Option below. Resolution order:
+# explicit API_BASE_URL env var > last value a client actually used
+# (persisted by get_data_service(), item 72 Phase 1) > the hardcoded default.
+# This is what makes a second `atlantis` invocation reuse the previous one's
+# --base-url without passing it again.
+API_BASE_URL = os.getenv("API_BASE_URL") or recall_base_url() or ApiBaseUrl.LOCAL_8080
 
 
 cli = typer.Typer(name="atlantis", help="SMS API CLI for managing vEcoli simulations, simulators, parca, and analyses.")
