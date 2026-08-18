@@ -36,6 +36,8 @@ def _ray_settings() -> MagicMock:
         ray_mnp_standalone_queue="",  # unconfigured by default -- real fallback behavior (item 65)
         ray_array_queue="smscdk-vecoli-task-amd64",
         ray_array_job_definition="smscdk-ray-array",
+        ray_container_queue="",  # unconfigured by default -- real fallback: raises (item 71)
+        ray_container_job_definition="",
         ray_num_nodes=3,
         ray_ecr_repository="v2ecoli",
         ecr_account_id="476270107793",
@@ -95,6 +97,41 @@ def _env_at(call: Any, index: int) -> dict[str, str]:
 def _env_of(call: Any) -> dict[str, str]:
     """Head (node 0) environment dict."""
     return _env_at(call, 0)
+
+
+def _container_settings(**overrides: Any) -> MagicMock:
+    """A settings double with the plain container-path (backlog item 71) fields
+    configured, for tests that exercise _ensure_container_job_def/_submit_container."""
+    s = _ray_settings()
+    s.ray_container_queue = "smscdk-ray-standalone"
+    s.ray_container_job_definition = "smscdk-ray-container"
+    for k, v in overrides.items():
+        setattr(s, k, v)
+    return s
+
+
+def _fake_container_batch(submit_ids: list[str]) -> MagicMock:
+    """A boto3 Batch mock for the container job-def path (backlog item 71),
+    mirroring _fake_batch's per-commit-revision-derivation shape but for
+    containerProperties instead of nodeProperties/nodeRangeProperties."""
+    b = MagicMock()
+    base_container_props = {"image": "111.dkr.ecr.x/vecoli:ray", "vcpus": 16, "memory": 32000}
+
+    def _describe(**kwargs: Any) -> dict[str, Any]:
+        name = kwargs.get("jobDefinitionName")
+        if name == "smscdk-ray-container":  # container base
+            return {"jobDefinitions": [{"revision": 7, "containerProperties": base_container_props}]}
+        return {"jobDefinitions": []}  # per-commit: none yet
+
+    b.describe_job_definitions.side_effect = _describe
+    b.register_job_definition.side_effect = lambda **kw: {"jobDefinitionName": kw["jobDefinitionName"], "revision": 1}
+    b.submit_job.side_effect = [{"jobId": jid} for jid in submit_ids]
+    return b
+
+
+def _container_env_of(call: Any) -> dict[str, str]:
+    """Env dict for a _submit_container call (single containerOverrides.environment list)."""
+    return {e["name"]: e["value"] for e in call.kwargs["containerOverrides"]["environment"]}
 
 
 class TestJobIdRay:
@@ -1285,6 +1322,184 @@ class TestEnsureMnpJobDef:
         mock_batch.register_job_definition.assert_not_called()
 
 
+class TestEnsureContainerJobDef:
+    """Per-commit container job-def derivation (backlog item 71) -- mirrors
+    TestEnsureMnpJobDef for the plain (non-MNP, non-array) container job shape."""
+
+    def test_reuses_existing_revision_for_same_image(self) -> None:
+        image = "476270107793.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:abc1234"
+        mock_batch = MagicMock()
+        mock_batch.describe_job_definitions.return_value = {
+            "jobDefinitions": [{"revision": 5, "containerProperties": {"image": image}}]
+        }
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            jd = service._ensure_container_job_def(image, "abc1234")
+        assert jd == "smscdk-ray-container-abc1234:5"
+        mock_batch.register_job_definition.assert_not_called()
+
+    def test_registers_new_revision_cloning_base_container_properties(self) -> None:
+        image = "476270107793.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:def5678"
+        mock_batch = _fake_container_batch([])
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            jd = service._ensure_container_job_def(image, "def5678")
+        assert jd == "smscdk-ray-container-def5678:1"
+        registered = mock_batch.register_job_definition.call_args.kwargs
+        assert registered["type"] == "container"
+        assert registered["containerProperties"]["image"] == image
+        assert registered["containerProperties"]["vcpus"] == 16  # cloned from the base, not dropped
+
+    def test_raises_clearly_when_job_definition_setting_unset(self) -> None:
+        """Empty (the real default) must fail loud with the setting name, not
+        submit a doomed job with a blank job-def name (compose_ray_image_tag's
+        own precedent in this file)."""
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            pytest.raises(RuntimeError, match="ray_container_job_definition"),
+        ):
+            service._ensure_container_job_def("some-image", "abc1234")
+
+
+class TestSubmitContainer:
+    """_submit_container: the plain container-type submission path (backlog item
+    71) -- sibling of _submit_mnp with no node overrides and the CONTAINER_* env
+    contract docker/batch-container-entrypoint.sh (sms-ecoli) expects."""
+
+    def test_submits_with_container_env_and_queue_no_node_overrides(self) -> None:
+        mock_batch = MagicMock()
+        mock_batch.submit_job.return_value = {"jobId": "job-1"}
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings):
+            job_id = service._submit_container(
+                job_name="container-test",
+                job_definition="smscdk-ray-container-abc:1",
+                job_cmd="echo hi",
+                out_s3="s3://bucket/out/",
+                out_dir="/out",
+                batch_client=mock_batch,
+            )
+        assert job_id == "job-1"
+        call = mock_batch.submit_job.call_args
+        assert call.kwargs["jobQueue"] == "smscdk-ray-standalone"
+        assert call.kwargs["jobDefinition"] == "smscdk-ray-container-abc:1"
+        assert "nodeOverrides" not in call.kwargs
+        env = _container_env_of(call)
+        assert env["CONTAINER_JOB_CMD"] == "echo hi"
+        assert env["CONTAINER_OUT_DIR"] == "/out"
+        assert env["CONTAINER_OUT_S3"] == "s3://bucket/out/"
+        assert "RAY_JOB_CMD" not in env
+        assert "ARRAY_JOB_CMD" not in env
+
+    def test_stage_vars_only_present_when_both_configured(self) -> None:
+        mock_batch = MagicMock()
+        mock_batch.submit_job.return_value = {"jobId": "job-1"}
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings):
+            service._submit_container(
+                job_name="container-test",
+                job_definition="jd:1",
+                job_cmd="echo hi",
+                out_s3="s3://bucket/out/",
+                out_dir="/out",
+                stage_s3="s3://bucket/cache/",
+                stage_dir="/cache",
+                batch_client=mock_batch,
+            )
+        env = _container_env_of(mock_batch.submit_job.call_args)
+        assert env["CONTAINER_STAGE_S3"] == "s3://bucket/cache/"
+        assert env["CONTAINER_STAGE_DIR"] == "/cache"
+
+    def test_stage_vars_absent_when_only_one_of_the_pair_is_set(self) -> None:
+        mock_batch = MagicMock()
+        mock_batch.submit_job.return_value = {"jobId": "job-1"}
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings):
+            service._submit_container(
+                job_name="container-test",
+                job_definition="jd:1",
+                job_cmd="echo hi",
+                out_s3="s3://bucket/out/",
+                out_dir="/out",
+                stage_s3="s3://bucket/cache/",
+                stage_dir=None,
+                batch_client=mock_batch,
+            )
+        env = _container_env_of(mock_batch.submit_job.call_args)
+        assert "CONTAINER_STAGE_S3" not in env
+        assert "CONTAINER_STAGE_DIR" not in env
+
+    def test_raises_clearly_when_queue_setting_unset(self) -> None:
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            pytest.raises(RuntimeError, match="ray_container_queue"),
+        ):
+            service._submit_container(
+                job_name="x", job_definition="jd:1", job_cmd="echo hi", out_s3="s3://b/", out_dir="/o"
+            )
+
+    def test_depends_on_and_tags_pass_through(self) -> None:
+        mock_batch = MagicMock()
+        mock_batch.submit_job.return_value = {"jobId": "job-2"}
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings):
+            service._submit_container(
+                job_name="container-test",
+                job_definition="jd:1",
+                job_cmd="echo hi",
+                out_s3="s3://bucket/out/",
+                out_dir="/out",
+                depends_on=["parca-job-1"],
+                tags={"Project": "v2ecoli"},
+                batch_client=mock_batch,
+            )
+        call = mock_batch.submit_job.call_args
+        assert call.kwargs["dependsOn"] == [{"jobId": "parca-job-1", "type": "SEQUENTIAL"}]
+        assert call.kwargs["tags"] == {"Project": "v2ecoli"}
+        assert call.kwargs["propagateTags"] is True
+
+
+@pytest.mark.asyncio
+class TestSubmitParcaJob:
+    """submit_parca_job (backlog item 71): migrated from a 1-node MNP job to the
+    plain container-type path -- ParCa has no real inter-node traffic to protect."""
+
+    async def test_submits_via_the_container_path(self) -> None:
+        from viva_api.simulation.models import ParcaDataset, ParcaDatasetRequest, ParcaOptions, SimulatorVersion
+
+        parca_dataset = ParcaDataset(
+            database_id=1,
+            parca_dataset_request=ParcaDatasetRequest(
+                simulator_version=SimulatorVersion(
+                    database_id=1, git_commit_hash="abc1234", git_branch="main", git_repo_url="https://github.com/x/y"
+                ),
+                parca_config=ParcaOptions(),
+            ),
+        )
+        mock_batch = _fake_container_batch(["parca-999"])
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            job_id = await service.submit_parca_job(parca_dataset)
+        assert job_id == JobId.ray("parca-999")
+        call = mock_batch.submit_job.call_args
+        assert "containerOverrides" in call.kwargs
+        assert "nodeOverrides" not in call.kwargs
+        env = _container_env_of(call)
+        assert "v2ecoli-parca" in env["CONTAINER_JOB_CMD"]
+
+
 @pytest.mark.asyncio
 class TestSubmitJobPacer:
     """_SubmitJobPacer proactively caps AWS Batch SubmitJob calls below the
@@ -1641,11 +1856,11 @@ class TestSubmitCampaignAnalysis:
         database_service: "DatabaseServiceSQL",
     ) -> None:
         simulation = await database_service.insert_simulation(sim_request=experiment_request)
-        mock_batch = _fake_batch(["analysis-999"])
+        mock_batch = _fake_container_batch(["analysis-999"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
         ):
             job_id = await service.submit_campaign_analysis(
@@ -1662,7 +1877,10 @@ class TestSubmitCampaignAnalysis:
         # no native dependsOn at all (unlike item 24's single-shot-dispatch
         # shape, which depends on the sim job it rides directly behind).
         assert "dependsOn" not in analysis_call.kwargs
-        assert analysis_call.kwargs["nodeOverrides"]["numNodes"] == 1  # rides on MNP, matching item 24
+        # Item 71: the analysis DAG node now rides the plain container path,
+        # not MNP -- no node overrides at all.
+        assert "containerOverrides" in analysis_call.kwargs
+        assert "nodeOverrides" not in analysis_call.kwargs
 
         records = await database_service.list_analyses(simulation_id=simulation.database_id)
         assert len(records) == 1
@@ -1678,11 +1896,11 @@ class TestSubmitCampaignAnalysis:
         modules resolve 'applicable' against the campaign's INTENDED shape,
         not however many chains actually survived to completion."""
         simulation = await database_service.insert_simulation(sim_request=experiment_request)
-        mock_batch = _fake_batch(["analysis-999"])
+        mock_batch = _fake_container_batch(["analysis-999"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
         ):
             await service.submit_campaign_analysis(
@@ -1692,8 +1910,8 @@ class TestSubmitCampaignAnalysis:
                 total_n_seeds=1000,  # the originally requested total, even if fewer chains actually succeeded
                 n_generations=10,
             )
-        env = _env_of(mock_batch.submit_job.call_args_list[0])
-        assert "--n-seeds 1000" in env["RAY_JOB_CMD"]
+        env = _container_env_of(mock_batch.submit_job.call_args_list[0])
+        assert "--n-seeds 1000" in env["CONTAINER_JOB_CMD"]
 
     async def test_configured_analysis_options_reach_the_analysis_job(
         self,
@@ -1713,11 +1931,11 @@ class TestSubmitCampaignAnalysis:
             "multiseed": {"cd1_fluxomics": {"generation_lower_bound": 5}}
         })
         simulation = await database_service.insert_simulation(sim_request=experiment_request)
-        mock_batch = _fake_batch(["analysis-789"])
+        mock_batch = _fake_container_batch(["analysis-789"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
         ):
             await service.submit_campaign_analysis(
@@ -1727,7 +1945,7 @@ class TestSubmitCampaignAnalysis:
                 total_n_seeds=4,
                 n_generations=3,
             )
-        cmd = _env_of(mock_batch.submit_job.call_args_list[0])["RAY_JOB_CMD"]
+        cmd = _container_env_of(mock_batch.submit_job.call_args_list[0])["CONTAINER_JOB_CMD"]
         tokens = shlex.split(cmd.split("&&", 1)[1].replace("V2ECOLI_SIM_DATA=", "", 1))
         assert json.loads(tokens[tokens.index("--modules") + 1]) == {
             "multiseed": {"cd1_fluxomics": {"generation_lower_bound": 5}}
@@ -1745,13 +1963,13 @@ class TestSubmitCampaignAnalysis:
         now the canonical shape's own analysis trigger, replacing
         submit_ecoli_simulation_job's removed inline path)."""
         simulation = await database_service.insert_simulation(sim_request=experiment_request)
-        mock_batch = _fake_batch([])
+        mock_batch = _fake_container_batch([])
         mock_batch.submit_job.side_effect = RuntimeError("Batch said no")
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
         ):
             result = await service.submit_campaign_analysis(

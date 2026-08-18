@@ -276,6 +276,22 @@ class Settings(BaseSettings):
     ray_array_queue: str = ""  # Batch Array job queue (BatchStack's vecoli-task-amd64, reused deliberately)
     ray_array_job_definition: str = ""  # Batch Array job definition (e.g. "smscdk-ray-array")
 
+    # --- Ray-on-Batch plain CONTAINER dispatch settings (backlog item 71) ---
+    # A third, non-MNP, non-array job shape: one Batch container-type job, no node
+    # overrides, no array indexing. Used for ParCa, the analysis DAG node, and
+    # (a later phase) chain-dispatch's per-seed-per-generation jobs -- none of
+    # which have real inter-node traffic to protect, so they gain nothing from
+    # ray_mnp_queue's cluster-placement-group compute environment (the same
+    # reasoning that motivated ray_mnp_standalone_queue, item 65). Provisioned by
+    # sms-cdk's RayContainerJobDef, reusing the existing RayStandaloneQueue (no
+    # new queue). Dedicated settings, not reused from ray_mnp_*/ray_array_* --
+    # same convention as every other explicit-not-implicit setting in this file.
+    # Empty defaults: _ensure_container_job_def/_submit_container raise a clear
+    # RuntimeError naming the unset setting rather than submit a doomed job with a
+    # blank queue/job-def (matches compose_ray_image_tag's own precedent below).
+    ray_container_queue: str = ""  # Batch container job queue (e.g. "smscdk-ray-standalone")
+    ray_container_job_definition: str = ""  # Batch container job definition (e.g. "smscdk-ray-container")
+
     # EC2 build machine (legacy, replaced by Batch DooD builds)
     build_node_host: str = ""
     build_node_user: str = ""

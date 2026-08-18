@@ -394,15 +394,14 @@ class SimulationServiceRay(SimulationService):
         """
         settings = get_settings()
         # Per-node knobs every node acts on (stage cache in, sync results out, ship logs).
-        shared_env: list[dict[str, str]] = [
-            {"name": "RAY_OUT_DIR", "value": out_dir},
-            {"name": "RAY_OUT_S3", "value": out_s3},
-        ]
-        if stage_s3 and stage_dir:
-            shared_env.append({"name": "RAY_STAGE_S3", "value": stage_s3})
-            shared_env.append({"name": "RAY_STAGE_DIR", "value": stage_dir})
-        if settings.ray_log_s3_prefix:
-            shared_env.append({"name": "RAY_LOG_S3_PREFIX", "value": settings.ray_log_s3_prefix})
+        shared_env = self._stage_out_env(
+            prefix="RAY",
+            out_dir=out_dir,
+            out_s3=out_s3,
+            stage_s3=stage_s3,
+            stage_dir=stage_dir,
+            log_s3_prefix=settings.ray_log_s3_prefix,
+        )
 
         # The head additionally runs the workload (RAY_JOB_CMD) and writes the report.
         # Workers receive these too but never act on them — the entrypoint branches on
@@ -468,6 +467,149 @@ class SimulationServiceRay(SimulationService):
             num_nodes,
             job_queue,
         )
+        return batch_job_id
+
+    def _stage_out_env(
+        self,
+        *,
+        prefix: str,
+        out_dir: str,
+        out_s3: str,
+        stage_s3: str | None = None,
+        stage_dir: str | None = None,
+        log_s3_prefix: str | None = None,
+    ) -> list[dict[str, str]]:
+        """Shared stage/output/log env-var construction for both the MNP (``RAY_*``)
+        and container (``CONTAINER_*``) submission paths (backlog item 71) -- same
+        conditional logic (only emit STAGE_*/LOG_S3_PREFIX when configured), a
+        different env-var prefix per job shape, since each entrypoint script only
+        reads its own prefix -- the values can't literally share one env list.
+        """
+        env: list[dict[str, str]] = [
+            {"name": f"{prefix}_OUT_DIR", "value": out_dir},
+            {"name": f"{prefix}_OUT_S3", "value": out_s3},
+        ]
+        if stage_s3 and stage_dir:
+            env.append({"name": f"{prefix}_STAGE_S3", "value": stage_s3})
+            env.append({"name": f"{prefix}_STAGE_DIR", "value": stage_dir})
+        if log_s3_prefix:
+            env.append({"name": f"{prefix}_LOG_S3_PREFIX", "value": log_s3_prefix})
+        return env
+
+    def _ensure_container_job_def(self, image: str, commit: str) -> str:
+        """Return a container job definition (name:revision) whose image is the commit's image.
+
+        Mirrors ``_ensure_mnp_job_def`` exactly, for the plain (non-MNP, non-array)
+        standalone container job shape (backlog item 71 -- ParCa, the analysis DAG
+        node, and eventually chain-dispatch's per-seed-per-generation jobs, none of
+        which have any real inter-node traffic to protect). Plain container jobs
+        can't override the image at submission time either -- same limitation as
+        MNP -- so a per-commit job-def revision is derived the same way: describe
+        the CDK base container job def (``ray_container_job_definition``: roles,
+        resources, retry strategy, log config -- provisioned by sms-cdk's
+        RayContainerJobDef), swap ONLY its image, and register it as
+        ``<base>-<commit>``. An existing active revision already pointing at this
+        image is reused, so resubmits don't churn revisions.
+        """
+        settings = get_settings()
+        if not settings.ray_container_job_definition:
+            # Matches this file's own compose_ray_image_tag precedent: fail loud with
+            # the setting name rather than submit a doomed job with a blank job-def.
+            raise RuntimeError("ray_container_job_definition is not set; cannot submit a container-type Batch job.")
+        batch = self._batch()
+        name = f"{settings.ray_container_job_definition}-{commit}"
+
+        # Reuse an existing active revision that already targets this exact image.
+        existing = batch.describe_job_definitions(jobDefinitionName=name, status="ACTIVE")
+        for jd in existing.get("jobDefinitions", []):
+            if jd.get("containerProperties", {}).get("image") == image:
+                return f"{name}:{jd['revision']}"
+
+        # Otherwise clone the base job def's container properties and swap the image.
+        base = batch.describe_job_definitions(jobDefinitionName=settings.ray_container_job_definition, status="ACTIVE")
+        base_defs = base.get("jobDefinitions", [])
+        if not base_defs:
+            raise RuntimeError(f"Base container job definition {settings.ray_container_job_definition!r} not found")
+        container_properties = copy.deepcopy(max(base_defs, key=lambda d: d["revision"])["containerProperties"])
+        container_properties["image"] = image
+
+        response = batch.register_job_definition(
+            jobDefinitionName=name,
+            type="container",
+            containerProperties=container_properties,
+        )
+        logger.info("Registered container job def %s:%s for image %s", name, response["revision"], image)
+        return f"{name}:{response['revision']}"
+
+    def _submit_container(
+        self,
+        *,
+        job_name: str,
+        job_definition: str,
+        job_cmd: str,
+        out_s3: str,
+        out_dir: str,
+        stage_s3: str | None = None,
+        stage_dir: str | None = None,
+        depends_on: list[str] | None = None,
+        depends_type: str | None = "SEQUENTIAL",
+        tags: dict[str, str] | None = None,
+        retry_strategy: dict[str, Any] | None = None,
+        batch_client: Any = None,
+    ) -> str:
+        """Submit a plain, standalone AWS Batch container-type job (backlog item 71).
+
+        Sibling of ``_submit_mnp`` for the non-MNP, non-array job shape -- currently
+        ParCa (``submit_parca_job``) and the analysis DAG node
+        (``_submit_analysis_job``), both already ``num_nodes=1`` MNP jobs with no
+        real inter-node traffic; chain-dispatch's per-seed-per-generation jobs
+        migrate here too in a later phase. One task, one container: no node
+        overrides, no head/worker split -- every env var goes in a single
+        ``containerOverrides.environment`` list, matching
+        ``docker/batch-container-entrypoint.sh``'s ``CONTAINER_*`` contract exactly
+        (sms-ecoli). Returns the AWS Batch job id.
+
+        Do NOT modify ``_submit_mnp`` -- this is a parallel path, not a
+        replacement; genuinely multi-node Ray paths keep submitting through
+        ``_submit_mnp`` unchanged.
+        """
+        settings = get_settings()
+        if not settings.ray_container_queue:
+            raise RuntimeError("ray_container_queue is not set; cannot submit a container-type Batch job.")
+
+        env: list[dict[str, str]] = [
+            {"name": "CONTAINER_JOB_CMD", "value": job_cmd},
+            {"name": "CONTAINER_REPORT_PATH", "value": REPORT_PATH},
+            *self._stage_out_env(
+                prefix="CONTAINER",
+                out_dir=out_dir,
+                out_s3=out_s3,
+                stage_s3=stage_s3,
+                stage_dir=stage_dir,
+                log_s3_prefix=settings.ray_log_s3_prefix,
+            ),
+        ]
+
+        kwargs: dict[str, Any] = {
+            "jobName": job_name,
+            "jobQueue": settings.ray_container_queue,
+            "jobDefinition": job_definition,
+            "containerOverrides": {"environment": env},
+        }
+        if depends_on:
+            kwargs["dependsOn"] = [
+                ({"jobId": jid, "type": depends_type} if depends_type else {"jobId": jid}) for jid in depends_on
+            ]
+        if tags:
+            kwargs["tags"] = tags
+            kwargs["propagateTags"] = True
+        if retry_strategy:
+            kwargs["retryStrategy"] = retry_strategy
+
+        batch = batch_client if batch_client is not None else self._batch()
+        response = batch.submit_job(**kwargs)
+        batch_job_id = str(response["jobId"])
+        logger.info("Submitted container job %s (id=%s) to %s", job_name, batch_job_id, settings.ray_container_queue)
         return batch_job_id
 
     def _parca_command(self) -> str:
@@ -830,11 +972,14 @@ class SimulationServiceRay(SimulationService):
             },
         }
         try:
-            analysis_job_id = self._submit_mnp(
+            # Backlog item 71: the analysis DAG node has no real inter-node traffic
+            # either (was a 1-node MNP job) -- moves to the plain container-type
+            # path. `job_definition` must now be a container job def (see
+            # submit_campaign_analysis's _ensure_container_job_def call).
+            analysis_job_id = self._submit_container(
                 job_name=f"ray-analysis-{experiment_id}-{_rand_suffix()}"[:128],
                 job_definition=job_definition,
-                num_nodes=1,
-                ray_job_cmd=self._analysis_command(
+                job_cmd=self._analysis_command(
                     experiment_id=experiment_id,
                     n_seeds=n_seeds,
                     n_generations=n_generations,
@@ -949,15 +1094,17 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
 
     @override
     async def submit_parca_job(self, parca_dataset: ParcaDataset) -> JobId:
-        """Submit ParCa as a 1-node Ray MNP job, capturing the cache to S3."""
+        """Submit ParCa as a standalone container job (backlog item 71), capturing
+        the cache to S3. Was a 1-node Ray MNP job; ParCa has no real inter-node
+        traffic, so it moves to the plain container-type path -- see
+        ``_submit_container``."""
         simulator_version = parca_dataset.parca_dataset_request.simulator_version
         commit = simulator_version.git_commit_hash
-        job_def = self._ensure_mnp_job_def(self._image_uri(commit), commit)
-        job_id = self._submit_mnp(
+        job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
+        job_id = self._submit_container(
             job_name=f"ray-parca-{commit}-{_rand_suffix()}",
             job_definition=job_def,
-            num_nodes=1,
-            ray_job_cmd=self._parca_command(),
+            job_cmd=self._parca_command(),
             out_s3=self._cache_s3_uri(commit),
             out_dir=PARCA_CACHE_DIR,
         )
@@ -1507,11 +1654,13 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         modules against the campaign's INTENDED shape.
         """
         base_tags = self._chain_base_tags(simulation=simulation, commit=commit)
-        mnp_job_def = self._ensure_mnp_job_def(self._image_uri(commit), commit)
+        # Backlog item 71: _submit_analysis_job now submits via _submit_container,
+        # so this must resolve a container job def, not an MNP one.
+        container_job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
         return await self._submit_analysis_job(
             simulation=simulation,
             database_service=database_service,
-            job_definition=mnp_job_def,
+            job_definition=container_job_def,
             commit=commit,
             sim_job_id=None,
             n_seeds=total_n_seeds,
