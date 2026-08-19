@@ -1,5 +1,4 @@
 import asyncio
-import datetime
 import logging
 
 from async_lru import alru_cache
@@ -11,7 +10,7 @@ from viva_api.common.models import JobBackend, JobStatus, SSHTarget
 from viva_api.config import get_settings
 from viva_api.dependencies import get_ssh_session_service
 from viva_api.simulation.database_service import DatabaseService
-from viva_api.simulation.models import HpcRun, WorkerEvent, WorkerEventMessagePayload
+from viva_api.simulation.models import ChainCampaignUpdate, HpcRun, Simulation, WorkerEvent, WorkerEventMessagePayload
 from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
 logger = logging.getLogger(__name__)
@@ -147,16 +146,15 @@ class JobScheduler:
             logger.info(f"Updated HpcRun {hpc_run.database_id} status to {new_status}")
 
     async def update_chain_campaigns(self) -> None:
-        """Poll every active chain-dispatch campaign's tracked final-generation
-        job ids to terminal, then submit the analysis DAG node exactly once per
-        campaign (backlog item 33 rework — individual per-seed job chains,
-        replacing the per-generation-array "wave" design's own per-generation
-        poll-then-advance loop). Unlike that design, there is no "advance to
-        the next generation" step left to do here: AWS Batch's own dependsOn
-        already resolves each seed's chain natively (see
-        ``SimulationServiceRay.submit_chain_dispatch_job``); the only thing
-        left to poll for is "has every seed's chain reached a terminal state,"
-        answered by ``SimulationServiceRay.get_chain_campaign_result``. No-op
+        """Advance every active chain-dispatch campaign by one tick each
+        (backlog item 71 Phase 4 — app-level per-seed gating, replacing native
+        Batch ``dependsOn`` chains, which never triggered AWS Batch's own
+        compute-environment scaling reconciliation at real campaign scale —
+        item 68's root cause). Unlike the design this superseded, there IS a
+        real "advance to the next generation" step to do here now: this
+        scheduler submits exactly one generation per seed at a time, only once
+        the previous one is confirmed SUCCEEDED — see
+        ``_advance_chain_campaign`` for the full per-tick state machine. No-op
         when no chain campaign is active, or on a deployment with no Ray/Batch
         backend wired (SLURM-only deployments pass
         ``simulation_service_ray=None``).
@@ -179,74 +177,292 @@ class JobScheduler:
                 logger.exception("Error advancing chain-dispatch campaign HpcRun %s", campaign.database_id)
 
     async def _advance_chain_campaign(self, campaign: HpcRun, simulation_service_ray: SimulationServiceRay) -> None:
-        """Handle one active chain-dispatch campaign HpcRun: no-op while any
-        tracked seed chain is still unresolved; once every tracked chain has
-        reached a terminal state, mark the campaign row terminal and, if at
-        least one seed chain succeeded, submit the analysis DAG node (see
-        ``update_chain_campaigns`` for the zero-succeeded case).
+        """Advance one active chain-dispatch campaign by exactly one tick
+        (backlog item 71 Phase 4). ``campaign`` only identifies WHICH campaign
+        — the real read-decide-write below always operates on a FRESH copy,
+        re-read inside ``DatabaseService.advance_chain_campaign``'s per-campaign
+        advisory lock, so a concurrent tick against the same campaign (e.g. two
+        pods briefly overlapping during a rolling restart) can never act on
+        stale state — the explicit no-double-submit guarantee this rework
+        exists to provide.
 
-        This method never marks an INDIVIDUAL chain job failed — a
-        permanently-failed seed's job already shows up as FAILED in
-        ``result.failed_job_ids`` via Batch's own dependency-failure
-        propagation (a later generation's job that depended on a failed one
-        auto-transitions to FAILED with no orchestrator action). The only
-        status write here is to the campaign's own tracking row.
+        One phase transition per tick, deliberately simple/safe:
+
+        1. ParCa not yet confirmed done: poll it. SUCCEEDED fans out
+           generation 0 for every seed at once (the one remaining genuine
+           submission burst, TPS-paced — see
+           ``SimulationServiceRay.submit_chain_generation_batch``). FAILED
+           ends the whole campaign (no seed can start). Anything else is a
+           no-op this tick.
+        2. ParCa already done: batch-poll every seed's current in-flight job.
+           A seed whose job reached a terminal state either advances to its
+           next generation (submits ONE new job, no ``depends_on`` — app-level
+           gating replaces native Batch dependency chains) or, if it just
+           finished its last generation, resolves — its ``chain_current_job_ids``
+           entry goes to ``None`` and its final job id is appended to
+           ``chain_final_job_ids``. A still-running seed is left alone this
+           tick. This never marks an individual seed's chain FAILED as an
+           orchestrator decision — a seed's job reaching Batch's own FAILED
+           state is what resolves it as failed; nothing here second-guesses
+           that.
+        3. Once every seed has resolved (every ``chain_current_job_ids`` entry
+           is ``None``): the campaign itself is terminal. Classify succeeded
+           vs failed by reusing ``get_chain_campaign_result`` on the now-fully-
+           populated ``chain_final_job_ids`` — every entry of which is already
+           known-terminal by construction, so this call is a fast formality,
+           not a real wait — and submit the analysis DAG node if anything
+           succeeded, exactly as before this rework.
         """
-        job_ids = campaign.chain_final_job_ids or []
-        result = simulation_service_ray.get_chain_campaign_result(job_ids)
-        if not result.terminal:
-            return
 
+        async def _tick(fresh: HpcRun) -> ChainCampaignUpdate | None:
+            if fresh.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
+                return None  # already resolved by a concurrent tick or a cancel request
+
+            current_job_ids = list(fresh.chain_current_job_ids or [])
+            current_generation = list(fresh.chain_current_generation or [])
+            final_job_ids = list(fresh.chain_final_job_ids or [])
+            n_seeds = len(current_job_ids)
+            n_generations = int(fresh.chain_n_generations or 1)
+
+            simulation = await self.database_service.get_simulation(simulation_id=fresh.ref_id)
+            if simulation is None:
+                logger.error("Chain dispatch: Simulation %s not found for HpcRun %s", fresh.ref_id, fresh.database_id)
+                return None
+            simulator = await self.database_service.get_simulator(simulator_id=simulation.simulator_id)
+            if simulator is None:
+                logger.error(
+                    "Chain dispatch: Simulator %s not found for simulation %s", simulation.simulator_id, fresh.ref_id
+                )
+                return None
+            commit = simulator.git_commit_hash
+            experiment_id = str(simulation.config.experiment_id)
+
+            if not fresh.chain_parca_done:
+                return await self._advance_parca_gate(
+                    simulation_service_ray,
+                    fresh=fresh,
+                    simulation=simulation,
+                    commit=commit,
+                    experiment_id=experiment_id,
+                    current_job_ids=current_job_ids,
+                    current_generation=current_generation,
+                    final_job_ids=final_job_ids,
+                    n_seeds=n_seeds,
+                )
+
+            # ParCa already done -- batch-poll every seed's current in-flight job,
+            # advancing or resolving each one (mutates both lists in place).
+            await self._advance_seed_generations(
+                simulation_service_ray,
+                simulation=simulation,
+                commit=commit,
+                experiment_id=experiment_id,
+                current_job_ids=current_job_ids,
+                current_generation=current_generation,
+                final_job_ids=final_job_ids,
+                n_generations=n_generations,
+            )
+
+            if any(jid is not None for jid in current_job_ids):
+                # some seeds still in flight (or nothing changed this tick) --
+                # persist whatever progress was made, not yet terminal.
+                return ChainCampaignUpdate(
+                    chain_current_job_ids=current_job_ids,
+                    chain_current_generation=current_generation,
+                    chain_parca_done=True,
+                    chain_final_job_ids=final_job_ids,
+                )
+
+            return await self._finalize_campaign(
+                simulation_service_ray,
+                fresh=fresh,
+                simulation=simulation,
+                commit=commit,
+                experiment_id=experiment_id,
+                current_job_ids=current_job_ids,
+                current_generation=current_generation,
+                final_job_ids=final_job_ids,
+                n_seeds=n_seeds,
+                n_generations=n_generations,
+            )
+
+        await self.database_service.advance_chain_campaign(campaign.database_id, _tick)
+
+    async def _advance_parca_gate(
+        self,
+        simulation_service_ray: SimulationServiceRay,
+        *,
+        fresh: HpcRun,
+        simulation: Simulation,
+        commit: str,
+        experiment_id: str,
+        current_job_ids: list[str | None],
+        current_generation: list[int | None],
+        final_job_ids: list[str],
+        n_seeds: int,
+    ) -> ChainCampaignUpdate | None:
+        """Phase 1 of ``_advance_chain_campaign``: gate generation-0 submission
+        on ParCa. Extracted purely to keep ``_tick`` under the project's
+        cyclomatic-complexity limit — see that method's own docstring for the
+        full 3-phase state machine this is one third of."""
+        parca_info = await simulation_service_ray.get_job_status(fresh.job_id)
+        if parca_info is None or parca_info.status not in (JobStatus.COMPLETED, JobStatus.FAILED):
+            return None  # ParCa still running, or not yet visible -- nothing to do this tick
+        if parca_info.status == JobStatus.FAILED:
+            logger.warning("Chain dispatch %s: ParCa failed; campaign ends here, no seed can start", experiment_id)
+            return ChainCampaignUpdate(
+                chain_current_job_ids=current_job_ids,
+                chain_current_generation=current_generation,
+                chain_parca_done=False,
+                chain_final_job_ids=final_job_ids,
+                terminal_status=JobStatus.FAILED,
+                error_message="chain dispatch: ParCa failed",
+            )
+        # ParCa SUCCEEDED -- fan out generation 0 for every seed at once.
+        runner_s3_uri = await simulation_service_ray.stage_runner(experiment_id)
+        submitted = await simulation_service_ray.submit_chain_generation_batch(
+            seeds=list(range(n_seeds)),
+            generation_index=0,
+            experiment_id=experiment_id,
+            commit=commit,
+            cache_s3=simulation_service_ray.cache_s3_uri(commit),
+            runner_s3_uri=runner_s3_uri,
+            tags=simulation_service_ray.chain_base_tags(simulation=simulation, commit=commit),
+        )
+        for seed in range(n_seeds):
+            if seed in submitted:
+                current_job_ids[seed] = submitted[seed]
+                current_generation[seed] = 0
+            # else: generation-0 submission itself failed for this seed (even
+            # after retry-on-throttle) -- current_job_ids[seed] stays None, so
+            # this seed is already "resolved" (with no final id of its own)
+            # the moment every OTHER seed resolves.
+        logger.info(
+            "Chain dispatch %s: ParCa succeeded -> %d/%d seed generation-0 jobs submitted",
+            experiment_id,
+            len(submitted),
+            n_seeds,
+        )
+        return ChainCampaignUpdate(
+            chain_current_job_ids=current_job_ids,
+            chain_current_generation=current_generation,
+            chain_parca_done=True,
+            chain_final_job_ids=final_job_ids,
+        )
+
+    async def _advance_seed_generations(
+        self,
+        simulation_service_ray: SimulationServiceRay,
+        *,
+        simulation: Simulation,
+        commit: str,
+        experiment_id: str,
+        current_job_ids: list[str | None],
+        current_generation: list[int | None],
+        final_job_ids: list[str],
+        n_generations: int,
+    ) -> None:
+        """Phase 2 of ``_advance_chain_campaign``: batch-poll every seed's
+        current in-flight job and advance or resolve each one — mutates
+        ``current_job_ids``/``current_generation``/``final_job_ids`` in place
+        (all three are freshly-copied lists owned by this one tick, never
+        shared, so in-place mutation is safe). Extracted purely to keep
+        ``_tick`` under the project's cyclomatic-complexity limit.
+        """
+        in_flight = [jid for jid in current_job_ids if jid is not None]
+        if not in_flight:
+            return
+        statuses = simulation_service_ray.get_batch_job_statuses(in_flight)
+        next_gen_runner_s3_uri: str | None = None
+        for seed, job_id in enumerate(current_job_ids):
+            if job_id is None:
+                continue
+            status = statuses.get(job_id)
+            if status not in (JobStatus.COMPLETED, JobStatus.FAILED):
+                continue  # still running, or not yet visible -- leave alone this tick
+            gen = current_generation[seed] or 0
+            if status == JobStatus.FAILED or gen + 1 >= n_generations:
+                # this seed's chain is done -- success (reached the last
+                # generation) or permanent failure, either way it contributes
+                # its final job id.
+                current_job_ids[seed] = None
+                final_job_ids.append(job_id)
+                continue
+            if next_gen_runner_s3_uri is None:
+                next_gen_runner_s3_uri = await simulation_service_ray.stage_runner(experiment_id)
+            current_job_ids[seed] = simulation_service_ray.submit_chain_generation(
+                seed=seed,
+                generation_index=gen + 1,
+                experiment_id=experiment_id,
+                commit=commit,
+                cache_s3=simulation_service_ray.cache_s3_uri(commit),
+                runner_s3_uri=next_gen_runner_s3_uri,
+                tags=simulation_service_ray.chain_base_tags(simulation=simulation, commit=commit),
+            )
+            current_generation[seed] = gen + 1
+
+    async def _finalize_campaign(
+        self,
+        simulation_service_ray: SimulationServiceRay,
+        *,
+        fresh: HpcRun,
+        simulation: Simulation,
+        commit: str,
+        experiment_id: str,
+        current_job_ids: list[str | None],
+        current_generation: list[int | None],
+        final_job_ids: list[str],
+        n_seeds: int,
+        n_generations: int,
+    ) -> ChainCampaignUpdate:
+        """Phase 3 of ``_advance_chain_campaign``: every seed has resolved
+        (``current_job_ids`` all ``None``), so the campaign itself is now
+        terminal — classify succeeded vs failed and submit the analysis DAG
+        node if anything succeeded. Extracted purely to keep ``_tick`` under
+        the project's cyclomatic-complexity limit.
+
+        Every id in ``final_job_ids`` is already known-terminal by
+        construction (``_advance_seed_generations`` only ever appends one once
+        its own poll observed it SUCCEEDED/FAILED), so the
+        ``get_chain_campaign_result`` call below is a fast formality that
+        reuses the existing classification logic, not a real wait.
+        """
+        result = simulation_service_ray.get_chain_campaign_result(final_job_ids)
         succeeded = result.succeeded_job_ids
-        await self.database_service.update_hpcrun_status(
-            hpcrun_id=campaign.database_id,
-            update=JobStatusUpdate(
-                job_id=campaign.job_id,
-                status=JobStatus.COMPLETED if succeeded else JobStatus.FAILED,
-                end_time=datetime.datetime.now().isoformat(),
-                error_message=None if succeeded else "chain dispatch: zero seed chains succeeded",
-            ),
+        update = ChainCampaignUpdate(
+            chain_current_job_ids=current_job_ids,
+            chain_current_generation=current_generation,
+            chain_parca_done=True,
+            chain_final_job_ids=final_job_ids,
+            terminal_status=JobStatus.COMPLETED if succeeded else JobStatus.FAILED,
+            error_message=None if succeeded else "chain dispatch: zero seed chains succeeded",
         )
         if not succeeded:
             logger.warning(
-                "Chain dispatch: HpcRun %s had zero succeeded seed chains "
-                "(%d tracked, %d failed); campaign ends here, no analysis submitted.",
-                campaign.database_id,
-                len(job_ids),
-                len(result.failed_job_ids),
+                "Chain dispatch %s: HpcRun %s had zero succeeded seed chains "
+                "(%d tracked); campaign ends here, no analysis submitted.",
+                experiment_id,
+                fresh.database_id,
+                n_seeds,
             )
-            return
-
-        simulation = await self.database_service.get_simulation(simulation_id=campaign.ref_id)
-        if simulation is None:
-            logger.error("Chain dispatch: Simulation %s not found for HpcRun %s", campaign.ref_id, campaign.database_id)
-            return
-        simulator = await self.database_service.get_simulator(simulator_id=simulation.simulator_id)
-        if simulator is None:
-            logger.error(
-                "Chain dispatch: Simulator %s not found for simulation %s",
-                simulation.simulator_id,
-                campaign.ref_id,
-            )
-            return
-        n_generations = int(campaign.chain_n_generations or simulation.config.generations or 1)
-        total_n_seeds = int(simulation.num_seeds or len(job_ids))
+            return update
 
         analysis_job_id = await simulation_service_ray.submit_campaign_analysis(
             simulation=simulation,
             database_service=self.database_service,
-            commit=simulator.git_commit_hash,
-            total_n_seeds=total_n_seeds,
+            commit=commit,
+            total_n_seeds=n_seeds,
             n_generations=n_generations,
         )
         logger.info(
             "Chain dispatch %s: campaign HpcRun %s all-terminal (%d/%d chains succeeded) -> analysis job %s",
-            simulation.config.experiment_id,
-            campaign.database_id,
+            experiment_id,
+            fresh.database_id,
             len(succeeded),
-            len(job_ids),
+            n_seeds,
             analysis_job_id,
         )
+        return update
 
     async def close(self) -> None:
         await self.stop_polling()

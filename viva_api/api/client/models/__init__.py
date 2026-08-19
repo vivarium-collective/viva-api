@@ -20,6 +20,7 @@ from .body_add_simulation_tags import BodyAddSimulationTags
 from .body_compose_run_copasi import BodyComposeRunCopasi
 from .body_compose_run_simulation import BodyComposeRunSimulation
 from .body_compose_run_tellurium import BodyComposeRunTellurium
+from .chain_progress import ChainProgress
 from .check_health_health_get_response_check_health_health_get import CheckHealthHealthGetResponseCheckHealthHealthGet
 from .compose_get_simulation_document_response_compose_get_simulation_document import (
     ComposeGetSimulationDocumentResponseComposeGetSimulationDocument,
@@ -93,6 +94,7 @@ __all__ = (
     "BodyComposeRunCopasi",
     "BodyComposeRunSimulation",
     "BodyComposeRunTellurium",
+    "ChainProgress",
     "CheckHealthHealthGetResponseCheckHealthHealthGet",
     "ComposeGetSimulationDocumentResponseComposeGetSimulationDocument",
     "ComposeHpcRun",

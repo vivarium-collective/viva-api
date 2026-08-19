@@ -13,10 +13,10 @@ T = TypeVar("T", bound="ParcaOptions")
 class ParcaOptions:
     """
     Attributes:
-        outdir (Union[Unset, str]):  Default: '/projects/SMS/viva_api/prod/sims'.
+        outdir (Union[Unset, str]):  Default: '.'.
     """
 
-    outdir: Union[Unset, str] = "/projects/SMS/viva_api/prod/sims"
+    outdir: Union[Unset, str] = "."
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
