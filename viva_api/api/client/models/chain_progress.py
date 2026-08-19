@@ -55,17 +55,15 @@ class ChainProgress:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "id": id,
-                "seeds_total": seeds_total,
-                "seeds_succeeded": seeds_succeeded,
-                "seeds_failed": seeds_failed,
-                "seeds_in_progress": seeds_in_progress,
-                "terminal": terminal,
-                "status": status,
-            }
-        )
+        field_dict.update({
+            "id": id,
+            "seeds_total": seeds_total,
+            "seeds_succeeded": seeds_succeeded,
+            "seeds_failed": seeds_failed,
+            "seeds_in_progress": seeds_in_progress,
+            "terminal": terminal,
+            "status": status,
+        })
 
         return field_dict
 
