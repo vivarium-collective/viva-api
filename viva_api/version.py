@@ -522,4 +522,13 @@
 #          cancel_job's existing terminate_job call unchanged, already
 #          validated by item 53's own empirical testing to work correctly
 #          across every non-terminal Batch state.
-__version__ = "0.9.52"
+# 0.9.53 — bump the K8s-native standalone-analysis Job's (run_standalone_analysis,
+#          simulation_service_k8s.py) hardcoded memory request/limit from 2Gi/4Gi
+#          to 6Gi/10Gi. A real multiseed sweep (item 71 b2, 40 seeds x 10 gens x
+#          12 modules) OOMKilled at 4Gi -- a multiseed analysis holds every seed's
+#          data in memory at once by design, so the old fixed limit (sized only
+#          for v2ecoli's heavier import surface vs. the legacy script, never for
+#          sweep scale) doesn't scale with campaign size. Real node headroom
+#          checked first (both smsvpctest cluster nodes <15% memory-requested;
+#          t3.xlarge allocatable ~14.4Gi each) before picking the new values.
+__version__ = "0.9.53"
