@@ -5,8 +5,31 @@ namespace: sms-api-stanford
 
 images:
   - name: ghcr.io/vivarium-collective/sms-api
-    # Must contain viva_api/simulation/db_reconcile.py (the Job runs it). Keep in
-    # sync with the app overlay's sms-api tag; do not lower below 0.9.19.
+    # This image must contain BOTH viva_api/simulation/db_reconcile.py (the Job
+    # runs it) AND every migration the deployed app expects. Keep in sync with the
+    # app overlay's sms-api tag; do not lower below 0.9.19.
+    #
+    # WHY THE SECOND HALF MATTERS -- a real production defect, 2026-08-19.
+    # This pin sat at 0.9.42 while the app overlay moved on. Migration
+    # 44335812e447 (shipped in 0.9.45) adds the upper-case 'CANCELLED' value to
+    # the jobstatusdb enum. ORMHpcRun.status has no values_callable, so SQLAlchemy
+    # binds the enum by NAME (upper-case), while prod's enum held only the
+    # lower-case 'cancelled' added by a1c3e5f7b9d2. Every
+    # POST /api/v1/simulations/{id}/cancel therefore raised
+    # InvalidTextRepresentationError.
+    #
+    # Confirmed live against sms-api-stanford: alembic_version stuck at
+    # f2b8e4a6c9d1, `db_reconcile --analyze` reporting the PENDING/CANCELLED
+    # marker absent, and the Job's last run 7d17h old. The trap is that
+    # re-running the Job in that state fixes NOTHING -- the 0.9.42 image does not
+    # contain the migration, so `upgrade head` has nothing to apply. A stale pin
+    # here is silent: the Job succeeds and the schema stays behind.
+    #
+    # The tag is deliberately NOT bumped in this commit. At the time of writing,
+    # production is running an image built from an unmerged branch, so there is no
+    # correct main-based value to point at -- pinning to it would put a tag in the
+    # manifest that does not exist on main. Bump this as part of the next deploy
+    # PR, once main and prod agree again.
     newTag: 0.9.42
 
 resources:
