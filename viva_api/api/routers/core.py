@@ -8,6 +8,7 @@ from fastapi import Depends, HTTPException, Query
 
 from viva_api.api import request_examples
 from viva_api.common import handlers
+from viva_api.common.capabilities import ServerCapabilities, get_server_capabilities
 from viva_api.common.gateway.models import ServerMode
 from viva_api.common.gateway.utils import get_router_config
 from viva_api.common.hpc.job_service import JobStatusUpdate
@@ -43,6 +44,33 @@ def get_server_url(dev: bool = True) -> ServerMode:
 
 
 config = get_router_config(prefix="core", version_major=False)
+
+
+@config.router.get(
+    path="/capabilities",
+    response_model=ServerCapabilities,
+    operation_id="get-server-capabilities",
+    tags=["Core"],
+    summary="What this deployment can actually do (for client feature detection)",
+)
+async def get_capabilities() -> ServerCapabilities:
+    """Advertise this deployment's capabilities as data, for clients to feature-detect against.
+
+    Clients branch on membership in ``capabilities`` -- never on ``version``.
+    ``version`` is returned for humans, logs and bug reports only.
+
+    Comparing versions is wrong here for two reasons this project has already
+    hit: a deployment can run an image built from an unmerged branch that no
+    version ordering describes (production, 2026-08-19), and having the code is
+    not the same as being able to use it -- several capabilities are gated on
+    deployment configuration as well. Each entry means "this deployment, right
+    now, can genuinely serve this".
+
+    Unrecognised names must be ignored; an absent name means "not available
+    here", never "unknown". See ``viva_api.common.capabilities`` for the naming
+    contract.
+    """
+    return get_server_capabilities()
 
 
 @config.router.get(
