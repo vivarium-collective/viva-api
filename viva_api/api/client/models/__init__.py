@@ -20,6 +20,7 @@ from .body_add_simulation_tags import BodyAddSimulationTags
 from .body_compose_run_copasi import BodyComposeRunCopasi
 from .body_compose_run_simulation import BodyComposeRunSimulation
 from .body_compose_run_tellurium import BodyComposeRunTellurium
+from .chain_progress import ChainProgress
 from .check_health_health_get_response_check_health_health_get import CheckHealthHealthGetResponseCheckHealthHealthGet
 from .compose_get_simulation_document_response_compose_get_simulation_document import (
     ComposeGetSimulationDocumentResponseComposeGetSimulationDocument,
@@ -57,6 +58,7 @@ from .run_ecoli_simulation_analysis_response_run_ecoli_simulation_analysis impor
 )
 from .run_ecoli_simulation_new_composite_type_0 import RunEcoliSimulationNewCompositeType0
 from .run_ecoli_simulation_new_vecoli_source_type_0 import RunEcoliSimulationNewVecoliSourceType0
+from .server_capabilities import ServerCapabilities
 from .simulation import Simulation
 from .simulation_analysis_data_response_type import SimulationAnalysisDataResponseType
 from .simulation_config import SimulationConfig
@@ -93,6 +95,7 @@ __all__ = (
     "BodyComposeRunCopasi",
     "BodyComposeRunSimulation",
     "BodyComposeRunTellurium",
+    "ChainProgress",
     "CheckHealthHealthGetResponseCheckHealthHealthGet",
     "ComposeGetSimulationDocumentResponseComposeGetSimulationDocument",
     "ComposeHpcRun",
@@ -126,6 +129,7 @@ __all__ = (
     "RunEcoliSimulationAnalysisResponseRunEcoliSimulationAnalysis",
     "RunEcoliSimulationNewCompositeType0",
     "RunEcoliSimulationNewVecoliSourceType0",
+    "ServerCapabilities",
     "Simulation",
     "SimulationAnalysisDataResponseType",
     "SimulationConfig",

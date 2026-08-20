@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.20
+  version: 0.9.50
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -444,6 +444,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/simulations/{id}/chain-progress:
+    get:
+      tags:
+      - Simulations
+      summary: Get real per-seed aggregate progress for a chain-dispatch campaign
+      description: "Backlog item 6: real seed-level progress (succeeded/failed/in-progress\n\
+        counts) for a chain-dispatch campaign (backlog item 33) \u2014 the SAME data\n\
+        ``/simulations/{id}/status`` already computes internally and collapses to\n\
+        one coarse phase, exposed at its real granularity. 404 when the\nsimulation/HpcRun\
+        \ doesn't exist; 409 when it exists but isn't a\nchain-dispatch campaign (a\
+        \ plain single-shot run has nothing to\naggregate \u2014 callers should use\
+        \ ``/status`` for those instead)."
+      operationId: get-ecoli-simulation-chain-progress
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChainProgress'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/simulations/{id}/cancel:
     delete:
       tags:
@@ -532,12 +565,12 @@ paths:
           - type: string
           - type: 'null'
           description: 'JSON object mapping analysis domains to module configs. E.g.
-            ''{"multiseed": {"ptools_rna": {"n_tp": 10}}}''. If omitted, runs default
+            ''{"single": {"ptools_rna": {"n_tp": 10}}}''. If omitted, runs default
             ptools modules.'
           title: Modules
         description: 'JSON object mapping analysis domains to module configs. E.g.
-          ''{"multiseed": {"ptools_rna": {"n_tp": 10}}}''. If omitted, runs default
-          ptools modules.'
+          ''{"single": {"ptools_rna": {"n_tp": 10}}}''. If omitted, runs default ptools
+          modules.'
       responses:
         '200':
           description: Successful Response
@@ -998,6 +1031,46 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /core/v1/capabilities:
+    get:
+      tags:
+      - Core
+      summary: What this deployment can actually do (for client feature detection)
+      description: 'Advertise this deployment''s capabilities as data, for clients
+        to feature-detect against.
+
+
+        Clients branch on membership in ``capabilities`` -- never on ``version``.
+
+        ``version`` is returned for humans, logs and bug reports only.
+
+
+        Comparing versions is wrong here for two reasons this project has already
+
+        hit: a deployment can run an image built from an unmerged branch that no
+
+        version ordering describes (production, 2026-08-19), and having the code is
+
+        not the same as being able to use it -- several capabilities are gated on
+
+        deployment configuration as well. Each entry means "this deployment, right
+
+        now, can genuinely serve this".
+
+
+        Unrecognised names must be ignored; an absent name means "not available
+
+        here", never "unknown". See ``viva_api.common.capabilities`` for the naming
+
+        contract.'
+      operationId: get-server-capabilities
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServerCapabilities'
   /core/v1/simulator/latest:
     get:
       tags:
@@ -1121,9 +1194,9 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-07-14T16:12:39.019002'
+                  created_at: '2026-08-20T08:10:01.705547'
                 parca_config:
-                  outdir: /projects/SMS/viva_api/prod/sims
+                  outdir: /projects/SMS/sms_api/jim/sims
       responses:
         '200':
           description: Successful Response
@@ -2108,6 +2181,46 @@ components:
       required:
       - sbml
       title: Body_compose-run-tellurium
+    ChainProgress:
+      properties:
+        id:
+          type: integer
+          title: Id
+        seeds_total:
+          type: integer
+          title: Seeds Total
+        seeds_succeeded:
+          type: integer
+          title: Seeds Succeeded
+        seeds_failed:
+          type: integer
+          title: Seeds Failed
+        seeds_in_progress:
+          type: integer
+          title: Seeds In Progress
+        terminal:
+          type: boolean
+          title: Terminal
+        status:
+          $ref: '#/components/schemas/JobStatus'
+      additionalProperties: true
+      type: object
+      required:
+      - id
+      - seeds_total
+      - seeds_succeeded
+      - seeds_failed
+      - seeds_in_progress
+      - terminal
+      - status
+      title: ChainProgress
+      description: "Backlog item 6: aggregate per-seed progress for a chain-dispatch\
+        \ campaign\n(backlog item 33) \u2014 the data ``get_simulation_status`` already\
+        \ computes via\n``SimulationServiceRay.get_chain_campaign_result`` and then\
+        \ collapses into\none coarse ``JobStatus``, exposed at its real granularity\
+        \ instead. Not a new\ndata source \u2014 the SAME already-tracked ``HpcRun.chain_final_job_ids``\
+        \ and\nthe SAME ``describe_jobs`` polling ``JobScheduler.update_chain_campaigns``\n\
+        already runs, just returned unflattened."
     ComposeHpcRun:
       properties:
         database_id:
@@ -2116,6 +2229,15 @@ components:
         slurmjobid:
           type: integer
           title: Slurmjobid
+        job_id_ext:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Job Id Ext
+        job_backend:
+          type: string
+          title: Job Backend
+          default: slurm
         correlation_id:
           type: string
           title: Correlation Id
@@ -2328,6 +2450,11 @@ components:
           - type: string
           - type: 'null'
           title: Error Message
+        job_id_ext:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Job Id Ext
       type: object
       required:
       - database_id
@@ -2473,6 +2600,18 @@ components:
           - type: string
           - type: 'null'
           title: Error Message
+        chain_n_generations:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Chain N Generations
+        chain_final_job_ids:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Chain Final Job Ids
         job_id_ext:
           type: string
           title: Job Id Ext
@@ -2612,7 +2751,7 @@ components:
         parca_config:
           $ref: '#/components/schemas/ParcaOptions'
           default:
-            outdir: /projects/SMS/viva_api/prod/sims
+            outdir: /projects/SMS/sms_api/jim/sims
       additionalProperties: true
       type: object
       required:
@@ -2623,7 +2762,7 @@ components:
         outdir:
           type: string
           title: Outdir
-          default: /projects/SMS/viva_api/prod/sims
+          default: /projects/SMS/sms_api/jim/sims
       additionalProperties: true
       type: object
       title: ParcaOptions
@@ -2752,6 +2891,27 @@ components:
       title: RepoDiscovery
       description: Available config filenames and analysis modules discovered from
         a simulator's repo.
+    ServerCapabilities:
+      properties:
+        version:
+          type: string
+          title: Version
+          description: Server version, for humans and bug reports. NOT for feature
+            detection.
+        capabilities:
+          items:
+            type: string
+          type: array
+          title: Capabilities
+          description: Stable capability names this deployment can serve right now.
+            Test membership; absence means 'not available here'. Unknown names should
+            be ignored.
+      type: object
+      required:
+      - version
+      - capabilities
+      title: ServerCapabilities
+      description: What this running deployment can actually do.
     Simulation:
       properties:
         database_id:
@@ -2774,7 +2934,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-07-14 16:12:38.947722'
+          default: '2026-08-20 08:10:01.635259'
         job_id:
           anyOf:
           - type: string
@@ -2816,7 +2976,7 @@ components:
         parca_options:
           $ref: '#/components/schemas/ParcaOptions'
           default:
-            outdir: /projects/SMS/viva_api/prod/sims
+            outdir: /projects/SMS/sms_api/jim/sims
         analysis_options:
           $ref: '#/components/schemas/AnalysisOptions'
           default: {}

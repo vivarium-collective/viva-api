@@ -21,6 +21,8 @@ class ComposeHpcRun:
         job_type (ComposeJobType):
         sim_id (Union[None, int]):
         simulator_id (Union[None, int]):
+        job_id_ext (Union[None, Unset, str]):
+        job_backend (Union[Unset, str]):  Default: 'slurm'.
         status (Union[ComposeJobStatus, None, Unset]):
         start_time (Union[None, Unset, str]):
         end_time (Union[None, Unset, str]):
@@ -33,6 +35,8 @@ class ComposeHpcRun:
     job_type: ComposeJobType
     sim_id: Union[None, int]
     simulator_id: Union[None, int]
+    job_id_ext: Union[None, Unset, str] = UNSET
+    job_backend: Union[Unset, str] = "slurm"
     status: Union[ComposeJobStatus, None, Unset] = UNSET
     start_time: Union[None, Unset, str] = UNSET
     end_time: Union[None, Unset, str] = UNSET
@@ -53,6 +57,14 @@ class ComposeHpcRun:
 
         simulator_id: Union[None, int]
         simulator_id = self.simulator_id
+
+        job_id_ext: Union[None, Unset, str]
+        if isinstance(self.job_id_ext, Unset):
+            job_id_ext = UNSET
+        else:
+            job_id_ext = self.job_id_ext
+
+        job_backend = self.job_backend
 
         status: Union[None, Unset, str]
         if isinstance(self.status, Unset):
@@ -90,6 +102,10 @@ class ComposeHpcRun:
             "sim_id": sim_id,
             "simulator_id": simulator_id,
         })
+        if job_id_ext is not UNSET:
+            field_dict["job_id_ext"] = job_id_ext
+        if job_backend is not UNSET:
+            field_dict["job_backend"] = job_backend
         if status is not UNSET:
             field_dict["status"] = status
         if start_time is not UNSET:
@@ -125,6 +141,17 @@ class ComposeHpcRun:
             return cast(Union[None, int], data)
 
         simulator_id = _parse_simulator_id(d.pop("simulator_id"))
+
+        def _parse_job_id_ext(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        job_id_ext = _parse_job_id_ext(d.pop("job_id_ext", UNSET))
+
+        job_backend = d.pop("job_backend", UNSET)
 
         def _parse_status(data: object) -> Union[ComposeJobStatus, None, Unset]:
             if data is None:
@@ -177,6 +204,8 @@ class ComposeHpcRun:
             job_type=job_type,
             sim_id=sim_id,
             simulator_id=simulator_id,
+            job_id_ext=job_id_ext,
+            job_backend=job_backend,
             status=status,
             start_time=start_time,
             end_time=end_time,

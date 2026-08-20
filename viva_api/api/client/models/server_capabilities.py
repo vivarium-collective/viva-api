@@ -1,46 +1,54 @@
 from collections.abc import Mapping
-from typing import Any, TypeVar, Union
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..types import UNSET, Unset
-
-T = TypeVar("T", bound="ParcaOptions")
+T = TypeVar("T", bound="ServerCapabilities")
 
 
 @_attrs_define
-class ParcaOptions:
-    """
+class ServerCapabilities:
+    """What this running deployment can actually do.
+
     Attributes:
-        outdir (Union[Unset, str]):  Default: '/projects/SMS/sms_api/jim/sims'.
+        version (str): Server version, for humans and bug reports. NOT for feature detection.
+        capabilities (list[str]): Stable capability names this deployment can serve right now. Test membership; absence
+            means 'not available here'. Unknown names should be ignored.
     """
 
-    outdir: Union[Unset, str] = "/projects/SMS/sms_api/jim/sims"
+    version: str
+    capabilities: list[str]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        outdir = self.outdir
+        version = self.version
+
+        capabilities = self.capabilities
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({})
-        if outdir is not UNSET:
-            field_dict["outdir"] = outdir
+        field_dict.update({
+            "version": version,
+            "capabilities": capabilities,
+        })
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        outdir = d.pop("outdir", UNSET)
+        version = d.pop("version")
 
-        parca_options = cls(
-            outdir=outdir,
+        capabilities = cast(list[str], d.pop("capabilities"))
+
+        server_capabilities = cls(
+            version=version,
+            capabilities=capabilities,
         )
 
-        parca_options.additional_properties = d
-        return parca_options
+        server_capabilities.additional_properties = d
+        return server_capabilities
 
     @property
     def additional_keys(self) -> list[str]:

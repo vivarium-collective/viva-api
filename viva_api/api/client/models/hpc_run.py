@@ -25,6 +25,8 @@ class HpcRun:
         start_time (Union[None, Unset, str]):
         end_time (Union[None, Unset, str]):
         error_message (Union[None, Unset, str]):
+        chain_n_generations (Union[None, Unset, int]):
+        chain_final_job_ids (Union[None, Unset, list[str]]):
     """
 
     database_id: int
@@ -37,6 +39,8 @@ class HpcRun:
     start_time: Union[None, Unset, str] = UNSET
     end_time: Union[None, Unset, str] = UNSET
     error_message: Union[None, Unset, str] = UNSET
+    chain_n_generations: Union[None, Unset, int] = UNSET
+    chain_final_job_ids: Union[None, Unset, list[str]] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -78,6 +82,21 @@ class HpcRun:
         else:
             error_message = self.error_message
 
+        chain_n_generations: Union[None, Unset, int]
+        if isinstance(self.chain_n_generations, Unset):
+            chain_n_generations = UNSET
+        else:
+            chain_n_generations = self.chain_n_generations
+
+        chain_final_job_ids: Union[None, Unset, list[str]]
+        if isinstance(self.chain_final_job_ids, Unset):
+            chain_final_job_ids = UNSET
+        elif isinstance(self.chain_final_job_ids, list):
+            chain_final_job_ids = self.chain_final_job_ids
+
+        else:
+            chain_final_job_ids = self.chain_final_job_ids
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({
@@ -96,6 +115,10 @@ class HpcRun:
             field_dict["end_time"] = end_time
         if error_message is not UNSET:
             field_dict["error_message"] = error_message
+        if chain_n_generations is not UNSET:
+            field_dict["chain_n_generations"] = chain_n_generations
+        if chain_final_job_ids is not UNSET:
+            field_dict["chain_final_job_ids"] = chain_final_job_ids
 
         return field_dict
 
@@ -158,6 +181,32 @@ class HpcRun:
 
         error_message = _parse_error_message(d.pop("error_message", UNSET))
 
+        def _parse_chain_n_generations(data: object) -> Union[None, Unset, int]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, int], data)
+
+        chain_n_generations = _parse_chain_n_generations(d.pop("chain_n_generations", UNSET))
+
+        def _parse_chain_final_job_ids(data: object) -> Union[None, Unset, list[str]]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                chain_final_job_ids_type_0 = cast(list[str], data)
+
+                return chain_final_job_ids_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[None, Unset, list[str]], data)
+
+        chain_final_job_ids = _parse_chain_final_job_ids(d.pop("chain_final_job_ids", UNSET))
+
         hpc_run = cls(
             database_id=database_id,
             correlation_id=correlation_id,
@@ -169,6 +218,8 @@ class HpcRun:
             start_time=start_time,
             end_time=end_time,
             error_message=error_message,
+            chain_n_generations=chain_n_generations,
+            chain_final_job_ids=chain_final_job_ids,
         )
 
         hpc_run.additional_properties = d

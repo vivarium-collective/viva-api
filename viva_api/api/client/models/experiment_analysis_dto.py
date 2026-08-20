@@ -41,6 +41,7 @@ class ExperimentAnalysisDTO:
             simulation_id (Union[None, Unset, int]):
             backend (Union[None, Unset, str]):
             error_message (Union[None, Unset, str]):
+            job_id_ext (Union[None, Unset, str]):
     """
 
     database_id: int
@@ -56,6 +57,7 @@ class ExperimentAnalysisDTO:
     simulation_id: Union[None, Unset, int] = UNSET
     backend: Union[None, Unset, str] = UNSET
     error_message: Union[None, Unset, str] = UNSET
+    job_id_ext: Union[None, Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -123,6 +125,12 @@ class ExperimentAnalysisDTO:
         else:
             error_message = self.error_message
 
+        job_id_ext: Union[None, Unset, str]
+        if isinstance(self.job_id_ext, Unset):
+            job_id_ext = UNSET
+        else:
+            job_id_ext = self.job_id_ext
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({
@@ -149,6 +157,8 @@ class ExperimentAnalysisDTO:
             field_dict["backend"] = backend
         if error_message is not UNSET:
             field_dict["error_message"] = error_message
+        if job_id_ext is not UNSET:
+            field_dict["job_id_ext"] = job_id_ext
 
         return field_dict
 
@@ -254,6 +264,15 @@ class ExperimentAnalysisDTO:
 
         error_message = _parse_error_message(d.pop("error_message", UNSET))
 
+        def _parse_job_id_ext(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        job_id_ext = _parse_job_id_ext(d.pop("job_id_ext", UNSET))
+
         experiment_analysis_dto = cls(
             database_id=database_id,
             name=name,
@@ -268,6 +287,7 @@ class ExperimentAnalysisDTO:
             simulation_id=simulation_id,
             backend=backend,
             error_message=error_message,
+            job_id_ext=job_id_ext,
         )
 
         experiment_analysis_dto.additional_properties = d
