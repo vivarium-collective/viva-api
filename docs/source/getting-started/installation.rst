@@ -16,8 +16,8 @@ Install from Source
 
 .. code-block:: bash
 
-   git clone https://github.com/vivarium-collective/sms-api.git
-   cd sms-api
+   git clone https://github.com/vivarium-collective/viva-api.git
+   cd viva-api
    uv sync
 
 This installs the ``atlantis`` command and all three client applications
