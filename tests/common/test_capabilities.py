@@ -41,9 +41,7 @@ class _FakeSettings:
         self.ray_container_job_definition = job_def
 
 
-def _patch(
-    monkeypatch: pytest.MonkeyPatch, *, service: Any, settings: Any = None
-) -> None:
+def _patch(monkeypatch: pytest.MonkeyPatch, *, service: Any, settings: Any = None) -> None:
     monkeypatch.setattr(capabilities, "_ray_service", lambda: service)
     monkeypatch.setattr(capabilities, "get_settings", lambda: settings or _FakeSettings())
 
@@ -96,9 +94,7 @@ def test_container_jobs_absent_when_code_present_but_unconfigured(monkeypatch: p
     ("queue", "job_def"),
     [("smscdk-ray-standalone", ""), ("", "smscdk-ray-container")],
 )
-def test_container_jobs_requires_both_settings(
-    monkeypatch: pytest.MonkeyPatch, queue: str, job_def: str
-) -> None:
+def test_container_jobs_requires_both_settings(monkeypatch: pytest.MonkeyPatch, queue: str, job_def: str) -> None:
     """Half-configured is unconfigured -- either blank setting fails at submit."""
     _patch(monkeypatch, service=_FakeService(container=True), settings=_FakeSettings(queue, job_def))
     assert CAPABILITY_CONTAINER_JOBS not in detect_capabilities()
