@@ -76,8 +76,7 @@ def sync_detailed(
     Args:
         id (int): Database ID of a completed simulation.
         modules (Union[None, Unset, str]): JSON object mapping analysis domains to module configs.
-            E.g. '{"multiseed": {"ptools_rna": {"n_tp": 10}}}'. If omitted, runs default ptools
-            modules.
+            E.g. '{"single": {"ptools_rna": {"n_tp": 10}}}'. If omitted, runs default ptools modules.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -110,8 +109,7 @@ def sync(
     Args:
         id (int): Database ID of a completed simulation.
         modules (Union[None, Unset, str]): JSON object mapping analysis domains to module configs.
-            E.g. '{"multiseed": {"ptools_rna": {"n_tp": 10}}}'. If omitted, runs default ptools
-            modules.
+            E.g. '{"single": {"ptools_rna": {"n_tp": 10}}}'. If omitted, runs default ptools modules.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -139,8 +137,7 @@ async def asyncio_detailed(
     Args:
         id (int): Database ID of a completed simulation.
         modules (Union[None, Unset, str]): JSON object mapping analysis domains to module configs.
-            E.g. '{"multiseed": {"ptools_rna": {"n_tp": 10}}}'. If omitted, runs default ptools
-            modules.
+            E.g. '{"single": {"ptools_rna": {"n_tp": 10}}}'. If omitted, runs default ptools modules.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -171,8 +168,7 @@ async def asyncio(
     Args:
         id (int): Database ID of a completed simulation.
         modules (Union[None, Unset, str]): JSON object mapping analysis domains to module configs.
-            E.g. '{"multiseed": {"ptools_rna": {"n_tp": 10}}}'. If omitted, runs default ptools
-            modules.
+            E.g. '{"single": {"ptools_rna": {"n_tp": 10}}}'. If omitted, runs default ptools modules.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
