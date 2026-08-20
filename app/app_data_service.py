@@ -44,6 +44,54 @@ DEFAULT_REQUEST_TIMEOUT = 1000
 SUPPORTED_CONFIGS = [name.replace(".json", "") for name in SimulationConfigFilename.values()]
 
 
+# ---------------------------------------------------------------------------
+# Persisted last-used base_url (backlog item 72 Phase 1) — mirrors
+# vivarium-workbench's vivarium_workbench/lib/github_auth.py
+# `_last_login_path()` / `_remember_login()` pattern: a tiny on-disk hint file
+# under the XDG config dir remembers the last base_url a client actually used,
+# so a second `atlantis` invocation (CLI, TUI, and GUI all route through
+# get_data_service() below) doesn't need --base-url passed again. Same
+# "current context" convenience `kubectl`/`aws configure` give, applied to
+# this CLI. Best-effort throughout: a persistence failure (read-only FS,
+# permissions) never blocks the client — it just falls back to the hardcoded
+# default, same as if nothing had ever been remembered.
+# ---------------------------------------------------------------------------
+
+
+def _last_base_url_path() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return Path(base) / "atlantis" / "last_base_url"
+
+
+def _remember_base_url(value: str) -> None:
+    value = (value or "").strip()
+    if not value:
+        return
+    try:
+        p = _last_base_url_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(value + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def recall_base_url() -> str | None:
+    """Return the last-persisted base_url, or None if never set / unreadable.
+
+    Used by ``app.cli`` to compute its module-level default so a fresh
+    invocation with no ``--base-url`` reuses whatever was last actually used,
+    instead of always falling back to the hardcoded default.
+    """
+    try:
+        p = _last_base_url_path()
+        if p.is_file():
+            v = p.read_text(encoding="utf-8").strip()
+            return v or None
+    except OSError:
+        pass
+    return None
+
+
 def _parse_content_disposition_filename(header_value: str) -> str | None:
     """Return the ``filename`` parameter from a Content-Disposition header, or None.
 
@@ -64,8 +112,20 @@ def _parse_content_disposition_filename(header_value: str) -> str | None:
     return None
 
 
+def resolve_base_url(value: BaseUrl | str) -> BaseUrl | str:
+    """Return *value* as a ``BaseUrl`` when it matches a known preset, else the
+    raw string unchanged. ``BaseUrl`` is a documented set of shortcuts for
+    common deployments, not a closed domain — any URL a client actually wants
+    to talk to must work, matching how ``VIVA_API_BASE`` is already handled on
+    the vivarium-workbench side of this same feature (backlog item 72 Phase 1)."""
+    try:
+        return BaseUrl(value)
+    except ValueError:
+        return str(value)
+
+
 @asynccontextmanager
-async def async_client(base_url: BaseUrl, timeout: int = 300) -> AsyncIterator[AsyncClient]:
+async def async_client(base_url: BaseUrl | str, timeout: int = 300) -> AsyncIterator[AsyncClient]:
     try:
         async with AsyncClient(base_url=base_url, timeout=timeout) as client:
             yield client
@@ -74,10 +134,10 @@ async def async_client(base_url: BaseUrl, timeout: int = 300) -> AsyncIterator[A
 
 
 class E2EDataService:
-    base_url: BaseUrl
+    base_url: BaseUrl | str
     client: httpx.Client
 
-    def __init__(self, base_url: BaseUrl, timeout: int = 300) -> None:
+    def __init__(self, base_url: BaseUrl | str, timeout: int = 300) -> None:
         self.base_url = base_url
         self.client = httpx.Client(base_url=self.base_url, timeout=timeout)
 
@@ -851,6 +911,10 @@ class E2EDataService:
 
 
 def get_data_service(base_url: BaseUrl | str | None = None, timeout: int | None = None) -> E2EDataService:
-    return E2EDataService(
-        base_url=BaseUrl(base_url) if base_url else DEFAULT_BASE_URL, timeout=timeout or DEFAULT_REQUEST_TIMEOUT
-    )
+    resolved = resolve_base_url(base_url) if base_url else DEFAULT_BASE_URL
+    # Single funnel point for CLI + TUI + GUI: remember whichever base_url this
+    # call actually resolved to (explicit or defaulted) as "last used," so the
+    # NEXT invocation's default (app.cli's API_BASE_URL, via recall_base_url())
+    # converges to it without --base-url passed again.
+    _remember_base_url(str(resolved))
+    return E2EDataService(base_url=resolved, timeout=timeout or DEFAULT_REQUEST_TIMEOUT)

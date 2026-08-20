@@ -23,7 +23,7 @@ import httpx
 import typer
 from typer import Argument, Option
 
-from app.app_data_service import get_data_service
+from app.app_data_service import get_data_service, recall_base_url
 from app.cli_theme import display_json, get_console, print_banner, status_border, status_style
 from app.tui import AtlantisTUI
 
@@ -223,7 +223,19 @@ class ApiBaseUrl(StrEnumBase):
     LOCAL_8080 = "http://localhost:8080"
 
 
-API_BASE_URL = os.getenv("API_BASE_URL", ApiBaseUrl.LOCAL_8080)
+# Default for every command's --base-url Option below. Resolution order:
+# explicit API_BASE_URL env var > last value a client actually used
+# (persisted by get_data_service(), item 72 Phase 1) > the hardcoded default.
+# This is what makes a second `atlantis` invocation reuse the previous one's
+# --base-url without passing it again.
+API_BASE_URL = os.getenv("API_BASE_URL") or recall_base_url() or ApiBaseUrl.LOCAL_8080
+
+# Typed as plain str (not the ApiBaseUrl enum) so any real endpoint works — e.g.
+# a one-off SSM tunnel on a custom local port — not just the known deployments.
+# ApiBaseUrl's members remain valid input and are surfaced here as documented
+# shortcuts, matching how VIVA_API_BASE is already handled on the
+# vivarium-workbench side of this same feature (item 72 Phase 1).
+_BASE_URL_HELP = f"API server base URL. Common presets: {', '.join(ApiBaseUrl)}."
 
 
 cli = typer.Typer(name="atlantis", help="SMS API CLI for managing vEcoli simulations, simulators, parca, and analyses.")
@@ -328,7 +340,7 @@ for _name, _sub in [
 
 @tui_cli.command(name="tui", help="Launch the interactive terminal UI.")
 def launch_tui(
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     tui = AtlantisTUI(base_url=base_url)
     tui.run()
@@ -336,7 +348,7 @@ def launch_tui(
 
 @gui_cli.command(name="gui", help="Launch the interactive graphical user interface.")
 def launch_gui(
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
     mode: str = Option(
         default="run", help="Launch the interactive graphical user interface mode in either run or edit mode."
     ),
@@ -357,7 +369,7 @@ def simulator_latest(
     repo_url: str | None = Option(default=None, help="Git repo URL. Defaults to the configured default repo."),
     branch: str | None = Option(default=None, help="Git branch. Defaults to the configured default branch."),
     force: bool = Option(default=False, help="Force rebuild even if a completed build exists."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     import time
 
@@ -403,7 +415,7 @@ def simulator_list(
     n: int | None = Option(
         default=None, help="Number of entries to show. Positive = first N, negative = last N (by ID)."
     ),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -416,7 +428,7 @@ def simulator_list(
 @simulator_cli.command("status", help="Get the container build status for a simulator by its database ID.")
 def simulator_status(
     simulator_id: int = Argument(help="Simulator database ID."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     from rich.panel import Panel
 
@@ -494,7 +506,7 @@ def simulation_run(
         "Tags can also be added later with 'atlantis simulation tag <id> <tag>'.",
     ),
     poll: bool = Option(default=False, help="Poll simulation status until completion."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     import json as _json
     import time
@@ -599,7 +611,7 @@ def simulation_run(
 @simulation_cli.command("get", help="Get a simulation by its database ID.")
 def simulation_get(
     simulation_id: int = Argument(help="Simulation database ID."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -617,7 +629,7 @@ def simulation_list(
         default=None,
         help="Comma-separated tags to filter by (e.g. 'cd1'). Use 'atlantis simulation tags' to list tags in use.",
     ),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -629,7 +641,7 @@ def simulation_list(
 
 @simulation_cli.command("tags", help="List the tags in use and the experiment IDs carrying each.")
 def simulation_tags(
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -647,7 +659,7 @@ def simulation_tags(
 def simulation_tag(
     simulation_id: int = Argument(help="Database ID of the simulation to tag."),
     tags: list[str] = Argument(help="One or more tags to add (e.g. cd1)."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -658,7 +670,7 @@ def simulation_tag(
 @simulation_cli.command("configs", help="List available config filenames for a simulator's repo.")
 def simulation_configs(
     simulator_id: int = Argument(help="Simulator database ID."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -675,7 +687,7 @@ def simulation_configs(
 @simulation_cli.command("analyses", help="List available analysis modules for a simulator's repo.")
 def simulation_analyses(
     simulator_id: int = Argument(help="Simulator database ID."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -695,7 +707,7 @@ def simulation_analyses(
 def simulation_status(
     simulation_id: int = Argument(help="Simulation database ID."),
     poll: bool = Option(default=False, help="Poll until simulation completes."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     import time
 
@@ -729,7 +741,7 @@ def simulation_status(
 @simulation_cli.command("cancel", help="Cancel a running simulation.")
 def simulation_cancel(
     simulation_id: int = Argument(help="Simulation database ID."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -740,7 +752,7 @@ def simulation_cancel(
 @simulation_cli.command("log", help="Show the Nextflow workflow log for a simulation.")
 def simulation_log(
     simulation_id: int = Argument(help="Simulation database ID."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     from rich.panel import Panel
 
@@ -757,7 +769,7 @@ def simulation_log(
 def simulation_outputs(
     simulation_id: int = Argument(help="Simulation database ID."),
     dest: str | None = Option(default=None, help="Destination directory. Defaults to ./simulation_id_<ID>."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -774,7 +786,7 @@ def simulation_analysis(
         help='JSON string of analysis modules. E.g. \'{"single": {"ptools_rna": {"n_tp": 10}}}\'.'
         " If omitted, runs default ptools modules.",
     ),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -794,7 +806,7 @@ def parca_list(
     n: int | None = Option(
         default=None, help="Number of entries to show. Positive = first N, negative = last N (by ID)."
     ),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -807,7 +819,7 @@ def parca_list(
 @parca_cli.command("status", help="Get the status of a parca run by its database ID.")
 def parca_status(
     parca_id: int = Argument(help="Parca dataset database ID."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -821,7 +833,7 @@ def parca_status(
 @analysis_cli.command("get", help="Get an analysis spec by its database ID.")
 def analysis_get(
     analysis_id: int = Argument(help="Analysis database ID."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -832,7 +844,7 @@ def analysis_get(
 @analysis_cli.command("status", help="Get the status of an analysis run.")
 def analysis_status(
     analysis_id: int = Argument(help="Analysis database ID."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -843,7 +855,7 @@ def analysis_status(
 @analysis_cli.command("log", help="Get the log output of an analysis run.")
 def analysis_log(
     analysis_id: int = Argument(help="Analysis database ID."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     from rich.panel import Panel
 
@@ -856,7 +868,7 @@ def analysis_log(
 @analysis_cli.command("plots", help="Get analysis plot outputs (HTML) for an analysis run.")
 def analysis_plots(
     analysis_id: int = Argument(help="Analysis database ID."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -874,7 +886,7 @@ def compose_run(
     interval_time: float = Option(default=1.0, help="Simulation interval/duration."),
     batch: bool = Option(default=False, help="Use batch submission mode."),
     poll: bool = Option(default=False, help="Poll until job completes."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     import time
 
@@ -921,7 +933,7 @@ def compose_run(
 @compose_cli.command("status", help="Get compose simulation job status.")
 def compose_status(
     simulation_id: int = Argument(help="Compose simulation database ID."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     from rich.panel import Panel
 
@@ -943,7 +955,7 @@ def compose_status(
 def compose_results(
     simulation_id: int = Argument(help="Compose simulation database ID."),
     dest: str = Option(default="./compose_results", help="Local destination directory."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -956,7 +968,7 @@ def compose_results(
 @compose_cli.command("doc", help="Retrieve the process-bigraph document used for a compose simulation.")
 def compose_doc(
     simulation_id: int = Argument(help="Compose simulation database ID."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -966,7 +978,7 @@ def compose_doc(
 
 @compose_cli.command("simulators", help="List registered compose simulators.")
 def compose_simulators(
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -976,7 +988,7 @@ def compose_simulators(
 
 @compose_cli.command("processes", help="List registered process-bigraph processes.")
 def compose_processes(
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -989,7 +1001,7 @@ def compose_processes(
 
 @compose_cli.command("steps", help="List registered process-bigraph steps.")
 def compose_steps(
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -1003,7 +1015,7 @@ def compose_steps(
 @compose_cli.command("build-status", help="Get compose container build status.")
 def compose_build_status(
     simulator_id: int = Argument(help="Compose simulator database ID."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     from rich.panel import Panel
 
@@ -1029,7 +1041,7 @@ def compose_ecoli(
     features: str = Option(default="[]", help="JSON list of feature modules, e.g. '[\"ppgpp_regulation\"]'"),
     cache_dir: str = Option(default="/out/cache", help="Absolute path to ParCa cache inside container."),
     poll: bool = Option(default=False, help="Poll until job completes."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     import time
 
@@ -1076,7 +1088,7 @@ def compose_copasi(
     start_time: float = Option(default=0.0, help="Simulation start time."),
     duration: float = Option(default=10.0, help="Simulation duration."),
     num_data_points: float = Option(default=100.0, help="Number of data points."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -1093,7 +1105,7 @@ def compose_tellurium(
     start_time: float = Option(default=0.0, help="Simulation start time."),
     end_time: float = Option(default=10.0, help="Simulation end time."),
     num_data_points: float = Option(default=100.0, help="Number of data points."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -1107,7 +1119,7 @@ def compose_tellurium(
 @compose_cli.command("biomodels-ids", help="List BioModels database identifiers.")
 def compose_biomodels_ids(
     n: int = Option(default=20, help="Max number of identifiers to return."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -1119,7 +1131,7 @@ def compose_biomodels_ids(
 @compose_cli.command("biomodels-meta", help="Get metadata for a BioModels database entry.")
 def compose_biomodels_meta(
     biomodel_id: str = Argument(help="BioModel ID (e.g. BIOMD0000000001)."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -1133,7 +1145,7 @@ def compose_biomodels_run(
     biomodel_id: str = Argument(help="BioModel ID (e.g. BIOMD0000000001)."),
     simulator: str = Option(default="copasi", help="Simulator: copasi or tellurium."),
     poll: bool = Option(default=False, help="Poll for job status until complete."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -1163,7 +1175,7 @@ def compose_biomodels_batch(
     simulator: str = Option(default="copasi", help="Simulator: copasi or tellurium."),
     n: int = Option(default=5, help="Number of models to run (ignored if --ids provided)."),
     ids: str = Option(default="", help="Comma-separated BioModel IDs to run."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -1182,7 +1194,7 @@ def compose_biomodels_audit(
     biomodel_id: str = Argument(help="BioModel ID (e.g. BIOMD0000000001)."),
     simulators: str = Option(default="copasi,tellurium", help="Comma-separated simulators to use."),
     poll: bool = Option(default=False, help="Poll for job status until complete."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)
@@ -1214,7 +1226,7 @@ def compose_biomodels_regression(
     n: int = Option(default=10, help="Number of models to run (ignored if --ids provided)."),
     ids: str = Option(default="", help="Comma-separated BioModel IDs to run."),
     simulators: str = Option(default="copasi,tellurium", help="Comma-separated simulators to wire into each model."),
-    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+    base_url: str = Option(default=API_BASE_URL, help=_BASE_URL_HELP),
 ) -> None:
     console = get_console()
     data_service = get_data_service(base_url=base_url)

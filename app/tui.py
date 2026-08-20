@@ -37,7 +37,7 @@ from textual.widgets import (
     Static,
 )
 
-from app.app_data_service import BaseUrl, E2EDataService, get_data_service
+from app.app_data_service import BaseUrl, E2EDataService, get_data_service, resolve_base_url
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -480,7 +480,7 @@ class AtlantisTUI(App[None]):
         # This renders cleanly in every terminal (Terminal.app, iTerm2, PyCharm, etc.)
         # because it inherits the terminal's own color scheme instead of fighting it.
         self.theme = "textual-ansi"
-        self.base_url = BaseUrl(base_url) if isinstance(base_url, str) else base_url
+        self.base_url = resolve_base_url(base_url) if isinstance(base_url, str) else base_url
         self.svc: E2EDataService = get_data_service(base_url=self.base_url)
         self._active_domain: str = ""
         self._temp_dirs: list[tempfile.TemporaryDirectory[str]] = []
@@ -526,7 +526,17 @@ class AtlantisTUI(App[None]):
 
         with Horizontal(id="server-bar"):
             yield Label("Server: ", id="server-label")
-            yield Select(SERVER_OPTIONS, value=self.base_url.value, id="server-select", allow_blank=False)
+            # self.base_url may be a custom URL that isn't one of the known
+            # presets (item 72 Phase 1) — the Select widget can only default
+            # to a value present in its own options, so add it as an extra
+            # entry rather than crash or silently drop the current selection.
+            current = str(self.base_url)
+            options = (
+                SERVER_OPTIONS
+                if isinstance(self.base_url, BaseUrl)
+                else [*SERVER_OPTIONS, (f"custom  ({current})", current)]
+            )
+            yield Select(options, value=current, id="server-select", allow_blank=False)
 
         yield Footer()
 
@@ -538,7 +548,8 @@ class AtlantisTUI(App[None]):
         for domain in ("simulations", "simulators", "analyses"):
             self.query_one(f"#actions-{domain}").display = False
         self.write_log("[dim]Simulating Microbial Systems — Interactive Terminal[/dim]")
-        self.write_log(f"[dim]Server: {self.base_url.name} ({self.base_url.value})[/dim]")
+        server_label = self.base_url.name if isinstance(self.base_url, BaseUrl) else "custom"
+        self.write_log(f"[dim]Server: {server_label} ({self.base_url})[/dim]")
         self.write_log("")
         self.write_log("[bold]Select a domain in the sidebar.  [dim]q[/dim]=quit  [dim]d[/dim]=theme[/bold]\n")
 
