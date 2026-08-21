@@ -58,6 +58,7 @@ from .run_ecoli_simulation_analysis_response_run_ecoli_simulation_analysis impor
 )
 from .run_ecoli_simulation_new_composite_type_0 import RunEcoliSimulationNewCompositeType0
 from .run_ecoli_simulation_new_vecoli_source_type_0 import RunEcoliSimulationNewVecoliSourceType0
+from .server_capabilities import ServerCapabilities
 from .simulation import Simulation
 from .simulation_analysis_data_response_type import SimulationAnalysisDataResponseType
 from .simulation_config import SimulationConfig
@@ -128,6 +129,7 @@ __all__ = (
     "RunEcoliSimulationAnalysisResponseRunEcoliSimulationAnalysis",
     "RunEcoliSimulationNewCompositeType0",
     "RunEcoliSimulationNewVecoliSourceType0",
+    "ServerCapabilities",
     "Simulation",
     "SimulationAnalysisDataResponseType",
     "SimulationConfig",
