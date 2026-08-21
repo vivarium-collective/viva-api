@@ -286,3 +286,4 @@ source = ["viva_api", "client"]
 "viva_api/simulation/simulation_service.py" = ["E501"]
 "app/gui.py" = ["B018", "F841"]  # Marimo notebook: bare expressions are cell outputs, unused vars are cell returns
 "app/cli.py" = ["S603", "S607"]  # CLI subprocess calls are intentional
+".github/scripts/*" = ["E501"]  # Inline HTML/CSS templates have intentionally long lines
