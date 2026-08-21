@@ -22,11 +22,9 @@ class AnalysisConfigOptions:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "experiment_id": experiment_id,
-            }
-        )
+        field_dict.update({
+            "experiment_id": experiment_id,
+        })
 
         return field_dict
 

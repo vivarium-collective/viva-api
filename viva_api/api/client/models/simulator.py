@@ -30,13 +30,11 @@ class Simulator:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "git_commit_hash": git_commit_hash,
-                "git_repo_url": git_repo_url,
-                "git_branch": git_branch,
-            }
-        )
+        field_dict.update({
+            "git_commit_hash": git_commit_hash,
+            "git_repo_url": git_repo_url,
+            "git_branch": git_branch,
+        })
 
         return field_dict
 

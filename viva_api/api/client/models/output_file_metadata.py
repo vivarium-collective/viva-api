@@ -60,11 +60,9 @@ class OutputFileMetadata:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "filename": filename,
-            }
-        )
+        field_dict.update({
+            "filename": filename,
+        })
         if variant is not UNSET:
             field_dict["variant"] = variant
         if lineage_seed is not UNSET:

@@ -40,12 +40,10 @@ class ParcaDataset:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "database_id": database_id,
-                "parca_dataset_request": parca_dataset_request,
-            }
-        )
+        field_dict.update({
+            "database_id": database_id,
+            "parca_dataset_request": parca_dataset_request,
+        })
         if remote_archive_path is not UNSET:
             field_dict["remote_archive_path"] = remote_archive_path
 

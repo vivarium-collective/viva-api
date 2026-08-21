@@ -48,14 +48,12 @@ class SimulatorVersion:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "git_commit_hash": git_commit_hash,
-                "git_repo_url": git_repo_url,
-                "git_branch": git_branch,
-                "database_id": database_id,
-            }
-        )
+        field_dict.update({
+            "git_commit_hash": git_commit_hash,
+            "git_repo_url": git_repo_url,
+            "git_branch": git_branch,
+            "database_id": database_id,
+        })
         if created_at is not UNSET:
             field_dict["created_at"] = created_at
 

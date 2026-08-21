@@ -32,11 +32,9 @@ class ContainerizationFileRepr:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "representation": representation,
-            }
-        )
+        field_dict.update({
+            "representation": representation,
+        })
         if containerization_engine is not UNSET:
             field_dict["containerization_engine"] = containerization_engine
 

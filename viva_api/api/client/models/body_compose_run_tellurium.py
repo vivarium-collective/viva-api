@@ -24,11 +24,9 @@ class BodyComposeRunTellurium:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "sbml": sbml,
-            }
-        )
+        field_dict.update({
+            "sbml": sbml,
+        })
 
         return field_dict
 

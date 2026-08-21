@@ -51,15 +51,13 @@ class RegisteredPackage:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "database_id": database_id,
-                "package_type": package_type,
-                "name": name,
-                "processes": processes,
-                "steps": steps,
-            }
-        )
+        field_dict.update({
+            "database_id": database_id,
+            "package_type": package_type,
+            "name": name,
+            "processes": processes,
+            "steps": steps,
+        })
 
         return field_dict
 

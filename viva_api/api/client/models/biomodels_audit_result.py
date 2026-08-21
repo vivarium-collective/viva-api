@@ -35,12 +35,10 @@ class BiomodelsAuditResult:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "experiment": experiment,
-                "simulators_used": simulators_used,
-            }
-        )
+        field_dict.update({
+            "experiment": experiment,
+            "simulators_used": simulators_used,
+        })
 
         return field_dict
 

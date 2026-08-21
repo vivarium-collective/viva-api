@@ -42,11 +42,9 @@ class AnalysisModuleConfig:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "name": name,
-            }
-        )
+        field_dict.update({
+            "name": name,
+        })
         if files is not UNSET:
             field_dict["files"] = files
 

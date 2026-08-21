@@ -26,12 +26,10 @@ class OutputFile:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "name": name,
-                "content": content,
-            }
-        )
+        field_dict.update({
+            "name": name,
+            "content": content,
+        })
 
         return field_dict
 

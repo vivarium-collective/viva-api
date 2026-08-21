@@ -48,16 +48,14 @@ class SimulationObservables:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "simulation_id": simulation_id,
-                "experiment_id": experiment_id,
-                "seed": seed,
-                "store": store,
-                "time": time,
-                "series": series,
-            }
-        )
+        field_dict.update({
+            "simulation_id": simulation_id,
+            "experiment_id": experiment_id,
+            "seed": seed,
+            "store": store,
+            "time": time,
+            "series": series,
+        })
 
         return field_dict
 

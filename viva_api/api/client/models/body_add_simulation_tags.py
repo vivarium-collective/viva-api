@@ -22,11 +22,9 @@ class BodyAddSimulationTags:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "tags": tags,
-            }
-        )
+        field_dict.update({
+            "tags": tags,
+        })
 
         return field_dict
 

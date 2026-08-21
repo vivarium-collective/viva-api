@@ -43,11 +43,9 @@ class RegisteredSimulators:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "versions": versions,
-            }
-        )
+        field_dict.update({
+            "versions": versions,
+        })
         if timestamp is not UNSET:
             field_dict["timestamp"] = timestamp
 
