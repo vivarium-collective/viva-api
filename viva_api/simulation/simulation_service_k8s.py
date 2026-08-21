@@ -494,9 +494,15 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ecr_repository}:{image_tag}-s
                                 ],
                                 resources=k8s_client.V1ResourceRequirements(
                                     # v2ecoli's full import surface (pandas/scipy/cvxpy/numba)
-                                    # is heavier than the legacy analysis script's.
-                                    requests={"cpu": "500m", "memory": "2Gi"},
-                                    limits={"cpu": "1", "memory": "4Gi"},
+                                    # is heavier than the legacy analysis script's. 4Gi OOMKilled a
+                                    # real multiseed sweep at 40 seeds x 10 gens x 12 modules (item
+                                    # 71, 2026-08-19) -- a multiseed analysis holds every seed's
+                                    # data in memory at once by design, so this scales with sweep
+                                    # size, not a fixed cost. Bumped with real node headroom checked
+                                    # first (both cluster nodes were <15% memory-requested at the
+                                    # time; t3.xlarge allocatable ~14.4Gi each).
+                                    requests={"cpu": "1", "memory": "6Gi"},
+                                    limits={"cpu": "2", "memory": "10Gi"},
                                 ),
                             ),
                         ],

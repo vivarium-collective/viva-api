@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.50
+  version: 0.9.53
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -1194,9 +1194,9 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-08-20T08:10:01.705547'
+                  created_at: '2026-08-21T15:18:20.263698'
                 parca_config:
-                  outdir: /projects/SMS/sms_api/jim/sims
+                  outdir: .
       responses:
         '200':
           description: Successful Response
@@ -2612,6 +2612,29 @@ components:
             type: array
           - type: 'null'
           title: Chain Final Job Ids
+        chain_current_job_ids:
+          anyOf:
+          - items:
+              anyOf:
+              - type: string
+              - type: 'null'
+            type: array
+          - type: 'null'
+          title: Chain Current Job Ids
+        chain_current_generation:
+          anyOf:
+          - items:
+              anyOf:
+              - type: integer
+              - type: 'null'
+            type: array
+          - type: 'null'
+          title: Chain Current Generation
+        chain_parca_done:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Chain Parca Done
         job_id_ext:
           type: string
           title: Job Id Ext
@@ -2751,7 +2774,7 @@ components:
         parca_config:
           $ref: '#/components/schemas/ParcaOptions'
           default:
-            outdir: /projects/SMS/sms_api/jim/sims
+            outdir: .
       additionalProperties: true
       type: object
       required:
@@ -2762,7 +2785,7 @@ components:
         outdir:
           type: string
           title: Outdir
-          default: /projects/SMS/sms_api/jim/sims
+          default: .
       additionalProperties: true
       type: object
       title: ParcaOptions
@@ -2934,7 +2957,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-08-20 08:10:01.635259'
+          default: '2026-08-21 15:18:18.829455'
         job_id:
           anyOf:
           - type: string
@@ -2976,7 +2999,7 @@ components:
         parca_options:
           $ref: '#/components/schemas/ParcaOptions'
           default:
-            outdir: /projects/SMS/sms_api/jim/sims
+            outdir: .
         analysis_options:
           $ref: '#/components/schemas/AnalysisOptions'
           default: {}

@@ -12,7 +12,7 @@ import pytest
 from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.config import ComputeBackend
-from viva_api.simulation.models import JobType
+from viva_api.simulation.models import HpcRun, JobType
 from viva_api.simulation.simulation_service_ray import (
     PARCA_CACHE_DIR,
     SIM_OUT_DIR,
@@ -274,75 +274,51 @@ class TestSimulationServiceRaySubmit:
         database_service: "DatabaseServiceSQL",
     ) -> None:
         """The canonical batch_baseline sweep (composite is None, generations>1)
-        is now delegated ENTIRELY to submit_chain_dispatch_job (backlog item 33
-        rework) -- individual per-seed AWS Batch job chains, never the array-job
-        path (removed: _submit_array/_array_sim_command/_ensure_array_job_def no
-        longer exist at all -- a fresh repo-wide grep confirmed their only
-        caller was the array branch this replaced, before they were deleted).
+        is delegated ENTIRELY to submit_chain_dispatch_job (backlog item 33
+        rework), which (backlog item 71 Phase 4) now submits ONLY ParCa as a
+        container job and writes the campaign's initial per-seed tracking row
+        -- generation submission moves to JobScheduler's poll loop (see
+        TestAdvanceChainCampaign, tests/simulation/test_scheduler.py).
 
         This is the test that would have caught the real wiring gap found in
         review: submit_chain_dispatch_job existed and was fully tested in
         isolation from the moment it was built, but nothing on the REAL
-        submit_ecoli_simulation_job entrypoint ever called it until this
-        routing landed -- a real request would have silently kept exercising
-        the old array/wave-style path forever."""
+        submit_ecoli_simulation_job entrypoint ever called it until routing
+        landed -- a real request would have silently kept exercising the old
+        array/wave-style path forever."""
         setattr(experiment_request.config, "n_init_sims", 2)  # noqa: B010
         experiment_request.config.generations = 3
         simulation = await database_service.insert_simulation(sim_request=experiment_request)
 
-        # parca + 2 seeds x 3 generations = 7 real submissions -- not 1 array job.
-        submit_ids = ["parca-1", "s0g0", "s0g1", "s0g2", "s1g0", "s1g1", "s1g2"]
-        mock_batch = _fake_batch(submit_ids)
-        fake_file_service = AsyncMock()
-        fake_file_service.upload_file = AsyncMock()
+        mock_batch = _fake_container_batch(["parca-1"])
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
-            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
-            patch("viva_api.simulation.simulation_service_ray.asyncio.sleep", new=AsyncMock()),
         ):
             job_id = await service.submit_ecoli_simulation_job(
                 ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-real-entry"
             )
 
-            # The entrypoint now returns a LOCAL task id the instant the campaign
-            # is scheduled and issues the real N*G submissions in the background
-            # (_submit_chain_dispatch_background) -- so every downstream invariant
-            # below is checked AFTER awaiting that task, not synchronously on
-            # return. Awaiting the asyncio.Task directly blocks until it is done
-            # and re-raises anything it hit, which is exactly what a test wants;
-            # it has to happen INSIDE the patch context, since the task is what
-            # actually calls boto3.
+            # The entrypoint returns a LOCAL task id the instant the campaign is
+            # scheduled and submits ParCa + writes the initial tracking row in
+            # the background (_submit_chain_dispatch_background) -- so every
+            # downstream invariant below is checked AFTER awaiting that task.
+            # Awaiting the asyncio.Task directly blocks until it is done and
+            # re-raises anything it hit; it has to happen INSIDE the patch
+            # context, since the task is what actually calls boto3.
             assert job_id.backend == JobBackend.LOCAL
             campaign_job_id = await service._local._tasks[job_id.value]
 
-        # Chain-dispatch's own return convention: the ParCa job id, never a
-        # single "sim" job id (there isn't one anymore). Same invariant as
-        # before; it is now the background task's RESULT rather than
-        # submit_ecoli_simulation_job's own return value.
+        # Chain-dispatch's own return convention: the ParCa job id.
         assert campaign_job_id == JobId.ray("parca-1")
-        assert mock_batch.submit_job.call_count == 7
-        calls = mock_batch.submit_job.call_args_list
-
-        # Every submission is a plain MNP job -- arrayProperties never appears
-        # anywhere in this call sequence.
-        for call in calls:
-            assert "arrayProperties" not in call.kwargs
-        for call in calls[1:]:
-            assert "nodeOverrides" in call.kwargs
-
-        # Dependency chain for a representative seed (seed 0) and confirmation
-        # seed 1's chain is entirely independent, both rooted at the SAME ParCa job.
-        _parca_call, s0g0, s0g1, s0g2, s1g0, s1g1, s1g2 = calls
-        assert s0g0.kwargs["dependsOn"] == [{"jobId": "parca-1", "type": "SEQUENTIAL"}]
-        assert s0g1.kwargs["dependsOn"] == [{"jobId": "s0g0", "type": "SEQUENTIAL"}]
-        assert s0g2.kwargs["dependsOn"] == [{"jobId": "s0g1", "type": "SEQUENTIAL"}]
-        assert s1g0.kwargs["dependsOn"] == [{"jobId": "parca-1", "type": "SEQUENTIAL"}]
-        assert s1g1.kwargs["dependsOn"] == [{"jobId": "s1g0", "type": "SEQUENTIAL"}]
-        assert s1g2.kwargs["dependsOn"] == [{"jobId": "s1g1", "type": "SEQUENTIAL"}]
+        # Exactly ONE submission now -- no per-seed generation jobs upfront.
+        assert mock_batch.submit_job.call_count == 1
+        (parca_call,) = mock_batch.submit_job.call_args_list
+        assert "dependsOn" not in parca_call.kwargs
+        assert "containerOverrides" in parca_call.kwargs  # container-type, not MNP
 
         # The campaign row was recorded under the CALLER's OWN correlation_id
         # (threaded through, not a fresh internally-generated one) -- this is
@@ -364,35 +340,34 @@ class TestSimulationServiceRaySubmit:
         assert campaign.correlation_id == "corr-real-entry"
         assert campaign.job_id == JobId.ray("parca-1")
         assert campaign.chain_n_generations == 3
-        assert campaign.chain_final_job_ids == ["s0g2", "s1g2"]
+        assert campaign.chain_final_job_ids == []
+        assert campaign.chain_current_job_ids == [None, None]
+        assert campaign.chain_current_generation == [None, None]
+        assert campaign.chain_parca_done is False
 
     async def test_submit_routes_canonical_batch_baseline_to_chain_dispatch_when_single_seed(
         self,
         experiment_request: "SimulationRequest",
         database_service: "DatabaseServiceSQL",
     ) -> None:
-        """Unlike the superseded array-job design (which required n_seeds > 1 --
-        AWS Batch's own array-size floor, verified against the real API model),
-        a single-seed canonical batch_baseline request is now ALSO routed to
-        chain-dispatch: that floor doesn't apply at all to independent per-seed
-        MNP jobs, confirmed here at the REAL entrypoint (not just in
-        TestChainDispatchSubmission's own isolated coverage of the same claim)."""
+        """Unlike the array-job design predating item 33 (which required
+        n_seeds > 1 -- AWS Batch's own array-size floor), a single-seed
+        canonical batch_baseline request is ALSO routed to chain-dispatch --
+        confirmed here at the REAL entrypoint (not just in
+        TestChainDispatchSubmission's own isolated coverage of the same
+        claim), now submitting just ParCa + the initial per-seed row
+        (backlog item 71 Phase 4)."""
         setattr(experiment_request.config, "n_init_sims", 1)  # noqa: B010
         experiment_request.config.generations = 3
         simulation = await database_service.insert_simulation(sim_request=experiment_request)
 
-        submit_ids = ["parca-1", "s0g0", "s0g1", "s0g2"]
-        mock_batch = _fake_batch(submit_ids)
-        fake_file_service = AsyncMock()
-        fake_file_service.upload_file = AsyncMock()
+        mock_batch = _fake_container_batch(["parca-1"])
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
-            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
-            patch("viva_api.simulation.simulation_service_ray.asyncio.sleep", new=AsyncMock()),
         ):
             job_id = await service.submit_ecoli_simulation_job(
                 ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-single-real"
@@ -403,12 +378,10 @@ class TestSimulationServiceRaySubmit:
             campaign_job_id = await service._local._tasks[job_id.value]
 
         assert campaign_job_id == JobId.ray("parca-1")
-        assert mock_batch.submit_job.call_count == 4  # parca + 1 seed x 3 generations
-        _parca_call, g0, g1, g2 = mock_batch.submit_job.call_args_list
-        assert "arrayProperties" not in g0.kwargs
-        assert g0.kwargs["dependsOn"] == [{"jobId": "parca-1", "type": "SEQUENTIAL"}]
-        assert g1.kwargs["dependsOn"] == [{"jobId": "s0g0", "type": "SEQUENTIAL"}]
-        assert g2.kwargs["dependsOn"] == [{"jobId": "s0g1", "type": "SEQUENTIAL"}]
+        assert mock_batch.submit_job.call_count == 1
+        campaign = await database_service.get_hpcrun_by_ref(ref_id=simulation.database_id, job_type=JobType.SIMULATION)
+        assert campaign is not None
+        assert campaign.chain_current_job_ids == [None]
 
     async def test_canonical_chain_dispatch_returns_before_submitting_anything(
         self,
@@ -426,45 +399,44 @@ class TestSimulationServiceRaySubmit:
         INLINE, inside the single POST /api/v1/simulations the client was
         awaiting -- about 15 minutes for the real 10,000-job shape. The client's
         HTTP timeout fired long first and reported a FAILED dispatch, while
-        viva-api went right on submitting the real, AWS-billed campaign. Retrying
-        (the obvious response to being told it failed) would have started a
-        second, duplicate, paid campaign on top of the first.
-
-        The background task is held at a deterministic chokepoint -- the
-        run_pbg.py staging upload, which submit_chain_dispatch_job awaits after
-        its two DB reads and before the pacer and every submit_job call -- so the
-        "nothing has happened yet" assertions below are guarantees rather than a
-        race this test happens to win.
+        viva-api went right on submitting the real, AWS-billed campaign.
+        Backlog item 71 Phase 4 additionally shrank submit_chain_dispatch_job
+        itself down to one ParCa submission + one DB insert (no more N*G loop
+        at all), so the ORIGINAL pathological 15-minute case can no longer
+        happen by construction -- but the backgrounding mechanism itself
+        (_submit_chain_dispatch_background, unchanged by Phase 4) is still the
+        real code path and still worth locking down: the chokepoint here holds
+        submit_chain_dispatch_job itself (not an internal implementation
+        detail of it), so this test is robust to future changes in what that
+        method does internally.
         """
         setattr(experiment_request.config, "n_init_sims", 2)  # noqa: B010
         experiment_request.config.generations = 3
         simulation = await database_service.insert_simulation(sim_request=experiment_request)
 
-        submit_ids = ["parca-1", "s0g0", "s0g1", "s0g2", "s1g0", "s1g1", "s1g2"]
-        mock_batch = _fake_batch(submit_ids)
+        mock_batch = _fake_container_batch(["parca-1"])
 
-        staging_released = asyncio.Event()
+        released = asyncio.Event()
+        real_submit_chain_dispatch_job = SimulationServiceRay.submit_chain_dispatch_job
 
-        async def _hold_at_staging(*args: Any, **kwargs: Any) -> None:
-            await staging_released.wait()
-
-        fake_file_service = AsyncMock()
-        fake_file_service.upload_file = AsyncMock(side_effect=_hold_at_staging)
+        async def _held_submit_chain_dispatch_job(self: "SimulationServiceRay", *args: Any, **kwargs: Any) -> JobId:
+            await released.wait()
+            return await real_submit_chain_dispatch_job(self, *args, **kwargs)
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
-            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
-            patch("viva_api.simulation.simulation_service_ray.asyncio.sleep", new=AsyncMock()),
+            patch.object(SimulationServiceRay, "submit_chain_dispatch_job", _held_submit_chain_dispatch_job),
         ):
             # The property under test, stated directly: the entrypoint returns
-            # promptly regardless of campaign size. asyncio.wait_for, rather than
-            # a bare await, so that the pre-fix inline behaviour FAILS here in
-            # seconds instead of deadlocking the suite -- submitting inline, it
-            # would park in the submission loop at the staging chokepoint below
-            # and never come back, since only this test body releases it.
+            # promptly regardless of how long the campaign's own submission
+            # takes. asyncio.wait_for, rather than a bare await, so that an
+            # inline (non-backgrounded) regression FAILS here in seconds
+            # instead of deadlocking the suite -- submitting inline, it would
+            # park at the chokepoint above and never come back, since only
+            # this test body releases it.
             job_id = await asyncio.wait_for(
                 service.submit_ecoli_simulation_job(
                     ecoli_simulation=simulation,
@@ -499,10 +471,8 @@ class TestSimulationServiceRaySubmit:
 
             # 4. ...and precisely BECAUSE chain_n_generations is unset, the
             # scheduler's poll set excludes the placeholder. Were it enrolled,
-            # get_chain_campaign_result([]) would call the campaign trivially
-            # terminal with zero successes and _advance_chain_campaign would mark
-            # it FAILED on the very next tick -- recreating the same false
-            # failure, this time inside viva-api itself.
+            # a zero-seed campaign would look terminal with nothing to analyze,
+            # recreating a false failure inside viva-api itself.
             assert [
                 c.database_id
                 for c in await database_service.list_active_chain_campaigns()
@@ -510,20 +480,21 @@ class TestSimulationServiceRaySubmit:
             ] == []
 
             # Release the chokepoint and let the campaign finish submitting.
-            staging_released.set()
+            released.set()
             campaign_job_id = await service._local._tasks[job_id.value]
 
         # 5. The real campaign row now supersedes the placeholder for every later
         # read (get_hpcrun_by_ref is ORDER BY id DESC) and IS in the scheduler's
         # poll set -- so analysis auto-fire stays wired exactly as before.
         assert campaign_job_id == JobId.ray("parca-1")
-        assert mock_batch.submit_job.call_count == 7
+        assert mock_batch.submit_job.call_count == 1  # just ParCa (backlog item 71 Phase 4)
         campaign = await database_service.get_hpcrun_by_ref(ref_id=simulation.database_id, job_type=JobType.SIMULATION)
         assert campaign is not None
         assert campaign.database_id != placeholder.database_id
         assert campaign.job_id == JobId.ray("parca-1")
         assert campaign.chain_n_generations == 3
-        assert campaign.chain_final_job_ids == ["s0g2", "s1g2"]
+        assert campaign.chain_current_job_ids == [None, None]
+        assert campaign.chain_parca_done is False
         assert [
             c.database_id
             for c in await database_service.list_active_chain_campaigns()
@@ -825,6 +796,71 @@ class TestSimulationServiceRayStatusCancel:
             await service.cancel_job(JobId.ray("sim-456"))
         mock_batch.terminate_job.assert_called_once()
         assert mock_batch.terminate_job.call_args.kwargs["jobId"] == "sim-456"
+
+
+@pytest.mark.asyncio
+class TestCancelChainCampaign:
+    """cancel_chain_campaign (backlog item 71 Phase 4, folding in backlog item
+    53's cancellation design): terminate every seed's CURRENT in-flight job,
+    directly from chain_current_job_ids -- no dependsOn-chain walk needed
+    under the per-seed model (at most one in-flight job per seed at any
+    time). Reuses cancel_job's existing terminate_job call unchanged."""
+
+    def _campaign(self, chain_current_job_ids: list[str | None]) -> HpcRun:
+        return HpcRun(
+            database_id=1,
+            job_id=JobId.ray("parca-1"),
+            correlation_id="chain-campaign-exp",
+            job_type=JobType.SIMULATION,
+            ref_id=1,
+            status=JobStatus.RUNNING,
+            chain_n_generations=3,
+            chain_final_job_ids=[],
+            chain_current_job_ids=chain_current_job_ids,
+            chain_current_generation=[0] * len(chain_current_job_ids),
+            chain_parca_done=True,
+        )
+
+    async def test_terminates_every_seeds_current_job(self) -> None:
+        mock_batch = MagicMock()
+        service = SimulationServiceRay()
+        campaign = self._campaign(["s0g1", "s1g0", "s2g2"])
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            await service.cancel_chain_campaign(campaign)
+
+        assert mock_batch.terminate_job.call_count == 3
+        terminated_ids = {call.kwargs["jobId"] for call in mock_batch.terminate_job.call_args_list}
+        assert terminated_ids == {"s0g1", "s1g0", "s2g2"}
+
+    async def test_skips_seeds_that_already_resolved(self) -> None:
+        """A seed whose chain already resolved (its own slot already None --
+        either it fully succeeded/failed on a prior tick, or it never even
+        started) must not be touched -- idempotent, nothing to cancel."""
+        mock_batch = MagicMock()
+        service = SimulationServiceRay()
+        campaign = self._campaign([None, "s1g0", None])
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            await service.cancel_chain_campaign(campaign)
+
+        mock_batch.terminate_job.assert_called_once()
+        assert mock_batch.terminate_job.call_args.kwargs["jobId"] == "s1g0"
+
+    async def test_empty_or_all_none_is_a_safe_noop(self) -> None:
+        mock_batch = MagicMock()
+        service = SimulationServiceRay()
+        campaign = self._campaign([None, None])
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            await service.cancel_chain_campaign(campaign)
+        mock_batch.terminate_job.assert_not_called()
 
 
 class TestGetChainCampaignResult:
@@ -1552,11 +1588,12 @@ class TestSubmitJobPacer:
 
 @pytest.mark.asyncio
 class TestChainDispatchSubmission:
-    """submit_chain_dispatch_job kicks off a chain-dispatch campaign: ParCa +
-    every seed's full G-generation dependsOn chain, submitted upfront
-    (backlog item 33 rework — individual per-seed job chains, replacing the
-    per-generation-array "wave" design's own TestWaveDispatchSubmission /
-    TestSubmitNextWave)."""
+    """submit_chain_dispatch_job (backlog item 71 Phase 4 rework): submits
+    ONLY ParCa now, as a container-type job, and writes the campaign's
+    initial per-seed tracking row (every slot empty, gated on ParCa) --
+    generation submission moves entirely to JobScheduler's poll loop (see
+    TestAdvanceChainCampaign, tests/simulation/test_scheduler.py, and
+    TestSubmitChainGeneration/TestCancelChainCampaign below for those)."""
 
     async def test_rejects_single_generation(
         self,
@@ -1574,272 +1611,183 @@ class TestChainDispatchSubmission:
         ):
             await service.submit_chain_dispatch_job(ecoli_simulation=simulation, database_service=database_service)
 
-    async def test_single_seed_multi_generation_is_now_allowed(
+    async def test_submits_only_parca_as_a_container_job(
         self,
         experiment_request: "SimulationRequest",
         database_service: "DatabaseServiceSQL",
     ) -> None:
-        """Unlike the superseded per-generation-array design, n_seeds >= 2 is
-        NOT required -- that floor was AWS Batch's own array-size minimum
-        (arrayProperties.size must be 2-10000, verified against the real API
-        model this session), which doesn't apply here: each seed's chain is
-        independent standalone MNP jobs, no array involved at all."""
-        setattr(experiment_request.config, "n_init_sims", 1)  # noqa: B010
-        experiment_request.config.generations = 2
+        setattr(experiment_request.config, "n_init_sims", 3)  # noqa: B010
+        experiment_request.config.generations = 4
         simulation = await database_service.insert_simulation(sim_request=experiment_request)
-        mock_batch = _fake_batch(["parca-1", "s0g0", "s0g1"])
-        fake_file_service = AsyncMock()
-        fake_file_service.upload_file = AsyncMock()
-        service = SimulationServiceRay()
-        with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
-            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
-            patch("viva_api.simulation.simulation_service_ray.asyncio.sleep", new=AsyncMock()),
-        ):
-            job_id = await service.submit_chain_dispatch_job(
-                ecoli_simulation=simulation, database_service=database_service
-            )
-        assert job_id == JobId.ray("parca-1")
-        assert mock_batch.submit_job.call_count == 3  # parca + 2 generations, one seed
-
-    async def test_submits_parca_then_every_seeds_full_chain(
-        self,
-        experiment_request: "SimulationRequest",
-        database_service: "DatabaseServiceSQL",
-    ) -> None:
-        """2 seeds x 3 generations: locks the exact dependency structure for a
-        representative seed (right job count, right dependsOn linkage, right
-        deterministic daughter-state S3 paths) and the campaign HpcRun row's
-        shape."""
-        setattr(experiment_request.config, "n_init_sims", 2)  # noqa: B010
-        experiment_request.config.generations = 3
-        simulation = await database_service.insert_simulation(sim_request=experiment_request)
-        submit_ids = ["parca-1", "s0g0", "s0g1", "s0g2", "s1g0", "s1g1", "s1g2"]
-        mock_batch = _fake_batch(submit_ids)
-        fake_file_service = AsyncMock()
-        fake_file_service.upload_file = AsyncMock()
+        mock_batch = _fake_container_batch(["parca-1"])
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
-            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
-            patch("viva_api.simulation.simulation_service_ray.asyncio.sleep", new=AsyncMock()),
         ):
             job_id = await service.submit_chain_dispatch_job(
                 ecoli_simulation=simulation, database_service=database_service
             )
 
         assert job_id == JobId.ray("parca-1")
-        assert mock_batch.submit_job.call_count == 7  # parca + 2 seeds x 3 generations
-        parca_call, s0g0, s0g1, s0g2, s1g0, s1g1, s1g2 = mock_batch.submit_job.call_args_list
-
+        # Exactly ONE submission -- no per-seed generation jobs anymore.
+        assert mock_batch.submit_job.call_count == 1
+        (parca_call,) = mock_batch.submit_job.call_args_list
         assert "dependsOn" not in parca_call.kwargs
-        assert "retryStrategy" not in parca_call.kwargs  # ParCa's own behavior is unchanged
+        assert "containerOverrides" in parca_call.kwargs  # container-type, not MNP nodeOverrides
+        env = _container_env_of(parca_call)
+        assert "v2ecoli-parca" in env["CONTAINER_JOB_CMD"]
 
-        # Representative seed (seed 0)'s full chain: right linkage, right retry,
-        # right shape (MNP -- nodeOverrides, never arrayProperties at all).
-        assert s0g0.kwargs["dependsOn"] == [{"jobId": "parca-1", "type": "SEQUENTIAL"}]
-        assert s0g1.kwargs["dependsOn"] == [{"jobId": "s0g0", "type": "SEQUENTIAL"}]
-        assert s0g2.kwargs["dependsOn"] == [{"jobId": "s0g1", "type": "SEQUENTIAL"}]
-        for call in (s0g0, s0g1, s0g2, s1g0, s1g1, s1g2):
-            assert call.kwargs["retryStrategy"] == {"attempts": 2}
-            assert "nodeOverrides" in call.kwargs
-            assert "arrayProperties" not in call.kwargs
+    async def test_writes_initial_campaign_row_with_empty_per_seed_state(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        setattr(experiment_request.config, "n_init_sims", 3)  # noqa: B010
+        experiment_request.config.generations = 4
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+        mock_batch = _fake_container_batch(["parca-1"])
 
-        # Seed 1's chain is entirely independent of seed 0's, both rooted at ParCa.
-        assert s1g0.kwargs["dependsOn"] == [{"jobId": "parca-1", "type": "SEQUENTIAL"}]
-        assert s1g1.kwargs["dependsOn"] == [{"jobId": "s1g0", "type": "SEQUENTIAL"}]
-        assert s1g2.kwargs["dependsOn"] == [{"jobId": "s1g1", "type": "SEQUENTIAL"}]
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            await service.submit_chain_dispatch_job(ecoli_simulation=simulation, database_service=database_service)
 
-        # Deterministic daughter-state S3 paths, embedded directly -- no
-        # AWS_BATCH_JOB_ARRAY_INDEX / container-start resolution at all.
-        experiment_id = simulation.config.experiment_id
-        env = _env_of(s0g1)
-        tokens = shlex.split(env["RAY_JOB_CMD"])
-        overrides = json.loads(tokens[tokens.index("--overrides") + 1])
-        assert overrides["seed"] == 0
-        assert overrides["initial_generation_index"] == 1
-        assert overrides["initial_carry_state_path"] == (
-            f"s3://mybucket/vecoli-output/{experiment_id}/daughter-state/seed0/gen0.pkl"
-        )
-        assert overrides["daughter_state_out_path"] == (
-            f"s3://mybucket/vecoli-output/{experiment_id}/daughter-state/seed0/gen1.pkl"
-        )
-        assert "AWS_BATCH_JOB_ARRAY_INDEX" not in env["RAY_JOB_CMD"]
-
-        # Tags carry seed/generation for cost-allocation granularity.
-        assert s0g1.kwargs["tags"]["Seed"] == "0"
-        assert s0g1.kwargs["tags"]["Generation"] == "1"
-        assert s0g1.kwargs["tags"]["Phase"] == "sim"
-
-        # ONE campaign-tracking HpcRun row, holding each seed's OWN final job id.
         active_campaigns = [
             c for c in await database_service.list_active_chain_campaigns() if c.ref_id == simulation.database_id
         ]
         assert len(active_campaigns) == 1
         campaign = active_campaigns[0]
-        assert campaign.chain_n_generations == 3
-        assert campaign.chain_final_job_ids == ["s0g2", "s1g2"]
         assert campaign.job_id == JobId.ray("parca-1")
+        assert campaign.chain_n_generations == 4
+        assert campaign.chain_final_job_ids == []
+        assert campaign.chain_current_job_ids == [None, None, None]
+        assert campaign.chain_current_generation == [None, None, None]
+        assert campaign.chain_parca_done is False
 
-    async def test_paces_every_submission_through_the_rate_limiter(
+    async def test_single_seed_multi_generation_is_allowed(
         self,
         experiment_request: "SimulationRequest",
         database_service: "DatabaseServiceSQL",
     ) -> None:
-        setattr(experiment_request.config, "n_init_sims", 2)  # noqa: B010
+        """Unlike the array-job design predating item 33, n_seeds >= 2 is NOT
+        required -- no AWS Batch array-size floor applies here at all (every
+        seed's chain is independent standalone container jobs)."""
+        setattr(experiment_request.config, "n_init_sims", 1)  # noqa: B010
         experiment_request.config.generations = 2
         simulation = await database_service.insert_simulation(sim_request=experiment_request)
-        mock_batch = _fake_batch(["parca-1", "s0g0", "s0g1", "s1g0", "s1g1"])
-        fake_file_service = AsyncMock()
-        fake_file_service.upload_file = AsyncMock()
+        mock_batch = _fake_container_batch(["parca-1"])
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            job_id = await service.submit_chain_dispatch_job(
+                ecoli_simulation=simulation, database_service=database_service
+            )
+        assert job_id == JobId.ray("parca-1")
+        active_campaigns = [
+            c for c in await database_service.list_active_chain_campaigns() if c.ref_id == simulation.database_id
+        ]
+        assert active_campaigns[0].chain_current_job_ids == [None]
+
+
+@pytest.mark.asyncio
+class TestSubmitChainGeneration:
+    """submit_chain_generation/submit_chain_generation_batch (backlog item 71
+    Phase 4): submit ONE seed's ONE generation as a standalone container job,
+    no depends_on -- JobScheduler decides WHEN to call these, not native Batch
+    dependency resolution. Locks the exact deterministic S3 paths + tag shape
+    unchanged from the superseded design, on the new container job type."""
+
+    async def test_submit_chain_generation_builds_the_right_command_and_shape(self) -> None:
+        mock_batch = _fake_container_batch(["s2g1"])
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            job_id = service.submit_chain_generation(
+                seed=2,
+                generation_index=1,
+                experiment_id="exp-1",
+                commit="abc1234",
+                cache_s3="s3://mybucket/cache/abc1234",
+                runner_s3_uri="s3://mybucket/runner/run_pbg.py",
+                tags={"Project": "v2ecoli-comparison", "Phase": "sim"},
+            )
+
+        assert job_id == "s2g1"
+        (call,) = mock_batch.submit_job.call_args_list
+        assert "dependsOn" not in call.kwargs  # app-level gating -- no native Batch dependency at all
+        assert call.kwargs["tags"]["Seed"] == "2"
+        assert call.kwargs["tags"]["Generation"] == "1"
+        env = _container_env_of(call)
+        tokens = shlex.split(env["CONTAINER_JOB_CMD"])
+        overrides = json.loads(tokens[tokens.index("--overrides") + 1])
+        assert overrides["seed"] == 2
+        assert overrides["initial_generation_index"] == 1
+        assert (
+            overrides["initial_carry_state_path"] == "s3://mybucket/vecoli-output/exp-1/daughter-state/seed2/gen0.pkl"
+        )
+        assert overrides["daughter_state_out_path"] == "s3://mybucket/vecoli-output/exp-1/daughter-state/seed2/gen1.pkl"
+
+    async def test_batch_fans_out_generation_zero_for_every_seed_paced_and_isolates_failures(self) -> None:
+        """The one remaining genuine submission burst: every seed's
+        generation 0, fanned out the instant ParCa succeeds. Paced (like the
+        superseded design's own N*G burst); a per-seed failure (even after
+        retry-on-throttle) is isolated -- that seed is simply omitted from the
+        returned mapping, other seeds unaffected."""
+        mock_batch = MagicMock()
+        base_container_props = {"image": "111.dkr.ecr.x/vecoli:ray", "vcpus": 16, "memory": 32000}
+
+        def _describe(**kwargs: Any) -> dict[str, Any]:
+            if kwargs.get("jobDefinitionName") == "smscdk-ray-container":
+                return {"jobDefinitions": [{"revision": 7, "containerProperties": base_container_props}]}
+            return {"jobDefinitions": []}
+
+        mock_batch.describe_job_definitions.side_effect = _describe
+        mock_batch.register_job_definition.side_effect = lambda **kw: {
+            "jobDefinitionName": kw["jobDefinitionName"],
+            "revision": 1,
+        }
+        remaining_ids = iter(["s0g0", "s2g0"])
+
+        def _submit_job(**kwargs: Any) -> dict[str, Any]:
+            if kwargs["jobName"].startswith("chain-seed1-gen0-"):
+                raise RuntimeError("submit_job: rate exceeded (simulated, retries exhausted)")
+            return {"jobId": next(remaining_ids)}
+
+        mock_batch.submit_job.side_effect = _submit_job
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
-            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
             patch(
                 "viva_api.simulation.simulation_service_ray._SubmitJobPacer.wait", new=AsyncMock()
             ) as mock_pacer_wait,
         ):
-            await service.submit_chain_dispatch_job(ecoli_simulation=simulation, database_service=database_service)
-        # Every one of the 5 real SubmitJob calls (parca + 2 seeds x 2
-        # generations) is paced -- not just the bulk per-seed chain jobs.
-        assert mock_pacer_wait.await_count == 5
+            submitted = await service.submit_chain_generation_batch(
+                seeds=[0, 1, 2],
+                generation_index=0,
+                experiment_id="exp-1",
+                commit="abc1234",
+                cache_s3="s3://mybucket/cache/abc1234",
+                runner_s3_uri="s3://mybucket/runner/run_pbg.py",
+                tags={"Project": "v2ecoli-comparison"},
+            )
 
-    async def test_seed_submission_failure_truncates_only_that_seeds_chain(
-        self,
-        experiment_request: "SimulationRequest",
-        database_service: "DatabaseServiceSQL",
-    ) -> None:
-        """seed 0's generation 1 submission fails (even after retry-on-throttle
-        is exhausted): seed 0's chain is truncated right there (its
-        ALREADY-submitted generation 0 job keeps running normally on Batch --
-        nothing here cancels it), generation 2 is NEVER attempted for seed 0,
-        and seed 0's TRACKED final job is generation 0's real id (not a
-        generation-2 id that never existed). Seed 1 is entirely unaffected."""
-        setattr(experiment_request.config, "n_init_sims", 2)  # noqa: B010
-        experiment_request.config.generations = 3
-        simulation = await database_service.insert_simulation(sim_request=experiment_request)
-
-        base_node_props = {
-            "numNodes": 4,
-            "mainNode": 0,
-            "nodeRangeProperties": [
-                {"targetNodes": "0:", "container": {"image": "111.dkr.ecr.x/vecoli:ray", "vcpus": 16}}
-            ],
-        }
-        mock_batch = MagicMock()
-
-        def _describe(**kwargs: Any) -> dict[str, Any]:
-            if kwargs.get("jobDefinitionName") == "smscdk-ray-mnp":
-                return {"jobDefinitions": [{"revision": 7, "nodeProperties": base_node_props}]}
-            return {"jobDefinitions": []}
-
-        mock_batch.describe_job_definitions.side_effect = _describe
-        mock_batch.register_job_definition.side_effect = lambda **kw: {
-            "jobDefinitionName": kw["jobDefinitionName"],
-            "revision": 1,
-        }
-        remaining_ids = iter(["parca-1", "s0g0", "s1g0", "s1g1", "s1g2"])
-
-        def _submit_job(**kwargs: Any) -> dict[str, Any]:
-            if kwargs["jobName"].startswith("chain-seed0-gen1-"):
-                raise RuntimeError("submit_job: rate exceeded (simulated, retries exhausted)")
-            return {"jobId": next(remaining_ids)}
-
-        mock_batch.submit_job.side_effect = _submit_job
-        fake_file_service = AsyncMock()
-        fake_file_service.upload_file = AsyncMock()
-
-        service = SimulationServiceRay()
-        with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
-            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
-            patch("viva_api.simulation.simulation_service_ray.asyncio.sleep", new=AsyncMock()),
-        ):
-            await service.submit_chain_dispatch_job(ecoli_simulation=simulation, database_service=database_service)
-
-        submitted_names = [c.kwargs["jobName"] for c in mock_batch.submit_job.call_args_list]
-        assert any(n.startswith("chain-seed0-gen0-") for n in submitted_names)
-        assert any(n.startswith("chain-seed0-gen1-") for n in submitted_names)  # attempted (and failed)
-        assert not any(n.startswith("chain-seed0-gen2-") for n in submitted_names)  # never attempted
-        for gen in range(3):
-            assert any(n.startswith(f"chain-seed1-gen{gen}-") for n in submitted_names)
-
-        active_campaigns = [
-            c for c in await database_service.list_active_chain_campaigns() if c.ref_id == simulation.database_id
-        ]
-        assert len(active_campaigns) == 1
-        assert active_campaigns[0].chain_final_job_ids == ["s0g0", "s1g2"]
-
-    async def test_generation_zero_failure_excludes_that_seed_entirely(
-        self,
-        experiment_request: "SimulationRequest",
-        database_service: "DatabaseServiceSQL",
-    ) -> None:
-        """If even generation 0 fails to submit for a seed, that seed
-        contributes NOTHING to chain_final_job_ids -- there is no job of its
-        own at all for the analysis-fan-in poller to track."""
-        setattr(experiment_request.config, "n_init_sims", 2)  # noqa: B010
-        experiment_request.config.generations = 2
-        simulation = await database_service.insert_simulation(sim_request=experiment_request)
-
-        base_node_props = {
-            "numNodes": 4,
-            "mainNode": 0,
-            "nodeRangeProperties": [
-                {"targetNodes": "0:", "container": {"image": "111.dkr.ecr.x/vecoli:ray", "vcpus": 16}}
-            ],
-        }
-        mock_batch = MagicMock()
-
-        def _describe(**kwargs: Any) -> dict[str, Any]:
-            if kwargs.get("jobDefinitionName") == "smscdk-ray-mnp":
-                return {"jobDefinitions": [{"revision": 7, "nodeProperties": base_node_props}]}
-            return {"jobDefinitions": []}
-
-        mock_batch.describe_job_definitions.side_effect = _describe
-        mock_batch.register_job_definition.side_effect = lambda **kw: {
-            "jobDefinitionName": kw["jobDefinitionName"],
-            "revision": 1,
-        }
-        remaining_ids = iter(["parca-1", "s1g0", "s1g1"])
-
-        def _submit_job(**kwargs: Any) -> dict[str, Any]:
-            if kwargs["jobName"].startswith("chain-seed0-gen0-"):
-                raise RuntimeError("submit_job: rate exceeded (simulated, retries exhausted)")
-            return {"jobId": next(remaining_ids)}
-
-        mock_batch.submit_job.side_effect = _submit_job
-        fake_file_service = AsyncMock()
-        fake_file_service.upload_file = AsyncMock()
-
-        service = SimulationServiceRay()
-        with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
-            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
-            patch("viva_api.simulation.simulation_service_ray.asyncio.sleep", new=AsyncMock()),
-        ):
-            await service.submit_chain_dispatch_job(ecoli_simulation=simulation, database_service=database_service)
-
-        active_campaigns = [
-            c for c in await database_service.list_active_chain_campaigns() if c.ref_id == simulation.database_id
-        ]
-        assert len(active_campaigns) == 1
-        # Only seed 1 contributed -- seed 0's generation-0 failure means it has
-        # no job at all to track.
-        assert active_campaigns[0].chain_final_job_ids == ["s1g1"]
+        assert submitted == {0: "s0g0", 2: "s2g0"}  # seed 1 omitted -- its submission failed
+        assert mock_pacer_wait.await_count == 3  # every seed's attempt is paced, including the failed one
 
 
 @pytest.mark.asyncio

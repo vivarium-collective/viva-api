@@ -51,6 +51,11 @@ class HpcRun(BaseModel):
     # analysis-fan-in poller (JobScheduler.update_chain_campaigns) watches.
     chain_n_generations: int | None = None
     chain_final_job_ids: list[str] | None = None
+    # Backlog item 71 Phase 4: per-seed incremental progress (see ORMHpcRun's own
+    # docstring for the full rationale). None for every non-chain-campaign row.
+    chain_current_job_ids: list[str | None] | None = None
+    chain_current_generation: list[int | None] | None = None
+    chain_parca_done: bool | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -83,6 +88,29 @@ class HpcRun(BaseModel):
     @property
     def job_backend(self) -> str:
         return self.job_id.backend.value
+
+
+class ChainCampaignUpdate(BaseModel):
+    """What one ``JobScheduler`` tick decided to persist for a chain-dispatch
+    campaign (backlog item 71 Phase 4) — returned from the callback passed to
+    ``DatabaseService.advance_chain_campaign`` so the whole read-decide-write
+    sequence commits atomically under that campaign's advisory lock, never
+    racing a concurrent tick (e.g. during a rolling restart).
+
+    Every field is the FULL current state, not a delta — the callback always
+    supplies whichever fields it didn't change this tick unchanged from what it
+    read, since the underlying JSONB columns are replaced wholesale.
+    ``terminal_status`` is set only on the tick that resolves the whole
+    campaign (every seed's chain_current_job_ids entry is None); otherwise the
+    campaign row's own status is left alone.
+    """
+
+    chain_current_job_ids: list[str | None]
+    chain_current_generation: list[int | None]
+    chain_parca_done: bool
+    chain_final_job_ids: list[str]
+    terminal_status: JobStatus | None = None
+    error_message: str | None = None
 
 
 class SimulationRun(BaseModel):

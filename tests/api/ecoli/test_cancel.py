@@ -3,6 +3,8 @@
 Run with: uv run pytest tests/api/ecoli/test_cancel.py -v
 """
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from viva_api.common.hpc.job_service import JobStatusUpdate
@@ -97,6 +99,55 @@ async def test_cancel_already_completed_is_noop(
         simulation_id=simulation.database_id,
     )
     assert result.status == JobStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_cancel_chain_dispatch_campaign_terminates_every_seeds_current_job(
+    experiment_request: SimulationRequest,
+    database_service: DatabaseServiceSQL,
+) -> None:
+    """Backlog item 71 Phase 4, folding in backlog item 53: cancelling a
+    chain-dispatch campaign (a row with chain_final_job_ids set, unlike the
+    plain single-job rows the other tests in this file cover) must route
+    through cancel_chain_campaign -- every seed's CURRENT in-flight job --
+    not the plain single-job cancel_job path."""
+    from viva_api.common.handlers.simulations import cancel_simulation
+    from viva_api.simulation.simulation_service_ray import SimulationServiceRay
+
+    simulation = await database_service.insert_simulation(sim_request=experiment_request)
+    hpcrun = await database_service.insert_hpcrun(
+        job_id=JobId.ray("parca-1"),
+        job_type=JobType.SIMULATION,
+        ref_id=simulation.database_id,
+        correlation_id="chain-campaign-test",
+        chain_n_generations=3,
+        chain_final_job_ids=[],
+        chain_current_job_ids=["s0g1", "s1g0"],
+        chain_current_generation=[1, 0],
+        chain_parca_done=True,
+    )
+    assert hpcrun.status == JobStatus.RUNNING
+
+    mock_ray_service = AsyncMock(spec=SimulationServiceRay)
+    with patch(
+        "viva_api.common.handlers.simulations.get_simulation_service_for_job",
+        return_value=mock_ray_service,
+    ):
+        result = await cancel_simulation(
+            db_service=database_service,
+            simulation_service=mock_ray_service,
+            simulation_id=simulation.database_id,
+        )
+
+    assert result.status == JobStatus.CANCELLED
+    mock_ray_service.cancel_chain_campaign.assert_awaited_once()
+    call_args = mock_ray_service.cancel_chain_campaign.call_args.args
+    assert call_args[0].database_id == hpcrun.database_id
+    mock_ray_service.cancel_job.assert_not_awaited()  # never the plain single-job path
+
+    updated = await database_service.get_hpcrun_by_ref(ref_id=simulation.database_id, job_type=JobType.SIMULATION)
+    assert updated is not None
+    assert updated.status == JobStatus.CANCELLED
 
 
 @pytest.mark.asyncio
