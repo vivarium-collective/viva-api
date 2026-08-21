@@ -6,7 +6,7 @@ authors = [{ name = "Alex Patrie", email = "alexanderpatrie@gmail.com" }, { name
 requires-python = ">=3.13,<3.14"
 readme = "README.md"
 dependencies = [
-    "uvicorn>=0.34.3,<0.50",
+    "uvicorn>=0.34.3,<0.53",
     "dotenv>=0.9.9,<0.10",
     "fastapi>=0.135.0",
     "pydantic>=2.11.5,<3",
@@ -78,11 +78,11 @@ dev = [
     # EXACT pin: must equal .pre-commit-config.yaml's ruff-pre-commit rev.
     # Enforced by tests/test_tooling_versions.py — see that module for why a
     # range here is what let the two drift apart in the first place.
-    "ruff==0.12.12",
+    "ruff==0.16.3",
     "pytest>=9.0.3",
     "pytest-cov>=4.0.0,<8",
     "deptry>=0.16.2,<0.26",
-    "mypy>=1.5.1,<2.2",
+    "mypy>=1.5.1,<2.4",
     "pre-commit>=3.4.0,<5",
     "tox>=4.11.1,<5",
     "types-requests>=2.32.0.20250602,<3",
