@@ -49,11 +49,13 @@ class RepoDiscovery:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({
-            "simulator_id": simulator_id,
-            "git_repo_url": git_repo_url,
-            "git_commit_hash": git_commit_hash,
-        })
+        field_dict.update(
+            {
+                "simulator_id": simulator_id,
+                "git_repo_url": git_repo_url,
+                "git_commit_hash": git_commit_hash,
+            }
+        )
         if config_filenames is not UNSET:
             field_dict["config_filenames"] = config_filenames
         if analysis_modules is not UNSET:

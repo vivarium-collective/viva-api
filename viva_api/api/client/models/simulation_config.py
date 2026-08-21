@@ -61,9 +61,11 @@ class SimulationConfig:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({
-            "experiment_id": experiment_id,
-        })
+        field_dict.update(
+            {
+                "experiment_id": experiment_id,
+            }
+        )
         if parca_options is not UNSET:
             field_dict["parca_options"] = parca_options
         if analysis_options is not UNSET:

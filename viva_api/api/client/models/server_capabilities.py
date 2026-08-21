@@ -28,10 +28,12 @@ class ServerCapabilities:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({
-            "version": version,
-            "capabilities": capabilities,
-        })
+        field_dict.update(
+            {
+                "version": version,
+                "capabilities": capabilities,
+            }
+        )
 
         return field_dict
 

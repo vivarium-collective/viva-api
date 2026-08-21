@@ -42,10 +42,12 @@ class ComposeSimulationExperiment:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({
-            "simulation_database_id": simulation_database_id,
-            "simulator_database_id": simulator_database_id,
-        })
+        field_dict.update(
+            {
+                "simulation_database_id": simulation_database_id,
+                "simulator_database_id": simulator_database_id,
+            }
+        )
         if last_updated is not UNSET:
             field_dict["last_updated"] = last_updated
         if metadata is not UNSET:

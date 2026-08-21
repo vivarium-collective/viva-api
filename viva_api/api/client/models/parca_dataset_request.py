@@ -35,9 +35,11 @@ class ParcaDatasetRequest:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({
-            "simulator_version": simulator_version,
-        })
+        field_dict.update(
+            {
+                "simulator_version": simulator_version,
+            }
+        )
         if parca_config is not UNSET:
             field_dict["parca_config"] = parca_config
 
