@@ -455,4 +455,26 @@
 #          Renumbered from this branch's original 0.9.48 -> 0.9.50: item 6
 #          (PR #257) merged first and independently claimed 0.9.49, so this
 #          lands second in real merge order.
-__version__ = "0.9.50"
+# 0.9.51 — backlog item 71 (viva-api PR #1 of item 68's V2 non-Nextflow
+#          chain-dispatch redesign): new plain, standalone AWS Batch
+#          container-type job shape (_ensure_container_job_def/
+#          _submit_container, sibling of the existing MNP path -- extracted
+#          the shared stage/output/log env-list construction into
+#          _stage_out_env, parameterized by prefix, since RAY_*/CONTAINER_*
+#          can't literally share one env list). submit_parca_job and the
+#          analysis DAG node (_submit_analysis_job, via
+#          submit_campaign_analysis) migrate to it -- neither has real
+#          inter-node traffic to protect, matching 0.9.50's own reasoning for
+#          chain-dispatch's per-seed jobs (migrated in a later phase, not this
+#          PR). New empty-default settings ray_container_queue/
+#          ray_container_job_definition; both raise a clear RuntimeError
+#          naming the setting if referenced before being configured (matches
+#          this file's own compose_ray_image_tag precedent) rather than
+#          submit a doomed job -- so this PR is inert pre-deploy, exactly like
+#          0.9.50's ray_mnp_standalone_queue. Does NOT touch _submit_mnp,
+#          submit_ecoli_simulation_job's inline MNP submission, or
+#          submit_chain_dispatch_job's per-seed loop -- those stay on the MNP
+#          path in this PR; chain-dispatch's own migration + the DB schema
+#          change are a separate, later PR (item 71's Phase 4), gated on this
+#          one validating first.
+__version__ = "0.9.51"
