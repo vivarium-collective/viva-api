@@ -281,9 +281,7 @@ async def test_extra_params_merge_into_config_without_overriding_named_params(
     configmap = mock_k8s_job_service.create_configmap.call_args[0][0]
     config_data = json.loads(configmap.data["workflow.json"])
 
-    assert config_data["injected_processes"] == {
-        "swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"}
-    }
+    assert config_data["injected_processes"] == {"swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"}}
     assert config_data["generations"] == 3  # num_generations wins, extra_params does not clobber it
 
 
