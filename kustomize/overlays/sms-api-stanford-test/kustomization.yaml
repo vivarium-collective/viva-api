@@ -47,8 +47,16 @@ images:
   # PBG_PTOOLS_REF) default to "main" and the build workflow passes no build-args, so
   # a rebuild bakes whatever v2ecoli main points at. 0.3.2 baked the correct
   # a08e20bd… only because main still sits there; that agreement is not enforced.
+  # 0.3.52 (workbench #915, item 78, Arnab): _session_workspace_mw no longer
+  # re-stamps the shared vw_session cookie to match a header-less request --
+  # it mints the cookie only when absent. Fixes a real cross-tab bug where an
+  # unrelated tab's incidental fetch could silently repoint another tab's
+  # next plain reload at the wrong workspace. Workbench-only change -- no
+  # viva-api/scheduler/dispatch code touched. Built via the same
+  # native-AMD64 Batch DinD infra as prior releases, from merged main
+  # (d0c5d90f).
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.51
+    newTag: 0.3.52
 
 replicas:
   - count: 1
