@@ -6,8 +6,15 @@ namespace: sms-api-stanford-test
 # STABLE: 0.5.9 | 0.6.2
 
 images:
+  # Catches up this overlay's newTag (last committed at 0.9.30) to match what
+  # has actually been live here since item 71's Phase 5 pilot work: 0.9.51,
+  # 0.9.52, then 0.9.53 (all real, merged commits on main -- fa9b946f,
+  # 4879073c, d6132ae4 -- deployed live from their own branches ahead of
+  # merge, git tracking simply never caught up). Confirmed live via the real
+  # pod image and /version before this edit. Same drift pattern already
+  # documented on the sms-api-stanford (prod) workbench overlay.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.30
+    newTag: 0.9.53
   # ptools pinned to last-known-good tag — CI only builds sms-api, so there is
   # no newer sms-ptools:0.6.x image on ghcr.io.  0.5.9 is the tag the live Stanford
   # pod has been running successfully; keeping both namespaces pointing here
@@ -41,7 +48,7 @@ images:
   # a rebuild bakes whatever v2ecoli main points at. 0.3.2 baked the correct
   # a08e20bd… only because main still sits there; that agreement is not enforced.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.4
+    newTag: 0.3.51
 
 replicas:
   - count: 1
