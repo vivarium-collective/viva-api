@@ -605,6 +605,7 @@ class TestSubmitMultiNodeComposite:
     `multi_node_dispatch` field. Never references any one composite by name --
     colony is the motivating case, not a hardcoded target."""
 
+    @pytest.mark.asyncio
     async def test_multi_node_dispatch_routes_before_chain_dispatch_even_when_generations_over_one(
         self,
         experiment_request: "SimulationRequest",
@@ -641,6 +642,7 @@ class TestSubmitMultiNodeComposite:
         assert job_id == JobId.ray("composite-1")
         assert mock_batch.submit_job.call_count == 2
 
+    @pytest.mark.asyncio
     async def test_multi_node_composite_command_and_tags(
         self,
         experiment_request: "SimulationRequest",
@@ -695,6 +697,7 @@ class TestSubmitMultiNodeComposite:
 
         assert composite_call.kwargs["tags"]["CompositeId"] == "some_workspace.composites.some_multi_node_composite"
 
+    @pytest.mark.asyncio
     async def test_multi_node_dispatch_requires_composite_id(
         self,
         experiment_request: "SimulationRequest",
@@ -724,14 +727,20 @@ class TestSubmitMultiNodeComposite:
         assert vcpus == 16
 
     def test_mnp_node_vcpus_returns_none_on_unknown_job_def(self) -> None:
+        # A name outside _fake_multi_node_batch's own recognized prefixes (base
+        # "smscdk-ray-mnp" or any "smscdk-ray-mnp-<commit>") -- genuinely
+        # unmatched, unlike a per-commit-shaped name (which the fixture answers
+        # generically, by design, since real per-commit revisions always exist
+        # once _ensure_mnp_job_def has registered one).
         mock_batch = _fake_multi_node_batch(["unused"])
         service = SimulationServiceRay()
         with (
             patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
             patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
         ):
-            assert service._mnp_node_vcpus("smscdk-ray-mnp-nonexistent:1") is None
+            assert service._mnp_node_vcpus("totally-different-job-def:1") is None
 
+    @pytest.mark.asyncio
     async def test_existing_comparison_ensemble_path_unaffected_when_multi_node_dispatch_absent(
         self,
         experiment_request: "SimulationRequest",
