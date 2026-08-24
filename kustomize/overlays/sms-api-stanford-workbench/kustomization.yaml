@@ -210,8 +210,17 @@ images:
   # never block or fail the real dispatch; land_remote_run cleans up the
   # placeholder once the real row lands. Built via the same native-AMD64
   # Batch DinD infra as 0.3.40/0.3.47/0.3.48, from merged main (92970b69).
+  # 0.3.52 (workbench #915, item 78, Arnab): _session_workspace_mw no longer
+  # re-stamps the shared vw_session cookie to match a header-less request --
+  # it mints the cookie only when absent. Fixes a real cross-tab bug where an
+  # unrelated tab's incidental fetch could silently repoint another tab's next
+  # plain reload at the wrong workspace, most visible on the long
+  # switch-build materialization window Arnab hit. Workbench-only change --
+  # no viva-api/scheduler/dispatch code touched. Built via the same
+  # native-AMD64 Batch DinD infra as prior releases, from merged main
+  # (d0c5d90f).
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.50
+    newTag: 0.3.52
 
 replicas:
   # Single writer: workbench holds a git working copy + SQLite on an RWO EBS volume.
