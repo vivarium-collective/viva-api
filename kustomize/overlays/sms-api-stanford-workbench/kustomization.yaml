@@ -194,8 +194,24 @@ images:
   # validation degrades any non-identifier segment to a safe skip instead.
   # Built via the same native-AMD64 Batch DinD infra as 0.3.40/0.3.47, from
   # merged main (0fc9de81).
+  # 0.3.50 (workbench #921 + #922, items 83/84; 0.3.49 -- item 83 alone --
+  # was never separately deployed here, superseded before its own build).
+  # #921: on a deployment target, run_study_baseline now delegates to
+  # remote_run_submit (the proven real dispatch mechanism) for the study's
+  # default baseline entry instead of an unconditional 409 -- closes the
+  # server-side half of the item-80 walkthrough's dispatch gap. Confirmed
+  # zero overlap with the working "Run current spec" pinned-dispatch path
+  # (the JS calls remote_run_submit directly when pinned, never reaching
+  # this function) before merging. #922: remote_run_submit now writes a
+  # pending-dispatch placeholder row immediately on a successful dispatch
+  # (land_remote_run was previously the ONLY place a runs_meta row was ever
+  # written for a remote run, so a UI-dispatched campaign was invisible in
+  # the Runs tab until manually landed) -- best-effort, wrapped so it can
+  # never block or fail the real dispatch; land_remote_run cleans up the
+  # placeholder once the real row lands. Built via the same native-AMD64
+  # Batch DinD infra as 0.3.40/0.3.47/0.3.48, from merged main (92970b69).
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.48
+    newTag: 0.3.50
 
 replicas:
   # Single writer: workbench holds a git working copy + SQLite on an RWO EBS volume.
