@@ -531,4 +531,12 @@
 #          sweep scale) doesn't scale with campaign size. Real node headroom
 #          checked first (both smsvpctest cluster nodes <15% memory-requested;
 #          t3.xlarge allocatable ~14.4Gi each) before picking the new values.
-__version__ = "0.9.53"
+# 0.9.54 — run-simulation-workflow gains an optional extra_params passthrough
+#          (backlog items 86/88): a composite-agnostic fallback layer for
+#          params with no dedicated named parameter (e.g. a composite's own
+#          fork/injection or multi-node-dispatch knobs), merged into the
+#          resolved config via setdefault so it can only fill gaps, never
+#          override a key the endpoint's own named parameters already set.
+#          Additive/backward-compatible -- absent extra_params, behavior is
+#          byte-for-byte unchanged (regression-tested).
+__version__ = "0.9.54"
