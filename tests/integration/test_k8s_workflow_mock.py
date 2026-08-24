@@ -245,6 +245,49 @@ async def test_k8s_workflow_config_contents(
 
 
 @pytest.mark.asyncio
+async def test_extra_params_merge_into_config_without_overriding_named_params(
+    database_service: DatabaseServiceSQL,
+    simulation_service_k8s_mock: SimulationServiceK8s,
+    mock_k8s_job_service: MagicMock,
+    simulator_repo_info: SimulatorRepoInfo,
+) -> None:
+    """extra_params fills gaps the named parameters don't cover (e.g. a composite's own
+    injected_processes/multi_node_dispatch knobs, per backlog items 86/88) but never
+    overrides a key one of the named parameters — or the config template — already set.
+    """
+    simulator = await _get_or_create_simulator(database_service, simulator_repo_info)
+    await database_service.insert_parca_dataset(
+        parca_dataset_request=ParcaDatasetRequest(simulator_version=simulator, parca_config=ParcaOptions())
+    )
+    simulation_service_k8s_mock.read_config_template = AsyncMock(return_value=CONFIG_TEMPLATE)  # type: ignore[method-assign]
+
+    with patch("viva_api.common.handlers.simulations.get_job_backend", return_value=ComputeBackend.BATCH):
+        await sim_handlers.run_simulation_workflow(
+            database_service=database_service,
+            simulation_service=simulation_service_k8s_mock,
+            simulator_id=simulator.database_id,
+            experiment_id="extra-params-test",
+            simulation_config_filename="api_simulation_default.json",
+            num_generations=3,
+            extra_params={
+                # New key, no dedicated named parameter — should pass through untouched.
+                "injected_processes": {"swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"}},
+                # Deliberately collides with num_generations's own explicit override
+                # (config_data["generations"] = 3) — must NOT win.
+                "generations": 999,
+            },
+        )
+
+    configmap = mock_k8s_job_service.create_configmap.call_args[0][0]
+    config_data = json.loads(configmap.data["workflow.json"])
+
+    assert config_data["injected_processes"] == {
+        "swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"}
+    }
+    assert config_data["generations"] == 3  # num_generations wins, extra_params does not clobber it
+
+
+@pytest.mark.asyncio
 async def test_analysis_options_default_public_repo(
     database_service: DatabaseServiceSQL,
     simulation_service_k8s_mock: SimulationServiceK8s,
