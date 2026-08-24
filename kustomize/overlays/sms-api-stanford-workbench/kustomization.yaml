@@ -167,8 +167,60 @@ images:
   # translation for remote dispatch to resolve against the live served
   # workspace instead of a build-time-baked snapshot (#791). First image
   # built via this path, independently verified live on ghcr.io.
+  # 0.3.47 (workbench #257 backend already deployed via sms-api 0.9.50; this
+  # tag ships the matching frontend halves): item 6's real per-seed progress
+  # bar (PR #853, polls the new /simulations/{id}/chain-progress endpoint) and
+  # item 63's composite-parameter-discovery fix for session-pinned remote
+  # builds (PR #852, 3 compounding root causes in switch_build's env
+  # materialization + composite_resolve's routing + the local generator
+  # lookup's in-process-import gap). Built via sms-cdk's native-AMD64 Batch
+  # DinD infra (same mechanism 0.3.40 used) from the clean v0.3.47 git tag,
+  # not a local build -- QEMU/Polars emulation crashes on Apple Silicon never
+  # applied. First image built this way to land here since 0.3.40.
+  # 0.3.48 (workbench #917, item 80/83): two dispatch-config-building bugs
+  # found live during a real UI-triggered 1000x10 baseline dispatch on this
+  # deployment. (1) study_crud_mutations.py's study_baseline_add/_remove
+  # operated on the raw on-disk study YAML while a v4 (conditions-based)
+  # study's baseline[] is only ever a synthesized, never-persisted in-memory
+  # view (investigations._project_v4_redesign_to_legacy_view) -- editing
+  # Runnable-models params on such a study silently created a disconnected
+  # real baseline: key, then 404'd trying to remove the phantom old one. New
+  # _v4_baseline_not_yet_materialized() guard now returns a clear 422 instead.
+  # (2) study_spec.collect_study_observables() accepted any non-empty string
+  # under a behavior_tests[*].measure.path key, including one study's
+  # data-authoring defect (a division expression stored directly under path
+  # instead of the sibling formula field) -- silently corrupted
+  # engine_process_reports for that dispatch. New _OBSERVABLE_SEGMENT_RE
+  # validation degrades any non-identifier segment to a safe skip instead.
+  # Built via the same native-AMD64 Batch DinD infra as 0.3.40/0.3.47, from
+  # merged main (0fc9de81).
+  # 0.3.50 (workbench #921 + #922, items 83/84; 0.3.49 -- item 83 alone --
+  # was never separately deployed here, superseded before its own build).
+  # #921: on a deployment target, run_study_baseline now delegates to
+  # remote_run_submit (the proven real dispatch mechanism) for the study's
+  # default baseline entry instead of an unconditional 409 -- closes the
+  # server-side half of the item-80 walkthrough's dispatch gap. Confirmed
+  # zero overlap with the working "Run current spec" pinned-dispatch path
+  # (the JS calls remote_run_submit directly when pinned, never reaching
+  # this function) before merging. #922: remote_run_submit now writes a
+  # pending-dispatch placeholder row immediately on a successful dispatch
+  # (land_remote_run was previously the ONLY place a runs_meta row was ever
+  # written for a remote run, so a UI-dispatched campaign was invisible in
+  # the Runs tab until manually landed) -- best-effort, wrapped so it can
+  # never block or fail the real dispatch; land_remote_run cleans up the
+  # placeholder once the real row lands. Built via the same native-AMD64
+  # Batch DinD infra as 0.3.40/0.3.47/0.3.48, from merged main (92970b69).
+  # 0.3.52 (workbench #915, item 78, Arnab): _session_workspace_mw no longer
+  # re-stamps the shared vw_session cookie to match a header-less request --
+  # it mints the cookie only when absent. Fixes a real cross-tab bug where an
+  # unrelated tab's incidental fetch could silently repoint another tab's next
+  # plain reload at the wrong workspace, most visible on the long
+  # switch-build materialization window Arnab hit. Workbench-only change --
+  # no viva-api/scheduler/dispatch code touched. Built via the same
+  # native-AMD64 Batch DinD infra as prior releases, from merged main
+  # (d0c5d90f).
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.42
+    newTag: 0.3.52
 
 replicas:
   # Single writer: workbench holds a git working copy + SQLite on an RWO EBS volume.
