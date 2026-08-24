@@ -539,4 +539,14 @@
 #          override a key the endpoint's own named parameters already set.
 #          Additive/backward-compatible -- absent extra_params, behavior is
 #          byte-for-byte unchanged (regression-tested).
-__version__ = "0.9.54"
+# 0.9.55 — backlog item 88: generic multi-node process-bigraph composite dispatch
+#          (colony is the validating case, not hardcoded). New
+#          submit_ecoli_simulation_job routing branch + _submit_multi_node_composite/
+#          _multi_node_composite_command, reusing _ensure_mnp_job_def/_submit_mnp/
+#          stage_runner and the EXISTING generic run_pbg.py runner unchanged -- no
+#          new CDK job def, no new entrypoint module, no process-bigraph change.
+#          Cross-node Ray attach needs zero new code either (empirically confirmed):
+#          ray-batch-entrypoint.sh already exports RAY_ADDRESS on the head, and
+#          process-bigraph's own RayProtocolRuntime fallback already calls bare
+#          ray.init(), which already respects RAY_ADDRESS from the environment.
+__version__ = "0.9.55"

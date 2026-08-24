@@ -1157,6 +1157,19 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             raise RuntimeError("DatabaseService is not available. Cannot submit Ray simulation job.")
 
         config = ecoli_simulation.config
+
+        # Backlog item 88: a generic multi-node process-bigraph composite dispatch
+        # (e.g. a colony composite distributed across N Ray-cluster nodes) arrives
+        # as an extra key (SimulationConfig's extra="allow") rather than a declared
+        # field -- checked FIRST, before the chain-dispatch routing below, since a
+        # multi-node request may otherwise also satisfy that check's own
+        # composite-is-None/generations>1 condition and would silently misroute.
+        mnp_dispatch = getattr(config, "multi_node_dispatch", None)
+        if mnp_dispatch is not None:
+            return await self._submit_multi_node_composite(
+                ecoli_simulation, database_service, mnp_dispatch, correlation_id=correlation_id
+            )
+
         composite = getattr(config, "composite", None)
         # config.generations is a real (non-"extra") SimulationConfig field, unlike
         # the comparison knobs read further below -- read directly, not via getattr.
@@ -1278,6 +1291,174 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         # no cd1_*/ptools_*-ready sweep and never got inline analysis either --
         # unaffected by this rework.
         return JobId.ray(sim_job_id)
+
+    def _mnp_node_vcpus(self, job_definition: str) -> int | None:
+        """Real per-node vCPU count declared on an MNP job definition's own
+        ``resourceRequirements`` (confirmed live 2026-08-24: ``VCPU: "16"`` on
+        the real ``smsvpctest-ray-mnp`` base def) -- used to size
+        ``RAY_SHARDS_DEFAULT`` for a multi-node composite dispatch. A
+        ``--num-cpus=0`` head's own ``os.cpu_count()`` (``RayProtocolRuntime``'s
+        default fallback) under-counts real aggregate cluster capacity; reading
+        the job definition's own declared resources is the real, existing
+        source of truth for this, not a new guessed config value. Returns
+        ``None`` on any lookup failure so the caller can safely leave
+        ``RAY_SHARDS_DEFAULT`` unset (process-bigraph's own fallback still
+        applies) rather than fail the whole submission over a sizing nicety.
+        """
+        try:
+            name, _, revision = job_definition.partition(":")
+            batch = self._batch()
+            described = batch.describe_job_definitions(jobDefinitionName=name, revision=int(revision))
+            defs = described.get("jobDefinitions", [])
+            if not defs:
+                return None
+            ranges = defs[0].get("nodeProperties", {}).get("nodeRangeProperties", [])
+            for nr in ranges:
+                for req in nr.get("container", {}).get("resourceRequirements", []):
+                    if req.get("type") == "VCPU":
+                        return int(float(req["value"]))
+            return None
+        except Exception:
+            logger.warning("Could not determine per-node vCPUs for %s; RAY_SHARDS_DEFAULT left unset", job_definition)
+            return None
+
+    def _multi_node_composite_command(
+        self,
+        *,
+        composite_id: str,
+        params: dict[str, Any],
+        steps: int,
+        runner_s3_uri: str,
+        n_shards_default: int | None,
+    ) -> str:
+        """Head-node command for a multi-node process-bigraph composite dispatch
+        (backlog item 88).
+
+        Reuses ``run_pbg.py``'s existing, already-generic ``--composite-id``/
+        ``--overrides`` mode (``viva_api/compose/run_pbg.py`` -- the SAME runner
+        ``stage_runner`` stages for the multi-generation batch_baseline path
+        above) rather than a new script; ``composite_id`` is resolved through
+        ``process_bigraph.composite_spec``'s own registry, so this works for
+        ANY registered composite, not a hardcoded one.
+
+        No new Ray multi-node "pre-connect" code is needed either -- confirmed
+        empirically 2026-08-24 (backlog item 88, local Ray test): the entrypoint
+        already exports ``RAY_ADDRESS`` on the head node before this command
+        runs (``ray-batch-entrypoint.sh``), and process-bigraph's own
+        ``RayProtocolRuntime.__init__`` already falls back to a bare
+        ``ray.init(ignore_reinit_error=True, ...)`` when no explicit address is
+        passed -- which already respects ``RAY_ADDRESS`` from the environment
+        per Ray's own SDK (log-confirmed: "Using address ... set in the
+        environment variable RAY_ADDRESS"). So a composite built with
+        ``transport='ray'`` on the head attaches to the real multi-node cluster
+        with zero code changes anywhere in this chain.
+        """
+        env = f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER}"
+        if n_shards_default:
+            env = f"{env} RAY_SHARDS_DEFAULT={int(n_shards_default)}"
+        return (
+            f"cd {V2ECOLI_DIR}"
+            f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
+            f" && {env} python /tmp/run_pbg.py"
+            f" --composite-id {shlex.quote(composite_id)}"
+            f" --overrides {shlex.quote(json.dumps(params))} -n {int(steps)}"
+        )
+
+    async def _submit_multi_node_composite(
+        self,
+        ecoli_simulation: Simulation,
+        database_service: DatabaseService,
+        mnp_dispatch: dict[str, Any],
+        *,
+        correlation_id: str,
+    ) -> JobId:
+        """Submit a generic multi-node process-bigraph composite dispatch
+        (backlog item 88) -- e.g. a colony composite distributed across N
+        Ray-cluster nodes. This method never references any one composite by
+        name; ``composite_id`` is resolved generically at runtime by
+        ``run_pbg.py`` via ``process_bigraph.composite_spec``.
+
+        Reuses ``_ensure_mnp_job_def``/``_submit_mnp`` UNCHANGED -- the exact
+        same MNP job definition/queue the comparison-ensemble path above uses
+        (``RayBatchOnDemandCE``/``ray-mnp``, confirmed live 2026-08-24: a real
+        code comment on the no-placement-group standalone-queue routing logic
+        already anticipates "colony sims" falling back to this queue for any
+        genuine multi-node request). No new CDK job definition, no new
+        compute environment.
+
+        Submits ParCa first (1 node), then the composite (N nodes), gated on
+        ParCa via the same ``depends_on`` pattern ``submit_ecoli_simulation_job``
+        already uses -- any composite embedding a whole-cell process needs the
+        same staged ParCa cache every other dispatch shape does.
+        """
+        composite_id = mnp_dispatch.get("composite_id")
+        if not composite_id:
+            raise ValueError("multi_node_dispatch.composite_id is required")
+        num_nodes = int(mnp_dispatch.get("num_nodes") or 1)
+        params = dict(mnp_dispatch.get("params") or {})
+        steps = int(mnp_dispatch.get("steps") or 1)
+
+        simulator = await database_service.get_simulator(simulator_id=ecoli_simulation.simulator_id)
+        if simulator is None:
+            raise ValueError(f"Simulator {ecoli_simulation.simulator_id} not found")
+
+        settings = get_settings()
+        commit = simulator.git_commit_hash
+        experiment_id = ecoli_simulation.config.experiment_id
+
+        job_def = self._ensure_mnp_job_def(self._image_uri(commit), commit)
+        n_shards_default = self._mnp_node_vcpus(job_def)
+        if n_shards_default:
+            n_shards_default *= num_nodes
+
+        cache_s3 = self.cache_s3_uri(commit)
+        runner_s3_uri = await self.stage_runner(experiment_id)
+
+        base_tags = {
+            "Project": "v2ecoli-multi-node-composite",
+            "ExperimentId": str(experiment_id)[:255],
+            "CompositeId": str(composite_id)[:255],
+            "Commit": str(commit)[:12],
+            "Team": getattr(settings, "cost_team_tag", None) or "covertlab",
+        }
+
+        parca_job_id = self._submit_mnp(
+            job_name=f"ray-parca-{commit}-{_rand_suffix()}",
+            job_definition=job_def,
+            num_nodes=1,
+            ray_job_cmd=self._parca_command(),
+            out_s3=cache_s3,
+            out_dir=PARCA_CACHE_DIR,
+            tags={**base_tags, "Phase": "parca"},
+        )
+
+        composite_job_id = self._submit_mnp(
+            job_name=f"ray-mnp-composite-{experiment_id}-{_rand_suffix()}"[:128],
+            job_definition=job_def,
+            num_nodes=num_nodes,
+            ray_job_cmd=self._multi_node_composite_command(
+                composite_id=composite_id,
+                params=params,
+                steps=steps,
+                runner_s3_uri=runner_s3_uri,
+                n_shards_default=n_shards_default,
+            ),
+            out_s3=self._results_s3_uri(experiment_id),
+            out_dir=SIM_OUT_DIR,
+            stage_s3=cache_s3,
+            stage_dir=PARCA_CACHE_DIR,
+            depends_on=[parca_job_id],
+            tags={**base_tags, "Phase": "composite"},
+        )
+        logger.info(
+            "Multi-node composite %s (%s): parca job %s -> composite job %s (%d nodes)",
+            experiment_id,
+            composite_id,
+            parca_job_id,
+            composite_job_id,
+            num_nodes,
+        )
+        return JobId.ray(composite_job_id)
 
     def chain_base_tags(self, *, simulation: Simulation, commit: str) -> dict[str, str]:
         """Cost-allocation tag base shared by every per-seed chain job + the

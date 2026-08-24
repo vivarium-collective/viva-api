@@ -548,6 +548,222 @@ class TestSimulationServiceRaySubmit:
         assert parca_call.kwargs["nodeOverrides"]["numNodes"] == 1
 
 
+def _fake_multi_node_batch(submit_ids: list[str], *, per_node_vcpus: int = 16) -> MagicMock:
+    """Like _fake_batch, but also answers describe_job_definitions for the
+    PER-COMMIT derived name (not just the CDK base) with a real
+    resourceRequirements shape (backlog item 88's _mnp_node_vcpus reads this
+    -- confirmed live 2026-08-24 against the real smsvpctest-ray-mnp job def).
+
+    Matches the per-commit name GENERICALLY (any name != the base) rather than
+    a hardcoded commit string -- the real commit hash is generated fresh per
+    test run by the experiment_request/database_service fixtures, not a fixed
+    value this fixture can know in advance."""
+    b = MagicMock()
+    base_node_props = {
+        "numNodes": 4,
+        "mainNode": 0,
+        "nodeRangeProperties": [{"targetNodes": "0:", "container": {"image": "111.dkr.ecr.x/vecoli:ray", "vcpus": 16}}],
+    }
+
+    def _per_commit_props(image: str) -> dict[str, Any]:
+        return {
+            "numNodes": 4,
+            "mainNode": 0,
+            "nodeRangeProperties": [
+                {
+                    "targetNodes": "0:",
+                    "container": {
+                        "image": image,
+                        "resourceRequirements": [
+                            {"type": "VCPU", "value": str(per_node_vcpus)},
+                            {"type": "MEMORY", "value": "60000"},
+                        ],
+                    },
+                }
+            ],
+        }
+
+    def _describe(**kwargs: Any) -> dict[str, Any]:
+        name = kwargs.get("jobDefinitionName")
+        if name == "smscdk-ray-mnp":
+            return {"jobDefinitions": [{"revision": 7, "nodeProperties": base_node_props}]}
+        if name and name.startswith("smscdk-ray-mnp-"):
+            commit = name.removeprefix("smscdk-ray-mnp-")
+            image = f"476270107793.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:{commit}"
+            return {"jobDefinitions": [{"revision": 1, "nodeProperties": _per_commit_props(image)}]}
+        return {"jobDefinitions": []}
+
+    b.describe_job_definitions.side_effect = _describe
+    b.register_job_definition.side_effect = lambda **kw: {"jobDefinitionName": kw["jobDefinitionName"], "revision": 1}
+    b.submit_job.side_effect = [{"jobId": jid} for jid in submit_ids]
+    return b
+
+
+class TestSubmitMultiNodeComposite:
+    """Backlog item 88: a generic multi-node process-bigraph composite dispatch
+    (e.g. a colony composite), routed via SimulationConfig's extra
+    `multi_node_dispatch` field. Never references any one composite by name --
+    colony is the motivating case, not a hardcoded target."""
+
+    async def test_multi_node_dispatch_routes_before_chain_dispatch_even_when_generations_over_one(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """The critical ordering guard: composite is None + generations>1 would
+        otherwise satisfy chain-dispatch's own routing condition. A
+        multi_node_dispatch request must win that race, not silently fall
+        through to chain-dispatch."""
+        setattr(  # noqa: B010
+            experiment_request.config,
+            "multi_node_dispatch",
+            {"composite_id": "some_workspace.composites.some_multi_node_composite", "num_nodes": 2, "params": {}},
+        )
+        experiment_request.config.generations = 5  # would satisfy chain-dispatch's own condition
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        mock_batch = _fake_multi_node_batch(["parca-1", "composite-1"])
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+        ):
+            job_id = await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-mnp-composite"
+            )
+
+        # NOT chain-dispatch's JobBackend.LOCAL placeholder -- a real MNP job id.
+        assert job_id == JobId.ray("composite-1")
+        assert mock_batch.submit_job.call_count == 2
+
+    async def test_multi_node_composite_command_and_tags(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        setattr(  # noqa: B010
+            experiment_request.config,
+            "multi_node_dispatch",
+            {
+                "composite_id": "some_workspace.composites.some_multi_node_composite",
+                "num_nodes": 2,
+                "params": {"n_cells": 6, "env_size": 20},
+                "steps": 3,
+            },
+        )
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        mock_batch = _fake_multi_node_batch(["parca-9", "composite-9"], per_node_vcpus=16)
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+        ):
+            job_id = await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-mnp-cmd"
+            )
+
+        assert job_id == JobId.ray("composite-9")
+        parca_call, composite_call = mock_batch.submit_job.call_args_list
+
+        # Real MNP job, gated on parca, N nodes -- same shape as the comparison-ensemble path.
+        assert composite_call.kwargs["dependsOn"] == [{"jobId": "parca-9", "type": "SEQUENTIAL"}]
+        assert composite_call.kwargs["nodeOverrides"]["numNodes"] == 2
+        assert composite_call.kwargs["jobQueue"] == "smscdk-ray-mnp"  # genuine multi-node, never the standalone queue
+        assert parca_call.kwargs["nodeOverrides"]["numNodes"] == 1
+
+        cmd = _env_of(composite_call)["RAY_JOB_CMD"]
+        # Reuses the existing generic run_pbg.py runner, not a new script.
+        assert "run_pbg.py" in cmd
+        assert "--composite-id some_workspace.composites.some_multi_node_composite" in cmd
+        assert "-n 3" in cmd
+        assert shlex.quote(json.dumps({"n_cells": 6, "env_size": 20})) in cmd
+        # Sized from the job definition's REAL per-node vCPU declaration (16) x num_nodes (2).
+        assert "RAY_SHARDS_DEFAULT=32" in cmd
+        # No colony/composite-specific hardcoding anywhere in the built command.
+        assert "colony" not in cmd.lower()
+
+        assert composite_call.kwargs["tags"]["CompositeId"] == "some_workspace.composites.some_multi_node_composite"
+
+    async def test_multi_node_dispatch_requires_composite_id(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        setattr(experiment_request.config, "multi_node_dispatch", {"num_nodes": 2})  # noqa: B010
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            pytest.raises(ValueError, match="composite_id"),
+        ):
+            await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-mnp-noid"
+            )
+
+    def test_mnp_node_vcpus_reads_real_resource_requirements(self) -> None:
+        mock_batch = _fake_multi_node_batch(["unused"], per_node_vcpus=16)
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+        ):
+            vcpus = service._mnp_node_vcpus("smscdk-ray-mnp-abc123:1")
+        assert vcpus == 16
+
+    def test_mnp_node_vcpus_returns_none_on_unknown_job_def(self) -> None:
+        mock_batch = _fake_multi_node_batch(["unused"])
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+        ):
+            assert service._mnp_node_vcpus("smscdk-ray-mnp-nonexistent:1") is None
+
+    async def test_existing_comparison_ensemble_path_unaffected_when_multi_node_dispatch_absent(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """Explicit regression proof (not just relying on the pre-existing
+        comparison-ensemble/chain-dispatch tests staying green): the new
+        routing check is a true no-op when multi_node_dispatch is absent."""
+        assert getattr(experiment_request.config, "multi_node_dispatch", None) is None
+        setattr(experiment_request.config, "composite", "vecoli")  # noqa: B010
+        experiment_request.config.generations = 3
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        mock_batch = _fake_batch(["parca-123", "sim-456"])
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+        ):
+            job_id = await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-unaffected"
+            )
+        # Byte-for-byte the same outcome as test_composite_comparison_ensemble_with_multiple_generations_stays_on_mnp.
+        assert job_id == JobId.ray("sim-456")
+        assert mock_batch.submit_job.call_count == 2
+
+
 class TestSubmitMnpStandaloneQueueRouting:
     """Backlog item 65: a genuinely standalone (numNodes=1) MNP submission has no
     inter-node traffic to protect, so it gains nothing from ray_mnp_queue's
