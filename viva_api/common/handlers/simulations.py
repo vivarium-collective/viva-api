@@ -752,26 +752,29 @@ async def get_simulation_status(db_service: DatabaseService, id: int) -> Simulat
     if hpc_run is None:
         raise RuntimeError(f"No HPC run found for simulation {id}")
 
-    # Chain-dispatch campaigns (backlog item 33) track N per-seed job chains, not
-    # one job -- `hpc_run.job_id` is only the ParCa kickoff job. The plain path
-    # below reads THAT job's status and writes it onto the whole campaign row,
-    # which corrupts it: ParCa finishing legitimately marks the entire campaign
-    # COMPLETED while the real per-seed chains are still mid-flight, permanently
-    # dropping it out of JobScheduler.list_active_chain_campaigns()'s poll set
-    # and silently preventing analysis auto-fire forever. Report read-only status
-    # instead for a chain campaign -- mirroring JobScheduler._advance_chain_campaign's
-    # own already-correct terminal-check logic -- and never write here; only the
-    # scheduler's own poll loop may transition a campaign row's status.
+    # Chain-dispatch campaigns (backlog item 33, reworked by item 71 Phase 4)
+    # track N per-seed job chains, not one job -- `hpc_run.job_id` is only the
+    # ParCa kickoff job. The plain path below reads THAT job's status and
+    # writes it onto the whole campaign row, which corrupts it: ParCa
+    # finishing legitimately marks the entire campaign COMPLETED while the
+    # real per-seed chains are still mid-flight. Report the campaign row's OWN
+    # status directly instead: under Phase 4, `JobScheduler._advance_chain_campaign`
+    # (via `DatabaseService.advance_chain_campaign`) is the ONLY writer of this
+    # row's status, and it transitions it exactly once, on the same tick it
+    # confirms every seed has resolved -- so `hpc_run.status` is always
+    # current, the same trust the non-campaign path below places in a
+    # freshly-polled job's status. Do NOT re-derive terminal-ness here by
+    # calling `get_chain_campaign_result` on `chain_final_job_ids`: that list
+    # is now filled INCREMENTALLY (one entry per seed, only once THAT seed's
+    # own job is already known-terminal), so a describe_jobs check against
+    # whatever PARTIAL subset has resolved so far would always report
+    # "terminal" for that subset -- unable to distinguish "3 of 1000 seeds
+    # done" from "campaign complete." Never write here; only the scheduler
+    # may transition a campaign row's status.
     if hpc_run.chain_final_job_ids is not None:
-        chain_service = get_simulation_service_for_job(hpc_run.job_id)
-        if not isinstance(chain_service, SimulationServiceRay):
-            raise RuntimeError("Chain-dispatch campaign requires the Ray/Batch simulation service")
-        result = chain_service.get_chain_campaign_result(hpc_run.chain_final_job_ids)
-        if not result.terminal:
-            return SimulationRun(id=int(id), status=hpc_run.status or JobStatus.RUNNING)
-        status = JobStatus.COMPLETED if result.succeeded_job_ids else JobStatus.FAILED
-        error_message = None if result.succeeded_job_ids else "chain dispatch: zero seed chains succeeded"
-        return SimulationRun(id=int(id), status=status, error_message=error_message)
+        return SimulationRun(
+            id=int(id), status=hpc_run.status or JobStatus.RUNNING, error_message=hpc_run.error_message
+        )
 
     # Route to the service that owns this run (by the run's backend), not the global default.
     simulation_service = get_simulation_service_for_job(hpc_run.job_id)
@@ -799,8 +802,9 @@ async def get_simulation_status(db_service: DatabaseService, id: int) -> Simulat
 
 async def get_simulation_chain_progress(db_service: DatabaseService, id: int) -> ChainProgress:
     """Backlog item 6: real per-seed aggregate progress for a chain-dispatch
-    campaign (backlog item 33) — ``n`` seeds' worth of ``chain_final_job_ids``,
-    resolved to real/terminal/succeeded/failed counts.
+    campaign (backlog item 33, reworked by item 71 Phase 4) — ``chain_current_job_ids``
+    (which seeds are still active) plus ``chain_final_job_ids`` (which have
+    resolved, and how) collapsed into real/terminal/succeeded/failed counts.
 
     404 (via ``ValueError``, matching ``get_simulation_status``'s own
     not-found convention) when the simulation or its HpcRun doesn't exist.
@@ -821,49 +825,44 @@ async def get_simulation_chain_progress(db_service: DatabaseService, id: int) ->
     if hpc_run is None:
         raise ValueError(f"No HPC run found for simulation {id}.")
 
-    job_ids = hpc_run.chain_final_job_ids
-    if job_ids is None:
+    if hpc_run.chain_final_job_ids is None:
         raise RuntimeError(f"Simulation {id} is not a chain-dispatch campaign (no chain_final_job_ids tracked).")
 
-    chain_service = get_simulation_service_for_job(hpc_run.job_id)
-    if not isinstance(chain_service, SimulationServiceRay):
-        # Matches get_simulation_status's own established convention for this
-        # exact check (same message, same file) -- kept as RuntimeError for
-        # consistency rather than TypeError, which would diverge from it.
-        raise RuntimeError("Chain-dispatch campaign requires the Ray/Batch simulation service")  # noqa: TRY004
+    # seeds_total is the campaign's real requested seed count -- fixed at
+    # submission time (len(chain_current_job_ids) never changes length, only
+    # its individual entries flip between a job id and None), NOT
+    # len(chain_final_job_ids), which now grows incrementally as seeds resolve
+    # and would under-report the total for a still-in-flight campaign.
+    current_job_ids = hpc_run.chain_current_job_ids or []
+    seeds_total = len(current_job_ids) or int(sim_record.num_seeds or 0)
 
-    seeds_total = len(job_ids)
-    if seeds_total == 0:
-        # Every seed failed even generation 0's submission -- trivially
-        # terminal with nothing that ever ran (mirrors
-        # JobScheduler._advance_chain_campaign's own zero-tracked handling).
-        return ChainProgress(
-            id=int(id),
-            seeds_total=0,
-            seeds_succeeded=0,
-            seeds_failed=0,
-            seeds_in_progress=0,
-            terminal=True,
-            status=JobStatus.FAILED,
-        )
+    seeds_succeeded = 0
+    seeds_failed = 0
+    if hpc_run.chain_final_job_ids:
+        chain_service = get_simulation_service_for_job(hpc_run.job_id)
+        if not isinstance(chain_service, SimulationServiceRay):
+            # Matches get_simulation_status's own established convention for this
+            # exact check (same message, same file) -- kept as RuntimeError for
+            # consistency rather than TypeError, which would diverge from it.
+            raise RuntimeError("Chain-dispatch campaign requires the Ray/Batch simulation service")
+        # Every entry in chain_final_job_ids is already known-terminal by
+        # construction (JobScheduler only appends once it has observed a
+        # seed's job SUCCEEDED/FAILED) -- this call is a fast, safe formality
+        # for the succeeded-vs-failed breakdown, not a live wait.
+        result = chain_service.get_chain_campaign_result(hpc_run.chain_final_job_ids)
+        seeds_succeeded = len(result.succeeded_job_ids)
+        seeds_failed = len(result.failed_job_ids)
 
-    result = chain_service.get_chain_campaign_result(job_ids)
-    seeds_succeeded = len(result.succeeded_job_ids)
-    seeds_failed = len(result.failed_job_ids)
     seeds_in_progress = seeds_total - seeds_succeeded - seeds_failed
-    status = (
-        (JobStatus.COMPLETED if seeds_succeeded else JobStatus.FAILED)
-        if result.terminal
-        else hpc_run.status or JobStatus.RUNNING
-    )
+    terminal = hpc_run.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
     return ChainProgress(
         id=int(id),
         seeds_total=seeds_total,
         seeds_succeeded=seeds_succeeded,
         seeds_failed=seeds_failed,
         seeds_in_progress=seeds_in_progress,
-        terminal=result.terminal,
-        status=status,
+        terminal=terminal,
+        status=hpc_run.status or JobStatus.RUNNING,
     )
 
 
@@ -872,7 +871,18 @@ async def cancel_simulation(
     simulation_service: SimulationService,
     simulation_id: int,
 ) -> SimulationRun:
-    """Cancel a running simulation by killing its backend job."""
+    """Cancel a running simulation by killing its backend job(s).
+
+    Chain-dispatch campaigns (backlog item 71 Phase 4, folding in backlog item
+    53's cancellation design) cancel every seed's CURRENT in-flight job —
+    directly readable from ``chain_current_job_ids``, at most one per seed
+    under the per-seed app-level-gated model, no ``dependsOn``-chain walk
+    needed the way item 53's original design (written against the superseded
+    upfront-chain model) would have required. Once every AWS-side job is
+    terminated, the campaign row itself is marked CANCELLED, which also stops
+    ``JobScheduler`` from advancing it any further (it only polls rows still
+    in a non-terminal status).
+    """
     hpc_run = await db_service.get_hpcrun_by_ref(ref_id=simulation_id, job_type=JobType.SIMULATION)
     if hpc_run is None:
         raise ValueError(f"No HPC run found for simulation {simulation_id}")
@@ -884,7 +894,13 @@ async def cancel_simulation(
     # Cancel via the service that owns this run (by its backend), not necessarily the
     # injected default.
     service = get_simulation_service_for_job(hpc_run.job_id) or simulation_service
-    await service.cancel_job(hpc_run.job_id)
+
+    if hpc_run.chain_final_job_ids is not None:
+        if not isinstance(service, SimulationServiceRay):
+            raise RuntimeError("Chain-dispatch campaign requires the Ray/Batch simulation service")
+        await service.cancel_chain_campaign(hpc_run)
+    else:
+        await service.cancel_job(hpc_run.job_id)
 
     # Update the database record
     update = JobStatusUpdate(

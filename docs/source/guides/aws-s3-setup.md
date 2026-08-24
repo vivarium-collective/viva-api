@@ -1,6 +1,6 @@
-# AWS S3 Setup for SMS API
+# AWS S3 Setup for Viva API
 
-This document describes how to set up an AWS S3 bucket for use with the SMS API, including proper permissions for SSO users and avoiding KMS encryption issues.
+This document describes how to set up an AWS S3 bucket for use with the Viva API, including proper permissions for SSO users and avoiding KMS encryption issues.
 
 ## Requirements
 
@@ -42,7 +42,7 @@ aws sts get-caller-identity
 ```bash
 # Set variables
 export AWS_REGION="us-east-1"
-export BUCKET_NAME="sms-api-storage-$(date +%Y%m%d)"
+export BUCKET_NAME="viva-api-storage-$(date +%Y%m%d)"
 export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 export SSO_ROLE_ARN="arn:aws:sts::${ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_0623eedd7adb8854/jcschaff_sso"
 
@@ -226,7 +226,7 @@ aws sts get-caller-identity
 
 Bucket names are globally unique. Choose a different name:
 ```bash
-export BUCKET_NAME="sms-api-storage-$(uuidgen | head -c 8 | tr '[:upper:]' '[:lower:]')"
+export BUCKET_NAME="viva-api-storage-$(uuidgen | head -c 8 | tr '[:upper:]' '[:lower:]')"
 ```
 
 ## Common AWS CLI Operations
@@ -343,7 +343,7 @@ await s3_service.close()
 6. **Use bucket policies** to restrict access to specific principals
 7. **Enable S3 Block Public Access** to prevent accidental public exposure
 
-## Configuration in SMS API
+## Configuration in Viva API
 
 ### Environment Variables
 

@@ -20,7 +20,7 @@ DooD mounts the host EC2 instance's Docker socket (`/var/run/docker.sock`) into 
 ## Architecture
 
 ```
-sms-api (submit_build_image_job)
+viva-api (submit_build_image_job)
 │
 ├── AWS Batch Job (ARM64 Graviton compute)
 │   └── docker:cli container (DooD via mounted socket)
@@ -71,11 +71,11 @@ The AMD64 job additionally builds the submit image (vEcoli + Java + Nextflow) on
 - **DinD doesn't work in AWS Batch** — Docker daemon inside containers fails due to cgroup/storage driver issues even with privileged mode on EC2-backed compute
 - **DooD works perfectly** — mounting host Docker socket is simple and reliable
 - **`docker:cli`** (not `docker:dind`) — only need the CLI, not the daemon
-- **`build-and-push-ecr.sh` requires `USER` env var** — set `export USER=${USER:-sms-api}` before calling it
+- **`build-and-push-ecr.sh` requires `USER` env var** — set `export USER=${USER:-viva-api}` before calling it
 - **GitHub private repos don't support `git fetch --depth 1 origin {hash}`** — use full single-branch clone instead
 - **GitHub PAT auth** — `https://x-access-token:${PAT}@github.com/...` is the standard convention
 
-## sms-api Code
+## viva-api Code
 
 - `simulation_service_k8s.py`: `_build_command()` generates the shell script, `_submit_batch_build()` submits to Batch, `_poll_batch_jobs()` polls for completion, `_run_build()` orchestrates both jobs
 - `config.py`: `build_arm64_queue`, `build_amd64_queue`, `build_job_definition`, `build_git_secret_arn`

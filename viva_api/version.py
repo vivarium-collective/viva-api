@@ -455,4 +455,80 @@
 #          Renumbered from this branch's original 0.9.48 -> 0.9.50: item 6
 #          (PR #257) merged first and independently claimed 0.9.49, so this
 #          lands second in real merge order.
-__version__ = "0.9.50"
+# 0.9.51 — backlog item 71 (viva-api PR #1 of item 68's V2 non-Nextflow
+#          chain-dispatch redesign): new plain, standalone AWS Batch
+#          container-type job shape (_ensure_container_job_def/
+#          _submit_container, sibling of the existing MNP path -- extracted
+#          the shared stage/output/log env-list construction into
+#          _stage_out_env, parameterized by prefix, since RAY_*/CONTAINER_*
+#          can't literally share one env list). submit_parca_job and the
+#          analysis DAG node (_submit_analysis_job, via
+#          submit_campaign_analysis) migrate to it -- neither has real
+#          inter-node traffic to protect, matching 0.9.50's own reasoning for
+#          chain-dispatch's per-seed jobs (migrated in a later phase, not this
+#          PR). New empty-default settings ray_container_queue/
+#          ray_container_job_definition; both raise a clear RuntimeError
+#          naming the setting if referenced before being configured (matches
+#          this file's own compose_ray_image_tag precedent) rather than
+#          submit a doomed job -- so this PR is inert pre-deploy, exactly like
+#          0.9.50's ray_mnp_standalone_queue. Does NOT touch _submit_mnp,
+#          submit_ecoli_simulation_job's inline MNP submission, or
+#          submit_chain_dispatch_job's per-seed loop -- those stay on the MNP
+#          path in this PR; chain-dispatch's own migration + the DB schema
+#          change are a separate, later PR (item 71's Phase 4), gated on this
+#          one validating first.
+# 0.9.52 — backlog item 71 Phase 4 (V2 non-Nextflow chain-dispatch redesign,
+#          PR #2 of 2): replaces native AWS Batch dependsOn chaining for
+#          chain-dispatch's N*G per-seed generation jobs with app-level
+#          incremental submission, the actual fix for item 68's scaling stall
+#          (the upfront-dependsOn design never triggered Batch's own compute-
+#          environment scaling reconciliation at real backlog size, confirmed
+#          via CloudTrail showing zero scaling API activity). submit_chain_
+#          dispatch_job now submits ONLY ParCa (migrated to container-type,
+#          matching 0.9.51's ParCa/analysis migration) and writes an initial
+#          per-seed tracking row; generation submission moves entirely into
+#          JobScheduler's existing 30s poll loop (_advance_chain_campaign,
+#          rewritten), which submits exactly one generation per seed at a
+#          time, only once the previous one (or ParCa, for generation 0) is
+#          confirmed SUCCEEDED -- app-level gating instead of native
+#          dependency chains, also submitting as container-type jobs
+#          (SimulationServiceRay.submit_chain_generation/_batch, new). Three
+#          new nullable HpcRun columns (migration 71a5478673a8):
+#          chain_current_job_ids/chain_current_generation (per-seed, JSONB)
+#          and chain_parca_done (bool). chain_final_job_ids keeps its existing
+#          shape but is now written INCREMENTALLY as each seed's chain
+#          resolves, not all at submission time -- get_simulation_status and
+#          get_simulation_chain_progress (backlog item 6) both updated to
+#          read the new fields correctly (the old re-derive-terminal-from-
+#          chain_final_job_ids logic would have falsely reported "terminal"
+#          for whatever partial subset of seeds had resolved so far, unable
+#          to distinguish e.g. "3 of 1000 seeds done" from "campaign
+#          complete" -- a real bug this migration had to avoid introducing,
+#          not carry forward).
+#          Race-condition hardening: DatabaseService.advance_chain_campaign
+#          (new) wraps each campaign's whole per-tick read-decide-write in a
+#          Postgres pg_advisory_xact_lock keyed on the campaign's own
+#          HpcRun.id, so two overlapping ticks against the same campaign
+#          (e.g. a rolling restart briefly running two pods) can never both
+#          act on the same stale state -- defense-in-depth on top of the
+#          existing replicas:1 pin, cheap, no schema change.
+#          Backlog item 53 (chain-dispatch campaign-wide cancellation) folded
+#          in, backend-only: cancel_simulation now walks a campaign's
+#          chain_current_job_ids and terminates each seed's current job
+#          (SimulationServiceRay.cancel_chain_campaign, new) -- structurally
+#          simpler than item 53's original walk-back-through-dependsOn
+#          design, which the per-seed model makes unnecessary (at most one
+#          in-flight job per seed at any time, directly actionable). Reuses
+#          cancel_job's existing terminate_job call unchanged, already
+#          validated by item 53's own empirical testing to work correctly
+#          across every non-terminal Batch state.
+# 0.9.53 — bump the K8s-native standalone-analysis Job's (run_standalone_analysis,
+#          simulation_service_k8s.py) hardcoded memory request/limit from 2Gi/4Gi
+#          to 6Gi/10Gi. A real multiseed sweep (item 71 b2, 40 seeds x 10 gens x
+#          12 modules) OOMKilled at 4Gi -- a multiseed analysis holds every seed's
+#          data in memory at once by design, so the old fixed limit (sized only
+#          for v2ecoli's heavier import surface vs. the legacy script, never for
+#          sweep scale) doesn't scale with campaign size. Real node headroom
+#          checked first (both smsvpctest cluster nodes <15% memory-requested;
+#          t3.xlarge allocatable ~14.4Gi each) before picking the new values.
+__version__ = "0.9.53"

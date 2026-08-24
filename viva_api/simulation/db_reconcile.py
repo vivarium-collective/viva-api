@@ -130,6 +130,10 @@ async def _marker_hpcrun_chain_dispatch(conn: AsyncConnection) -> bool:
     return await _column_exists(conn, "hpcrun", "chain_final_job_ids")
 
 
+async def _marker_hpcrun_chain_current(conn: AsyncConnection) -> bool:
+    return await _column_exists(conn, "hpcrun", "chain_current_job_ids")
+
+
 async def _marker_jobstatus_pending_and_cancelled_uppercase(conn: AsyncConnection) -> bool:
     """True once jobstatusdb has BOTH 'PENDING' and upper-case 'CANCELLED'.
 
@@ -160,6 +164,7 @@ LEGACY_FINGERPRINTS: list[tuple[str, str]] = [
     ("e5a7c9d10f21", "compose_hpcrun.job_id_ext column exists"),
     ("f2b8e4a6c9d1", "hpcrun.chain_final_job_ids column exists"),
     ("44335812e447", "enum jobstatusdb has values 'PENDING' and 'CANCELLED'"),
+    ("71a5478673a8", "hpcrun.chain_current_job_ids column exists"),
 ]
 _LEGACY_PREDICATES = [
     _marker_baseline,
@@ -170,6 +175,7 @@ _LEGACY_PREDICATES = [
     _marker_compose_hpcrun_job_id_ext,
     _marker_hpcrun_chain_dispatch,
     _marker_jobstatus_pending_and_cancelled_uppercase,
+    _marker_hpcrun_chain_current,
 ]
 
 

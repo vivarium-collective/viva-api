@@ -2,9 +2,10 @@ import contextlib
 import datetime
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from typing import Any, override
 
-from sqlalchemy import ColumnElement, Result, and_, or_, select
+from sqlalchemy import ColumnElement, Result, and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import InstrumentedAttribute
 
@@ -12,6 +13,7 @@ from viva_api.analysis.models import AnalysisConfig, ExperimentAnalysisDTO
 from viva_api.common.hpc.job_service import JobStatusUpdate
 from viva_api.common.models import JobId
 from viva_api.simulation.models import (
+    ChainCampaignUpdate,
     HpcRun,
     JobType,
     ParcaDataset,
@@ -132,6 +134,9 @@ class DatabaseService(ABC):
         correlation_id: str,
         chain_n_generations: int | None = None,
         chain_final_job_ids: list[str] | None = None,
+        chain_current_job_ids: list[str | None] | None = None,
+        chain_current_generation: list[int | None] | None = None,
+        chain_parca_done: bool | None = None,
     ) -> HpcRun:
         """
         :param job_id: Backend-tagged job identifier.
@@ -142,6 +147,10 @@ class DatabaseService(ABC):
             33). Omit for every non-campaign HpcRun.
         :param chain_final_job_ids: the AWS Batch job id of each seed's own last successfully-submitted
             generation job, for a chain-dispatch campaign. Omit for every non-campaign HpcRun.
+        :param chain_current_job_ids: per-seed current in-flight job id, or None once that seed's chain
+            has resolved (backlog item 71 Phase 4). Omit for every non-campaign HpcRun.
+        :param chain_current_generation: per-seed generation index of the tracked current job.
+        :param chain_parca_done: whether ParCa has completed, gating generation-0 submission.
         """
         pass
 
@@ -234,6 +243,34 @@ class DatabaseService(ABC):
     @abstractmethod
     async def update_hpcrun_status(self, hpcrun_id: int, update: JobStatusUpdate) -> None:
         """Update the status of a given HpcRun job."""
+        pass
+
+    @abstractmethod
+    async def advance_chain_campaign(
+        self, hpcrun_id: int, updater: Callable[[HpcRun], Awaitable[ChainCampaignUpdate | None]]
+    ) -> None:
+        """Run one JobScheduler tick's read-decide-write against a single
+        chain-dispatch campaign (backlog item 71 Phase 4) atomically: acquire a
+        Postgres advisory lock scoped to this campaign
+        (``pg_advisory_xact_lock``, keyed on ``hpcrun_id``, released
+        automatically when the transaction ends), re-read the campaign row
+        FRESH within that lock (never the possibly-stale copy a caller read
+        before acquiring it), call ``updater`` with that fresh row, and persist
+        whatever ``ChainCampaignUpdate`` it returns (or write nothing if it
+        returns ``None``) — all before the lock releases.
+
+        This is what makes concurrent ticks against the same campaign safe
+        (e.g. two overlapping polling intervals during a rolling restart briefly
+        running two pods): a second tick blocks on the lock until the first's
+        full read-decide-write has committed, so it can only ever act on
+        genuinely current state — the explicit regression property this method
+        exists to guarantee (no double-submitting the same generation).
+
+        ``updater`` may perform real AWS Batch calls (submitting the next
+        generation, checking job status) while the lock is held; those calls
+        are what "decide" needs to do and are expected to be fast (a handful of
+        API calls, not the whole campaign).
+        """
         pass
 
     @abstractmethod
@@ -523,6 +560,9 @@ class DatabaseServiceSQL(DatabaseService):
         correlation_id: str,
         chain_n_generations: int | None = None,
         chain_final_job_ids: list[str] | None = None,
+        chain_current_job_ids: list[str | None] | None = None,
+        chain_current_generation: list[int | None] | None = None,
+        chain_parca_done: bool | None = None,
     ) -> HpcRun:
         jobref_simulation_id = ref_id if job_type == JobType.SIMULATION else None
         jobref_parca_dataset_id = ref_id if job_type == JobType.PARCA else None
@@ -541,6 +581,11 @@ class DatabaseServiceSQL(DatabaseService):
                 correlation_id=correlation_id,
                 chain_n_generations=chain_n_generations,
                 chain_final_job_ids=list(chain_final_job_ids) if chain_final_job_ids is not None else None,
+                chain_current_job_ids=list(chain_current_job_ids) if chain_current_job_ids is not None else None,
+                chain_current_generation=list(chain_current_generation)
+                if chain_current_generation is not None
+                else None,
+                chain_parca_done=chain_parca_done,
             )
             session.add(orm_hpc_run)
             await session.flush()
@@ -938,6 +983,41 @@ class DatabaseServiceSQL(DatabaseService):
                     orm_hpcrun.end_time = dt.replace(tzinfo=None)
             if update.error_message:
                 orm_hpcrun.error_message = update.error_message
+            await session.flush()
+
+    @override
+    async def advance_chain_campaign(
+        self, hpcrun_id: int, updater: Callable[[HpcRun], Awaitable[ChainCampaignUpdate | None]]
+    ) -> None:
+        async with self.async_sessionmaker() as session, session.begin():
+            # Acquire the per-campaign lock FIRST, before reading -- this is what
+            # makes the read-decide-write sequence atomic across concurrent ticks.
+            # Transaction-scoped (pg_advisory_xact_lock, not the session-scoped
+            # pg_advisory_lock): released automatically on commit/rollback, no
+            # explicit unlock needed, no risk of a leaked lock outliving a crashed
+            # request. Keyed on the campaign's own hpcrun_id -- a dedicated,
+            # disjoint sequence, no collision risk with any other lock use.
+            await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": hpcrun_id})
+
+            orm_hpcrun = await self._get_orm_hpcrun(session, hpcrun_id=hpcrun_id)
+            if orm_hpcrun is None:
+                logger.warning("advance_chain_campaign: HpcRun %s not found (already deleted?)", hpcrun_id)
+                return
+            fresh = orm_hpcrun.to_hpc_run()
+
+            update = await updater(fresh)
+            if update is None:
+                return  # nothing to persist this tick
+
+            orm_hpcrun.chain_current_job_ids = list(update.chain_current_job_ids)
+            orm_hpcrun.chain_current_generation = list(update.chain_current_generation)
+            orm_hpcrun.chain_parca_done = update.chain_parca_done
+            orm_hpcrun.chain_final_job_ids = list(update.chain_final_job_ids)
+            if update.terminal_status is not None:
+                orm_hpcrun.status = JobStatusDB.from_job_status(update.terminal_status)
+                orm_hpcrun.end_time = datetime.datetime.now()
+                if update.error_message:
+                    orm_hpcrun.error_message = update.error_message
             await session.flush()
 
     @override

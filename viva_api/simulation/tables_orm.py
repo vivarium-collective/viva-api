@@ -136,6 +136,19 @@ class ORMHpcRun(Base):
     # analysis-fan-in poller watches for all-terminal.
     chain_n_generations: Mapped[int | None] = mapped_column(nullable=True)
     chain_final_job_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    # Backlog item 71 Phase 4: per-seed incremental progress, replacing the
+    # upfront-dependsOn design's "everything already submitted, just poll for
+    # terminal" model with app-level gating (JobScheduler submits ONE generation
+    # per seed at a time). chain_current_job_ids[seed] is that seed's current
+    # in-flight job id, or None once its chain has resolved (success or permanent
+    # failure) -- what the poller reads each tick and what a campaign cancel
+    # walks. chain_current_generation[seed] is the generation index that job
+    # represents (real per-seed progress visibility). chain_parca_done gates
+    # generation-0 submission for every seed at once (ParCa is campaign-wide,
+    # not per-seed). All three NULL for every non-chain-campaign HpcRun.
+    chain_current_job_ids: Mapped[list[str | None] | None] = mapped_column(JSONB, nullable=True)
+    chain_current_generation: Mapped[list[int | None] | None] = mapped_column(JSONB, nullable=True)
+    chain_parca_done: Mapped[bool | None] = mapped_column(nullable=True)
 
     def _build_job_id(self) -> JobId:
         """Construct a JobId from the ORM columns."""
@@ -159,6 +172,11 @@ class ORMHpcRun(Base):
             end_time=str(self.end_time) if self.end_time else None,
             chain_n_generations=self.chain_n_generations,
             chain_final_job_ids=list(self.chain_final_job_ids) if self.chain_final_job_ids is not None else None,
+            chain_current_job_ids=list(self.chain_current_job_ids) if self.chain_current_job_ids is not None else None,
+            chain_current_generation=list(self.chain_current_generation)
+            if self.chain_current_generation is not None
+            else None,
+            chain_parca_done=self.chain_parca_done,
         )
 
 

@@ -17,9 +17,9 @@
 - **REST API Documentation**: [View Docs](https://sms.cam.uchc.edu/documentation)
 - **Documentation(In progress, not complete)** <https://sms-api.readthedocs.io/en/latest/>
 
-#### SMS API (otherwise known as _Atlantis API_):
+#### Viva API (otherwise known as _Atlantis API_):
 
-Design, run, and analyze reproducible simulations of dynamic cellular processes in Escherichia coli. SMS API uses the vEcoli model. Please refer to [the vEcoli documentation](https://covertlab.github.io/vEcoli/) for more details.
+Design, run, and analyze reproducible simulations of dynamic cellular processes in Escherichia coli. Viva API uses the vEcoli model. Please refer to [the vEcoli documentation](https://covertlab.github.io/vEcoli/) for more details.
 The vEcoli documentation is very well written and we highly recommend that users become familiar with it.
 
 ## Quick Start (Atlantis CLI)
@@ -58,6 +58,14 @@ uv run atlantis simulation outputs 37 --dest ./results
 
 # Help works at any nesting level
 uv run atlantis simulation run help
+```
+
+```
+    ╭────────────────────────────────────────────╮
+    │    ▄▀▄ ▀█▀ █   ▄▀▄ █▄ █ ▀█▀ █ ▄▀▀          │∿~∿~~∿~∿~
+    │    █▀█  █  █▄▄ █▀█ █ ▀█  █  █ ▄██           │~∿~∿~~∿~∿
+    │     ∿ whole-cell simulation platform ∿     │∿~~∿~∿~~∿
+    ╰────────────────────────────────────────────╯
 ```
 
 ## Three Client Interfaces
@@ -104,11 +112,3 @@ Three client applications connect to the server:
 - **GUI** (`app/gui.py`): Marimo reactive notebook with Memphis-styled cards
 
 ---
-
-```
-    ╭────────────────────────────────────────────╮
-    │    ▄▀▄ ▀█▀ █   ▄▀▄ █▄ █ ▀█▀ █ ▄▀▀          │∿~∿~~∿~∿~
-    │    █▀█  █  █▄▄ █▀█ █ ▀█  █  █ ▄██           │~∿~∿~~∿~∿
-    │     ∿ whole-cell simulation platform ∿     │∿~~∿~∿~~∿
-    ╰────────────────────────────────────────────╯
-```

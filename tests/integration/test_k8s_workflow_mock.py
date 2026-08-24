@@ -494,18 +494,27 @@ async def test_ray_canonical_batch_baseline_routes_through_real_entrypoint_to_ch
             git_branch="main",
         )
 
-        # parca + 2 seeds x 3 generations = 7 real per-seed-generation submissions.
-        submit_ids = ["parca-1", "s0g0", "s0g1", "s0g2", "s1g0", "s1g1", "s1g2"]
+        # Chain-dispatch now submits ONLY ParCa upfront (backlog item 71 Phase
+        # 4) -- as a container-type job, which needs the real (cached)
+        # Settings singleton's container fields set. Patched as attributes on
+        # the REAL get_settings() instance (not a mock replacing get_settings
+        # itself) so "config assembly... is real" (this test's own stated
+        # intent) stays true for everything else.
+        settings = get_settings()
         mnp_base_props = {
             "numNodes": 4,
             "mainNode": 0,
             "nodeRangeProperties": [{"targetNodes": "0:", "container": {"image": "x:tag", "vcpus": 16}}],
         }
+        container_base_props = {"image": "x:tag", "vcpus": 16, "memory": 32000}
         mock_batch = MagicMock()
 
         def _describe(**kwargs: Any) -> dict[str, Any]:
-            if kwargs.get("jobDefinitionName") == get_settings().ray_mnp_job_definition:
+            name = kwargs.get("jobDefinitionName")
+            if name == settings.ray_mnp_job_definition:
                 return {"jobDefinitions": [{"revision": 1, "nodeProperties": mnp_base_props}]}
+            if name == settings.ray_container_job_definition:
+                return {"jobDefinitions": [{"revision": 1, "containerProperties": container_base_props}]}
             return {"jobDefinitions": []}
 
         mock_batch.describe_job_definitions.side_effect = _describe
@@ -513,7 +522,11 @@ async def test_ray_canonical_batch_baseline_routes_through_real_entrypoint_to_ch
             "jobDefinitionName": kw["jobDefinitionName"],
             "revision": 1,
         }
-        mock_batch.submit_job.side_effect = [{"jobId": jid} for jid in submit_ids]
+        # ParCa is now the ONE upfront submission; the campaign's own
+        # generation jobs are submitted incrementally by JobScheduler, not
+        # exercised by this entrypoint-routing test (see
+        # tests/simulation/test_scheduler.py::TestAdvanceChainCampaign for that).
+        mock_batch.submit_job.side_effect = [{"jobId": "parca-1"}]
 
         fake_file_service = AsyncMock()
         fake_file_service.upload_file = AsyncMock()
@@ -522,6 +535,8 @@ async def test_ray_canonical_batch_baseline_routes_through_real_entrypoint_to_ch
             patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
             patch("viva_api.simulation.simulation_service_ray.asyncio.sleep", new=AsyncMock()),
+            patch.object(settings, "ray_container_queue", "smscdk-ray-standalone"),
+            patch.object(settings, "ray_container_job_definition", "smscdk-ray-container"),
         ):
             simulation = await sim_handlers.run_simulation_workflow(
                 database_service=database_service,
@@ -547,20 +562,14 @@ async def test_ray_canonical_batch_baseline_routes_through_real_entrypoint_to_ch
             assert simulation.job_id in ray_service._local._tasks
             campaign_job_id = await ray_service._local._tasks[simulation.job_id]
 
-        # Reached chain-dispatch, not the array path: N*G real per-seed
-        # generation jobs, never a single array-shaped submission.
-        assert mock_batch.submit_job.call_count == 7
-        calls = mock_batch.submit_job.call_args_list
-        for call in calls:
-            assert "arrayProperties" not in call.kwargs
-
-        _parca_call, s0g0, s0g1, s0g2, s1g0, s1g1, s1g2 = calls
-        assert s0g0.kwargs["dependsOn"] == [{"jobId": "parca-1", "type": "SEQUENTIAL"}]
-        assert s0g1.kwargs["dependsOn"] == [{"jobId": "s0g0", "type": "SEQUENTIAL"}]
-        assert s0g2.kwargs["dependsOn"] == [{"jobId": "s0g1", "type": "SEQUENTIAL"}]
-        assert s1g0.kwargs["dependsOn"] == [{"jobId": "parca-1", "type": "SEQUENTIAL"}]
-        assert s1g1.kwargs["dependsOn"] == [{"jobId": "s1g0", "type": "SEQUENTIAL"}]
-        assert s1g2.kwargs["dependsOn"] == [{"jobId": "s1g1", "type": "SEQUENTIAL"}]
+        # Reached chain-dispatch, not the array path: exactly ONE submission
+        # (ParCa, container-type, backlog item 71 Phase 4) -- never a single
+        # array-shaped submission, and no per-seed generation jobs upfront.
+        assert mock_batch.submit_job.call_count == 1
+        (parca_call,) = mock_batch.submit_job.call_args_list
+        assert "arrayProperties" not in parca_call.kwargs
+        assert "dependsOn" not in parca_call.kwargs
+        assert "containerOverrides" in parca_call.kwargs
 
         # Chain-dispatch's own return convention (the ParCa job -- there is no
         # single "sim" job for a chain campaign) is now the BACKGROUND TASK's
@@ -604,7 +613,9 @@ async def test_ray_canonical_batch_baseline_routes_through_real_entrypoint_to_ch
         assert hpc_run.database_id == campaign_row.id
         assert hpc_run.job_id == JobId.ray("parca-1")
         assert hpc_run.chain_n_generations == 3
-        assert hpc_run.chain_final_job_ids == ["s0g2", "s1g2"]
+        assert hpc_run.chain_final_job_ids == []
+        assert hpc_run.chain_current_job_ids == [None, None]
+        assert hpc_run.chain_parca_done is False
     finally:
         deps.set_simulation_service_registry(saved_registry)
         deps.set_simulation_service(saved_default)

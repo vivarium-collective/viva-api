@@ -2,11 +2,11 @@
 
 - **Status:** Proposed
 - **Date:** 2026-07-14
-- **Scope:** sms-api endpoints only (Stanford K8s/Batch). Workbench UI is a follow-up.
+- **Scope:** viva-api endpoints only (Stanford K8s/Batch). Workbench UI is a follow-up.
 
 ## Context & motivation
 
-ptools wants to consume pre-computed analysis results from sms-api. Analysis is **very expensive**, so
+ptools wants to consume pre-computed analysis results from viva-api. Analysis is **very expensive**, so
 submission and retrieval must be **fully decoupled** — no blocking call may ever compute. Concretely
 ptools needs to:
 
@@ -42,7 +42,7 @@ retrieve are separate operations; retrieval never triggers computation.
 - Target **Stanford K8s/Batch (S3)** only; the SLURM path may 501 for now.
 - `n_tp` is a **predetermined set**: `AVAILABLE_NTP = [10, 50, 100]`.
 - Persist in a DB table that supports **backfilling** existing results.
-- **sms-api endpoints only** (no workbench UI in this task).
+- **viva-api endpoints only** (no workbench UI in this task).
 
 ## Design
 
