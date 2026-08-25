@@ -26,7 +26,7 @@ RUN rm -rf /var/lib/apt/lists/* && \
 
 WORKDIR /app
 
-ADD assets/ptools/aic-export.30.0.tar.gz /app/
+ADD assets/ptools/aic-export-30.0.tar.gz /app/
 RUN mkdir -p /app/ptools && \
     ./aic-export/pathway-tools/ptools/30.0/install/config-ptools /app/ptools
 

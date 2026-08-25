@@ -1,0 +1,10 @@
+# BuildKit uses this file INSTEAD OF .dockerignore when building with
+# `-f Dockerfile-ptools` (it does not merge with it), so this is a standalone
+# allowlist rather than a copy of the root ignore file.
+#
+# Dockerfile-ptools consumes exactly one path from the context -- the aic-export
+# archive it ADDs -- so ignore everything and opt that single file back in.
+# Keep the filename below in sync with the ADD line in Dockerfile-ptools when
+# upgrading Pathway Tools; the older archives in assets/ptools/ stay excluded.
+*
+!assets/ptools/aic-export-30.0.tar.gz

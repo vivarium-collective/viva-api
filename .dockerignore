@@ -182,3 +182,14 @@ simulation_configs/
 scratchpads/
 notes/
 .ruff_cache/
+
+# Archives: never ship tarballs in a build context. assets/ptools/ alone holds
+# ~4 GB of aic-export archives, and no image but ptools wants any of them.
+# Dockerfile-ptools opts its one archive back in via Dockerfile-ptools.dockerignore
+# (BuildKit uses <dockerfile>.dockerignore in preference to this file).
+**/*.tar.gz
+
+# Local git history (~3 GB) -- no image needs it. The version baked into images
+# is the static one in pyproject.toml/viva_api/version.py, not derived from VCS,
+# and Dockerfile-sms's `git clone` pulls vEcoli over the network, not from here.
+**/.git
