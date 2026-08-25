@@ -5,12 +5,17 @@ namespace: sms-api-stanford-test
 
 images:
   - name: ghcr.io/vivarium-collective/sms-api
-    # Must contain viva_api/simulation/db_reconcile.py (the Job runs it). Keep in
-    # sync with the app overlay's sms-api tag; do not lower below 0.9.19.
-    # 0.9.24 carries migration e5a7c9d10f21 (compose_hpcrun.job_id_ext/job_backend)
-    # and its db_reconcile fingerprint marker — the Job only applies what THIS tag
-    # contains, so a stale tag here silently skips the migration.
-    newTag: 0.9.26
+    # Must contain viva_api/simulation/db_reconcile.py (the Job runs it) AND every
+    # migration the deployed app expects. Keep in sync with the app overlay's
+    # sms-api tag; do not lower below 0.9.19. The Job only applies what THIS tag
+    # contains, so a stale tag here silently skips migrations -- the Job still
+    # reports success. See the sms-api-stanford sibling for the production
+    # incident this caused on 2026-08-19.
+    #
+    # 2026-08-24: 0.9.26 -> 0.9.55, matching this overlay's app tag. The last Job
+    # run here was from an ad-hoc 0.9.52 override rather than this pin, which is
+    # exactly the drift the sync contract exists to prevent.
+    newTag: 0.9.55
 
 resources:
   - alembic-job.yaml

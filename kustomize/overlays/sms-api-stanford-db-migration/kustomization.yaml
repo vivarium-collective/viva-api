@@ -18,19 +18,21 @@ images:
     # POST /api/v1/simulations/{id}/cancel therefore raised
     # InvalidTextRepresentationError.
     #
-    # Confirmed live against sms-api-stanford: alembic_version stuck at
-    # f2b8e4a6c9d1, `db_reconcile --analyze` reporting the PENDING/CANCELLED
-    # marker absent, and the Job's last run 7d17h old. The trap is that
-    # re-running the Job in that state fixes NOTHING -- the 0.9.42 image does not
-    # contain the migration, so `upgrade head` has nothing to apply. A stale pin
-    # here is silent: the Job succeeds and the schema stays behind.
+    # The trap is that re-running the Job in a stale state fixes NOTHING -- the
+    # pinned image does not contain the migration, so `upgrade head` has nothing
+    # to apply. A stale pin here is SILENT: the Job succeeds and the schema stays
+    # behind.
     #
-    # The tag is deliberately NOT bumped in this commit. At the time of writing,
-    # production is running an image built from an unmerged branch, so there is no
-    # correct main-based value to point at -- pinning to it would put a tag in the
-    # manifest that does not exist on main. Bump this as part of the next deploy
-    # PR, once main and prod agree again.
-    newTag: 0.9.42
+    # 2026-08-24: unblocked and bumped 0.9.42 -> 0.9.55. The earlier note said this
+    # could not be bumped because prod was running an image built from an unmerged
+    # branch, so no correct main-based value existed. That is resolved: main is at
+    # 0.9.55 and the live prod api Deployment runs 0.9.55, so the two agree again.
+    # Verified before pinning -- the live 0.9.55 image carries all 9 revisions in
+    # /app/alembic/versions (including head 71a5478673a8) plus db_reconcile.py, and
+    # `db_reconcile --analyze` against prod RDS reports managed at 71a5478673a8 with
+    # every schema marker present. This bump is therefore a no-op for the CURRENT
+    # schema; its value is that the NEXT migration will actually be applied.
+    newTag: 0.9.55
 
 resources:
   - alembic-job.yaml
