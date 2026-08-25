@@ -219,8 +219,20 @@ images:
   # no viva-api/scheduler/dispatch code touched. Built via the same
   # native-AMD64 Batch DinD infra as prior releases, from merged main
   # (d0c5d90f).
+  # 0.3.55 (workbench #929, item 86, merged main 834e59c5): a JSON "external
+  # config" input mode alongside the per-field parameter form, on the real
+  # Explore panel (vivarium_workbench/loom/src/panels/ConfigPanel.tsx) --
+  # upload/paste a JSON document, matched server-side onto a composite's own
+  # declared params (new POST /api/composite-config-translate), applied into
+  # the same per-field form the existing Apply button already uses. Live
+  # e2e-verified on smsvpctest before merge (real browser screenshots, a real
+  # POST against the deployed baseline composite) -- see PR #929's own
+  # description for the full verification trail, including a same-day
+  # correction (0.3.54 put the panel in dead code; 0.3.55 is the real fix).
+  # Workbench-only change -- no viva-api/scheduler/dispatch code touched.
+  # Built via the same native-AMD64 Batch DinD infra as prior releases.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.52
+    newTag: 0.3.55
 
 replicas:
   # Single writer: workbench holds a git working copy + SQLite on an RWO EBS volume.

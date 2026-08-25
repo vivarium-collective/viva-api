@@ -403,6 +403,7 @@ async def run_simulation_workflow(  # noqa: C901
     ecoli_sources_repo_url: str | None = None,
     ecoli_sources_ref: str | None = None,
     tags: list[str] | None = None,
+    extra_params: dict[str, Any] | None = None,
 ) -> Simulation:
     """
     Simplified workflow execution with just the essential parameters.
@@ -426,6 +427,11 @@ async def run_simulation_workflow(  # noqa: C901
             otherwise comma-delimited hierarchical paths to exclusively include in the output reporting.
         analysis_options: Analysis options specific to the vecoli workflow API, corresponding to specific existing
             analysis modules in the vecoli repo.
+        extra_params: Additional composite-specific parameters not covered by the named
+            parameters above (e.g. a composite's own `injected_processes`/
+            `multi_node_dispatch` knobs). Merged into the resolved config as a fallback
+            layer — a key already set by one of the named parameters or the config
+            template is never overridden by a key of the same name here.
     """
     if run_parca is None:
         run_parca = True
@@ -628,6 +634,15 @@ async def run_simulation_workflow(  # noqa: C901
         config_data["ecoli_sources_uri"] = ecoli_sources_uri
     if ecoli_sources_overlays is not None:
         config_data["ecoli_sources_overlays"] = ecoli_sources_overlays
+
+    # Fallback layer for composite-specific params with no dedicated named parameter
+    # above (e.g. a composite's own injected_processes/multi_node_dispatch knobs).
+    # setdefault, not assignment: a key already set by the config template or one of
+    # the named parameters above always wins — extra_params can only fill gaps, never
+    # override something this function already explicitly computed.
+    if extra_params:
+        for key, value in extra_params.items():
+            config_data.setdefault(key, value)
 
     config = SimulationConfig(**config_data)
 

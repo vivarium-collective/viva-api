@@ -10,6 +10,7 @@
 import json
 import logging
 from collections.abc import Sequence
+from typing import Any
 
 from fastapi import BackgroundTasks, Body, Depends, HTTPException, Query
 from fastapi import Path as FastAPIPath
@@ -260,6 +261,13 @@ async def run_simulation_workflow(
         "later via POST /simulations/{id}/tags.",
     ),
     analysis_options: AnalysisOptions | None = None,
+    extra_params: dict[str, Any] | None = Body(
+        default=None,
+        description="Additional composite-specific parameters not covered by the named "
+        "params above (e.g. a composite's own `injected_processes`/`multi_node_dispatch` "
+        "knobs). Merged into the resolved config without overriding any of the named "
+        "params — a key here is ignored if the same key is already set by one of them.",
+    ),
 ) -> Simulation:
     """Run a vEcoli simulation workflow with simplified parameters.
 
@@ -299,6 +307,7 @@ async def run_simulation_workflow(
             ecoli_sources_repo_url=ecoli_sources_repo_url,
             ecoli_sources_ref=ecoli_sources_ref,
             tags=tags,
+            extra_params=extra_params,
         )
     except Exception as e:
         logger.exception("Error running vEcoli simulation")
