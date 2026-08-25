@@ -13,3 +13,12 @@ configMapGenerator:
     envs:
       - ptools.env
       - shared.env
+  # ui.* deployment bindings for vivarium-workbench (vivarium-workbench#471).
+  # `files:` rather than `envs:` because the workbench reads a YAML document,
+  # not key=value pairs. configMapGenerator hashes the content into the resource
+  # name, so editing workbench-deploy.yaml rolls the Deployment automatically --
+  # a plain ConfigMap edited in place would restart nothing and leave the pod
+  # silently serving the old value.
+  - name: workbench-deploy-config
+    files:
+      - deploy.yaml=workbench-deploy.yaml

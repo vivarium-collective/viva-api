@@ -210,3 +210,43 @@ patches:
     target:
       kind: Deployment
       name: workbench
+  # ui.* deployment-config layer (vivarium-workbench#471), phase 2 of lifting
+  # these bindings out of the workspace. Mounts the generated
+  # workbench-deploy-config ConfigMap read-only and names it via
+  # VIVARIUM_WORKBENCH_DEPLOY_CONFIG; the workbench overlays it on top of the
+  # served workspace.yaml's ui: block (deployment wins, null unsets).
+  #
+  # DOUBLY INERT ON PURPOSE. (1) Every value in workbench-deploy.yaml is exactly
+  # what the seed initContainer above already stamps into workspace.yaml, so the
+  # two agree and nothing changes. (2) The running workbench image predates
+  # lib/deploy_config.py, so it ignores the env var and the mount entirely. This
+  # exists to prove the plumbing before anything depends on it; the seed
+  # mutations come out in phase 4, when this becomes the only source.
+  #
+  # Applied to the -test overlay only. The base is shared with sms-api-stanford,
+  # where this ConfigMap does not exist -- putting the volume in the base would
+  # either wedge prod's pod on a missing ConfigMap or force a prod rollout.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: workbench
+      spec:
+        template:
+          spec:
+            containers:
+              - name: workbench
+                env:
+                  - name: VIVARIUM_WORKBENCH_DEPLOY_CONFIG
+                    value: /etc/vivarium-workbench/deploy.yaml
+                volumeMounts:
+                  - name: deploy-config
+                    mountPath: /etc/vivarium-workbench
+                    readOnly: true
+            volumes:
+              - name: deploy-config
+                configMap:
+                  name: workbench-deploy-config
+    target:
+      kind: Deployment
+      name: workbench
