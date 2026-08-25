@@ -254,8 +254,25 @@ def _redirect_emitters(node: Any, results_dir: Path) -> int:
 
 def _resolve_document(
     input_file: str | None, composite_id: str | None, overrides: dict[str, Any] | None, core: Any
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], Any]:
     """Load a static ``.pbg`` document, or build one from a registered composite.
+
+    Returns ``(document, core)`` — NOT just the document. A composite's own
+    ``core_extensions`` (e.g. ecoli_colony's ``pymunk_agent`` type +
+    ``EcoliWCM``/``ColonyGrowthGif`` link registration via
+    ``_register_colony_core``) are applied here via
+    ``process_bigraph.composite_generator.apply_core_extensions`` — the same
+    real helper ``run_runner.execute()`` uses, not a hand-rolled loop — because
+    ``to_document()`` alone never applies them (only the higher-level
+    ``to_composite()`` does, which this runner can't call directly: it needs
+    the intermediate document for its own emitter-redirect/override logic
+    below). Critically, an extension may return a NEW core object rather than
+    mutating the one it's passed (``_register_colony_core`` builds a fresh
+    viva_munk-based core, confirmed live — backlog item 88); the caller MUST
+    use the returned core, not its own original one, when later constructing
+    ``Composite(document, core=core)`` — a first attempt that applied the
+    extension but kept using the original core silently built against an
+    unextended one and failed with "unable to parse type map[pymunk_agent]".
 
     The composite-id branch resolves through ``process_bigraph.composite_spec`` —
     the same registry ``vivarium_workbench.lib.pbg_export.export_composite_pbg``
@@ -266,6 +283,7 @@ def _resolve_document(
     exactly what the generator function returns — nothing to strip or rewrite.
     """
     if composite_id:
+        from process_bigraph.composite_generator import apply_core_extensions
         from process_bigraph.composite_spec import discover_specs
         from process_bigraph.composite_spec import get as get_spec
 
@@ -279,27 +297,13 @@ def _resolve_document(
             spec = get_spec(composite_id)
         if spec is None:
             raise SystemExit(f"run_pbg: no composite registered as {composite_id!r}")
-        # A composite's declared core_extensions (e.g. ecoli_colony's
-        # pymunk_agent type + EcoliWCM/ColonyGrowthGif link registration) are
-        # NOT applied by to_document() -- only CompositeSpec.to_composite()
-        # does that (process_bigraph/composite_spec.py, "for ext in
-        # self.core_extensions: ext(core)"). This runner can't use
-        # to_composite() directly (it needs the intermediate document for its
-        # own emitter-redirect/override logic below), so it mirrors that same
-        # one line here instead -- mutates `core` in place, same object `run()`
-        # later passes to Composite(document, core=core). Confirmed necessary
-        # live (backlog item 88): omitting this raises "unable to parse type
-        # map[pymunk_agent]" building any composite that registers a custom
-        # type via core_extensions and isn't already covered by the
-        # workspace's own PBG_CORE_BUILDER.
-        for ext in spec.core_extensions:
-            ext(core)
+        core = apply_core_extensions(spec, core)
         document: dict[str, Any] = spec.to_document(overrides=overrides or {}, core=core)
-        return document
+        return document, core
     if input_file is None:
         raise ValueError("_resolve_document: input_file is required when composite_id is not given")
     loaded: dict[str, Any] = json.loads(Path(input_file).read_text())
-    return loaded
+    return loaded, core
 
 
 def run(
@@ -329,7 +333,7 @@ def run(
     if core is None:
         core = _build_core()
     with _v2ecoli_parquet_emitter_override(results_dir, overrides):
-        document = _resolve_document(input_file, composite_id, overrides, core)
+        document, core = _resolve_document(input_file, composite_id, overrides, core)
         # Emitters must write where the entrypoint syncs from, not where the authoring
         # workspace would have put them.
         _redirect_emitters(document, results_dir)
