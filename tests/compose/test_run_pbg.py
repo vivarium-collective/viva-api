@@ -593,11 +593,12 @@ def test_run_registers_protocols_on_the_core_that_survives_core_extensions(
     fake_schema_mod.allocate_core = FakeCore  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "bigraph_schema", fake_schema_mod)
 
-    def _mark_registered(core: Any) -> None:
+    def _mark_registered(core: Any) -> Any:
         core.protocols_registered = True
+        return core
 
     fake_protocols_mod = types.ModuleType("process_bigraph.protocols")
-    fake_protocols_mod.register_types = lambda core: (_mark_registered(core), core)[1]  # type: ignore[attr-defined]
+    fake_protocols_mod.register_types = _mark_registered  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "process_bigraph.protocols", fake_protocols_mod)
 
     new_core = FakeCore()
