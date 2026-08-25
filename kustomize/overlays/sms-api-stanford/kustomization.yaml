@@ -100,8 +100,13 @@ images:
   # against the deployed image at the real built commit (c44b69a). Also renames
   # base_seed -> seed in the per-seed chain-dispatch overrides (a second real
   # incompatibility with the new composite's signature).
+  # Catches up this overlay's newTag (last committed at 0.9.46) to match what's
+  # actually being deployed now (0.9.55, backlog item 88) -- confirmed via
+  # kubectl the real live tag was already drifted ahead to 0.9.53 (an earlier
+  # deploy whose git tracking never caught up, same drift class already
+  # documented on the -test overlay above).
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.46
+    newTag: 0.9.55
   # ptools pinned to last-known-good tag — CI only builds sms-api, so there is
   # no newer sms-ptools:0.6.x image on ghcr.io.  0.5.9 is the tag the live Stanford
   # pod has been running successfully; keeping both namespaces pointing here
