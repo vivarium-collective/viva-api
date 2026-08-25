@@ -56,6 +56,14 @@ class HpcRun(BaseModel):
     chain_current_job_ids: list[str | None] | None = None
     chain_current_generation: list[int | None] | None = None
     chain_parca_done: bool | None = None
+    # Backlog item 88: set only by SimulationServiceRay._submit_multi_node_composite
+    # (a generic multi-node process-bigraph composite dispatch, e.g. a colony
+    # composite spread across N Ray-cluster nodes) to the dispatched composite's
+    # id. None for every other HpcRun. Doubles as the discriminator
+    # JobScheduler.update_multi_node_jobs polls for -- mutually exclusive with
+    # chain_n_generations by construction (a row is written by exactly one
+    # dispatch shape).
+    multi_node_composite_id: str | None = None
 
     @model_validator(mode="before")
     @classmethod

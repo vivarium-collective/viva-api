@@ -94,6 +94,10 @@ class JobScheduler:
                 await self.update_chain_campaigns()
             except Exception:
                 logger.exception("Error during chain-dispatch campaign polling")
+            try:
+                await self.update_multi_node_jobs()
+            except Exception:
+                logger.exception("Error during multi-node composite job polling")
             await asyncio.sleep(interval_seconds)
 
     async def update_running_jobs(self) -> None:
@@ -463,6 +467,94 @@ class JobScheduler:
             analysis_job_id,
         )
         return update
+
+    async def update_multi_node_jobs(self) -> None:
+        """Advance every active multi-node process-bigraph composite dispatch
+        by one tick each (backlog item 88 — e.g. a colony composite spread
+        across N Ray-cluster nodes). Gives this dispatch shape the same
+        auto-triggered "Analysis flush" chain-dispatch campaigns already get
+        (``update_chain_campaigns``/``_finalize_campaign``), via a completely
+        separate, additive code path — deliberately NOT sharing logic with
+        that method, since a multi-node composite is ONE job (a status
+        transition), not an N-seed per-generation state machine. No-op when
+        no Ray/Batch backend is wired (SLURM-only deployments pass
+        ``simulation_service_ray=None``), or no such job is active.
+        """
+        if self.simulation_service_ray is None:
+            return
+        simulation_service_ray = self.simulation_service_ray
+
+        active_jobs = await self.database_service.list_active_multi_node_composites()
+        if not active_jobs:
+            logger.debug("No active multi-node composite jobs found for polling.")
+            return
+        for hpc_run in active_jobs:
+            try:
+                await self._advance_multi_node_job(hpc_run, simulation_service_ray)
+            except Exception:
+                logger.exception("Error advancing multi-node composite HpcRun %s", hpc_run.database_id)
+
+    async def _advance_multi_node_job(self, hpc_run: HpcRun, simulation_service_ray: SimulationServiceRay) -> None:
+        """Poll one multi-node composite HpcRun's underlying AWS Batch job; once
+        it's terminal, atomically finalize the row and — only for the ONE tick
+        that actually performs that transition — submit its Analysis-flush
+        node. ``get_job_status`` already generically handles an arbitrary
+        ``JobId`` (LOCAL vs. AWS Batch ``describe_jobs``), so no new AWS client
+        code is needed here, only the new polling loop + finalize + submit.
+        """
+        job_info = await simulation_service_ray.get_job_status(hpc_run.job_id)
+        if job_info is None or job_info.status not in (JobStatus.COMPLETED, JobStatus.FAILED):
+            return  # still running, or not yet visible -- nothing to do this tick
+
+        # Atomic conditional transition: only the tick whose UPDATE actually
+        # flips PENDING/RUNNING to terminal proceeds. A concurrent tick racing
+        # against the same row (e.g. two pods briefly overlapping during a
+        # rolling restart) sees `won=False` and does nothing further — the
+        # concrete guarantee against double-submitting the analysis job for a
+        # single completed dispatch.
+        won = await self.database_service.finalize_multi_node_job(
+            hpc_run.database_id, job_info.status, job_info.error_message
+        )
+        if not won or job_info.status != JobStatus.COMPLETED:
+            return
+
+        composite_id = hpc_run.multi_node_composite_id
+        if composite_id is None:
+            # Unreachable in practice -- list_active_multi_node_composites only
+            # ever returns rows with this field set -- but narrow explicitly
+            # rather than silently passing an empty string downstream.
+            logger.error(
+                "Multi-node composite: HpcRun %s finalized with no multi_node_composite_id set", hpc_run.database_id
+            )
+            return
+
+        simulation = await self.database_service.get_simulation(simulation_id=hpc_run.ref_id)
+        if simulation is None:
+            logger.error(
+                "Multi-node composite: Simulation %s not found for HpcRun %s", hpc_run.ref_id, hpc_run.database_id
+            )
+            return
+        simulator = await self.database_service.get_simulator(simulator_id=simulation.simulator_id)
+        if simulator is None:
+            logger.error(
+                "Multi-node composite: Simulator %s not found for simulation %s",
+                simulation.simulator_id,
+                hpc_run.ref_id,
+            )
+            return
+
+        analysis_job_id = await simulation_service_ray.submit_multi_node_analysis(
+            simulation=simulation,
+            database_service=self.database_service,
+            commit=simulator.git_commit_hash,
+            composite_id=composite_id,
+        )
+        logger.info(
+            "Multi-node composite HpcRun %s (%s) COMPLETED -> analysis job %s",
+            hpc_run.database_id,
+            composite_id,
+            analysis_job_id,
+        )
 
     async def close(self) -> None:
         await self.stop_polling()

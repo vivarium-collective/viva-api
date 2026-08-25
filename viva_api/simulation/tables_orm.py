@@ -149,6 +149,17 @@ class ORMHpcRun(Base):
     chain_current_job_ids: Mapped[list[str | None] | None] = mapped_column(JSONB, nullable=True)
     chain_current_generation: Mapped[list[int | None] | None] = mapped_column(JSONB, nullable=True)
     chain_parca_done: Mapped[bool | None] = mapped_column(nullable=True)
+    # Backlog item 88: discriminator + payload for a generic multi-node
+    # process-bigraph composite dispatch (e.g. a colony composite spread
+    # across N Ray-cluster nodes). NULL for every non-multi-node-composite
+    # HpcRun (SLURM, K8s, chain-dispatch, the older comparison-ensemble/
+    # phase0 MNP paths). Plays the exact same "IS NOT NULL discriminates
+    # this row's dispatch shape" role chain_n_generations already plays for
+    # chain-dispatch campaigns -- the two are mutually exclusive by
+    # construction (a row is written by exactly one dispatch shape), so
+    # JobScheduler.update_multi_node_jobs's own query can never overlap with
+    # list_active_chain_campaigns's.
+    multi_node_composite_id: Mapped[str | None] = mapped_column(nullable=True)
 
     def _build_job_id(self) -> JobId:
         """Construct a JobId from the ORM columns."""
@@ -177,6 +188,7 @@ class ORMHpcRun(Base):
             if self.chain_current_generation is not None
             else None,
             chain_parca_done=self.chain_parca_done,
+            multi_node_composite_id=self.multi_node_composite_id,
         )
 
 

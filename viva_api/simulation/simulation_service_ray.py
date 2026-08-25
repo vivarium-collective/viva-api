@@ -1458,7 +1458,24 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             composite_job_id,
             num_nodes,
         )
-        return JobId.ray(composite_job_id)
+        job_id = JobId.ray(composite_job_id)
+        # Backlog item 88: record this dispatch's OWN HpcRun row, under the SAME
+        # correlation_id the generic caller (run_simulation_workflow) will use for
+        # its own idempotent-insert guard -- mirrors submit_chain_dispatch_job's
+        # identical pattern (simulation_service_ray.py, chain-dispatch background
+        # task), for the identical reason: this row needs a field
+        # (multi_node_composite_id) a generic caller has no way to populate.
+        # JobScheduler.update_multi_node_jobs polls rows with this field set,
+        # completely disjoint from list_active_chain_campaigns's own
+        # chain_n_generations-based query.
+        await database_service.insert_hpcrun(
+            job_id=job_id,
+            job_type=JobType.SIMULATION,
+            ref_id=ecoli_simulation.database_id,
+            correlation_id=correlation_id,
+            multi_node_composite_id=composite_id,
+        )
+        return job_id
 
     def chain_base_tags(self, *, simulation: Simulation, commit: str) -> dict[str, str]:
         """Cost-allocation tag base shared by every per-seed chain job + the
@@ -1834,6 +1851,137 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             depends_type=None,
             tags={**base_tags, "Phase": "analysis"},
         )
+
+    def _multi_node_analysis_command(
+        self,
+        *,
+        experiment_id: str,
+        composite_id: str,
+        history_uri: str,
+        out_uri: str,
+    ) -> str:
+        """Build the "Analysis flush" DAG node's command for a generic
+        multi-node process-bigraph composite dispatch (backlog item 88).
+
+        Unlike ``_analysis_command`` (a fixed hive-parquet seed x generation
+        sweep, v2ecoli-specific analysis modules), this points at a separate,
+        generic entrypoint (``scripts/run_multi_node_analysis.py``) that
+        dispatches through v2ecoli's own generic post-run mechanism
+        (``v2ecoli.workflow.flush.run_flush``, the SAME one every other
+        composite's cd1_*/ptools_* analyses use) rather than branching on
+        ``composite_id`` at all -- a composite-specific renderer, if one is
+        ever needed, is a new registered post-sim step (e.g.
+        ``EmitterHistorySummary``), never a per-composite branch here. Reads
+        whatever ``run_pbg.py`` staged at ``history_uri`` (an
+        ``emitter_history.json`` gathered from the composite's own in-memory
+        emitter when no file-backed emitter already shipped its own output --
+        see ``run_pbg.run``'s own docstring -- falling back to
+        ``final_state.json`` when no history was captured), and writes
+        whatever ``run_flush`` renders + ``_manifest.json`` to ``out_uri``,
+        matching the same S3-manifest contract ``GET /analyses/{id}/status``
+        already probes for every other analysis kind.
+        """
+        return (
+            f"cd {V2ECOLI_DIR}"
+            f" && python scripts/run_multi_node_analysis.py"
+            f" --composite-id {shlex.quote(composite_id)}"
+            f" --history-uri {shlex.quote(history_uri)}"
+            f" --out-uri {shlex.quote(out_uri)}"
+            f" --experiment-id {shlex.quote(experiment_id)}"
+        )
+
+    async def submit_multi_node_analysis(
+        self,
+        *,
+        simulation: Simulation,
+        database_service: DatabaseService,
+        commit: str,
+        composite_id: str,
+    ) -> str | None:
+        """Submit the "Analysis flush" node for a multi-node composite dispatch
+        (backlog item 88) that ``JobScheduler.update_multi_node_jobs`` has just
+        confirmed COMPLETED -- the multi-node-composite analogue of
+        ``submit_campaign_analysis``, deliberately NOT a shared function with
+        it (different command, different params, different DB fields) to keep
+        the chain-dispatch analysis-fan-in path this mirrors completely
+        untouched. Same best-effort-but-never-silent contract as
+        ``_submit_analysis_job``: a submission failure is recorded as a FAILED
+        row, not just logged, so it's visible through the same
+        ``GET /analyses/{id}/status`` surface a successful submission uses.
+        """
+        experiment_id = str(simulation.config.experiment_id)
+        analysis_name = f"analysis-mnp-{experiment_id[:20]}-{_rand_suffix()}"
+        results_uri = self._results_s3_uri(experiment_id).rstrip("/")
+        result_uri = f"{results_uri}/analyses/{analysis_name}"
+        settings = get_settings()
+        container_job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
+        tags = {
+            "Project": "v2ecoli-multi-node-composite",
+            "ExperimentId": experiment_id[:255],
+            "CompositeId": str(composite_id)[:255],
+            "Commit": str(commit)[:12],
+            "Team": getattr(settings, "cost_team_tag", None) or "covertlab",
+            "Phase": "analysis",
+        }
+        params: dict[str, Any] = {
+            "composite_id": composite_id,
+            "history_uri": results_uri,
+            "analysis_name": analysis_name,
+            "trigger": "multi-node-dispatch-flush",
+            # ORMAnalysis.to_dto() unconditionally reads config["analysis_options"]
+            # (AnalysisConfigOptions requires experiment_id) -- mirror the shape
+            # _submit_analysis_job's own params dict already writes, so to_dto()
+            # doesn't KeyError for this analysis kind either.
+            "analysis_options": {"experiment_id": [experiment_id]},
+        }
+        try:
+            analysis_job_id = self._submit_container(
+                job_name=f"ray-mnp-analysis-{experiment_id}-{_rand_suffix()}"[:128],
+                job_definition=container_job_def,
+                job_cmd=self._multi_node_analysis_command(
+                    experiment_id=experiment_id,
+                    composite_id=composite_id,
+                    history_uri=results_uri,
+                    out_uri=result_uri,
+                ),
+                out_s3=self._results_s3_uri(experiment_id),
+                out_dir=ANALYSIS_OUT_DIR,
+                depends_on=None,
+                depends_type=None,
+                tags=tags,
+            )
+        except Exception as e:
+            logger.exception("Multi-node analysis submission failed for %s", experiment_id)
+            await database_service.record_analysis(
+                experiment_id=experiment_id,
+                n_tp=None,
+                status=AnalysisStatusDB.FAILED,
+                config=params,
+                name=analysis_name,
+                simulation_id=simulation.database_id,
+                backend="ray",
+                result_uri=result_uri,
+                error_message=f"multi-node analysis submission failed: {type(e).__name__}: {e}",
+            )
+            return None
+        await database_service.record_analysis(
+            experiment_id=experiment_id,
+            n_tp=None,
+            status=AnalysisStatusDB.COMPUTING,
+            config=params,
+            name=analysis_name,
+            simulation_id=simulation.database_id,
+            backend="ray",
+            job_id_ext=str(analysis_job_id),
+            result_uri=result_uri,
+        )
+        logger.info(
+            "Multi-node composite %s (%s): analysis flush -> job %s",
+            experiment_id,
+            composite_id,
+            analysis_job_id,
+        )
+        return analysis_job_id
 
     @override
     async def read_config_template(

@@ -549,4 +549,31 @@
 #          ray-batch-entrypoint.sh already exports RAY_ADDRESS on the head, and
 #          process-bigraph's own RayProtocolRuntime fallback already calls bare
 #          ray.init(), which already respects RAY_ADDRESS from the environment.
-__version__ = "0.9.55"
+# 0.9.56 — backlog item 88: a completed multi-node composite dispatch now joins
+#          the same auto-triggered "Analysis flush" chain-dispatch campaigns
+#          already get, via a deliberately SEPARATE, additive path -- new
+#          JobScheduler.update_multi_node_jobs/_advance_multi_node_job (wired
+#          into the poll loop alongside, never replacing, update_chain_campaigns),
+#          new DatabaseService.list_active_multi_node_composites/
+#          finalize_multi_node_job (an atomic conditional UPDATE, not a Postgres
+#          advisory lock -- a single row's status transition, not a multi-field
+#          per-seed read-decide-write, needs no more than that), new
+#          SimulationServiceRay.submit_multi_node_analysis. New nullable
+#          hpcrun.multi_node_composite_id column (migration 9c2e6b1f4a73) is the
+#          discriminator, mutually exclusive with chain_n_generations by
+#          construction -- proven disjoint against a real Postgres database, not
+#          just by reading the two WHERE clauses (see
+#          test_chain_dispatch_and_multi_node_polling_are_mutually_disjoint).
+#          _submit_multi_node_composite now records its own HpcRun row (mirrors
+#          submit_chain_dispatch_job's identical existing pattern) -- zero
+#          changes to the generic run_simulation_workflow handler.
+#          run_pbg.py's generic runner (viva_api/compose/run_pbg.py) gains a
+#          second generalization: when a document's own emitter has nothing for
+#          _redirect_emitters to redirect (a plain in-memory emitter, e.g.
+#          colony's default), gather and persist its history to
+#          emitter_history.json -- generic, not colony-specific; a document
+#          with a real file-backed emitter is completely unaffected (this only
+#          runs when nothing else already shipped output). This is what makes a
+#          real analysis (not just the final-snapshot final_state.json) possible
+#          for ANY multi-node composite dispatched this way.
+__version__ = "0.9.56"

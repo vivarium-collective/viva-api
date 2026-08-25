@@ -295,6 +295,192 @@ def test_redirect_emitters_is_a_noop_without_emitters(tmp_path: Path) -> None:
     assert doc["composition"]["proc"]["config"]["out_dir"] == "keep"
 
 
+def test_redirect_emitters_does_not_count_or_touch_a_ram_or_console_emitter(tmp_path: Path) -> None:
+    """Backlog item 88 regression: RAMEmitter/ConsoleEmitter (process_bigraph
+    built-ins) have NO out_dir/out_uri capability at all -- Emitter's base
+    config_schema is just {'emit': 'schema'}, and neither subclass adds a
+    location key (RAMEmitter keeps everything in self.history/self.table;
+    ConsoleEmitter just print()s). Unlike ParquetEmitter/XArrayEmitter/
+    SQLiteEmitter, stuffing out_dir into their config is a silent no-op, not a
+    real redirect -- before this fix, the broad `"emitter" in address.lower()`
+    match counted them anyway (confirmed: "emitter" in "local:ramemitter" is
+    True), which silently defeated run()'s own
+    `if n_redirected == 0: _persist_emitter_history(...)` fallback for exactly
+    the plain-in-memory-emitter case that fallback exists to catch. A colony
+    composite's own `emitter_from_wires({...})` resolves to
+    address='local:RAMEmitter' by default (process_bigraph.emitter's own
+    default), so this is not a hypothetical case."""
+    doc: dict[str, Any] = {
+        "ram": {"address": "local:RAMEmitter", "config": {}},
+        "console": {"address": "local:ConsoleEmitter"},
+    }
+    n = run_pbg._redirect_emitters(doc, tmp_path / "out")
+    assert n == 0
+    assert doc["ram"]["config"] == {}  # no meaningless out_dir key added
+    assert "config" not in doc["console"]  # no config block fabricated for it either
+
+
+def test_redirect_emitters_still_counts_a_real_file_backed_emitter_alongside_a_ram_emitter(
+    tmp_path: Path,
+) -> None:
+    """The exclusion is precise, not a blanket "skip anything with emitter in the
+    name": a document mixing a RAMEmitter (e.g. a debug/console sink) with a real
+    ParquetEmitter must still redirect the Parquet one and count exactly 1."""
+    doc: dict[str, Any] = {
+        "ram": {"address": "local:RAMEmitter", "config": {}},
+        "parquet": {"address": "local:ParquetEmitter", "config": {}},
+    }
+    n = run_pbg._redirect_emitters(doc, tmp_path / "out")
+    assert n == 1
+    assert doc["ram"]["config"] == {}
+    assert doc["parquet"]["config"]["out_dir"] == str(tmp_path / "out")
+
+
+# --- _persist_emitter_history: the in-memory-emitter fallback (backlog item 88) ---
+
+
+def test_persist_emitter_history_writes_json_from_gathered_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_pbg_mod = types.ModuleType("process_bigraph")
+    fake_pbg_mod.gather_emitter_results = lambda composite: {  # type: ignore[attr-defined]
+        ("emitter",): [(0.0, {"a": 1}), (1.0, {"a": 2})],
+        ("nested", "path"): [(0.0, {"b": 1})],
+    }
+    monkeypatch.setitem(sys.modules, "process_bigraph", fake_pbg_mod)
+
+    out = run_pbg._persist_emitter_history(composite=object(), results_dir=tmp_path)
+
+    assert out == tmp_path / "emitter_history.json"
+    assert json.loads(out.read_text()) == {
+        "emitter": [[0.0, {"a": 1}], [1.0, {"a": 2}]],
+        "nested.path": [[0.0, {"b": 1}]],
+    }
+
+
+def test_persist_emitter_history_returns_none_and_writes_nothing_when_no_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty gather result (e.g. a document with no emitter at all) is a
+    legitimate, honest absence -- not an error."""
+    fake_pbg_mod = types.ModuleType("process_bigraph")
+    fake_pbg_mod.gather_emitter_results = lambda composite: {}  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "process_bigraph", fake_pbg_mod)
+
+    out = run_pbg._persist_emitter_history(composite=object(), results_dir=tmp_path)
+
+    assert out is None
+    assert not (tmp_path / "emitter_history.json").exists()
+
+
+def test_persist_emitter_history_degrades_when_gather_emitter_results_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Best-effort, matching the function's own documented contract: a composite
+    this generic runner knows nothing about may not support
+    gather_emitter_results the way v2ecoli's colony composite does -- must never
+    raise and abort an otherwise-successful dispatch."""
+
+    def _raise(composite: Any) -> Any:
+        raise RuntimeError("boom")
+
+    fake_pbg_mod = types.ModuleType("process_bigraph")
+    fake_pbg_mod.gather_emitter_results = _raise  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "process_bigraph", fake_pbg_mod)
+
+    out = run_pbg._persist_emitter_history(composite=object(), results_dir=tmp_path)
+
+    assert out is None
+    assert not (tmp_path / "emitter_history.json").exists()
+
+
+def test_persist_emitter_history_degrades_without_process_bigraph_gather_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An older process_bigraph install without gather_emitter_results at all
+    must degrade the same way as any other unsupported-composite case."""
+    fake_pbg_mod = types.ModuleType("process_bigraph")  # no gather_emitter_results attribute
+    monkeypatch.setitem(sys.modules, "process_bigraph", fake_pbg_mod)
+
+    out = run_pbg._persist_emitter_history(composite=object(), results_dir=tmp_path)
+
+    assert out is None
+
+
+def _install_fake_pbg_for_run(monkeypatch: pytest.MonkeyPatch, gather_emitter_results: Any) -> list[Any]:
+    """Install the full fake process_bigraph/bigraph_schema stack test_run_* needs
+    to exercise the real run() function end-to-end, plus a spy on
+    gather_emitter_results calls. Returns the list gather calls are recorded into."""
+
+    class FakeComposite:
+        def __init__(self, doc: Any, core: Any = None) -> None:
+            self.doc = doc
+
+        def run(self, n: int) -> None:
+            pass
+
+        def serialize_state(self) -> dict[str, bool]:
+            return {"ran": True}
+
+    calls: list[Any] = []
+
+    def _spy_gather(composite: Any) -> Any:
+        calls.append(composite)
+        return gather_emitter_results(composite)
+
+    fake_pbg_mod = types.ModuleType("process_bigraph")
+    fake_pbg_mod.Composite = FakeComposite  # type: ignore[attr-defined]
+    fake_pbg_mod.register_types = lambda core: core  # type: ignore[attr-defined]
+    fake_pbg_mod.gather_emitter_results = _spy_gather  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "process_bigraph", fake_pbg_mod)
+    fake_schema_mod = types.ModuleType("bigraph_schema")
+    fake_schema_mod.allocate_core = FakeCore  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "bigraph_schema", fake_schema_mod)
+    _install_fake_protocol_registration(monkeypatch)
+    return calls
+
+
+def test_run_persists_emitter_history_end_to_end_for_a_plain_ram_emitter_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real regression this fix closes, exercised through the actual run()
+    wiring (not just the two halves in isolation): a document shaped exactly
+    like a colony composite's own (emitter_from_wires({...}) -> RAMEmitter, no
+    out_dir/out_uri anywhere) must come out of a real run() call with
+    emitter_history.json written under results_dir."""
+    calls = _install_fake_pbg_for_run(
+        monkeypatch, gather_emitter_results=lambda composite: {("emitter",): [(0.0, {"x": 1})]}
+    )
+
+    pbg = tmp_path / "m.pbg"
+    pbg.write_text(json.dumps({"composition": {"emitter": {"address": "local:RAMEmitter", "config": {}}}}))
+    run_pbg.run(str(pbg), steps=1, results_dir=tmp_path / "output")
+
+    assert len(calls) == 1
+    history_path = tmp_path / "output" / "emitter_history.json"
+    assert history_path.exists()
+    assert json.loads(history_path.read_text()) == {"emitter": [[0.0, {"x": 1}]]}
+
+
+def test_run_skips_persisting_emitter_history_when_a_file_backed_emitter_already_shipped_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A document with a real file-backed emitter (ParquetEmitter) already ships
+    its own output via _redirect_emitters -- _persist_emitter_history must not
+    even be attempted for it (would be redundant, and gather_emitter_results is
+    not guaranteed safe/meaningful once a file-backed emitter owns the data)."""
+    calls = _install_fake_pbg_for_run(
+        monkeypatch, gather_emitter_results=lambda composite: {("emitter",): [(0.0, {"x": 1})]}
+    )
+
+    pbg = tmp_path / "m.pbg"
+    pbg.write_text(json.dumps({"composition": {"emitter": {"address": "local:ParquetEmitter", "config": {}}}}))
+    run_pbg.run(str(pbg), steps=1, results_dir=tmp_path / "output")
+
+    assert calls == []
+    assert not (tmp_path / "output" / "emitter_history.json").exists()
+
+
 # --- _workspace_core: the workspace registers types the generic core can't know ---
 
 
