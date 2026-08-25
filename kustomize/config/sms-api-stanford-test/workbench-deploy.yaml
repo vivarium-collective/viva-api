@@ -1,0 +1,31 @@
+# Deployment-config layer for vivarium-workbench's ui.* bindings.
+#
+# Mounted read-only at /etc/vivarium-workbench/deploy.yaml and named by
+# VIVARIUM_WORKBENCH_DEPLOY_CONFIG. The workbench overlays this on top of the
+# served workspace.yaml's own ui: block (deployment wins; null unsets), so a
+# workspace stops having to carry the identity of the site it runs on.
+# See vivarium-workbench#471 and lib/deploy_config.py.
+#
+# PHASE 2 -- DELIBERATELY REDUNDANT. Every value below is exactly what the
+# seed-workspace initContainer already stamps into workspace.yaml. Both
+# mechanisms agree, so this changes nothing; the point is to prove the plumbing
+# before anything depends on it. The seed script is removed in phase 4, at
+# which point this file becomes the only source.
+#
+# It is also inert until the workbench image contains lib/deploy_config.py
+# (merged to vivarium-workbench main as 8d72d56a, not yet released) -- an older
+# image simply ignores the env var and the mount.
+ui:
+  # Browser-reachable PTools base for the Omics Viewer. The workbench builds a
+  # link the user's BROWSER opens, so this is the tunnel/ALB address
+  # (sms-proxy -s smsvpctest -> localhost:8080), not an in-cluster Service URL.
+  ptools_server_url: "http://localhost:8080"
+
+  # In-cluster workbench Service URL (including the /workbench base path) that
+  # the ptools pod would fetch study TSVs from.
+  dashboard_public_base_url: "http://workbench.sms-api-stanford-test.svc.cluster.local:8000/workbench"
+
+  # null = UNSET, replacing the seed script's imperative ui.pop("ptools_data_dir").
+  # Filesystem delivery is impossible here (the ptools pod has no workspace
+  # mount), so the launcher must not be handed a data dir.
+  ptools_data_dir: null
