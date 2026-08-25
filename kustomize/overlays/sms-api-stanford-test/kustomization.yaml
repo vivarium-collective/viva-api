@@ -13,15 +13,14 @@ images:
   # merge, git tracking simply never caught up). Confirmed live via the real
   # pod image and /version before this edit. Same drift pattern already
   # documented on the sms-api-stanford (prod) workbench overlay.
-  # 0.9.55: same drift pattern again, same day (item 86's own `kubectl diff`
-  # preview caught it before applying) -- live pod is genuinely one version
-  # ahead of what main has merged (confirmed via a fresh `kubectl get
-  # deployment` describe immediately before this edit), almost certainly a
-  # concurrent sibling item's own deploy-ahead-of-merge work. Not this item's
-  # concern -- preserved as-is so this deploy touches ONLY the
-  # vivarium-workbench tag below, never sms-api.
+  # 0.9.56 (item 86/88, PR #276): auto-triggers the analysis job once a
+  # multi-node composite dispatch (e.g. colony) completes --
+  # JobScheduler.update_multi_node_jobs/_advance_multi_node_job, additive,
+  # verified line-by-line to never touch chain-dispatch code. Also includes
+  # 0.9.54 (extra_params passthrough) and 0.9.55 (MNP submission +
+  # HpcRun tracking), neither of which got its own tag at the time.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.55
+    newTag: 0.9.56
   # ptools 0.5.9 -> 0.9.53 (DEV ONLY — prod sms-api-stanford stays on 0.5.9 while
   # this soaks). The long-standing 0.5.9 pin existed because CI builds only
   # sms-api (scripts/build_action.sh), so no newer sms-ptools existed on ghcr.io

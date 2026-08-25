@@ -105,8 +105,11 @@ images:
   # kubectl the real live tag was already drifted ahead to 0.9.53 (an earlier
   # deploy whose git tracking never caught up, same drift class already
   # documented on the -test overlay above).
+  # 0.9.56 (item 86/88, PR #276): auto-triggers the analysis job once a
+  # multi-node composite dispatch (e.g. colony) completes. Verified
+  # line-by-line to never touch chain-dispatch code before deploying here.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.55
+    newTag: 0.9.56
   # ptools 0.5.9 -> 0.9.53, promoting to prod what has been running on
   # sms-api-stanford-test since 2026-08-24 (PR #266).
   #

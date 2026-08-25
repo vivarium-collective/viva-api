@@ -32,7 +32,14 @@ images:
     # `db_reconcile --analyze` against prod RDS reports managed at 71a5478673a8 with
     # every schema marker present. This bump is therefore a no-op for the CURRENT
     # schema; its value is that the NEXT migration will actually be applied.
-    newTag: 0.9.55
+    #
+    # 2026-08-25: 0.9.55 -> 0.9.56 (item 88's multi_node_composite_id migration,
+    # 9c2e6b1f4a73). This time run BEFORE the app overlay deploy, not after --
+    # smsvpctest's own deploy this same session hit this exact class of bug
+    # live (UndefinedColumnError spam in the api pod, confirmed via real logs)
+    # by deploying the app first; fixed there, and this overlay updated first
+    # here specifically to not repeat it in prod.
+    newTag: 0.9.56
 
 resources:
   - alembic-job.yaml
