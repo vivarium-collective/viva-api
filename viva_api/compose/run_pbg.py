@@ -254,8 +254,25 @@ def _redirect_emitters(node: Any, results_dir: Path) -> int:
 
 def _resolve_document(
     input_file: str | None, composite_id: str | None, overrides: dict[str, Any] | None, core: Any
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], Any]:
     """Load a static ``.pbg`` document, or build one from a registered composite.
+
+    Returns ``(document, core)`` — NOT just the document. A composite's own
+    ``core_extensions`` (e.g. ecoli_colony's ``pymunk_agent`` type +
+    ``EcoliWCM``/``ColonyGrowthGif`` link registration via
+    ``_register_colony_core``) are applied here via
+    ``process_bigraph.composite_generator.apply_core_extensions`` — the same
+    real helper ``run_runner.execute()`` uses, not a hand-rolled loop — because
+    ``to_document()`` alone never applies them (only the higher-level
+    ``to_composite()`` does, which this runner can't call directly: it needs
+    the intermediate document for its own emitter-redirect/override logic
+    below). Critically, an extension may return a NEW core object rather than
+    mutating the one it's passed (``_register_colony_core`` builds a fresh
+    viva_munk-based core, confirmed live — backlog item 88); the caller MUST
+    use the returned core, not its own original one, when later constructing
+    ``Composite(document, core=core)`` — a first attempt that applied the
+    extension but kept using the original core silently built against an
+    unextended one and failed with "unable to parse type map[pymunk_agent]".
 
     The composite-id branch resolves through ``process_bigraph.composite_spec`` —
     the same registry ``vivarium_workbench.lib.pbg_export.export_composite_pbg``
@@ -266,6 +283,7 @@ def _resolve_document(
     exactly what the generator function returns — nothing to strip or rewrite.
     """
     if composite_id:
+        from process_bigraph.composite_generator import apply_core_extensions
         from process_bigraph.composite_spec import discover_specs
         from process_bigraph.composite_spec import get as get_spec
 
@@ -279,12 +297,13 @@ def _resolve_document(
             spec = get_spec(composite_id)
         if spec is None:
             raise SystemExit(f"run_pbg: no composite registered as {composite_id!r}")
+        core = apply_core_extensions(spec, core)
         document: dict[str, Any] = spec.to_document(overrides=overrides or {}, core=core)
-        return document
+        return document, core
     if input_file is None:
         raise ValueError("_resolve_document: input_file is required when composite_id is not given")
     loaded: dict[str, Any] = json.loads(Path(input_file).read_text())
-    return loaded
+    return loaded, core
 
 
 def run(
@@ -314,7 +333,30 @@ def run(
     if core is None:
         core = _build_core()
     with _v2ecoli_parquet_emitter_override(results_dir, overrides):
-        document = _resolve_document(input_file, composite_id, overrides, core)
+        document, core = _resolve_document(input_file, composite_id, overrides, core)
+        # Neither _workspace_core()/_build_core() nor a composite's own
+        # core_extensions register process_bigraph's remote-address PROTOCOLS
+        # ('ray'/'rest'/'parallel'/'git' -> RayProtocol/RestProtocol/...) --
+        # confirmed directly: process_bigraph.register_types() (used by
+        # _build_core()) only adds a few misc types, and a workspace's own
+        # PBG_CORE_BUILDER (e.g. v2ecoli.core:build_core) has no reason to
+        # know about this generic-runner concern either. Without this, any
+        # document referencing e.g. a 'ray:SomeProcess' address fails at
+        # Composite-build time with "value is not a protocol: ray" -- confirmed
+        # live (backlog item 88). MUST run AFTER _resolve_document, on the
+        # core it actually returns: a first attempt registered protocols
+        # BEFORE _resolve_document ran core_extensions, and ecoli_colony's own
+        # core_extensions entry (_register_colony_core) discards its input and
+        # builds a brand-new core instead of mutating in place (the same real
+        # convention _resolve_document's own core_extensions fix already
+        # handles) -- so the registration landed on a core that got thrown
+        # away, and the SAME core-that's-actually-used problem recurred one
+        # layer up. Registering it unconditionally, on whatever core survives
+        # to this point, is safe and generic: a document with no such address
+        # simply never looks the type up.
+        from process_bigraph.protocols import register_types as register_protocol_types
+
+        core = register_protocol_types(core)
         # Emitters must write where the entrypoint syncs from, not where the authoring
         # workspace would have put them.
         _redirect_emitters(document, results_dir)
