@@ -557,3 +557,64 @@ def test_run_composite_id_mode_end_to_end(tmp_path: Path, monkeypatch: pytest.Mo
 
     assert json.loads(out.read_text())["doc_seen"] == {"state": {"batch_runner": {}}}
     assert spec.overrides_received == {"n_seeds": 2, "n_generations": 3}
+
+
+def test_run_registers_protocols_on_the_core_that_survives_core_extensions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exact real bug this fix closes (backlog item 88, found on the
+    FOURTH live pilot attempt): protocol registration ('ray' -> RayProtocol
+    etc.) must be applied to whichever core _resolve_document actually
+    returns, not the one run() started with. A composite whose
+    core_extensions REPLACES the core (ecoli_colony's real
+    _register_colony_core does this) would otherwise silently register
+    protocols onto a core that gets thrown away one line later -- a first
+    attempt did exactly this (registered protocols before calling
+    _resolve_document) and failed identically on real AWS with "value is not
+    a protocol: ray", even though the core_extensions fix itself was already
+    correct."""
+
+    class FakeComposite:
+        def __init__(self, doc: Any, core: Any = None) -> None:
+            self.doc = doc
+            self.core_seen = core
+
+        def run(self, n: int) -> None:
+            pass
+
+        def serialize_state(self) -> dict[str, Any]:
+            return {"protocols_registered_on_final_core": getattr(self.core_seen, "protocols_registered", False)}
+
+    fake_pbg_mod = types.ModuleType("process_bigraph")
+    fake_pbg_mod.Composite = FakeComposite  # type: ignore[attr-defined]
+    fake_pbg_mod.register_types = lambda core: core  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "process_bigraph", fake_pbg_mod)
+    fake_schema_mod = types.ModuleType("bigraph_schema")
+    fake_schema_mod.allocate_core = FakeCore  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "bigraph_schema", fake_schema_mod)
+
+    def _mark_registered(core: Any) -> None:
+        core.protocols_registered = True
+
+    fake_protocols_mod = types.ModuleType("process_bigraph.protocols")
+    fake_protocols_mod.register_types = lambda core: (_mark_registered(core), core)[1]  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "process_bigraph.protocols", fake_protocols_mod)
+
+    new_core = FakeCore()
+
+    def _replaces_the_core(core: Any) -> Any:
+        return new_core
+
+    spec = FakeSpec({"state": {}}, core_extensions=[_replaces_the_core])
+    _install_fake_composite_spec(monkeypatch, {"some.workspace.multi_node_composite": spec})
+
+    out = run_pbg.run(
+        None,
+        steps=1,
+        results_dir=tmp_path / "output",
+        composite_id="some.workspace.multi_node_composite",
+        overrides={},
+    )
+
+    assert json.loads(out.read_text())["protocols_registered_on_final_core"] is True
+    assert getattr(new_core, "protocols_registered", False) is True

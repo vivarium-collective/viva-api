@@ -332,24 +332,31 @@ def run(
     core = _workspace_core()
     if core is None:
         core = _build_core()
-    # Neither path above registers process_bigraph's own remote-address
-    # PROTOCOLS ('ray'/'rest'/'parallel'/'git' -> RayProtocol/RestProtocol/...)
-    # -- confirmed directly: process_bigraph.register_types() (used by
-    # _build_core()) only adds a few misc types (interval/default 1/
-    # ode_config); a workspace's own PBG_CORE_BUILDER (e.g. v2ecoli.core:
-    # build_core, itself register_ecoli_core(allocate_core())) has no reason
-    # to know about this generic-runner concern either. Without this, any
-    # document referencing e.g. a 'ray:SomeProcess' address fails at
-    # Composite-build time with "value is not a protocol: ray" -- confirmed
-    # live (backlog item 88, a multi-node composite dispatch is the first
-    # thing in this ecosystem to ever request transport='ray' through this
-    # runner). Registering it unconditionally is safe and generic: a document
-    # with no such address simply never looks the type up.
-    from process_bigraph.protocols import register_types as register_protocol_types
-
-    core = register_protocol_types(core)
     with _v2ecoli_parquet_emitter_override(results_dir, overrides):
         document, core = _resolve_document(input_file, composite_id, overrides, core)
+        # Neither _workspace_core()/_build_core() nor a composite's own
+        # core_extensions register process_bigraph's remote-address PROTOCOLS
+        # ('ray'/'rest'/'parallel'/'git' -> RayProtocol/RestProtocol/...) --
+        # confirmed directly: process_bigraph.register_types() (used by
+        # _build_core()) only adds a few misc types, and a workspace's own
+        # PBG_CORE_BUILDER (e.g. v2ecoli.core:build_core) has no reason to
+        # know about this generic-runner concern either. Without this, any
+        # document referencing e.g. a 'ray:SomeProcess' address fails at
+        # Composite-build time with "value is not a protocol: ray" -- confirmed
+        # live (backlog item 88). MUST run AFTER _resolve_document, on the
+        # core it actually returns: a first attempt registered protocols
+        # BEFORE _resolve_document ran core_extensions, and ecoli_colony's own
+        # core_extensions entry (_register_colony_core) discards its input and
+        # builds a brand-new core instead of mutating in place (the same real
+        # convention _resolve_document's own core_extensions fix already
+        # handles) -- so the registration landed on a core that got thrown
+        # away, and the SAME core-that's-actually-used problem recurred one
+        # layer up. Registering it unconditionally, on whatever core survives
+        # to this point, is safe and generic: a document with no such address
+        # simply never looks the type up.
+        from process_bigraph.protocols import register_types as register_protocol_types
+
+        core = register_protocol_types(core)
         # Emitters must write where the entrypoint syncs from, not where the authoring
         # workspace would have put them.
         _redirect_emitters(document, results_dir)
