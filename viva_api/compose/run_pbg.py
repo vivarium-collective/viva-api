@@ -189,6 +189,18 @@ def _build_core() -> Any:
 # ParquetEmitter -> out_dir (emitter_presets.parquet_vecoli), XArrayEmitter -> out_uri.
 _EMITTER_OUT_KEYS = ("out_dir", "out_uri")
 
+# process_bigraph built-in emitter classes with NO location config at all (their
+# class names still match the broad "emitter" in address.lower() test below, but
+# neither reads out_dir/out_uri -- RAMEmitter keeps everything in memory,
+# ConsoleEmitter just prints). Backlog item 88: a colony composite's plain
+# emitter_from_wires({...}) resolves to address="local:RAMEmitter" by default
+# (process_bigraph.emitter.emitter_from_wires); without this exclusion
+# _redirect_emitters would stuff a meaningless out_dir key into its config and
+# count it as "redirected", which silently defeats run()'s own
+# `if n_redirected == 0: _persist_emitter_history(...)` fallback -- the exact
+# in-memory-emitter case that fallback exists to catch.
+_NON_FILE_BACKED_EMITTER_CLASSES = ("RAMEmitter", "ConsoleEmitter")
+
 
 def _flush_emitters(composite: Any) -> None:
     """Flush any ParquetEmitter steps' buffered rows before the process exits.
@@ -214,6 +226,45 @@ def _flush_emitters(composite: Any) -> None:
     ParquetEmitter.flush_all_in_composite(composite, success=True)
 
 
+def _persist_emitter_history(composite: Any, results_dir: Path) -> Path | None:
+    """Gather and persist a composite's own IN-MEMORY emitter history
+    (backlog item 88) — the generic fallback for whichever document declared
+    an emitter that ``_redirect_emitters`` had nothing to redirect (no
+    ``out_dir``/``out_uri`` key present, e.g. a plain in-memory emitter such
+    as ``emitter_from_wires({...})`` with no explicit sink configured).
+
+    Only called when ``_redirect_emitters`` redirected zero emitters — a
+    document using a real file-backed emitter (ParquetEmitter/XArrayEmitter,
+    the comparison-ensemble path's own setup) already ships its own output via
+    that redirect, so this never runs for it and never duplicates or
+    interferes with that path.
+
+    Writes ``emitter_history.json`` (a dict of ``"path.tuple.joined.by.dots" ->
+    results-list``, JSON-safe via ``default=str``) alongside ``final_state.json``
+    when the composite has emitter data to gather; returns ``None`` (not an
+    error — a document may legitimately have no emitter at all) when it
+    doesn't. Best-effort and never raises: a composite this generic runner
+    knows nothing about may not support ``gather_emitter_results`` the way
+    v2ecoli's colony composite does, and a report that can't be built from
+    missing history is a real, honestly-absent downstream state — not a
+    reason to fail an otherwise-successful dispatch.
+    """
+    try:
+        from process_bigraph import gather_emitter_results
+
+        results = gather_emitter_results(composite)
+    except Exception:
+        print("run_pbg: gather_emitter_results failed or unsupported for this composite; skipping history persist")
+        return None
+    if not results:
+        return None
+    history = {".".join(str(p) for p in path): rows for path, rows in results.items()}
+    out = results_dir / "emitter_history.json"
+    out.write_text(json.dumps(history, default=str))
+    print(f"run_pbg: persisted in-memory emitter history ({len(history)} emitter(s)) -> {out}")
+    return out
+
+
 def _redirect_emitters(node: Any, results_dir: Path) -> int:
     """Point every emitter step's output location at *results_dir*, recursively.
 
@@ -228,12 +279,19 @@ def _redirect_emitters(node: Any, results_dir: Path) -> int:
     Composite. Any pre-existing value is overridden rather than preserved: it was
     computed in the authoring environment, and inside this container the ONLY
     directory that reaches S3 is ``results_dir``. Returns the number of emitters
-    redirected (0 is a legitimate answer — a document need not declare one).
+    redirected (0 is a legitimate answer — a document need not declare one; it is
+    also the correct answer for a document whose only emitter is a non-file-backed
+    one, e.g. ``RAMEmitter`` — see ``_NON_FILE_BACKED_EMITTER_CLASSES``).
     """
     redirected = 0
     if isinstance(node, dict):
         address = node.get("address")
-        if isinstance(address, str) and "emitter" in address.lower():
+        is_file_backed = (
+            isinstance(address, str)
+            and "emitter" in address.lower()
+            and address.split(":")[-1] not in _NON_FILE_BACKED_EMITTER_CLASSES
+        )
+        if is_file_backed:
             config = node.get("config")
             if not isinstance(config, dict):
                 config = {}
@@ -359,10 +417,19 @@ def run(
         core = register_protocol_types(core)
         # Emitters must write where the entrypoint syncs from, not where the authoring
         # workspace would have put them.
-        _redirect_emitters(document, results_dir)
+        n_redirected = _redirect_emitters(document, results_dir)
         composite = Composite(document, core=core)  # full-path local:! addresses resolve via importlib
     composite.run(steps)
     _flush_emitters(composite)
+    # Backlog item 88: a document whose emitter is a plain in-memory one (no
+    # out_dir/out_uri to redirect -- n_redirected == 0) has nothing else
+    # shipping its data to results_dir/S3. Gather and persist it generically
+    # here so ANY composite dispatched through this runner this way (not just
+    # ecoli_colony) gets its trajectory captured, not just the final snapshot
+    # below. A document with a real file-backed emitter already shipped its
+    # own output via the redirect above, so this is skipped for it.
+    if n_redirected == 0:
+        _persist_emitter_history(composite, results_dir)
     out = results_dir / "final_state.json"
     out.write_text(json.dumps(composite.serialize_state(), default=str))
     return out

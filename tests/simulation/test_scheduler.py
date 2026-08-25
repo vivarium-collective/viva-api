@@ -146,6 +146,7 @@ def _mock_ray_service() -> MagicMock:
     mock_ray.stage_runner = AsyncMock(return_value="s3://mybucket/runner/run_pbg.py")
     mock_ray.submit_chain_generation_batch = AsyncMock()
     mock_ray.submit_campaign_analysis = AsyncMock(return_value="analysis-job-id")
+    mock_ray.submit_multi_node_analysis = AsyncMock(return_value="mnp-analysis-job-id")
     mock_ray.cache_s3_uri = MagicMock(return_value="s3://mybucket/cache/commit")
     mock_ray.chain_base_tags = MagicMock(return_value={"Project": "v2ecoli-comparison"})
     return mock_ray
@@ -565,6 +566,188 @@ class TestAdvanceChainCampaign:
         assert refetched is not None
         assert refetched.chain_current_job_ids == ["s0g2"]
         assert refetched.chain_current_generation == [2]
+
+
+async def insert_multi_node_composite_job(
+    database_service: DatabaseServiceSQL,
+    *,
+    job_id_ext: str,
+    composite_id: str = "some_workspace.composites.some_multi_node_composite",
+) -> tuple[Simulation, HpcRun]:
+    """Insert a Simulation + a multi-node-composite-shaped HpcRun row (backlog
+    item 88 — e.g. a colony composite spread across N Ray-cluster nodes), the
+    fixture shape JobScheduler.update_multi_node_jobs/_advance_multi_node_job
+    consumes. Mirrors insert_chain_campaign_job's own shape, but for the
+    single-job (not N-seed-chain) discriminator: multi_node_composite_id."""
+    latest_commit_hash = str(uuid.uuid4())
+    simulator = await database_service.insert_simulator(
+        git_commit_hash=latest_commit_hash,
+        git_repo_url="https://github.com/CovertLabEcoli/sms-ecoli",
+        git_branch="main",
+    )
+    parca_dataset = await database_service.insert_parca_dataset(
+        parca_dataset_request=ParcaDatasetRequest(simulator_version=simulator, parca_config=ParcaOptions())
+    )
+    experiment_id = f"test-mnp-composite-{str(uuid.uuid4())[:8]!s}"
+    simulation_request = SimulationRequest(
+        simulation_config_filename="config_filename",
+        experiment_id=experiment_id,
+        parca_dataset_id=parca_dataset.database_id,
+        simulator_id=simulator.database_id,
+        config=SimulationConfig(experiment_id=experiment_id),
+    )
+    simulation = await database_service.insert_simulation(sim_request=simulation_request)
+    hpcrun = await database_service.insert_hpcrun(
+        job_id=JobId.ray(job_id_ext),
+        job_type=JobType.SIMULATION,
+        ref_id=simulation.database_id,
+        correlation_id=f"mnp-composite-{experiment_id}",
+        multi_node_composite_id=composite_id,
+    )
+    return simulation, hpcrun
+
+
+class TestUpdateMultiNodeJobs:
+    """JobScheduler.update_multi_node_jobs / _advance_multi_node_job (backlog
+    item 88): the "Analysis flush" auto-trigger for a generic multi-node
+    process-bigraph composite dispatch, mirroring update_chain_campaigns'
+    role for chain-dispatch campaigns but via a deliberately SEPARATE,
+    additive code path -- these tests exist specifically to prove that
+    separation holds against a REAL Postgres database (testcontainers), not
+    just by code inspection."""
+
+    @pytest.mark.asyncio
+    async def test_update_multi_node_jobs_is_a_noop_without_a_ray_service(self) -> None:
+        mock_database = AsyncMock()
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(),
+            database_service=mock_database,
+            simulation_service_ray=None,
+        )
+        await scheduler.update_multi_node_jobs()
+        mock_database.list_active_multi_node_composites.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_still_running_job_leaves_row_untouched_and_submits_no_analysis(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        _simulation, hpcrun = await insert_multi_node_composite_job(database_service, job_id_ext="mnp-running")
+        mock_ray = _mock_ray_service()
+        mock_ray.get_job_status.return_value = JobStatusInfo(job_id=JobId.ray("mnp-running"), status=JobStatus.RUNNING)
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_multi_node_job(hpcrun, mock_ray)
+
+        mock_ray.submit_multi_node_analysis.assert_not_awaited()
+        refetched = await database_service.get_hpcrun(hpcrun.database_id)
+        assert refetched is not None
+        assert refetched.status == JobStatus.RUNNING
+
+    @pytest.mark.asyncio
+    async def test_completed_job_finalizes_row_and_submits_analysis_exactly_once(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        _simulation, hpcrun = await insert_multi_node_composite_job(
+            database_service, job_id_ext="mnp-done", composite_id="v2ecoli.composites.ecoli_colony.ecoli_colony"
+        )
+        mock_ray = _mock_ray_service()
+        mock_ray.get_job_status.return_value = JobStatusInfo(job_id=JobId.ray("mnp-done"), status=JobStatus.COMPLETED)
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_multi_node_job(hpc_run=hpcrun, simulation_service_ray=mock_ray)
+
+        mock_ray.submit_multi_node_analysis.assert_awaited_once()
+        call_kwargs = mock_ray.submit_multi_node_analysis.call_args.kwargs
+        assert call_kwargs["composite_id"] == "v2ecoli.composites.ecoli_colony.ecoli_colony"
+
+        refetched = await database_service.get_hpcrun(hpcrun.database_id)
+        assert refetched is not None
+        assert refetched.status == JobStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_failed_job_finalizes_row_but_does_not_submit_analysis(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        _simulation, hpcrun = await insert_multi_node_composite_job(database_service, job_id_ext="mnp-failed")
+        mock_ray = _mock_ray_service()
+        mock_ray.get_job_status.return_value = JobStatusInfo(
+            job_id=JobId.ray("mnp-failed"), status=JobStatus.FAILED, error_message="Batch job failed"
+        )
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_multi_node_job(hpc_run=hpcrun, simulation_service_ray=mock_ray)
+
+        mock_ray.submit_multi_node_analysis.assert_not_awaited()
+        refetched = await database_service.get_hpcrun(hpcrun.database_id)
+        assert refetched is not None
+        assert refetched.status == JobStatus.FAILED
+        assert refetched.error_message == "Batch job failed"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_finalize_only_one_tick_wins_the_race(self, database_service: DatabaseServiceSQL) -> None:
+        """The explicit regression property finalize_multi_node_job exists to
+        guarantee: two overlapping polling ticks against the SAME completed
+        job (e.g. two pods briefly overlapping during a rolling restart) must
+        never both submit the analysis job. Runs the real atomic conditional
+        UPDATE concurrently via asyncio.gather against a real Postgres
+        testcontainer -- the same methodology item 71 Phase 4's own advisory
+        -lock regression test (PR #260) used for its own double-submit
+        guarantee."""
+        _simulation, hpcrun = await insert_multi_node_composite_job(database_service, job_id_ext="mnp-race")
+
+        results = await asyncio.gather(
+            database_service.finalize_multi_node_job(hpcrun.database_id, JobStatus.COMPLETED),
+            database_service.finalize_multi_node_job(hpcrun.database_id, JobStatus.COMPLETED),
+        )
+        assert sorted(results) == [False, True]
+
+    @pytest.mark.asyncio
+    async def test_chain_dispatch_and_multi_node_polling_are_mutually_disjoint(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        """The explicit "existing chain-dispatch path is unaffected" proof:
+        with BOTH a chain-dispatch campaign row and a multi-node-composite row
+        active simultaneously, each poller's own query must see ONLY its own
+        row -- never the other's, and never the union. Proves
+        list_active_chain_campaigns/list_active_multi_node_composites are
+        structurally disjoint against a real Postgres database, not just by
+        reading the two WHERE clauses."""
+        _chain_sim, chain_hpcrun = await insert_chain_campaign_job(
+            database_service, job_id_ext="disjoint-chain", chain_n_generations=2, n_seeds=1
+        )
+        _mnp_sim, mnp_hpcrun = await insert_multi_node_composite_job(database_service, job_id_ext="disjoint-mnp")
+
+        chain_campaigns = await database_service.list_active_chain_campaigns()
+        chain_ids = {c.database_id for c in chain_campaigns}
+        assert chain_hpcrun.database_id in chain_ids
+        assert mnp_hpcrun.database_id not in chain_ids
+
+        mnp_jobs = await database_service.list_active_multi_node_composites()
+        mnp_ids = {m.database_id for m in mnp_jobs}
+        assert mnp_hpcrun.database_id in mnp_ids
+        assert chain_hpcrun.database_id not in mnp_ids
+
+        # Advancing the multi-node job must not touch the chain campaign row.
+        mock_ray = _mock_ray_service()
+        mock_ray.get_job_status.return_value = JobStatusInfo(
+            job_id=JobId.ray("disjoint-mnp"), status=JobStatus.COMPLETED
+        )
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+        await scheduler._advance_multi_node_job(hpc_run=mnp_hpcrun, simulation_service_ray=mock_ray)
+
+        untouched_chain = await database_service.get_hpcrun(chain_hpcrun.database_id)
+        assert untouched_chain is not None
+        assert untouched_chain.status == JobStatus.RUNNING
+        assert untouched_chain.chain_current_job_ids == [None]
+        mock_ray.submit_chain_generation_batch.assert_not_awaited()
 
 
 @pytest.mark.integration

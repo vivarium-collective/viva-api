@@ -3,15 +3,16 @@ import datetime
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from typing import Any, override
+from typing import Any, cast, override
 
-from sqlalchemy import ColumnElement, Result, and_, or_, select, text
+from sqlalchemy import ColumnElement, CursorResult, Result, and_, or_, select, text
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import InstrumentedAttribute
 
 from viva_api.analysis.models import AnalysisConfig, ExperimentAnalysisDTO
 from viva_api.common.hpc.job_service import JobStatusUpdate
-from viva_api.common.models import JobId
+from viva_api.common.models import JobId, JobStatus
 from viva_api.simulation.models import (
     ChainCampaignUpdate,
     HpcRun,
@@ -137,6 +138,7 @@ class DatabaseService(ABC):
         chain_current_job_ids: list[str | None] | None = None,
         chain_current_generation: list[int | None] | None = None,
         chain_parca_done: bool | None = None,
+        multi_node_composite_id: str | None = None,
     ) -> HpcRun:
         """
         :param job_id: Backend-tagged job identifier.
@@ -151,6 +153,9 @@ class DatabaseService(ABC):
             has resolved (backlog item 71 Phase 4). Omit for every non-campaign HpcRun.
         :param chain_current_generation: per-seed generation index of the tracked current job.
         :param chain_parca_done: whether ParCa has completed, gating generation-0 submission.
+        :param multi_node_composite_id: the dispatched composite's id, for a generic multi-node
+            process-bigraph composite dispatch (backlog item 88, e.g. a colony composite spread
+            across N Ray-cluster nodes). Omit for every other HpcRun.
         """
         pass
 
@@ -241,6 +246,17 @@ class DatabaseService(ABC):
         pass
 
     @abstractmethod
+    async def list_active_multi_node_composites(self) -> list[HpcRun]:
+        """Return active (PENDING/RUNNING) HpcRun rows tracking a generic
+        multi-node process-bigraph composite dispatch
+        (``multi_node_composite_id is not None``) -- backlog item 88. The set
+        ``JobScheduler.update_multi_node_jobs`` polls each interval.
+        Structurally disjoint from ``list_active_chain_campaigns``'s own
+        result set: a row is written by exactly one dispatch shape, never
+        both."""
+        pass
+
+    @abstractmethod
     async def update_hpcrun_status(self, hpcrun_id: int, update: JobStatusUpdate) -> None:
         """Update the status of a given HpcRun job."""
         pass
@@ -270,6 +286,27 @@ class DatabaseService(ABC):
         generation, checking job status) while the lock is held; those calls
         are what "decide" needs to do and are expected to be fast (a handful of
         API calls, not the whole campaign).
+        """
+        pass
+
+    @abstractmethod
+    async def finalize_multi_node_job(
+        self, hpcrun_id: int, status: JobStatus, error_message: str | None = None
+    ) -> bool:
+        """Atomically transition one multi-node-composite HpcRun (backlog item
+        88) from PENDING/RUNNING to a terminal ``status``, returning ``True``
+        only if THIS call performed the transition.
+
+        A single-row conditional UPDATE (``WHERE status IN (PENDING,
+        RUNNING)``) is sufficient here — unlike ``advance_chain_campaign``'s
+        Postgres advisory lock, no separate lock is needed because there is
+        only one field to transition, not a multi-field per-seed
+        read-decide-write. Two overlapping polling ticks (e.g. during a
+        rolling restart) racing to finalize the SAME row can only ever have
+        one UPDATE affect a row; the other sees zero rows affected and returns
+        ``False``. Callers MUST only submit the follow-on analysis job when
+        this returns ``True`` — the concrete guarantee against double-firing
+        the analysis for a single completed job.
         """
         pass
 
@@ -563,6 +600,7 @@ class DatabaseServiceSQL(DatabaseService):
         chain_current_job_ids: list[str | None] | None = None,
         chain_current_generation: list[int | None] | None = None,
         chain_parca_done: bool | None = None,
+        multi_node_composite_id: str | None = None,
     ) -> HpcRun:
         jobref_simulation_id = ref_id if job_type == JobType.SIMULATION else None
         jobref_parca_dataset_id = ref_id if job_type == JobType.PARCA else None
@@ -586,6 +624,7 @@ class DatabaseServiceSQL(DatabaseService):
                 if chain_current_generation is not None
                 else None,
                 chain_parca_done=chain_parca_done,
+                multi_node_composite_id=multi_node_composite_id,
             )
             session.add(orm_hpc_run)
             await session.flush()
@@ -967,6 +1006,17 @@ class DatabaseServiceSQL(DatabaseService):
             return [orm_hpcrun.to_hpc_run() for orm_hpcrun in orm_hpcruns]
 
     @override
+    async def list_active_multi_node_composites(self) -> list[HpcRun]:
+        async with self.async_sessionmaker() as session:
+            stmt = select(ORMHpcRun).where(
+                ORMHpcRun.status.in_([JobStatusDB.PENDING, JobStatusDB.RUNNING]),
+                ORMHpcRun.multi_node_composite_id.is_not(None),
+            )
+            result: Result[tuple[ORMHpcRun]] = await session.execute(stmt)
+            orm_hpcruns = result.scalars().all()
+            return [orm_hpcrun.to_hpc_run() for orm_hpcrun in orm_hpcruns]
+
+    @override
     async def update_hpcrun_status(self, hpcrun_id: int, update: JobStatusUpdate) -> None:
         async with self.async_sessionmaker() as session, session.begin():
             orm_hpcrun: ORMHpcRun | None = await self._get_orm_hpcrun(session, hpcrun_id=hpcrun_id)
@@ -1019,6 +1069,26 @@ class DatabaseServiceSQL(DatabaseService):
                 if update.error_message:
                     orm_hpcrun.error_message = update.error_message
             await session.flush()
+
+    @override
+    async def finalize_multi_node_job(
+        self, hpcrun_id: int, status: JobStatus, error_message: str | None = None
+    ) -> bool:
+        async with self.async_sessionmaker() as session, session.begin():
+            stmt = (
+                sa_update(ORMHpcRun)
+                .where(
+                    ORMHpcRun.id == hpcrun_id,
+                    ORMHpcRun.status.in_([JobStatusDB.PENDING, JobStatusDB.RUNNING]),
+                )
+                .values(
+                    status=JobStatusDB.from_job_status(status),
+                    end_time=datetime.datetime.now(),
+                    error_message=error_message,
+                )
+            )
+            result = cast(CursorResult[Any], await session.execute(stmt))
+            return bool(result.rowcount)
 
     @override
     async def get_hpcrun_id_by_correlation_id(self, correlation_id: str) -> int | None:
