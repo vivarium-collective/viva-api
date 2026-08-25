@@ -332,6 +332,22 @@ def run(
     core = _workspace_core()
     if core is None:
         core = _build_core()
+    # Neither path above registers process_bigraph's own remote-address
+    # PROTOCOLS ('ray'/'rest'/'parallel'/'git' -> RayProtocol/RestProtocol/...)
+    # -- confirmed directly: process_bigraph.register_types() (used by
+    # _build_core()) only adds a few misc types (interval/default 1/
+    # ode_config); a workspace's own PBG_CORE_BUILDER (e.g. v2ecoli.core:
+    # build_core, itself register_ecoli_core(allocate_core())) has no reason
+    # to know about this generic-runner concern either. Without this, any
+    # document referencing e.g. a 'ray:SomeProcess' address fails at
+    # Composite-build time with "value is not a protocol: ray" -- confirmed
+    # live (backlog item 88, a multi-node composite dispatch is the first
+    # thing in this ecosystem to ever request transport='ray' through this
+    # runner). Registering it unconditionally is safe and generic: a document
+    # with no such address simply never looks the type up.
+    from process_bigraph.protocols import register_types as register_protocol_types
+
+    core = register_protocol_types(core)
     with _v2ecoli_parquet_emitter_override(results_dir, overrides):
         document, core = _resolve_document(input_file, composite_id, overrides, core)
         # Emitters must write where the entrypoint syncs from, not where the authoring

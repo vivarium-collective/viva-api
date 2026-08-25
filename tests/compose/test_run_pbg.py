@@ -17,6 +17,19 @@ class FakeCore:
         self.links[key] = link
 
 
+def _install_fake_protocol_registration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """run() does `from process_bigraph.protocols import register_types as
+    register_protocol_types` unconditionally (backlog item 88 -- registers
+    'ray'/'rest'/'parallel'/'git' as resolvable protocol types; without it
+    any document referencing e.g. a ray: address fails at Composite-build
+    time with "value is not a protocol: ray", confirmed live). Every test
+    that exercises the real run() needs this fake too, alongside the
+    existing process_bigraph/bigraph_schema fakes."""
+    fake_protocols_mod = types.ModuleType("process_bigraph.protocols")
+    fake_protocols_mod.register_types = lambda core: core  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "process_bigraph.protocols", fake_protocols_mod)
+
+
 def test_run_writes_final_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeComposite:
         def __init__(self, doc: Any, core: Any = None) -> None:
@@ -42,6 +55,7 @@ def test_run_writes_final_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     fake_schema_mod = types.ModuleType("bigraph_schema")
     fake_schema_mod.allocate_core = FakeCore  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "bigraph_schema", fake_schema_mod)
+    _install_fake_protocol_registration(monkeypatch)
 
     pbg = tmp_path / "m.pbg"
     pbg.write_text(json.dumps({"state": {}, "composition": {}}))
@@ -79,6 +93,7 @@ def test_run_flushes_parquet_emitters_after_composite_run(tmp_path: Path, monkey
     fake_schema_mod = types.ModuleType("bigraph_schema")
     fake_schema_mod.allocate_core = FakeCore  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "bigraph_schema", fake_schema_mod)
+    _install_fake_protocol_registration(monkeypatch)
 
     flush_calls: list[tuple[Any, bool]] = []
 
@@ -527,6 +542,7 @@ def test_run_composite_id_mode_end_to_end(tmp_path: Path, monkeypatch: pytest.Mo
     fake_schema_mod = types.ModuleType("bigraph_schema")
     fake_schema_mod.allocate_core = FakeCore  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "bigraph_schema", fake_schema_mod)
+    _install_fake_protocol_registration(monkeypatch)
 
     spec = FakeSpec({"state": {"batch_runner": {}}})
     _install_fake_composite_spec(monkeypatch, {"v2ecoli.composites.ecoli_baseline": spec})
