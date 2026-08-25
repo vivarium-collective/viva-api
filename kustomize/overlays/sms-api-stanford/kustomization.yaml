@@ -107,12 +107,38 @@ images:
   # documented on the -test overlay above).
   - name: ghcr.io/vivarium-collective/sms-api
     newTag: 0.9.55
-  # ptools pinned to last-known-good tag — CI only builds sms-api, so there is
-  # no newer sms-ptools:0.6.x image on ghcr.io.  0.5.9 is the tag the live Stanford
-  # pod has been running successfully; keeping both namespaces pointing here
-  # avoids an ErrImagePull ReplicaSet while api iterates independently.
+  # ptools 0.5.9 -> 0.9.53, promoting to prod what has been running on
+  # sms-api-stanford-test since 2026-08-24 (PR #266).
+  #
+  # The old 0.5.9 pin was never a stability choice -- CI builds only sms-api
+  # (scripts/build_action.sh), so no newer sms-ptools existed on ghcr.io to point
+  # at. 0.9.53 was built and pushed by hand via kustomize/scripts/build_and_push.sh
+  # (docker buildx, linux/amd64); it exists on ghcr, so this will not ErrImagePull.
+  #
+  # THIS CHANGES THE BIOCYC DATA SERVED ON :1555 -- it is not a version-number-only
+  # rebuild. 0.5.9 was built from the Pathway Tools 30.0 PREVIEW archive, which
+  # shipped 30.0 binaries over 29.5 PGDB data. 0.9.53 is built from the official
+  # release (aic-export-30.0.tar.gz): ecocyc/metacyc/mg1655-with-re548viocyc move
+  # 29.5 -> 30.0, and a fourth PGDB, mg1655-rph-vio-m5cyc/30.5, is added. The Lisp
+  # runtime image moves 1.232 -> 1.241 GB; 83 of 1998 common files differ. See
+  # commit bad12adb for the full archive diff.
+  #
+  # Verified live on stanford-test before promoting: GET / -> 200, and
+  # organism-summary -> 200 for ECOLI ("version 30.0", was 29.5), for
+  # MG1655-WITH-RE548VIO, and for the new MG1655-RPH-VIO-M5. The startup line
+  # "There are 3 organisms available" is CORRECT and not a missing PGDB -- the
+  # fourth is META (MetaCyc), a reference pathway DB rather than an organism, so
+  # organism-summary?object=META legitimately 404s.
+  #
+  # NOTE: this Deployment has no readiness/liveness probe, so `kubectl rollout
+  # status` reports success the instant the process starts and proves nothing.
+  # Verify by port-forwarding :1555 and repeating the checks above.
+  #
+  # ptools is tagged off the sms-api version line as of its BUILD, so it lags
+  # sms-api between rebuilds (api is 0.9.55 here). Never bump this tag without
+  # actually building and pushing that image.
   - name: ghcr.io/vivarium-collective/sms-ptools
-    newTag: 0.5.9
+    newTag: 0.9.53
 
 replicas:
   - count: 1
