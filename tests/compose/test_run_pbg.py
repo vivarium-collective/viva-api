@@ -333,10 +333,15 @@ def test_a_falsy_workspace_core_is_still_used(monkeypatch: pytest.MonkeyPatch) -
 
 
 class FakeSpec:
-    def __init__(self, doc: dict[str, Any]) -> None:
+    def __init__(self, doc: dict[str, Any], core_extensions: list[Any] | None = None) -> None:
         self._doc = doc
         self.overrides_received: dict[str, Any] | None = None
         self.core_received: Any = None
+        # Mirrors the real CompositeSpec's own field (process_bigraph/composite_spec.py,
+        # default_factory=list) -- to_document() itself never applies these (only the
+        # higher-level to_composite() does); _resolve_document applies them itself
+        # (backlog item 88), same one line to_composite() uses.
+        self.core_extensions = core_extensions or []
 
     def to_document(self, overrides: dict[str, Any] | None = None, core: Any = None) -> dict[str, Any]:
         self.overrides_received = overrides
@@ -373,6 +378,32 @@ def test_resolve_document_composite_id_mode_builds_via_registered_spec(monkeypat
     assert doc == {"state": {"batch_runner": {}}}
     assert spec.overrides_received == overrides
     assert spec.core_received is core
+
+
+def test_resolve_document_applies_the_spec_own_core_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """backlog item 88: a composite that declares core_extensions (e.g.
+    ecoli_colony's pymunk_agent type + EcoliWCM/ColonyGrowthGif link
+    registration via _register_colony_core) must have them applied before
+    to_document() builds against `core` -- CompositeSpec.to_document() itself
+    never does this (only to_composite() does), so _resolve_document must,
+    the same one line to_composite() uses. Without it, building any such
+    composite raises "unable to parse type" for whatever custom type the
+    extension would have registered -- confirmed live against a real 2-node
+    AWS Batch colony dispatch before this fix existed."""
+    applied: list[Any] = []
+
+    def _register_custom_types(core: Any) -> None:
+        applied.append(core)
+        core.register_link("SomeCustomLink", object())
+
+    core = FakeCore()
+    spec = FakeSpec({"state": {}}, core_extensions=[_register_custom_types])
+    _install_fake_composite_spec(monkeypatch, {"some.workspace.multi_node_composite": spec})
+
+    run_pbg._resolve_document(None, "some.workspace.multi_node_composite", {}, core=core)
+
+    assert applied == [core]
+    assert "SomeCustomLink" in core.links
 
 
 def test_resolve_document_composite_id_retries_after_discover_specs(monkeypatch: pytest.MonkeyPatch) -> None:

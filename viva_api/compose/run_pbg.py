@@ -279,6 +279,21 @@ def _resolve_document(
             spec = get_spec(composite_id)
         if spec is None:
             raise SystemExit(f"run_pbg: no composite registered as {composite_id!r}")
+        # A composite's declared core_extensions (e.g. ecoli_colony's
+        # pymunk_agent type + EcoliWCM/ColonyGrowthGif link registration) are
+        # NOT applied by to_document() -- only CompositeSpec.to_composite()
+        # does that (process_bigraph/composite_spec.py, "for ext in
+        # self.core_extensions: ext(core)"). This runner can't use
+        # to_composite() directly (it needs the intermediate document for its
+        # own emitter-redirect/override logic below), so it mirrors that same
+        # one line here instead -- mutates `core` in place, same object `run()`
+        # later passes to Composite(document, core=core). Confirmed necessary
+        # live (backlog item 88): omitting this raises "unable to parse type
+        # map[pymunk_agent]" building any composite that registers a custom
+        # type via core_extensions and isn't already covered by the
+        # workspace's own PBG_CORE_BUILDER.
+        for ext in spec.core_extensions:
+            ext(core)
         document: dict[str, Any] = spec.to_document(overrides=overrides or {}, core=core)
         return document
     if input_file is None:
