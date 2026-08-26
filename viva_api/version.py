@@ -576,4 +576,19 @@
 #          runs when nothing else already shipped output). This is what makes a
 #          real analysis (not just the final-snapshot final_state.json) possible
 #          for ANY multi-node composite dispatched this way.
-__version__ = "0.9.56"
+# 0.9.57 — GET .../observables/index now fails loudly (409) for a chain-dispatch
+#          campaign or a multi-node composite dispatch (e.g. colony) instead of
+#          falling through to RayLayout.seed_store_uri's flat "v2ecoli_seed{NN}.zarr"
+#          convention -- a store neither dispatch shape ever writes. Both are still
+#          Ray backend, so the existing guard (backend-type only) let them through
+#          silently. _ray_seed_store_uri_or_error now also checks
+#          HpcRun.chain_final_job_ids/multi_node_composite_id (the same fields used
+#          elsewhere to distinguish these shapes) and points the 409 at
+#          GET /analyses/{id}/status, the endpoint that actually serves that output.
+#          Found live investigating a real cplong bug report on smsvpctest: the
+#          phase0 (plain 1-seed/1-gen) dispatch shape was writing its own store to
+#          the wrong S3 layout entirely (fixed upstream in v2ecoli/sms-ecoli, not
+#          this repo) -- this release hardens the same endpoint against the two
+#          OTHER dispatch shapes it was never meant to serve, so a future
+#          misdirected call fails clearly instead of confusingly.
+__version__ = "0.9.57"
