@@ -121,8 +121,15 @@ images:
   # namespace already mounts a ConfigMap for (see the VIVARIUM_WORKBENCH_DEPLOY_
   # CONFIG patch below). Phase 2 was inert precisely because the running image
   # predated the resolver; from this tag on, the mount is actually read.
+  # 0.3.57 fixes a regression 0.3.56 introduced HERE (workbench #936): switching
+  # the active workspace to a materialized build raised "workspace has no .venv"
+  # for everything under build-cache/. materialize_build() extracts a tarball and
+  # never provisions an environment, so no such workspace has one; before the
+  # slim image they silently borrowed the baked science venv via sys.executable.
+  # 0.3.57 borrows the BASE workspace's venv instead -- deliberate rather than
+  # accidental. Bridge only; workbench #937 tracks per-workspace venvs.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.56
+    newTag: 0.3.57
 
 replicas:
   - count: 1
