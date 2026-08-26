@@ -229,6 +229,30 @@ spec:
             # docs/REFACTOR-PLAN.md §2B.3: "workspace (git/YAML/SQLite) +
             # caches (venv, ParCa ~175 MB, `~/.pbg/build-cache`)") -- only the
             # workspace half had shipped until now.
+            # Item 21 follow-on (2026-08-26): the mount BELOW made only
+            # /root/.pbg/build-cache durable -- one child of ~/.pbg. The
+            # directory itself stayed on the container's ephemeral overlay
+            # filesystem, and so did `/root/.pbg/workspaces.json`: the REGISTRY
+            # of which workspaces exist. Verified on the live smsvpctest pod by
+            # comparing device numbers -- /workspace and .../build-cache are both
+            # dev 66308 (the EBS PVC) while /root/.pbg and workspaces.json were
+            # dev 1048604 (the overlay fs). Consequence: every redeploy kept the
+            # workspace BYTES (9.4 GB of them) and threw away the index, so a
+            # user's materialized workspaces vanished from the picker and had to
+            # be re-materialized. That reads to an end user as "the volume got
+            # recycled" even though nothing on the volume was lost -- the pod's
+            # workspaces.json had an added_at equal to its own start time, with
+            # build-cache/sim82-234dc76 sitting on the PVC unreferenced.
+            #
+            # Mounting the directory (not just its build-cache child) fixes it.
+            # The build-cache mount below is NESTED inside this one and is kept
+            # at its existing subPath deliberately: kubelet orders mounts by path
+            # depth, so both apply and no existing build-cache data has to move.
+            # `servers/` + `servers.lock` (pbg server registrations) become
+            # durable as a side effect -- stale entries are re-derived on boot.
+            - name: workspace
+              mountPath: /root/.pbg
+              subPath: pbg-state
             - name: workspace
               mountPath: /root/.pbg/build-cache
               subPath: build-cache
