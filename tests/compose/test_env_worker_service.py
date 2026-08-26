@@ -11,6 +11,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from viva_api.compose.env_worker_service import (
+    MODULE_MOUNT,
+    SCRATCH_MOUNT,
     WORKER_TTL_SECONDS,
     EnvWorkerLaunchError,
     EnvWorkerService,
@@ -35,6 +37,8 @@ def service(monkeypatch):
         batch_region = "us-gov-west-1"
         ray_ecr_repository = "v2ecoli"
         k8s_job_namespace = "sms-api-stanford-test"
+        env_worker_module_image = "ghcr.io/vivarium-collective/vivarium-workbench:0.3.57"
+        env_worker_workspace_path = "/app/v2ecoli"
 
     monkeypatch.setattr("viva_api.compose.env_worker_service.get_settings", lambda: _S())
     k8s = MagicMock()
@@ -48,6 +52,8 @@ def test_missing_ecr_account_refuses_rather_than_guessing(monkeypatch):
         batch_region = "us-gov-west-1"
         ray_ecr_repository = "v2ecoli"
         k8s_job_namespace = "ns"
+        env_worker_module_image = "ghcr.io/vivarium-collective/vivarium-workbench:0.3.57"
+        env_worker_workspace_path = "/app/v2ecoli"
 
     monkeypatch.setattr("viva_api.compose.env_worker_service.get_settings", lambda: _S())
     svc = EnvWorkerService(k8s=MagicMock(), namespace="ns")
@@ -175,3 +181,77 @@ def test_stop_propagates_a_real_failure(service):
     k8s.delete_job.side_effect = k8s_client.rest.ApiException(status=403)
     with pytest.raises(k8s_client.rest.ApiException):
         svc.stop("env-worker-234dc76-shared")
+
+
+# --- step 3: the pod spec ---------------------------------------------------
+
+def test_worker_runs_under_the_images_own_interpreter(service):
+    """`python` in the simulator image resolves to ITS venv — that is the
+    environment being asked about, and why the worker runs here at all."""
+    svc, k8s = service
+    svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN)
+    c = _created_job(k8s).spec.template.spec.containers[0]
+    assert c.command == ["python", "-m", "vivarium_workbench.env_worker"]
+
+
+def test_worker_module_is_staged_from_the_workbench_image(service):
+    """Delivered, not installed: protocol §4 keeps vivarium-workbench out of the
+    workspace venv, and the simulator image is built --no-install-package."""
+    svc, k8s = service
+    svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN)
+    pod = _created_job(k8s).spec.template.spec
+    init = pod.init_containers[0]
+    assert "vivarium-workbench" in init.image
+    script = init.command[-1]
+    assert "env_worker.py" in script and "/lib" in script
+    # The bulk of the package is the loom frontend bundle; a worker must not pay
+    # ~199 MB of emptyDir for it.
+    assert "loom" not in script
+
+
+def test_module_and_scratch_are_ephemeral_and_the_pvc_is_untouched(service):
+    """The worker is stateless w.r.t. the record (specs travel in messages), which
+    is what frees it from the ReadWriteOnce PVC and its single-node binding."""
+    svc, k8s = service
+    svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN)
+    pod = _created_job(k8s).spec.template.spec
+    kinds = {v.name: v for v in pod.volumes}
+    assert set(kinds) == {"worker-module", "scratch"}
+    for v in pod.volumes:
+        assert v.empty_dir is not None
+        assert getattr(v, "persistent_volume_claim", None) is None
+
+
+def test_staged_module_is_on_pythonpath_and_mounted_read_only(service):
+    svc, k8s = service
+    svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN)
+    c = _created_job(k8s).spec.template.spec.containers[0]
+    env = {e.name: e.value for e in c.env}
+    assert env["PYTHONPATH"] == MODULE_MOUNT
+    assert env["TMPDIR"] == SCRATCH_MOUNT
+    mounts = {m.name: m for m in c.volume_mounts}
+    assert mounts["worker-module"].read_only is True
+    assert mounts["scratch"].read_only in (None, False)
+
+
+def test_workspace_defaults_to_the_images_own_checkout(service):
+    """Under §2A.8 the image's copy IS the environment — not the PVC."""
+    svc, k8s = service
+    svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN)
+    c = _created_job(k8s).spec.template.spec.containers[0]
+    assert "/app/v2ecoli" in c.args
+
+
+def test_missing_module_image_refuses_rather_than_guessing(monkeypatch):
+    class _S:
+        ecr_account_id = "476270107793"
+        batch_region = "us-gov-west-1"
+        ray_ecr_repository = "v2ecoli"
+        k8s_job_namespace = "ns"
+        env_worker_module_image = ""
+        env_worker_workspace_path = "/app/v2ecoli"
+
+    monkeypatch.setattr("viva_api.compose.env_worker_service.get_settings", lambda: _S())
+    svc = EnvWorkerService(k8s=MagicMock(), namespace="ns")
+    with pytest.raises(EnvWorkerLaunchError, match="env_worker_module_image"):
+        svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN)
