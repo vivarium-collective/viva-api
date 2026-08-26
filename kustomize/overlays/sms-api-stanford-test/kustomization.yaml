@@ -211,34 +211,24 @@ patches:
     target:
       kind: Deployment
       name: api
-  # Browser-reachable PTools base for the pbg-ptools Omics Viewer. The seed
-  # initContainer stamps this into the served workspace.yaml (ui.ptools_server_url),
-  # overriding the baked-in local-dev http://localhost:1555. Tunnel value
-  # (sms-proxy -s smsvpctest -> localhost:8080, PTools at the ALB root); use a real
-  # internal-ALB DNS if the demo is hosted for others.
-  - patch: |-
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: workbench
-      spec:
-        template:
-          spec:
-            initContainers:
-              - name: seed-workspace
-                env:
-                  - name: PTOOLS_SERVER_URL
-                    value: "http://localhost:8080"
-                  # Omics Viewer DATA overlay: the in-cluster ptools pod fetches
-                  # the study TSV from this workbench Service URL (same namespace,
-                  # incl. the /workbench base path the container serves under).
-                  # The seed also clears ui.ptools_data_dir so HTTP delivery is
-                  # used (ptools has no workspace mount).
-                  - name: DASHBOARD_PUBLIC_BASE_URL
-                    value: "http://workbench.sms-api-stanford-test.svc.cluster.local:8000/workbench"
-    target:
-      kind: Deployment
-      name: workbench
+  # ui.* deployment bindings: NOT patched here any more (vivarium-workbench#471
+  # phase 4). This overlay used to patch PTOOLS_SERVER_URL and
+  # DASHBOARD_PUBLIC_BASE_URL onto the seed-workspace initContainer, which made it
+  # rewrite the served /workspace/workspace.yaml on every pod start -- stamping this
+  # site's identity into a file that is git-TRACKED in the science repo (v2ecoli,
+  # sms-ecoli). Those two values now come from the workbench-deploy-config ConfigMap
+  # below, which the workbench reads at request time instead (>=0.3.56's
+  # lib/deploy_config.py; this namespace runs 0.3.57).
+  #
+  # Deleting the patch is all phase 4 needs HERE. The base's mutations are
+  # env-gated and default to "" ("empty = leave the workspace untouched"), so with
+  # no patch supplying values they simply never fire -- the initContainer is back to
+  # doing one job, seeding. The base code is deliberately left in place because
+  # ../sms-api-stanford still patches it: prod has no deploy-config ConfigMap and
+  # runs a workbench older than the resolver, so removing the base code would
+  # silently kill prod's Omics Viewer (it self-gates -- no error, the button just
+  # stops rendering). Phase 4 completes when prod migrates: delete its patch too,
+  # then the now-dead base code.
   # ui.* deployment-config layer (vivarium-workbench#471), phase 2 of lifting
   # these bindings out of the workspace. Mounts the generated
   # workbench-deploy-config ConfigMap read-only and names it via
@@ -249,8 +239,8 @@ patches:
   # what the seed initContainer above already stamps into workspace.yaml, so the
   # two agree and nothing changes. (2) The running workbench image predates
   # lib/deploy_config.py, so it ignores the env var and the mount entirely. This
-  # exists to prove the plumbing before anything depends on it; the seed
-  # mutations come out in phase 4, when this becomes the only source.
+  # existed to prove the plumbing before anything depended on it. As of phase 4
+  # (the deleted patch above) it IS the only source for this namespace.
   #
   # Applied to the -test overlay only. The base is shared with sms-api-stanford,
   # where this ConfigMap does not exist -- putting the volume in the base would
