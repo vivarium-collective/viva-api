@@ -108,8 +108,12 @@ images:
   # 0.9.56 (item 86/88, PR #276): auto-triggers the analysis job once a
   # multi-node composite dispatch (e.g. colony) completes. Verified
   # line-by-line to never touch chain-dispatch code before deploying here.
+  # 0.9.57 (PR #283): GET .../observables/index now returns a clear 409 for a
+  # chain-dispatch campaign or multi-node composite instead of falling through
+  # to a store neither shape ever writes. Already live-verified on smsvpctest
+  # before promoting here.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.56
+    newTag: 0.9.57
   # ptools 0.5.9 -> 0.9.53, promoting to prod what has been running on
   # sms-api-stanford-test since 2026-08-24 (PR #266).
   #
