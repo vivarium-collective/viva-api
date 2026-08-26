@@ -6,9 +6,10 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from viva_api.api.main import app
+from viva_api.common.models import JobId
 from viva_api.dependencies import get_database_service, set_database_service
 from viva_api.simulation.database_service import DatabaseService
-from viva_api.simulation.models import HpcRun, JobId, JobType, Simulation, SimulationConfig, SimulatorVersion
+from viva_api.simulation.models import HpcRun, JobType, Simulation, SimulationConfig, SimulatorVersion
 from viva_api.simulation.observable_reader import ObservableInfo, StoreIndex
 
 BASE = "/api/v1"
