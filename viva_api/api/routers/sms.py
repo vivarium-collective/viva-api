@@ -39,6 +39,7 @@ from viva_api.simulation.models import (
     AnalysisOptions,
     ChainProgress,
     CompositeEngine,
+    JobType,
     ObservableInfoModel,
     RepoDiscovery,
     Simulation,
@@ -83,7 +84,24 @@ async def _ray_seed_store_uri_or_error(db: DatabaseService, sim: Simulation, see
     vEcoli/Nextflow run emits parquet under a different layout and has no such
     store, so we return a clear 409 rather than the bare 404 (which reads as
     "results not ready yet" and was the ambiguity flagged in #152).
-    """
+
+    ``RayLayout.seed_store_uri``'s flat ``v2ecoli_seed{NN}.zarr`` convention is
+    real, but it is only what the single-generation ("phase0") and comparison-
+    engine dispatch shapes actually write. A chain-dispatch campaign
+    (``HpcRun.chain_final_job_ids is not None``) writes its per-seed lineage
+    store under a DIFFERENT naming convention
+    (``batch_baseline_runner._lineage_store_path``:
+    ``{experiment_id}_v{variant}_s{seed}.zarr``) and is read back through the
+    separate DuckDB/parquet analysis pipeline
+    (``GET /analyses/{id}/status``), never through this endpoint. A multi-node
+    composite dispatch (``HpcRun.multi_node_composite_id is not None``, e.g. a
+    colony) has no per-seed zarr store at all -- only an emitter-history/
+    final-state snapshot, also read through the analyses endpoint. Checking
+    the backend alone (below) does not catch either case, since both are
+    still Ray -- without this check, a request for either shape would fall
+    through to a `seed_store_uri` that nothing ever writes, and 500 instead
+    of naming the real cause (found live, 2026-08-26, alongside the phase0
+    write-path bug this docstring's #152 reference already covers)."""
     simulator = await db.get_simulator(sim.simulator_id)
     backend = compute_backend_for_repo(simulator.git_repo_url) if simulator else None
     layout = data_layout.layout_for(backend) if backend is not None else None
@@ -94,6 +112,26 @@ async def _ray_seed_store_uri_or_error(db: DatabaseService, sim: Simulation, see
                 f"Observables are only available for v2ecoli (Ray) runs; simulation "
                 f"{sim.database_id} ran on the {backend.value if backend else 'unknown'} backend. "
                 f"Use POST /api/v1/simulations/{sim.database_id}/data for its outputs."
+            ),
+        )
+    hpc_run = await db.get_hpcrun_by_ref(ref_id=sim.database_id, job_type=JobType.SIMULATION)
+    if hpc_run is not None and hpc_run.chain_final_job_ids is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Simulation {sim.database_id} is a chain-dispatch campaign (multi-seed/"
+                f"multi-generation) -- its per-seed lineage store uses a different S3 layout "
+                f"this endpoint doesn't read. Use GET /api/v1/analyses/{{id}}/status for its "
+                f"cd1_*/ptools_* analysis output instead."
+            ),
+        )
+    if hpc_run is not None and hpc_run.multi_node_composite_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Simulation {sim.database_id} is a multi-node composite dispatch (e.g. a "
+                f"colony) -- it has no per-seed XArray/zarr store. Use "
+                f"GET /api/v1/analyses/{{id}}/status for its analysis-flush output instead."
             ),
         )
     return data_layout.RayLayout.seed_store_uri(sim.experiment_id, seed)

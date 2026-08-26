@@ -8,7 +8,7 @@ from httpx import ASGITransport, AsyncClient
 from viva_api.api.main import app
 from viva_api.dependencies import get_database_service, set_database_service
 from viva_api.simulation.database_service import DatabaseService
-from viva_api.simulation.models import Simulation, SimulationConfig, SimulatorVersion
+from viva_api.simulation.models import HpcRun, JobId, JobType, Simulation, SimulationConfig, SimulatorVersion
 from viva_api.simulation.observable_reader import ObservableInfo, StoreIndex
 
 BASE = "/api/v1"
@@ -19,9 +19,10 @@ _VECOLI_REPO = "https://github.com/CovertLab/vEcoli"
 
 
 class _FakeDB:
-    def __init__(self, sim: Simulation | None, repo_url: str = _RAY_REPO) -> None:
+    def __init__(self, sim: Simulation | None, repo_url: str = _RAY_REPO, hpc_run: HpcRun | None = None) -> None:
         self._sim = sim
         self._repo_url = repo_url
+        self._hpc_run = hpc_run
 
     async def get_simulation(self, simulation_id: int) -> Simulation | None:
         return self._sim
@@ -30,6 +31,9 @@ class _FakeDB:
         return SimulatorVersion(
             database_id=simulator_id, git_commit_hash="abc1234", git_repo_url=self._repo_url, git_branch="master"
         )
+
+    async def get_hpcrun_by_ref(self, ref_id: int, job_type: JobType) -> HpcRun | None:
+        return self._hpc_run
 
 
 def _sim(experiment_id: str = "exp-abc") -> Simulation:
@@ -93,6 +97,57 @@ async def test_observables_409_for_non_ray_run() -> None:
             r = await c.get(f"{BASE}/simulations/49/observables/index")
         assert r.status_code == 409
         assert "v2ecoli (Ray)" in r.json()["detail"]
+    finally:
+        set_database_service(saved)
+
+
+@pytest.mark.asyncio
+async def test_observables_409_for_chain_dispatch_campaign() -> None:
+    """A chain-dispatch campaign's per-seed lineage store uses a different S3
+    layout (batch_baseline_runner._lineage_store_path) than RayLayout.seed_store_uri
+    expects -- this must fail loudly with a clear 409 naming the real cause and the
+    real alternative endpoint, not fall through to a store nothing ever writes."""
+    saved = get_database_service()
+    hpc_run = HpcRun(
+        database_id=1,
+        job_id=JobId.ray("chain-job-1"),
+        correlation_id="corr-1",
+        job_type=JobType.SIMULATION,
+        ref_id=49,
+        chain_final_job_ids=["job-a", "job-b"],
+    )
+    set_database_service(cast(DatabaseService, _FakeDB(_sim(), hpc_run=hpc_run)))
+    try:
+        async with _client() as c:
+            r = await c.get(f"{BASE}/simulations/49/observables/index")
+        assert r.status_code == 409
+        assert "chain-dispatch campaign" in r.json()["detail"]
+        assert "/analyses/" in r.json()["detail"]
+    finally:
+        set_database_service(saved)
+
+
+@pytest.mark.asyncio
+async def test_observables_409_for_multi_node_composite() -> None:
+    """A multi-node composite dispatch (e.g. colony) has no per-seed zarr store at
+    all -- must fail loudly with a clear 409, not fall through to a nonexistent
+    seed_store_uri."""
+    saved = get_database_service()
+    hpc_run = HpcRun(
+        database_id=1,
+        job_id=JobId.ray("mnp-job-1"),
+        correlation_id="corr-1",
+        job_type=JobType.SIMULATION,
+        ref_id=49,
+        multi_node_composite_id="v2ecoli.composites.ecoli_colony.ecoli_colony",
+    )
+    set_database_service(cast(DatabaseService, _FakeDB(_sim(), hpc_run=hpc_run)))
+    try:
+        async with _client() as c:
+            r = await c.get(f"{BASE}/simulations/49/observables/index")
+        assert r.status_code == 409
+        assert "multi-node composite" in r.json()["detail"]
+        assert "/analyses/" in r.json()["detail"]
     finally:
         set_database_service(saved)
 
