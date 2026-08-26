@@ -19,8 +19,14 @@ images:
   # verified line-by-line to never touch chain-dispatch code. Also includes
   # 0.9.54 (extra_params passthrough) and 0.9.55 (MNP submission +
   # HpcRun tracking), neither of which got its own tag at the time.
+  # 0.9.57 (PR #283): GET .../observables/index now returns a clear 409 for a
+  # chain-dispatch campaign or multi-node composite instead of falling through
+  # to a store neither shape ever writes -- found live via a real cplong bug
+  # report against this same namespace (see the phase0 S3-layout fix,
+  # v2ecoli#603/sms-ecoli#123, a separate repo, already deployed via sim
+  # builds -- not a viva-api change).
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.56
+    newTag: 0.9.57
   # ptools 0.5.9 -> 0.9.53 (DEV ONLY — prod sms-api-stanford stays on 0.5.9 while
   # this soaks). The long-standing 0.5.9 pin existed because CI builds only
   # sms-api (scripts/build_action.sh), so no newer sms-ptools existed on ghcr.io
