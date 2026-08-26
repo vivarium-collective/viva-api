@@ -3,6 +3,13 @@
 # `gp3-retain` (Retain reclaim policy) keeps the volume if the PVC is deleted, so
 # the workspace survives a redeploy; the SC is present on the smsvpctest cluster.
 # NOT shared with the compute — run outputs arrive from S3 via sms-api.
+# SIZE (2026-08-26): 20Gi -> 200Gi. 20Gi was sized for ONE workspace sharing one
+# baked venv; it was already 48% full (9.4 GiB) with a single 7.2 GiB venv on it.
+# The per-workspace-venv model (workbench#937) puts a venv per served workspace
+# AND uv's package cache on this volume, which 11 GiB of headroom cannot absorb
+# even with hardlink sharing. gp3-retain sets allowVolumeExpansion: true, so this
+# expands in place -- online, no data movement. NOTE it is one-way: EBS volumes
+# cannot be shrunk, and gp3 is billed per provisioned GiB, not per GiB used.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -13,4 +20,4 @@ spec:
   storageClassName: gp3-retain
   resources:
     requests:
-      storage: 20Gi
+      storage: 200Gi

@@ -256,6 +256,24 @@ spec:
             - name: workspace
               mountPath: /root/.pbg/build-cache
               subPath: build-cache
+            # uv's package cache, on the PVC (workbench#937). Two reasons, and
+            # the first is a hard precondition rather than an optimization:
+            #
+            # 1. HARDLINKING ONLY WORKS WITHIN ONE FILESYSTEM. The runtime image
+            #    sets UV_LINK_MODE=hardlink so that a venv per served workspace
+            #    costs only what differs from the venvs already present (measured
+            #    3 venvs: 103 MB hardlinked vs 299 MB copied). uv can only link
+            #    from its cache into a venv if both sit on the same fs. The
+            #    default cache (/root/.cache/uv) is on the container's ephemeral
+            #    overlay -- a DIFFERENT device from /workspace (verified
+            #    2026-08-26: 1048604 vs 66308) -- so without this mount uv
+            #    silently falls back to copying and the sharing never happens.
+            # 2. An ephemeral cache is re-downloaded from PyPI/GitHub on every
+            #    pod restart, making each workspace's `uv sync` slow and
+            #    network-dependent.
+            - name: workspace
+              mountPath: /root/.cache/uv
+              subPath: uv-cache
       volumes:
         # Private EBS gp3 PVC (RWO) — workspace + build-cache (via the second
         # subPath mount on the workbench container above). The claim is defined
