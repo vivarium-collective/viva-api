@@ -99,8 +99,30 @@ images:
   # elements that, now confirmed, live inside a cross-document iframe the
   # outer page can't see, so it would have always saved an empty {} over a
   # real baseline entry's params -- caught before merge, not shipped.
+  # 0.3.56 (workbench #932 + #471 phase 1): the FIRST slim workbench image. It
+  # no longer installs itself into v2ecoli's venv, so it carries no workspace
+  # package and no science stack -- 15.3 GB -> 3.18 GB, and it builds on Apple
+  # Silicon at all (the old build imported polars, which needs AVX that QEMU
+  # cannot emulate, and pulled a base from a GovCloud ECR repo no CI credential
+  # can reach).
+  #
+  # DEPLOYER-RELEVANT: <workspace>/.venv is now REQUIRED, not incidental.
+  # EnvironmentResolver already sent every env worker there, but a workspace
+  # without one used to fall back to the baked venv that happened to carry the
+  # full stack. The image sets VIVARIUM_WORKBENCH_REQUIRE_WORKSPACE_VENV=1, so
+  # that case now fails loudly at the seam instead of as a confusing
+  # ModuleNotFoundError deep inside a worker call.
+  #
+  # Pre-flight against the live PVC before this bump: /workspace/.venv/bin/python
+  # present + executable, Python 3.12.12, `import v2ecoli` OK inside it, 7.2 GB.
+  # That is the whole dependency this image adds, and it is satisfied here.
+  #
+  # Also brings lib/deploy_config.py -- the ui.* deployment-config resolver this
+  # namespace already mounts a ConfigMap for (see the VIVARIUM_WORKBENCH_DEPLOY_
+  # CONFIG patch below). Phase 2 was inert precisely because the running image
+  # predated the resolver; from this tag on, the mount is actually read.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.55
+    newTag: 0.3.56
 
 replicas:
   - count: 1
