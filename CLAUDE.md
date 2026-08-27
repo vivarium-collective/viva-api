@@ -275,10 +275,16 @@ Follow this exact sequence to cut a release:
 **Version sync checklist** (when bumping version):
 - `viva_api/version.py`
 - `pyproject.toml`
-- `kustomize/overlays/sms-api-stanford-test/kustomization.yaml` (sms-api only — keep sms-ptools at 0.5.9)
+- `kustomize/overlays/sms-api-stanford-test/kustomization.yaml` (the `sms-api` entry only — `sms-ptools` versions independently; **both Stanford sites are on 0.9.53** since 2026-08-24, so do NOT "restore" 0.5.9)
 - `kustomize/overlays/sms-api-stanford/kustomization.yaml`
 - `kustomize/overlays/sms-api-rke/kustomization.yaml`
 - `kustomize/overlays/sms-api-rke-dev/kustomization.yaml`
+- **`vivarium-workbench` newTag and `ENV_WORKER_MODULE_IMAGE`** (in
+  `kustomize/config/<ns>/shared.env`) — **keep these two EQUAL**. On a deployment
+  running env workers (image-as-worker, vivarium-workbench#942) that one image is
+  both the workbench that launches workers *and* the image a worker Job stages its
+  worker module from. Drift means a workbench speaking a protocol its own workers
+  do not. Only `sms-api-stanford-test` sets these today.
 - **`kustomize/overlays/<ns>-db-migration/kustomization.yaml`** — the migration
   Job runs the reconciler from *this* image tag, so it MUST contain any new
   migration. Keep it equal to the matching app overlay's `sms-api` tag. (These
@@ -362,7 +368,7 @@ uv run atlantis simulation outputs <SIM_ID> --dest ./debug
 **Version sync:** When bumping version, update ALL of:
 - `viva_api/version.py`
 - `pyproject.toml`
-- `kustomize/overlays/sms-api-stanford-test/kustomization.yaml` (the `sms-api` image entry only — leave `sms-ptools` pinned to 0.5.9)
+- `kustomize/overlays/sms-api-stanford-test/kustomization.yaml` (the `sms-api` image entry only — leave `sms-ptools` alone; it is on **0.9.53** on both Stanford sites, and only the UConn RKE overlays are still 0.5.9)
 - `kustomize/overlays/sms-api-rke/kustomization.yaml`
 - `kustomize/overlays/sms-api-rke-dev/kustomization.yaml`
 
