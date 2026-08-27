@@ -1103,7 +1103,7 @@ docker info >/dev/null 2>&1 || {{ echo "ERROR: Docker socket not available"; exi
 # Disable xtrace around the secret so the PAT (and the clone URL embedding it) never lands
 # in the build logs (CloudWatch). Re-enable tracing once the clone is done.
 set +x
-GH_PAT=$(aws secretsmanager get-secret-value \
+export GH_PAT=$(aws secretsmanager get-secret-value \
     --secret-id {settings.build_git_secret_arn} --query SecretString --output text)
 CLONE_URL=$(echo "{repo_url}" | sed "s|https://github.com/|https://x-access-token:${{GH_PAT}}@github.com/|")
 export GIT_TERMINAL_PROMPT=0
