@@ -16,6 +16,7 @@ from viva_api.simulation.models import HpcRun, JobType
 from viva_api.simulation.simulation_service_ray import (
     PARCA_CACHE_DIR,
     SIM_OUT_DIR,
+    V2ECOLI_DIR,
     SimulationServiceRay,
     analysis_modules_for,
 )
@@ -1522,6 +1523,44 @@ class TestIsUpstreamVecoli:
         assert _is_upstream_vecoli("vecoli") is True
         assert _is_upstream_vecoli("v2ecoli") is False
         assert _is_upstream_vecoli(None) is False
+
+
+class TestUpstreamParcaCommand:
+    """_upstream_parca_command / _upstream_cache_s3_uri (item 87): the vecoli
+    reference-arm ParCa build/cache path gains an optional config-driven,
+    non-colliding variant -- every existing caller (config_path/variant both
+    None) must be provably unaffected."""
+
+    def test_no_config_path_is_byte_identical_to_before(self) -> None:
+        service = SimulationServiceRay()
+        assert service._upstream_parca_command() == (
+            f"cd {V2ECOLI_DIR} && python scripts/build_upstream_parca.py"
+            f" --outdir {V2ECOLI_DIR}/out/upstream --cpus 1"
+            f" --copy-to {PARCA_CACHE_DIR}"
+        )
+
+    def test_config_path_appends_the_config_flag(self) -> None:
+        service = SimulationServiceRay()
+        cmd = service._upstream_parca_command(config_path=f"{V2ECOLI_DIR}/configs/custom_strain.json")
+        assert cmd.endswith(f" --config {V2ECOLI_DIR}/configs/custom_strain.json")
+        # Everything before it is unchanged -- confirms this is a pure append,
+        # not a differently-ordered command that happens to contain the flag.
+        assert cmd.startswith(service._upstream_parca_command())
+
+    def test_cache_uri_no_variant_is_byte_identical_to_before(self) -> None:
+        service = SimulationServiceRay()
+        with patch("viva_api.common.storage.data_layout.get_settings", _ray_settings):
+            assert service._upstream_cache_s3_uri("abc123") == "s3://mybucket/ray-upstream-parca-cache/abc123/"
+
+    def test_cache_uri_variant_never_collides_with_bare_commit_path(self) -> None:
+        """The real hazard this whole feature guards against: a config-driven
+        cache must never land where a plain baseline build/stage would read."""
+        service = SimulationServiceRay()
+        with patch("viva_api.common.storage.data_layout.get_settings", _ray_settings):
+            bare = service._upstream_cache_s3_uri("abc123")
+            variant = service._upstream_cache_s3_uri("abc123", variant="custom-strain")
+        assert variant != bare
+        assert variant == "s3://mybucket/ray-upstream-parca-cache/abc123/custom-strain/"
 
 
 class TestSimulationServiceRayBuildSubmit:

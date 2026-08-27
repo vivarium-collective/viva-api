@@ -44,6 +44,30 @@ class TestRayLayout:
         assert RayLayout.parca_cache_uri("abc123", upstream=True) == "s3://my-bucket/ray-upstream-parca-cache/abc123/"
         assert RayLayout.parca_cache_uri("abc123", upstream=True) != RayLayout.parca_cache_uri("abc123")
 
+    def test_parca_cache_no_variant_is_byte_identical_to_before(self) -> None:
+        """Regression: item 87 added an optional `variant` param. Every existing
+        caller passes nothing and MUST get the exact same commit-only key."""
+        assert RayLayout.parca_cache_uri("abc123") == "s3://my-bucket/ray-parca-cache/abc123/"
+        assert RayLayout.parca_cache_uri("abc123", upstream=True) == "s3://my-bucket/ray-upstream-parca-cache/abc123/"
+
+    def test_parca_cache_variant_never_collides_with_the_bare_commit_path(self) -> None:
+        """The real bug this exists to prevent: a config-driven (e.g. a custom
+        strain's) ParCa build must never land at the same key a plain baseline
+        build/stage uses, or it silently corrupts every other concurrent
+        dispatch on that commit."""
+        bare = RayLayout.parca_cache_uri("abc123", upstream=True)
+        variant = RayLayout.parca_cache_uri("abc123", upstream=True, variant="custom-strain")
+        assert variant != bare
+        assert not variant.startswith(bare.rstrip("/") + "x")  # not a naive string collision either
+        assert variant == "s3://my-bucket/ray-upstream-parca-cache/abc123/custom-strain/"
+
+    def test_parca_cache_variant_still_scoped_to_its_own_commit(self) -> None:
+        """A variant cache for one commit must not collide with the SAME variant
+        on a different commit -- still commit-scoped, just also variant-scoped."""
+        v1 = RayLayout.parca_cache_uri("commit1", upstream=True, variant="custom-strain")
+        v2 = RayLayout.parca_cache_uri("commit2", upstream=True, variant="custom-strain")
+        assert v1 != v2
+
     def test_daughter_state_uri(self) -> None:
         assert (
             RayLayout.daughter_state_uri("exp-abc", 4, 2)

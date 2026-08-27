@@ -284,7 +284,7 @@ class SimulationServiceRay(SimulationService):
         """
         return data_layout.RayLayout.parca_cache_uri(commit)
 
-    def _upstream_cache_s3_uri(self, commit: str) -> str:
+    def _upstream_cache_s3_uri(self, commit: str, *, variant: str | None = None) -> str:
         """S3 URI for the PRISTINE upstream-vEcoli ParCa cache (``--composite vecoli``).
 
         Kept SEPARATE from ``cache_s3_uri`` (the v2ecoli cache): the external
@@ -292,8 +292,13 @@ class SimulationServiceRay(SimulationService):
         the v2ecoli one (whose TCS ``modified_molecules`` skew makes upstream's
         two-component-system ODE go negative). Keyed by the same image commit so
         both engines' parca→sim hand-offs derive their URI with no runtime wiring.
+
+        ``variant`` (item 87): None for every existing caller -- unchanged
+        commit-only key. See ``RayLayout.parca_cache_uri``'s own docstring for why
+        a config-driven build (e.g. a custom strain's ``new_genes``) MUST pass a
+        real label here rather than ever writing to the shared bare-commit path.
         """
-        return data_layout.RayLayout.parca_cache_uri(commit, upstream=True)
+        return data_layout.RayLayout.parca_cache_uri(commit, upstream=True, variant=variant)
 
     def _results_s3_uri(self, experiment_id: str) -> str:
         return data_layout.RayLayout.results_uri(experiment_id)
@@ -631,7 +636,7 @@ class SimulationServiceRay(SimulationService):
             f" --fixture {PARCA_SIMDATA_DIR}/parca_state.pkl.gz --cache {PARCA_CACHE_DIR}"
         )
 
-    def _upstream_parca_command(self) -> str:
+    def _upstream_parca_command(self, *, config_path: str | None = None) -> str:
         """Build a PRISTINE upstream-vEcoli ParCa simData for the ``--composite vecoli`` wrapper.
 
         Runs once on the 1-node parca job from the image's bundled upstream
@@ -648,11 +653,21 @@ class SimulationServiceRay(SimulationService):
         Cython module", looping forever. The serial path (cpus==1) runs entirely
         in the main process, where the wrapper's import shim has pinned the
         INSTALLED compiled wholecell into sys.modules, so the import resolves.
+
+        ``config_path`` (item 87): None for every existing caller -- identical
+        command to before this param existed (``build_upstream_parca.py``'s own
+        ``--config`` defaults to the pristine baseline build). When set (an
+        in-image path to a config declaring ``parca_options.new_genes``, e.g. a
+        custom strain), threads it through so the built cache is config-driven.
+        The CALLER is responsible for pairing this with a matching ``variant``
+        label on ``_upstream_cache_s3_uri`` -- this method has no way to enforce
+        that pairing itself.
         """
+        config_flag = f" --config {config_path}" if config_path else ""
         return (
             f"cd {V2ECOLI_DIR} && python scripts/build_upstream_parca.py"
             f" --outdir {V2ECOLI_DIR}/out/upstream --cpus 1"
-            f" --copy-to {PARCA_CACHE_DIR}"
+            f" --copy-to {PARCA_CACHE_DIR}{config_flag}"
         )
 
     async def stage_runner(self, experiment_id: str) -> str:
