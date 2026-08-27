@@ -121,8 +121,11 @@ async def _ray_seed_store_uri_or_error(db: DatabaseService, sim: Simulation, see
             detail=(
                 f"Simulation {sim.database_id} is a chain-dispatch campaign (multi-seed/"
                 f"multi-generation) -- its per-seed lineage store uses a different S3 layout "
-                f"this endpoint doesn't read. Use GET /api/v1/analyses/{{id}}/status for its "
-                f"cd1_*/ptools_* analysis output instead."
+                f"this endpoint doesn't read. Its cd1_*/ptools_* analysis output is tracked "
+                f"under a SEPARATE id space -- look it up via "
+                f"GET /api/v1/simulations/{sim.database_id}/analyses, then poll "
+                f"GET /api/v1/analyses/{{analysis_id}}/status with THAT id (not this "
+                f"simulation's id)."
             ),
         )
     if hpc_run is not None and hpc_run.multi_node_composite_id is not None:
@@ -130,8 +133,11 @@ async def _ray_seed_store_uri_or_error(db: DatabaseService, sim: Simulation, see
             status_code=409,
             detail=(
                 f"Simulation {sim.database_id} is a multi-node composite dispatch (e.g. a "
-                f"colony) -- it has no per-seed XArray/zarr store. Use "
-                f"GET /api/v1/analyses/{{id}}/status for its analysis-flush output instead."
+                f"colony) -- it has no per-seed XArray/zarr store. Its analysis-flush output "
+                f"is tracked under a SEPARATE id space -- look it up via "
+                f"GET /api/v1/simulations/{sim.database_id}/analyses, then poll "
+                f"GET /api/v1/analyses/{{analysis_id}}/status with THAT id (not this "
+                f"simulation's id)."
             ),
         )
     return data_layout.RayLayout.seed_store_uri(sim.experiment_id, seed)
@@ -886,6 +892,20 @@ async def get_analysis_plots(
     db_service = get_database_service()
     if db_service is None:
         raise HTTPException(status_code=404, detail="Database not found")
+
+    try:
+        record = await db_service.get_analysis(database_id=id)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Analysis {id} not found") from e
+
+    if record.backend == "ray":
+        try:
+            return await handlers.analyses.handle_get_ray_analysis_plots(db_service=db_service, record=record)
+        except handlers.analyses.AnalysisNotReadyError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        except Exception as e:
+            logger.exception("Error getting Ray-native analysis plots.")
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
     try:
         return await handlers.analyses.handle_get_analysis_plots(db_service=db_service, id=id)
