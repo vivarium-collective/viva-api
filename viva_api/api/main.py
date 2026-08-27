@@ -141,6 +141,18 @@ try:
 except ImportError:
     logger.warning("Could not register compose router (compose deps may not be installed)")
 
+# -- env-worker router (vivarium-workbench#942 / REFACTOR-PLAN §2A.8) -- #
+# Runs a simulator's prebuilt image as a workbench env worker. Registered
+# unconditionally; the endpoints answer 503 until dependencies.py wires the
+# service, so a deployment without K8s job support fails clearly rather than 404.
+try:
+    from viva_api.api.routers.env_worker import router as env_worker_router
+
+    app.include_router(env_worker_router, prefix="/env-worker/v1")
+    logger.info("Env-worker router registered at /env-worker/v1")
+except ImportError:
+    logger.warning("Could not register env-worker router")
+
 
 # -- set ui templates and marimo notebook apps -- #
 

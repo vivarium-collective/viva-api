@@ -259,6 +259,25 @@ class Settings(BaseSettings):
     # one, leaving the actually-used ensemble sim path stuck at 4; see backlog item 26).
     # Must be <= CDK rayBatch.numNodes.
     ray_num_nodes: int = 3
+    # -- env worker (vivarium-workbench#942 / REFACTOR-PLAN §2A.8) --
+    # The workbench image an env-worker Job copies its worker module out of. The
+    # module is DELIVERED, not installed: protocol §4 requires the workspace venv
+    # to carry no vivarium-workbench dependency, and the simulator image is built
+    # from the science repo with `--no-install-package vivarium-workbench`.
+    # No default — pointing this at the wrong tag runs a worker whose protocol
+    # version disagrees with the workbench's, so a deployment must say it.
+    #
+    # HARD PREREQUISITE: the image must contain the dial-back transport
+    # (vivarium-workbench#945). Verified 2026-08-26 that 0.3.57 does NOT — its
+    # `env_worker.py --help` offers only `--socket-fd`, so a worker built from it
+    # exits 2 on `--connect-to`. That surfaces as a failed Job whose logs say
+    # "unrecognized arguments", which `GET /env-worker/v1/workers/{name}?include_logs=true`
+    # will show — but it is worth knowing before pointing this at a stale tag.
+    env_worker_module_image: str = ""
+    # Workspace root INSIDE the simulator image. This is the image's own checkout
+    # — under §2A.8 that copy IS the execution environment, so the worker reads it
+    # rather than mounting the PVC (which is ReadWriteOnce and single-node anyway).
+    env_worker_workspace_path: str = "/app/v2ecoli"
     ray_ecr_repository: str = "v2ecoli"  # ECR repo for the workload-owned Ray image (built by submit_build_image_job)
     ray_parca_mode: str = "full"  # v2ecoli-parca --mode (fast for debug, full for production)
     ray_parca_cpus: int = 8  # v2ecoli-parca --cpus
