@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 from dataclasses import dataclass
 
 from kubernetes import client as k8s_client
@@ -70,6 +71,10 @@ _TOKEN_RE = re.compile(r"^[A-Za-z0-9]{16,128}$")
 
 class EnvWorkerLaunchError(ValueError):
     """The launch request is not something we will turn into a Job."""
+
+
+class EnvWorkerJobExists(RuntimeError):
+    """A Job of this name already exists, or is still terminating."""
 
 
 @dataclass(frozen=True)
@@ -134,7 +139,12 @@ class EnvWorkerService:
             workspace=workspace,
             session_key=session_key,
         )
-        self._k8s.create_job(job)
+        try:
+            self._k8s.create_job(job)
+        except k8s_client.rest.ApiException as e:
+            if e.status == 409:
+                raise EnvWorkerJobExists(f"env-worker Job {job_name} already exists or is terminating") from e
+            raise
         logger.info(
             "env-worker Job %s created (image %s, dial-back %s:%s)", job_name, image, callback_host, callback_port
         )
@@ -307,7 +317,15 @@ def _label_safe(value: str) -> str:
 
 
 def _job_name(commit: str, session_key: str | None) -> str:
-    """A DNS-1123 name, unique per session so two sessions on one commit do not collide."""
-    suffix = _label_safe(session_key)[:8].lower() if session_key else "shared"
-    suffix = re.sub(r"[^a-z0-9]", "0", suffix)
-    return f"env-worker-{commit[:7]}-{suffix}"
+    """A DNS-1123 name, unique per LAUNCH.
+
+    Uniqueness comes from a random suffix, not from the session key: without one
+    every launch for a commit reused ``env-worker-<commit>-shared``, so two
+    sessions collided -- and so did a sequential relaunch, because a deleted Job
+    lingers while foreground propagation finishes ("object is being deleted ...
+    already exists"). Observed on dev. The session key stays as a *label* for
+    correlation, which is what it is actually good for.
+    """
+    stem = _label_safe(session_key)[:8].lower() if session_key else "w"
+    stem = re.sub(r"[^a-z0-9]", "0", stem) or "w"
+    return f"env-worker-{commit[:7]}-{stem}-{secrets.token_hex(4)}"

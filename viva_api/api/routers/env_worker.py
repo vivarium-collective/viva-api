@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from viva_api.compose.env_worker_service import (
+    EnvWorkerJobExists,
     EnvWorkerLaunchError,
     EnvWorkerService,
 )
@@ -49,7 +50,11 @@ class EnvWorkerStartRequest(BaseModel):
     callback_host: str = Field(..., description="Host/IP the worker dials back to (the workbench pod IP)")
     callback_port: int = Field(..., ge=1, le=65535, description="Port the workbench is listening on")
     token: str = Field(..., description="One-time handshake token the worker must present")
-    workspace: str = Field("/workspace", description="Workspace path inside the worker container")
+    workspace: str | None = Field(
+        None,
+        description="Workspace path inside the worker container; defaults to the "
+        "deployment's env_worker_workspace_path (the image's own checkout)",
+    )
     session_key: str | None = Field(None, description="Owning session; makes the Job name unique per session")
 
 
@@ -84,6 +89,10 @@ async def start_worker(request: EnvWorkerStartRequest) -> EnvWorkerStartResponse
             workspace=request.workspace,
             session_key=request.session_key,
         )
+    except EnvWorkerJobExists as e:
+        # A knowable Kubernetes condition, not a server fault: a Job of this name
+        # exists or is still terminating.
+        raise HTTPException(409, str(e)) from e
     except EnvWorkerLaunchError as e:
         # A malformed launch is the caller's error and is worth saying precisely
         # — these end up in a pod spec, so vagueness here costs a round trip
