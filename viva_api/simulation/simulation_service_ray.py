@@ -1049,7 +1049,9 @@ class SimulationServiceRay(SimulationService):
         return await fetch_latest_commit_hash(git_repo_url, git_branch, get_settings().github_token)
 
     @override
-    async def submit_build_image_job(self, simulator_version: SimulatorVersion) -> JobId:
+    async def submit_build_image_job(
+        self, simulator_version: SimulatorVersion, *, include_new_gene_data: bool = False
+    ) -> JobId:
         """Build the self-contained v2ecoli Ray image via a DooD Batch job.
 
         Symmetric with SimulationServiceK8s.submit_build_image_job: a LOCAL task submits a
@@ -1057,21 +1059,38 @@ class SimulationServiceRay(SimulationService):
         build-and-push recipe (v2ecoli/docker/build-and-push-ecr.sh) → v2ecoli:<commit>
         (plus the :latest deploy tag the Ray-MNP job def references). Returns immediately
         with a LOCAL JobId; _run_build polls the Batch job to completion.
+
+        ``include_new_gene_data`` (item 87): False for every existing caller -- identical
+        build to before this param existed. See ``_build_command``'s own docstring.
         """
         commit = simulator_version.git_commit_hash
-        return self._local.submit(self._run_build(simulator_version), name=f"ray-build-{commit}")
+        return self._local.submit(
+            self._run_build(simulator_version, include_new_gene_data=include_new_gene_data),
+            name=f"ray-build-{commit}",
+        )
 
-    def _build_command(self, simulator_version: SimulatorVersion) -> list[str]:
+    def _build_command(self, simulator_version: SimulatorVersion, *, include_new_gene_data: bool = False) -> list[str]:
         """DooD build command: clone v2ecoli@commit, run its build-and-push recipe.
 
         Mirrors SimulationServiceK8s._build_command (apk deps, PAT clone, in-repo recipe),
         but the workload repo is v2ecoli and the recipe is the v2ecoli image's own
         docker/build-and-push-ecr.sh → v2ecoli:<sha> (+ :latest).
+
+        ``include_new_gene_data`` (item 87): False for every existing caller -- identical
+        command to before this param existed (the outer clone's PAT is unset immediately,
+        as before; ``-g`` is never passed). When True, the SAME PAT this method already
+        fetches to clone the workload repo (both under the CovertLabEcoli org) stays
+        exported for the build-and-push recipe's own ``-g`` flag, which threads it through
+        as a Docker BuildKit secret (never a plain env/build-arg baked into a layer) so the
+        image can stage private new-gene data for a ``--composite vecoli`` ParCa build that
+        declares one. No new credential -- reuses this same Secrets Manager entry.
         """
         settings = get_settings()
         commit = simulator_version.git_commit_hash
         branch = simulator_version.git_branch
         repo_url = simulator_version.git_repo_url
+        build_flags = " -g" if include_new_gene_data else ""
+        unset_pat = "" if include_new_gene_data else "unset GH_PAT\n"
         script = f"""\
 set -ex
 export USER=${{USER:-sms-api}}
@@ -1089,25 +1108,25 @@ GH_PAT=$(aws secretsmanager get-secret-value \
 CLONE_URL=$(echo "{repo_url}" | sed "s|https://github.com/|https://x-access-token:${{GH_PAT}}@github.com/|")
 export GIT_TERMINAL_PROMPT=0
 git clone --branch {branch} --single-branch "$CLONE_URL" /build/v2ecoli
-unset GH_PAT CLONE_URL
-set -x
+unset CLONE_URL
+{unset_pat}set -x
 cd /build/v2ecoli
 git checkout {commit}
 
 # The v2ecoli image is self-contained (bundles the AWS CLI + Ray entrypoint); its own
 # recipe builds + pushes v2ecoli:<sha> and the :latest deploy tag the MNP job def uses.
-bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -R {settings.batch_region}
+bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -R {settings.batch_region}{build_flags}
 """
         return ["sh", "-c", script]
 
-    async def _run_build(self, simulator_version: SimulatorVersion) -> None:
+    async def _run_build(self, simulator_version: SimulatorVersion, *, include_new_gene_data: bool = False) -> None:
         """Submit the DooD v2ecoli image build to Batch (amd64 queue) and poll it."""
         settings = get_settings()
         commit = simulator_version.git_commit_hash
         job_id = await batch_build.submit_batch_build(
             job_name=f"v2ecoli-ray-build-{commit}",
             queue=settings.build_amd64_queue,
-            command=self._build_command(simulator_version),
+            command=self._build_command(simulator_version, include_new_gene_data=include_new_gene_data),
         )
         await batch_build.poll_batch_jobs([job_id])
         logger.info("v2ecoli Ray image build complete: %s:%s", settings.ray_ecr_repository, commit)
