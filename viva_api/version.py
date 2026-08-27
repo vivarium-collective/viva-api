@@ -605,4 +605,24 @@
 #          workspace default shadowed env_worker_workspace_path (so every worker
 #          ran a path absent from its pod and silently fell back to a GLOBAL
 #          generator scan); Job names collided per commit; a 409 surfaced as 500.
-__version__ = "0.9.60"
+# 0.9.61 — two real bugs in the analysis-result read endpoints, found live by
+#          cplong90 2026-08-27 re-testing #283: GET /analyses/{id}/data returned
+#          200 [] for a real, completed, non-empty analysis (fetch_analysis_data
+#          passed the full s3://<bucket>/... result_uri straight into
+#          S3FilePath, whose s3_path is bucket-relative -- Path()'s slash-
+#          collapsing mangled "s3://" into "s3:/", so the listing silently
+#          matched nothing; the SECOND time this exact bug class has hit this
+#          file, the first being 2026-08-05's key_from_uri fix for
+#          handle_get_ray_analysis_status's manifest lookup -- now routed
+#          through the same key_from_uri, via a new shared
+#          _list_analysis_result_files helper so both call sites can't drift
+#          apart again). GET /analyses/{id}/plots 500'd unconditionally for
+#          every Ray/K8s-backend analysis -- handle_get_analysis_plots only
+#          ever implemented the legacy SLURM local-filesystem path; added
+#          handle_get_ray_analysis_plots, an S3-backed implementation mirroring
+#          fetch_analysis_data's (now-fixed) pattern, filtered to .html.
+#          Also clarified the chain-dispatch/multi-node 409's error message
+#          (#283): "Use GET /analyses/{id}/status" read as the SIMULATION id,
+#          not the separate analysis id space -- now spells out
+#          GET /simulations/{id}/analyses as the lookup step first.
+__version__ = "0.9.61"

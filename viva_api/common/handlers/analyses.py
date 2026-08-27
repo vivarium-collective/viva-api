@@ -26,6 +26,7 @@ from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.models import JobId, JobStatus, SSHTarget
 from viva_api.common.storage import data_layout
 from viva_api.common.storage.file_paths import HPCFilePath, S3FilePath
+from viva_api.common.storage.file_service import FileService, ListingItem
 from viva_api.common.utils import get_data_id, timestamp
 from viva_api.config import get_settings
 from viva_api.dependencies import (
@@ -56,6 +57,32 @@ async def list_simulation_analyses(db_service: DatabaseService, simulation_id: i
     return await db_service.list_analyses(experiment_id=simulation.experiment_id)
 
 
+_ANALYSIS_PLOT_EXTENSIONS = (".html",)
+
+
+async def _list_analysis_result_files(
+    file_service: FileService, result_uri: str, extensions: tuple[str, ...]
+) -> list[ListingItem]:
+    """List an analysis's S3 result objects whose key ends with one of ``extensions``.
+
+    ``result_uri`` (as stored on the DB record, e.g. ``analysis.result_uri``) is
+    always a full ``s3://<bucket>/...`` URI, but ``S3FilePath.s3_path`` is
+    documented -- and ``FileServiceS3`` relies on it -- as BUCKET-RELATIVE.
+    Passing the full URI straight into ``Path(...)`` double-prefixes the bucket
+    into the key AND, via ``Path()``'s slash-collapsing, mangles ``s3://`` into
+    ``s3:/``, so the constructed prefix never matches a real object and the
+    listing silently comes back empty (200 with ``[]``, not an error). Route
+    through ``data_layout.key_from_uri`` first, exactly as the sibling
+    ``handle_get_ray_analysis_status`` already does for its own manifest lookup
+    -- this is the SECOND time this exact bug class has hit this file (the
+    first, 2026-08-05, is what motivated ``key_from_uri`` existing at all;
+    this one found live 2026-08-27 by cplong90 via ``GET /analyses/{id}/data``
+    returning ``[]`` for a real, completed, non-empty analysis)."""
+    prefix = data_layout.key_from_uri(result_uri)
+    listing = await file_service.get_listing(S3FilePath(s3_path=Path(prefix)))
+    return [item for item in listing if item.Key.lower().endswith(extensions)]
+
+
 async def fetch_analysis_data(db_service: DatabaseService, analysis_id: int) -> list[TsvOutputFile]:
     """Return all text output files of an existing analysis by id, as ``list[TsvOutputFile]``.
 
@@ -72,11 +99,9 @@ async def fetch_analysis_data(db_service: DatabaseService, analysis_id: int) -> 
     if file_service is None:
         raise RuntimeError("File service is not initialized")
 
-    listing = await file_service.get_listing(S3FilePath(s3_path=Path(analysis.result_uri)))
+    items = await _list_analysis_result_files(file_service, analysis.result_uri, _ANALYSIS_OUTPUT_EXTENSIONS)
     outputs: list[TsvOutputFile] = []
-    for item in listing:
-        if not item.Key.lower().endswith(_ANALYSIS_OUTPUT_EXTENSIONS):
-            continue
+    for item in items:
         content = await file_service.get_file_contents(S3FilePath(s3_path=Path(item.Key)))
         if content is None:
             continue
@@ -344,6 +369,35 @@ async def handle_get_analysis_plots(db_service: DatabaseService, id: int) -> lis
     analysis_data = await db_service.get_analysis(database_id=id)
     output_id = analysis_data.name
     return await get_html_outputs_local(output_id=output_id)
+
+
+async def handle_get_ray_analysis_plots(db_service: DatabaseService, record: ExperimentAnalysisDTO) -> list[OutputFile]:
+    """Return a Ray-native (S3-backed) analysis's HTML plot outputs.
+
+    ``handle_get_analysis_plots`` only ever implemented the legacy SLURM
+    local-filesystem path (``get_html_outputs_local``) -- there was no S3-backed
+    implementation for the K8s/Ray backend at all, so ``GET /analyses/{id}/plots``
+    500'd unconditionally against every Ray analysis (found live 2026-08-27,
+    alongside the ``/data`` bug this module's ``_list_analysis_result_files``
+    fixes -- same report, same underlying gap in S3-result-file retrieval
+    coverage). Mirrors ``fetch_analysis_data``'s pattern exactly, filtered to
+    ``.html``, returning the plots response shape (``OutputFile``: name+content,
+    no partition metadata -- a plot is one file per module, not per-cell)."""
+    if record.status != JobStatus.COMPLETED or not record.result_uri:
+        raise AnalysisNotReadyError(f"Analysis {record.database_id} is not ready (status={record.status})")
+
+    file_service = get_file_service()
+    if file_service is None:
+        raise RuntimeError("File service is not initialized")
+
+    items = await _list_analysis_result_files(file_service, record.result_uri, _ANALYSIS_PLOT_EXTENSIONS)
+    outputs: list[OutputFile] = []
+    for item in items:
+        content = await file_service.get_file_contents(S3FilePath(s3_path=Path(item.Key)))
+        if content is None:
+            continue
+        outputs.append(OutputFile(name=Path(item.Key).name, content=content.decode(errors="replace")))
+    return outputs
 
 
 async def get_html_outputs_local(output_id: str) -> list[OutputFile]:
