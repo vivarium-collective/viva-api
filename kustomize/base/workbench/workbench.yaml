@@ -86,9 +86,18 @@ spec:
                   # detected dubious ownership". Normalize so git works on the seeded repo.
                   chown -R 0:0 /workspace;
                 else
-                  # DEFAULT: a trivial workspace (~484 KiB). The base is an AUTHORING SHELL,
-                  # not a science checkout — REFACTOR-PLAN §0A.5's agreed target, and what
-                  # makes §2A.8's invariant hold rather than be violated by the seed itself.
+                  # DEFAULT: a trivial workspace (~484 KiB). The base is a LANDING SHELL —
+                  # the thing you switch FROM — not a science checkout. That is
+                  # REFACTOR-PLAN §0A.5's agreed target, and what makes §2A.8's invariant
+                  # hold rather than be violated by the seed itself.
+                  #
+                  # A brand-new deployment therefore shows an EMPTY dashboard until the user
+                  # picks a build. That is correct, not a gap to paper over.
+                  #
+                  # Authoring is NOT done here: studies and composites are written on local
+                  # laptop deployments against ordinary GitHub workspaces with the author's
+                  # own git credentials. A hosted deployment RUNS and INSPECTS that work
+                  # against image-backed builds; it is not where the work originates.
                   #
                   # Science code arrives by SWITCHING to a build, not by being seeded here:
                   # the build list comes from viva-api's simulator registry
@@ -104,16 +113,20 @@ spec:
                   echo "seeding /workspace with a minimal scaffold (name=$SEED_NAME)";
                   vivarium-workbench scaffold-workspace --name "$SEED_NAME" --target /workspace &&
                     chown -R 0:0 /workspace;
-                  # The scaffold leaves `git init` to its "Quick setup" instructions, but the
-                  # dashboard's workstream flow commits every action to a feature branch, so
-                  # an un-inited base would fail at the first authoring action rather than at
-                  # setup. Make the shell a real repo up front.
+                  # The scaffold leaves `git init` to its "Quick setup" instructions. Do it
+                  # here so the workspace registry reports a repo/branch/commit for the base
+                  # (/api/workspaces reads them from git) and the switch machinery sees a
+                  # normal git working copy.
+                  #
+                  # NOT because authoring would otherwise fail: `ensure_git_workspace` sets
+                  # up git + origin on the SWITCHED BUILD's cache dir, which is what the
+                  # push-based dispatch path actually needs. The base is not that.
                   if [ ! -d /workspace/.git ]; then
                     # Our own stamp is deployment state, not workspace content — untracked it
-                    # would leave the authoring shell permanently dirty in the dashboard.
+                    # would leave the shell permanently dirty in the dashboard.
                     # Deployment state that lives inside the workspace dir: our seed stamp,
                     # and pbg-state (the Deployment mounts /root/.pbg at this subPath).
-                    # Untracked, they leave the authoring shell permanently dirty.
+                    # Untracked, they leave the shell permanently dirty.
                     for f in .viv-seeded pbg-state; do
                       grep -qx "$f" /workspace/.gitignore 2>/dev/null ||
                         echo "$f" >> /workspace/.gitignore;
@@ -166,7 +179,7 @@ spec:
               PY
               fi
           env:
-            # The base workspace is an AUTHORING SHELL, not a science checkout.
+            # The base workspace is a LANDING SHELL, not a science checkout.
             # Empty SEED_REPO (the default) scaffolds a trivial workspace; science
             # code arrives by switching to a build, which is image-backed and
             # carries its own studies. Set SEED_REPO only for a site that
