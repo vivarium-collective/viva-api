@@ -111,8 +111,13 @@ spec:
                   if [ ! -d /workspace/.git ]; then
                     # Our own stamp is deployment state, not workspace content — untracked it
                     # would leave the authoring shell permanently dirty in the dashboard.
-                    grep -qx ".viv-seeded" /workspace/.gitignore 2>/dev/null ||
-                      echo ".viv-seeded" >> /workspace/.gitignore;
+                    # Deployment state that lives inside the workspace dir: our seed stamp,
+                    # and pbg-state (the Deployment mounts /root/.pbg at this subPath).
+                    # Untracked, they leave the authoring shell permanently dirty.
+                    for f in .viv-seeded pbg-state; do
+                      grep -qx "$f" /workspace/.gitignore 2>/dev/null ||
+                        echo "$f" >> /workspace/.gitignore;
+                    done;
                     git -C /workspace init -q -b main &&
                       git -C /workspace -c user.email=workbench@vivarium -c user.name=workbench \
                         add -A &&
