@@ -134,8 +134,14 @@ images:
   # slim image they silently borrowed the baked science venv via sys.executable.
   # 0.3.57 borrows the BASE workspace's venv instead -- deliberate rather than
   # accidental. Bridge only; workbench #937 tracks per-workspace venvs.
+  # 0.3.58 (workbench #945 + #946): the dial-back env-worker transport and the
+  # remote EnvironmentResolver. Dev needs BOTH halves of this tag — it runs the
+  # workbench that launches remote workers, AND it is the image an env-worker Job
+  # stages its worker module from (ENV_WORKER_MODULE_IMAGE in shared.env).
+  # Verified inside the image: env_worker.py offers (--socket-fd | --connect-to);
+  # 0.3.57 and earlier offer only --socket-fd.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.57
+    newTag: 0.3.58
 
 replicas:
   - count: 1
