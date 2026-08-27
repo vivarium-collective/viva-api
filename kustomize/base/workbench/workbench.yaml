@@ -61,7 +61,12 @@ spec:
             - "sh"
             - "-c"
             - |
-              if [ ! -f /workspace/workspace.yaml ]; then
+              # "Already seeded" is workspace.yaml OR our own stamp. workspace.yaml
+              # alone was the guard, and it works only because v2ecoli happens to
+              # have one at its root — a SEED_REPO without one would re-clone on
+              # every pod start. The stamp makes the guard a property of the seeding,
+              # not of whatever repo the deployment points at.
+              if [ ! -f /workspace/workspace.yaml ] && [ ! -f /workspace/.viv-seeded ]; then
                 if [ -d /app/v2ecoli ]; then
                   # Fat-image path (pre-#932). Kept so an older image still seeds.
                   echo "seeding /workspace from baked-in /app/v2ecoli";
@@ -93,10 +98,11 @@ spec:
                     cp -a /workspace/.seed-tmp/. /workspace/ &&
                     rm -rf /workspace/.seed-tmp &&
                     chown -R 0:0 /workspace &&
-                    echo "seeded at $(git -C /workspace rev-parse --short HEAD)";
+                    echo "seeded at $(git -C /workspace rev-parse --short HEAD)" &&
+                    date -u +"%Y-%m-%dT%H:%M:%SZ $SEED_REPO@$SEED_REF" > /workspace/.viv-seeded;
                 fi
               else
-                echo "/workspace already seeded (workspace.yaml present); skipping";
+                echo "/workspace already seeded; skipping";
               fi
               # Deployment override for the pbg-ptools Omics Viewer: the baked-in
               # workspace.yaml sets ui.ptools_server_url to a LOCAL dev container
