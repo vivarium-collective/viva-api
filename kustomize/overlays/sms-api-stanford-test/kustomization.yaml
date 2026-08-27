@@ -141,7 +141,7 @@ images:
   # Verified inside the image: env_worker.py offers (--socket-fd | --connect-to);
   # 0.3.57 and earlier offer only --socket-fd.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.63
+    newTag: 0.3.64
 
 replicas:
   - count: 1
