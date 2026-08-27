@@ -114,15 +114,29 @@ class RayLayout:
         return s3_uri(f"{RayLayout.seed_results_prefix(experiment_id, seed)}/")
 
     @staticmethod
-    def parca_cache_uri(commit: str, *, upstream: bool = False) -> str:
+    def parca_cache_uri(commit: str, *, upstream: bool = False, variant: str | None = None) -> str:
         """S3 URI for a commit's ParCa cache (trailing slash = 'directory').
 
         ``upstream=True`` selects the SEPARATE pristine-upstream-vEcoli cache used by
         the ``--composite vecoli`` wrapper (an upstream-built ``simData.cPickle``);
         ``upstream=False`` is the v2ecoli cache. Both the ParCa job (writes) and the
         sim job (stages) derive the same URI, so the hand-off needs no runtime wiring.
+
+        ``variant`` (item 87) is None for every existing caller -- returns the exact
+        same commit-only key as before this param existed. This cache is a SHARED
+        resource: any concurrent dispatch on the same commit stages from this one
+        key, so a config-driven build (e.g. a custom-strain ``new_genes`` ParCa)
+        must NEVER write here -- it would silently overwrite the plain baseline
+        cache every other concurrent dispatch on that commit relies on. Pass an
+        explicit label (e.g. ``"custom-strain"``) to get a nested, non-colliding
+        key instead
+        (``<kind>/<commit>/<variant>/``) -- still commit-scoped (a variant build
+        from a different commit is still a different cache), just never the bare
+        commit-only path a plain baseline build/stage would ever read.
         """
         kind = "ray-upstream-parca-cache" if upstream else "ray-parca-cache"
+        if variant:
+            return s3_uri(f"{kind}/{commit}/{variant}/")
         return s3_uri(f"{kind}/{commit}/")
 
     @staticmethod
