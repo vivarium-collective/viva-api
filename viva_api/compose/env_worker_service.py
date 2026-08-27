@@ -135,8 +135,9 @@ class EnvWorkerService:
             session_key=session_key,
         )
         self._k8s.create_job(job)
-        logger.info("env-worker Job %s created (image %s, dial-back %s:%s)",
-                    job_name, image, callback_host, callback_port)
+        logger.info(
+            "env-worker Job %s created (image %s, dial-back %s:%s)", job_name, image, callback_host, callback_port
+        )
         return EnvWorkerHandle(job_name=job_name, image=image, namespace=self._namespace)
 
     def status(self, job_name: str) -> JobStatusInfo | None:
@@ -159,9 +160,18 @@ class EnvWorkerService:
             logger.info("env-worker Job %s already gone", job_name)
 
     # -- job body ------------------------------------------------------------
-    def _build_job(self, *, job_name: str, image: str, commit: str, callback_host: str,
-                   callback_port: int, token: str, workspace: str,
-                   session_key: str | None) -> k8s_client.V1Job:
+    def _build_job(
+        self,
+        *,
+        job_name: str,
+        image: str,
+        commit: str,
+        callback_host: str,
+        callback_port: int,
+        token: str,
+        workspace: str,
+        session_key: str | None,
+    ) -> k8s_client.V1Job:
         labels = {"app": "sms-api", "job-type": "env-worker", "commit": commit}
         if session_key:
             labels["session"] = _label_safe(session_key)
@@ -178,8 +188,8 @@ class EnvWorkerService:
         return k8s_client.V1Job(
             metadata=k8s_client.V1ObjectMeta(name=job_name, labels=labels),
             spec=k8s_client.V1JobSpec(
-                backoff_limit=0,          # a worker that failed to dial back should not
-                                          # silently respawn against a dead listener
+                backoff_limit=0,  # a worker that failed to dial back should not
+                # silently respawn against a dead listener
                 ttl_seconds_after_finished=WORKER_TTL_SECONDS,
                 template=k8s_client.V1PodTemplateSpec(
                     metadata=k8s_client.V1ObjectMeta(labels=labels),
@@ -196,14 +206,13 @@ class EnvWorkerService:
                                 # whole point — the worker must import workspace
                                 # Python, and this image is where it lives.
                                 command=["python", "-m", "vivarium_workbench.env_worker"],
-                                args=["--connect-to", f"{callback_host}:{callback_port}",
-                                      "--workspace", workspace],
+                                args=["--connect-to", f"{callback_host}:{callback_port}", "--workspace", workspace],
                                 env=env,
                                 volume_mounts=[
                                     k8s_client.V1VolumeMount(
-                                        name="worker-module", mount_path=MODULE_MOUNT, read_only=True),
-                                    k8s_client.V1VolumeMount(
-                                        name="scratch", mount_path=SCRATCH_MOUNT),
+                                        name="worker-module", mount_path=MODULE_MOUNT, read_only=True
+                                    ),
+                                    k8s_client.V1VolumeMount(name="scratch", mount_path=SCRATCH_MOUNT),
                                 ],
                                 resources=k8s_client.V1ResourceRequirements(
                                     requests={"cpu": WORKER_CPU_REQUEST, "memory": WORKER_MEM_REQUEST},
@@ -219,10 +228,8 @@ class EnvWorkerService:
                             # nothing here needs the PVC — which is what lets a
                             # worker be scheduled on any node despite the PVC being
                             # ReadWriteOnce.
-                            k8s_client.V1Volume(
-                                name="worker-module", empty_dir=k8s_client.V1EmptyDirVolumeSource()),
-                            k8s_client.V1Volume(
-                                name="scratch", empty_dir=k8s_client.V1EmptyDirVolumeSource()),
+                            k8s_client.V1Volume(name="worker-module", empty_dir=k8s_client.V1EmptyDirVolumeSource()),
+                            k8s_client.V1Volume(name="scratch", empty_dir=k8s_client.V1EmptyDirVolumeSource()),
                         ],
                     ),
                 ),
@@ -250,11 +257,13 @@ class EnvWorkerService:
         return k8s_client.V1Container(
             name="stage-worker-module",
             image=settings.env_worker_module_image,
-            command=["/bin/sh", "-c",
-                     # -R (not -a): ownership/timestamps are irrelevant here and
-                     # -a fails noisily across some overlay filesystems.
-                     f"set -e; mkdir -p {dest}; cp -R {srcs} {dest}/; "
-                     f"test -f {dest}/env_worker.py"],
+            command=[
+                "/bin/sh",
+                "-c",
+                # -R (not -a): ownership/timestamps are irrelevant here and
+                # -a fails noisily across some overlay filesystems.
+                f"set -e; mkdir -p {dest}; cp -R {srcs} {dest}/; test -f {dest}/env_worker.py",
+            ],
             volume_mounts=[
                 k8s_client.V1VolumeMount(name="worker-module", mount_path=MODULE_MOUNT),
             ],

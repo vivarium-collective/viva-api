@@ -89,9 +89,7 @@ async def start_worker(request: EnvWorkerStartRequest) -> EnvWorkerStartResponse
         # — these end up in a pod spec, so vagueness here costs a round trip
         # through Kubernetes to find out what was wrong.
         raise HTTPException(422, str(e)) from e
-    return EnvWorkerStartResponse(
-        job_name=handle.job_name, image=handle.image, namespace=handle.namespace
-    )
+    return EnvWorkerStartResponse(job_name=handle.job_name, image=handle.image, namespace=handle.namespace)
 
 
 @router.get(
@@ -109,9 +107,7 @@ async def get_worker(job_name: str, include_logs: bool = False) -> EnvWorkerStat
         # and the caller needs to distinguish that from "still starting".
         return EnvWorkerStatusResponse(job_name=job_name, exists=False)
     logs = service.logs(job_name) if include_logs else None
-    return EnvWorkerStatusResponse(
-        job_name=job_name, status=str(getattr(info, "status", None)), logs=logs
-    )
+    return EnvWorkerStatusResponse(job_name=job_name, status=str(getattr(info, "status", None)), logs=logs)
 
 
 @router.delete(
