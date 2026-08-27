@@ -67,40 +67,61 @@ spec:
               # every pod start. The stamp makes the guard a property of the seeding,
               # not of whatever repo the deployment points at.
               if [ ! -f /workspace/workspace.yaml ] && [ ! -f /workspace/.viv-seeded ]; then
-                if [ -d /app/v2ecoli ]; then
-                  # Fat-image path (pre-#932). Kept so an older image still seeds.
-                  echo "seeding /workspace from baked-in /app/v2ecoli";
-                  cp -a /app/v2ecoli/. /workspace/;
-                  # `cp -a` preserves the IMAGE LAYER's ownership — a build-time uid
-                  # that doesn't exist in this container (observed: .git owned by
-                  # 17163:0). The pod runs as root, so git then refuses every command
-                  # with "fatal: detected dubious ownership", which is why in-pod git
-                  # has been unusable. Normalize ownership so git works on the repo.
-                  chown -R 0:0 /workspace;
-                else
-                  # Slim-image path (#932 onward): the workspace is NOT in the image, so
-                  # clone it. This is what makes the PVC re-seedable at all — once
-                  # /app/v2ecoli was dropped the `cp` above silently copied nothing, so a
-                  # wiped PVC could never come back and the stale one could never be
-                  # replaced. That is what actually blocked a clean base workspace.
-                  #
-                  # No venv is provisioned, deliberately: under §2A.8 a hosted worker runs
-                  # the simulator's own prebuilt image, so the base workspace is the
-                  # AUTHORING surface (studies, investigations, git) and never the science
-                  # environment. The 7.2 GiB venv this replaces was a fat-image relic that
-                  # could not `import v2ecoli` anyway.
+                if [ -n "${SEED_REPO:-}" ]; then
+                  # Escape hatch: seed from a specific repo. Not the default, and NOT how a
+                  # site should get science code — that arrives with a materialized build.
                   echo "seeding /workspace by cloning $SEED_REPO @ $SEED_REF";
-                  # Clone onto the PVC, not /tmp: the repo is ~1 GiB and the
-                  # container layer is bounded by ephemeral-storage limits (the same
-                  # ceiling that evicts the api pod on large downloads).
                   rm -rf /workspace/.seed-tmp;
                   git clone --branch "$SEED_REF" "$SEED_REPO" /workspace/.seed-tmp &&
                     cp -a /workspace/.seed-tmp/. /workspace/ &&
                     rm -rf /workspace/.seed-tmp &&
-                    chown -R 0:0 /workspace &&
-                    echo "seeded at $(git -C /workspace rev-parse --short HEAD)" &&
-                    date -u +"%Y-%m-%dT%H:%M:%SZ $SEED_REPO@$SEED_REF" > /workspace/.viv-seeded;
+                    chown -R 0:0 /workspace;
+                elif [ -d /app/v2ecoli ]; then
+                  # Fat-image path (pre-#932). Kept so an older image still seeds.
+                  echo "seeding /workspace from baked-in /app/v2ecoli";
+                  cp -a /app/v2ecoli/. /workspace/;
+                  # `cp -a` preserves the IMAGE LAYER's ownership — a build-time uid that
+                  # doesn't exist in this container (observed: .git owned by 17163:0). The
+                  # pod runs as root, so git then refuses every command with "fatal:
+                  # detected dubious ownership". Normalize so git works on the seeded repo.
+                  chown -R 0:0 /workspace;
+                else
+                  # DEFAULT: a trivial workspace (~484 KiB). The base is an AUTHORING SHELL,
+                  # not a science checkout — REFACTOR-PLAN §0A.5's agreed target, and what
+                  # makes §2A.8's invariant hold rather than be violated by the seed itself.
+                  #
+                  # Science code arrives by SWITCHING to a build, not by being seeded here:
+                  # the build list comes from viva-api's simulator registry
+                  # (list_build_sources -> client.list_simulators), and materialize_build
+                  # downloads that build's repo@commit tarball and stamps .viv-build.json.
+                  # So a chosen workspace is image-backed AND carries workspace/studies at
+                  # the commit it ran against.
+                  #
+                  # Seeding v2ecoli here instead produced the one state §2A.8 prohibits —
+                  # science code with no build stamp — so every interactive worker call on
+                  # the base raised "has no build stamp". An empty base has nothing to
+                  # introspect and needs no worker, which is exactly why it is consistent.
+                  echo "seeding /workspace with a minimal scaffold (name=$SEED_NAME)";
+                  vivarium-workbench scaffold-workspace --name "$SEED_NAME" --target /workspace &&
+                    chown -R 0:0 /workspace;
+                  # The scaffold leaves `git init` to its "Quick setup" instructions, but the
+                  # dashboard's workstream flow commits every action to a feature branch, so
+                  # an un-inited base would fail at the first authoring action rather than at
+                  # setup. Make the shell a real repo up front.
+                  if [ ! -d /workspace/.git ]; then
+                    # Our own stamp is deployment state, not workspace content — untracked it
+                    # would leave the authoring shell permanently dirty in the dashboard.
+                    grep -qx ".viv-seeded" /workspace/.gitignore 2>/dev/null ||
+                      echo ".viv-seeded" >> /workspace/.gitignore;
+                    git -C /workspace init -q -b main &&
+                      git -C /workspace -c user.email=workbench@vivarium -c user.name=workbench \
+                        add -A &&
+                      git -C /workspace -c user.email=workbench@vivarium -c user.name=workbench \
+                        commit -q -m "feat: workspace bootstrap" &&
+                      echo "initialized git at $(git -C /workspace rev-parse --short HEAD)";
+                  fi;
                 fi
+                date -u +"%Y-%m-%dT%H:%M:%SZ ${SEED_REPO:-scaffold}${SEED_REPO:+@$SEED_REF}" > /workspace/.viv-seeded;
               else
                 echo "/workspace already seeded; skipping";
               fi
@@ -140,13 +161,17 @@ spec:
               PY
               fi
           env:
-            # Where a slim image seeds an EMPTY /workspace from. Explicit because the
-            # workspace is no longer baked into the image: the DEPLOYMENT, not the
-            # image, now decides which repo and ref the base workspace comes from.
+            # The base workspace is an AUTHORING SHELL, not a science checkout.
+            # Empty SEED_REPO (the default) scaffolds a trivial workspace; science
+            # code arrives by switching to a build, which is image-backed and
+            # carries its own studies. Set SEED_REPO only for a site that
+            # deliberately wants a specific checkout as its base.
             - name: SEED_REPO
-              value: "https://github.com/vivarium-collective/v2ecoli.git"
+              value: ""
             - name: SEED_REF
               value: "main"
+            - name: SEED_NAME
+              value: "base"
             # Browser-reachable PTools base for the Omics Viewer; set per-overlay.
             # Empty = leave the workspace's own ui.ptools_server_url untouched.
             - name: PTOOLS_SERVER_URL
