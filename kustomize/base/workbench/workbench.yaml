@@ -61,18 +61,48 @@ spec:
             - "sh"
             - "-c"
             - |
-              if [ ! -f /workspace/workspace.yaml ]; then
-                echo "seeding /workspace from baked-in /app/v2ecoli";
-                cp -a /app/v2ecoli/. /workspace/;
-                # `cp -a` preserves the IMAGE LAYER's ownership — a build-time uid
-                # that doesn't exist in this container (observed: .git owned by
-                # 17163:0). The pod runs as root, so git then refuses every command
-                # with "fatal: detected dubious ownership", which is why in-pod git
-                # has been unusable (see REMOTE_PINNED's "unwritable git remote"
-                # note below). Normalize ownership so git works on the seeded repo.
-                chown -R 0:0 /workspace;
+              # "Already seeded" is workspace.yaml OR our own stamp. workspace.yaml
+              # alone was the guard, and it works only because v2ecoli happens to
+              # have one at its root — a SEED_REPO without one would re-clone on
+              # every pod start. The stamp makes the guard a property of the seeding,
+              # not of whatever repo the deployment points at.
+              if [ ! -f /workspace/workspace.yaml ] && [ ! -f /workspace/.viv-seeded ]; then
+                if [ -d /app/v2ecoli ]; then
+                  # Fat-image path (pre-#932). Kept so an older image still seeds.
+                  echo "seeding /workspace from baked-in /app/v2ecoli";
+                  cp -a /app/v2ecoli/. /workspace/;
+                  # `cp -a` preserves the IMAGE LAYER's ownership — a build-time uid
+                  # that doesn't exist in this container (observed: .git owned by
+                  # 17163:0). The pod runs as root, so git then refuses every command
+                  # with "fatal: detected dubious ownership", which is why in-pod git
+                  # has been unusable. Normalize ownership so git works on the repo.
+                  chown -R 0:0 /workspace;
+                else
+                  # Slim-image path (#932 onward): the workspace is NOT in the image, so
+                  # clone it. This is what makes the PVC re-seedable at all — once
+                  # /app/v2ecoli was dropped the `cp` above silently copied nothing, so a
+                  # wiped PVC could never come back and the stale one could never be
+                  # replaced. That is what actually blocked a clean base workspace.
+                  #
+                  # No venv is provisioned, deliberately: under §2A.8 a hosted worker runs
+                  # the simulator's own prebuilt image, so the base workspace is the
+                  # AUTHORING surface (studies, investigations, git) and never the science
+                  # environment. The 7.2 GiB venv this replaces was a fat-image relic that
+                  # could not `import v2ecoli` anyway.
+                  echo "seeding /workspace by cloning $SEED_REPO @ $SEED_REF";
+                  # Clone onto the PVC, not /tmp: the repo is ~1 GiB and the
+                  # container layer is bounded by ephemeral-storage limits (the same
+                  # ceiling that evicts the api pod on large downloads).
+                  rm -rf /workspace/.seed-tmp;
+                  git clone --branch "$SEED_REF" "$SEED_REPO" /workspace/.seed-tmp &&
+                    cp -a /workspace/.seed-tmp/. /workspace/ &&
+                    rm -rf /workspace/.seed-tmp &&
+                    chown -R 0:0 /workspace &&
+                    echo "seeded at $(git -C /workspace rev-parse --short HEAD)" &&
+                    date -u +"%Y-%m-%dT%H:%M:%SZ $SEED_REPO@$SEED_REF" > /workspace/.viv-seeded;
+                fi
               else
-                echo "/workspace already seeded (workspace.yaml present); skipping";
+                echo "/workspace already seeded; skipping";
               fi
               # Deployment override for the pbg-ptools Omics Viewer: the baked-in
               # workspace.yaml sets ui.ptools_server_url to a LOCAL dev container
@@ -110,6 +140,13 @@ spec:
               PY
               fi
           env:
+            # Where a slim image seeds an EMPTY /workspace from. Explicit because the
+            # workspace is no longer baked into the image: the DEPLOYMENT, not the
+            # image, now decides which repo and ref the base workspace comes from.
+            - name: SEED_REPO
+              value: "https://github.com/vivarium-collective/v2ecoli.git"
+            - name: SEED_REF
+              value: "main"
             # Browser-reachable PTools base for the Omics Viewer; set per-overlay.
             # Empty = leave the workspace's own ui.ptools_server_url untouched.
             - name: PTOOLS_SERVER_URL
