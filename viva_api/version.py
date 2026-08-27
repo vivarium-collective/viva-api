@@ -591,4 +591,10 @@
 #          this repo) -- this release hardens the same endpoint against the two
 #          OTHER dispatch shapes it was never meant to serve, so a future
 #          misdirected call fails clearly instead of confusingly.
-__version__ = "0.9.57"
+# 0.9.58 — env-worker lifecycle endpoints + worker pod spec (image-as-worker,
+#          vivarium-workbench#942 / REFACTOR-PLAN §2A.8). /env-worker/v1/workers
+#          runs a simulator's PREBUILT image as the workbench's env worker: a Job
+#          from ecr:<commit>, the worker module staged in from the workbench image,
+#          two emptyDir volumes, and the worker dials back to the caller. Hosted
+#          builds no venv on the PVC at all.
+__version__ = "0.9.58"
