@@ -26,7 +26,7 @@ images:
   # v2ecoli#603/sms-ecoli#123, a separate repo, already deployed via sim
   # builds -- not a viva-api change).
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.57
+    newTag: 0.9.58
   # ptools 0.5.9 -> 0.9.53 (DEV ONLY — prod sms-api-stanford stays on 0.5.9 while
   # this soaks). The long-standing 0.5.9 pin existed because CI builds only
   # sms-api (scripts/build_action.sh), so no newer sms-ptools existed on ghcr.io
@@ -134,8 +134,14 @@ images:
   # slim image they silently borrowed the baked science venv via sys.executable.
   # 0.3.57 borrows the BASE workspace's venv instead -- deliberate rather than
   # accidental. Bridge only; workbench #937 tracks per-workspace venvs.
+  # 0.3.58 (workbench #945 + #946): the dial-back env-worker transport and the
+  # remote EnvironmentResolver. Dev needs BOTH halves of this tag — it runs the
+  # workbench that launches remote workers, AND it is the image an env-worker Job
+  # stages its worker module from (ENV_WORKER_MODULE_IMAGE in shared.env).
+  # Verified inside the image: env_worker.py offers (--socket-fd | --connect-to);
+  # 0.3.57 and earlier offer only --socket-fd.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.57
+    newTag: 0.3.58
 
 replicas:
   - count: 1
@@ -235,6 +241,38 @@ patches:
   # silently kill prod's Omics Viewer (it self-gates -- no error, the button just
   # stops rendering). Phase 4 completes when prod migrates: delete its patch too,
   # then the now-dead base code.
+  # Env workers: run a simulator's prebuilt image as the env worker
+  # (vivarium-workbench#942 / REFACTOR-PLAN §2A.8). Declaring where workers dial
+  # back is what SELECTS the remote launcher — the workbench's composition root
+  # (lib/env_worker_launcher.default_launcher) goes remote iff this is set, and
+  # local otherwise, because a laptop has no cluster. One deployment-wide
+  # decision, chosen by topology rather than by any call site.
+  #
+  # The value is this pod's own IP via the Downward API: the worker connects
+  # BACK to us. viva-api may create Jobs but not Services, so a worker pod has
+  # no stable DNS name to dial, and the reverse direction also means viva-api
+  # needs to discover nothing — we already know our own address.
+  #
+  # DEV ONLY for now: prod runs a workbench predating the transport, and
+  # ../sms-api-stanford-workbench does not set this, so prod stays local.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: workbench
+      spec:
+        template:
+          spec:
+            containers:
+              - name: workbench
+                env:
+                  - name: VIVARIUM_WORKBENCH_ENV_WORKER_ADVERTISE_HOST
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: status.podIP
+    target:
+      kind: Deployment
+      name: workbench
   # ui.* deployment-config layer (vivarium-workbench#471), phase 2 of lifting
   # these bindings out of the workspace. Mounts the generated
   # workbench-deploy-config ConfigMap read-only and names it via
