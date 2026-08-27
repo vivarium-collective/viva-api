@@ -261,3 +261,43 @@ def test_missing_module_image_refuses_rather_than_guessing(monkeypatch: pytest.M
     svc = EnvWorkerService(k8s=MagicMock(), namespace="ns")
     with pytest.raises(EnvWorkerLaunchError, match="env_worker_module_image"):
         svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN)
+
+
+# --- job-name uniqueness + 409 (found on dev) -------------------------------
+
+
+def test_each_launch_gets_a_unique_job_name(service: tuple[EnvWorkerService, MagicMock]) -> None:
+    """A fixed name per commit collided between sessions AND on a sequential
+    relaunch, because a deleted Job lingers while foreground propagation
+    finishes: "object is being deleted ... already exists" (observed on dev)."""
+    svc, k8s = service
+    names = {svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN).job_name for _ in range(5)}
+    assert len(names) == 5
+    for n in names:
+        assert n.startswith("env-worker-234dc76-") and len(n) <= 63
+        assert n.islower() and " " not in n
+
+
+def test_job_already_exists_is_a_conflict_not_a_crash(
+    service: tuple[EnvWorkerService, MagicMock],
+) -> None:
+    from kubernetes import client as k8s_client
+
+    from viva_api.compose.env_worker_service import EnvWorkerJobExists
+
+    svc, k8s = service
+    k8s.create_job.side_effect = k8s_client.rest.ApiException(status=409)
+    with pytest.raises(EnvWorkerJobExists):
+        svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN)
+
+
+def test_workspace_defaults_to_the_deployment_setting_when_caller_omits_it(
+    service: tuple[EnvWorkerService, MagicMock],
+) -> None:
+    """The router used to default workspace to "/workspace", which is TRUTHY and
+    so shadowed env_worker_workspace_path entirely — every worker ran against a
+    path that does not exist in its pod and silently fell back to a global scan."""
+    svc, k8s = service
+    svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN, workspace=None)
+    c = _created_job(k8s).spec.template.spec.containers[0]
+    assert "/app/v2ecoli" in c.args

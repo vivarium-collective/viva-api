@@ -601,4 +601,8 @@
 #          the service but never called set_env_worker_service(), so every
 #          /env-worker/v1 call answered 503 ("not configured") — the guard doing
 #          its job, with nothing behind it. Found on dev launching a real worker.
-__version__ = "0.9.59"
+# 0.9.60 — env-worker fixes found by the first real launches on dev: the router's
+#          workspace default shadowed env_worker_workspace_path (so every worker
+#          ran a path absent from its pod and silently fell back to a GLOBAL
+#          generator scan); Job names collided per commit; a 409 surfaced as 500.
+__version__ = "0.9.60"
