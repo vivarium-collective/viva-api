@@ -597,4 +597,8 @@
 #          from ecr:<commit>, the worker module staged in from the workbench image,
 #          two emptyDir volumes, and the worker dials back to the caller. Hosted
 #          builds no venv on the PVC at all.
-__version__ = "0.9.58"
+# 0.9.59 — wire the env-worker service at startup. 0.9.58 shipped the router and
+#          the service but never called set_env_worker_service(), so every
+#          /env-worker/v1 call answered 503 ("not configured") — the guard doing
+#          its job, with nothing behind it. Found on dev launching a real worker.
+__version__ = "0.9.59"

@@ -384,6 +384,10 @@ async def init_standalone(enable_ssl: bool = True) -> None:
         # Initialize compose (process-bigraph) subsystem
         await _init_compose_subsystem(engine=get_postgres_engine())
 
+        # Env-worker service (image-as-worker, §2A.8) — same place, same
+        # non-fatal posture as the compose subsystem above.
+        _init_env_worker_service()
+
     except Exception as e:
         logger.error(f"Failed to initialize standalone services: {e}", exc_info=True)
         raise
@@ -447,6 +451,41 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         logger.info("✓ Compose subsystem initialized")
     except Exception:
         logger.warning("Compose subsystem initialization failed (non-fatal)", exc_info=True)
+
+
+def _init_env_worker_service() -> None:
+    """Wire the env-worker router (vivarium-workbench#942 / REFACTOR-PLAN §2A.8).
+
+    Runs a simulator's prebuilt image as the workbench's env worker. Only makes
+    sense where this deployment can create K8s Jobs and knows which workbench
+    image to stage the worker module from, so it is configured-or-absent rather
+    than always-on: without both settings the router keeps answering 503, which
+    says "not configured here" instead of pretending a 404.
+    """
+    from viva_api.api.routers.env_worker import set_env_worker_service
+
+    settings = get_settings()
+    if not settings.k8s_job_namespace or not settings.env_worker_module_image:
+        logger.info(
+            "Env-worker service not configured (k8s_job_namespace=%r, env_worker_module_image=%r); "
+            "/env-worker/v1 will answer 503",
+            settings.k8s_job_namespace,
+            settings.env_worker_module_image,
+        )
+        return
+    try:
+        from viva_api.compose.env_worker_service import EnvWorkerService
+
+        set_env_worker_service(EnvWorkerService())
+        logger.info(
+            "✓ Env-worker service initialized (namespace=%s, module image=%s)",
+            settings.k8s_job_namespace,
+            settings.env_worker_module_image,
+        )
+    except Exception:
+        # Non-fatal, like the compose subsystem: a deployment without in-cluster
+        # K8s credentials must still serve everything else.
+        logger.warning("Env-worker service initialization failed (non-fatal)", exc_info=True)
 
 
 async def shutdown_standalone() -> None:

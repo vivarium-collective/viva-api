@@ -26,7 +26,7 @@ images:
   # v2ecoli#603/sms-ecoli#123, a separate repo, already deployed via sim
   # builds -- not a viva-api change).
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.58
+    newTag: 0.9.59
   # ptools 0.5.9 -> 0.9.53 (DEV ONLY — prod sms-api-stanford stays on 0.5.9 while
   # this soaks). The long-standing 0.5.9 pin existed because CI builds only
   # sms-api (scripts/build_action.sh), so no newer sms-ptools existed on ghcr.io
@@ -141,7 +141,7 @@ images:
   # Verified inside the image: env_worker.py offers (--socket-fd | --connect-to);
   # 0.3.57 and earlier offer only --socket-fd.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.58
+    newTag: 0.3.59
 
 replicas:
   - count: 1
