@@ -235,6 +235,38 @@ patches:
   # silently kill prod's Omics Viewer (it self-gates -- no error, the button just
   # stops rendering). Phase 4 completes when prod migrates: delete its patch too,
   # then the now-dead base code.
+  # Env workers: run a simulator's prebuilt image as the env worker
+  # (vivarium-workbench#942 / REFACTOR-PLAN §2A.8). Declaring where workers dial
+  # back is what SELECTS the remote launcher — the workbench's composition root
+  # (lib/env_worker_launcher.default_launcher) goes remote iff this is set, and
+  # local otherwise, because a laptop has no cluster. One deployment-wide
+  # decision, chosen by topology rather than by any call site.
+  #
+  # The value is this pod's own IP via the Downward API: the worker connects
+  # BACK to us. viva-api may create Jobs but not Services, so a worker pod has
+  # no stable DNS name to dial, and the reverse direction also means viva-api
+  # needs to discover nothing — we already know our own address.
+  #
+  # DEV ONLY for now: prod runs a workbench predating the transport, and
+  # ../sms-api-stanford-workbench does not set this, so prod stays local.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: workbench
+      spec:
+        template:
+          spec:
+            containers:
+              - name: workbench
+                env:
+                  - name: VIVARIUM_WORKBENCH_ENV_WORKER_ADVERTISE_HOST
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: status.podIP
+    target:
+      kind: Deployment
+      name: workbench
   # ui.* deployment-config layer (vivarium-workbench#471), phase 2 of lifting
   # these bindings out of the workspace. Mounts the generated
   # workbench-deploy-config ConfigMap read-only and names it via
