@@ -320,6 +320,12 @@ marimo), and tui (textual-based tui) all expose/provide the same functionality, 
 
 ### Stanford-Test Deploy Loop (K8s + AWS Batch)
 
+> **See [`docs/DEPLOY.md`](docs/DEPLOY.md)** for the consolidated view: the three
+> images' *different* versioning schemes (sms-api semver; vivarium-workbench an
+> independent line; sms-ptools following sms-api and lagging), and the
+> `newTag` ↔ `ENV_WORKER_MODULE_IMAGE` coupling that lives in two files and is
+> therefore invisible in a diff.
+
 The iterative fix → deploy → test cycle for the `sms-api-stanford-test` namespace:
 
 ```bash
@@ -335,8 +341,13 @@ gh run watch $(gh run list --workflow=build-and-push.yml --limit 1 --json databa
 # Nextflow/vEcoli-submit image is NOT built here — it's a runtime, per-commit
 # build (base = that commit's vecoli:<sha>), so it was removed from the loop and
 # Dockerfile-nextflow deleted (it always failed "BASE_IMAGE blank"). Success =
-# "Built and pushed service api". DO NOT bump the sms-ptools newTag to match api;
-# ptools is intentionally pinned to 0.5.9 (no newer sms-ptools image on ghcr.io).
+# "Built and pushed service api". DO NOT bump the sms-ptools newTag to match api:
+# ptools is built BY HAND (CI never builds it) and is tagged off the sms-api
+# version line as of its last rebuild, so it LAGS by design. Never move that tag
+# without actually building and pushing the image. Actual state 2026-08-28:
+# Stanford sites 0.9.53, UConn RKE overlays 0.5.9 — the "pinned to 0.5.9"
+# note that used to sit here was stale and contradicted the version-sync
+# checklist below. See docs/DEPLOY.md §1.
 
 # 3. Apply + roll Stanford-test
 kubectl kustomize kustomize/overlays/sms-api-stanford-test | kubectl apply -f -
