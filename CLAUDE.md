@@ -88,6 +88,31 @@ The Atlantis logo (E. coli capsule + flagella squigglies) is defined in:
 - `app/tui.py` — TUI with animated green↔purple gradient (`_animated_banner()`)
 - `app/gui.py` — GUI with HTML/CSS + SVG flagella
 
+#### Not to be confused with: `vwb`, the workbench's own CLI
+
+`vivarium-workbench` (the separate repo deployed alongside this one) ships its
+own CLI, `vwb` — nothing to do with `atlantis`. Run it from that checkout:
+
+```bash
+uv run vwb --help          # 25 verbs; it is NOT on $PATH (or .venv/bin/vwb)
+uv run vwb smoke           # <1 min: server + env worker + a tiny run
+uv run vwb doctor          # stale process-bigraph / viva-superpowers
+```
+
+`smoke` is the cheapest "is anything actually broken" probe available on that
+side — hermetic temp workspace by default, `--workspace <path>` to check a real
+one (server + env worker only, writes no run). Other verbs worth knowing:
+`sync` (materialize an exact repo@commit workspace locally),
+`scaffold-workspace` / `catalog-add` (bootstrap, run before any server),
+`run` / `rerun` / `runs` / `status` / `logs`, `audit` (L0–L5 reproducibility),
+and `server-status` / `-stop` / `-restart`.
+
+Noted here because it is easy to miss from this side: `vwb` was never announced
+as a new tool — it arrived as the short alias in vivarium-workbench's
+2026-07-02 package rename (`vivarium_dashboard` → `vivarium_workbench`), and is
+documented only in *that* repo. `vdash` / `vivarium-dashboard` still work but
+are deprecated aliases, slated for removal in its Phase 3.
+
 ### HPC Workflow Pipeline
 
 1. **Build Image**: Clone vEcoli repo, build Singularity container
