@@ -1249,6 +1249,29 @@ class TestSimulationServiceRayBuild:
         # runs v2ecoli's OWN recipe (symmetric with K8s running vEcoli's), not an sms-cdk script
         assert "docker/build-and-push-ecr.sh -i abc1234 -r v2ecoli -R us-gov-west-1" in script
 
+    def test_build_command_default_never_passes_the_g_flag(self) -> None:
+        """Regression: item 87 added include_new_gene_data. Every existing caller must get
+        a command byte-for-byte unaffected -- the recipe line must have NOTHING after
+        -R us-gov-west-1, and the PAT must still be unset right after the outer clone."""
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            script = service._build_command(_v2ecoli_simulator())[2]
+        assert " -g" not in script
+        assert script.count("unset GH_PAT") == 1
+        # GH_PAT is unset BEFORE the build recipe runs, not after -- confirms it's not left
+        # exported into that command's environment when the flag is off.
+        assert script.index("unset GH_PAT") < script.index("docker/build-and-push-ecr.sh")
+
+    def test_build_command_include_new_gene_data_passes_g_and_keeps_pat_exported(self) -> None:
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            script = service._build_command(_v2ecoli_simulator(), include_new_gene_data=True)[2]
+        assert "docker/build-and-push-ecr.sh -i abc1234 -r v2ecoli -R us-gov-west-1 -g" in script
+        # GH_PAT must still be exported (not unset) by the time the recipe runs, or -g's own
+        # `[[ -n "${GH_PAT:-}" ]]` guard in the recipe would fail even though this method
+        # believes it's supplying one.
+        assert "unset GH_PAT" not in script
+
     def test_sim_command_composite_defaults_to_single_generation(self) -> None:
         """Selecting an engine must NOT imply the 16-gen comparison default."""
         service = SimulationServiceRay()
