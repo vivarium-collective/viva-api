@@ -454,9 +454,17 @@ HTTP/2 multiplexer. We hit this once in `E2EDataService.submit_stream_output_dat
 second `GET /simulations/{id}` call). Rule of thumb: inside an
 `async with client.stream(...)` block, don't make additional HTTP calls.
 
-**Pitfall 6 — the dev ALB kills any request that is silent for 60 s, and the
-server keeps going.** Measured 2026-08-28 on `smsvpctest`
-(`idle_timeout=60s`; prod `smscdk` is **600 s**, so this bites dev far harder):
+**Pitfall 6 — a gateway can kill a request that is silent too long, while the
+server keeps going.**
+
+> **RETIRED on dev 2026-08-28.** `smsvpctest`'s ALB is now **600 s**, matching
+> prod. The 60 s value below was real and measured that morning; the fix
+> (`idleTimeout: 600`, sms-cdk#36) had been merged but never `cdk deploy`ed, and
+> went out with sms-cdk#42. **The lesson survives the number** — a gateway 504
+> still means "nobody was listening any more", not "the server failed" — and the
+> ceiling still applies to any gateway in front of a long silent request.
+
+Measured 2026-08-28 on `smsvpctest` when it was still `idle_timeout=60s`:
 
 ```
 client:  HTTP 504 Gateway Time-out  after 60.1 s
@@ -473,11 +481,12 @@ applies end to end through `sms-proxy.sh`.
 
 The example above is not exotic: it is `GET /api/investigations` right after
 switching the workbench to a freshly materialized build — cold-start dominated
-(warm retries returned 200 in 32 s, then 9.9 s). Consequences: **any endpoint
-that can exceed 60 s must be task-based** (submit → poll), not a long request;
-and when a synchronous handler is suspected, time the *server* side rather than
-trusting the client's status. Raising `idleTimeout` is in
-`../sms-cdk/lib/internal-alb-stack.ts` and needs `cdk deploy` — see Pitfall 3.
+(warm retries returned 200 in 32 s, then 9.9 s). Consequences that still hold at
+600 s: **an endpoint that can exceed the ceiling must be task-based**
+(submit → poll) rather than a long request; and when a synchronous handler is
+suspected, time the *server* side rather than trusting the client's status.
+`idleTimeout` lives in `../sms-cdk/lib/internal-alb-stack.ts` and needs
+`cdk deploy` — see Pitfall 3.
 
 # PRIORITY
 
