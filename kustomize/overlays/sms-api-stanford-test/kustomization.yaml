@@ -25,8 +25,16 @@ images:
   # report against this same namespace (see the phase0 S3-layout fix,
   # v2ecoli#603/sms-ecoli#123, a separate repo, already deployed via sim
   # builds -- not a viva-api change).
+  # 0.9.61 (PR #299): cplong re-tested #283 live and found 2 real bugs on top
+  # of it -- GET /analyses/{id}/data returned 200 [] for a real, completed,
+  # non-empty analysis (fetch_analysis_data passed the full s3://<bucket>/...
+  # result_uri straight into S3FilePath, which is bucket-relative -- the
+  # SECOND time this exact bug class has hit this file); GET /analyses/{id}/
+  # plots 500'd unconditionally for every Ray/K8s analysis (no S3-backed
+  # implementation existed at all). Also clarifies the #283 409's message
+  # (the analysis id is a separate id space from the simulation id).
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.60
+    newTag: 0.9.61
   # ptools 0.5.9 -> 0.9.53 (DEV ONLY — prod sms-api-stanford stays on 0.5.9 while
   # this soaks). The long-standing 0.5.9 pin existed because CI builds only
   # sms-api (scripts/build_action.sh), so no newer sms-ptools existed on ghcr.io
@@ -140,6 +148,11 @@ images:
   # stages its worker module from (ENV_WORKER_MODULE_IMAGE in shared.env).
   # Verified inside the image: env_worker.py offers (--socket-fd | --connect-to);
   # 0.3.57 and earlier offer only --socket-fd.
+  # 0.3.65: live on this namespace per a real pod check (jschaff's own rapid
+  # env-worker deploy loop, PRs #289-298) -- his own deploy-record PR for this
+  # bump not yet merged as of this edit. Courtesy-corrected here only so THIS
+  # unrelated sms-api bump (v0.9.61) doesn't downgrade it; not this session's
+  # own change to author a changelog entry for.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
     newTag: 0.3.65
 
