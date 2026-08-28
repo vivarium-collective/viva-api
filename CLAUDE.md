@@ -443,6 +443,31 @@ HTTP/2 multiplexer. We hit this once in `E2EDataService.submit_stream_output_dat
 second `GET /simulations/{id}` call). Rule of thumb: inside an
 `async with client.stream(...)` block, don't make additional HTTP calls.
 
+**Pitfall 6 — the dev ALB kills any request that is silent for 60 s, and the
+server keeps going.** Measured 2026-08-28 on `smsvpctest`
+(`idle_timeout=60s`; prod `smscdk` is **600 s**, so this bites dev far harder):
+
+```
+client:  HTTP 504 Gateway Time-out  after 60.1 s
+server:  GET /api/investigations -> 200 (126037.0 ms)
+         GET /api/investigations -> 200 (172071.4 ms)
+         GET /api/investigations -> 200 (200191.4 ms)
+```
+
+The request **succeeded** — at 126 s, 172 s and 200 s — while the caller saw a
+504 at 60.1 s. So a 504 through the tunnel means "nobody was listening any more",
+not "the server failed"; check the pod log before concluding anything. A
+synthetic silent request is dropped at 60.1 s too, so the ceiling is exact and
+applies end to end through `sms-proxy.sh`.
+
+The example above is not exotic: it is `GET /api/investigations` right after
+switching the workbench to a freshly materialized build — cold-start dominated
+(warm retries returned 200 in 32 s, then 9.9 s). Consequences: **any endpoint
+that can exceed 60 s must be task-based** (submit → poll), not a long request;
+and when a synchronous handler is suspected, time the *server* side rather than
+trusting the client's status. Raising `idleTimeout` is in
+`../sms-cdk/lib/internal-alb-stack.ts` and needs `cdk deploy` — see Pitfall 3.
+
 # PRIORITY
 
 Implement that which is laid out in ./PLAN.md, if not already done.
