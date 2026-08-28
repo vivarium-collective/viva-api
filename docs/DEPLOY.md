@@ -82,6 +82,33 @@ Both failure directions were observed on 2026-08-27/28:
 
 Only `sms-api-stanford-test` sets these today.
 
+## 2b. What the ALB routes (and what silently doesn't)
+
+The internal ALB forwards by **path prefix**, and its **default action forwards to
+PTools**. So a viva-api path with no listener rule does not 404 from sms-api — it
+reaches *a different application*, which answers with its own 404 page. That is
+how `POST /compose/v1/simulation/run` appeared broken through the tunnel while
+working perfectly in-cluster (2026-08-28).
+
+Routed to the **api** target group: `/openapi.json`, `/home`, `/docs`, `/ws`,
+`/api`, `/core`, `/health`, `/version`, **`/compose`**, **`/env-worker`**.
+Routed to the **workbench** target group: `/workbench`, `/bigraph-loom`.
+Everything else → PTools.
+
+Rules live in `../sms-cdk/lib/internal-alb-stack.ts` and need **`cdk deploy`** —
+a kustomize apply will not touch them.
+
+**A TargetGroupBinding is a different thing and usually does not need changing.**
+It binds a *Service* to a target group (`kustomize/overlays/<ns>/target-group-binding.yaml`);
+listener rules map *paths* to a target group. Several rules can share one binding —
+`/workbench/*` and `/bigraph-loom/*` already do, and `/compose` and `/env-worker`
+ride the existing `api` binding. A new binding is needed only when a rule points
+at a **new** target group.
+
+**When adding a viva-api router, check it has a rule.** Compare the prefixes in
+`/openapi.json` against the list above; `/compose` and `/env-worker` were both
+missed for months because the rules predate those routers.
+
 ## 3. The loop
 
 ```bash
