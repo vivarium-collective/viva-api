@@ -34,7 +34,7 @@ images:
   # implementation existed at all). Also clarifies the #283 409's message
   # (the analysis id is a separate id space from the simulation id).
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.61
+    newTag: 0.9.62
   # ptools 0.5.9 -> 0.9.53 (DEV ONLY — prod sms-api-stanford stays on 0.5.9 while
   # this soaks). The long-standing 0.5.9 pin existed because CI builds only
   # sms-api (scripts/build_action.sh), so no newer sms-ptools existed on ghcr.io
@@ -154,7 +154,7 @@ images:
   # unrelated sms-api bump (v0.9.61) doesn't downgrade it; not this session's
   # own change to author a changelog entry for.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.67
+    newTag: 0.3.68
 
 replicas:
   - count: 1
@@ -268,6 +268,19 @@ patches:
   #
   # DEV ONLY for now: prod runs a workbench predating the transport, and
   # ../sms-api-stanford-workbench does not set this, so prod stays local.
+  #
+  # RELAY (plan §C, viva-api#309 + workbench#982): PROXY_BASE selects a third
+  # transport in which viva-api holds the worker socket and the workbench
+  # reaches it over HTTP. It exists for the case dial-back structurally cannot
+  # serve -- a laptop, whose SSM tunnel is laptop-initiated with no inbound path
+  # -- and dev is where it gets exercised before anyone depends on it.
+  #
+  # ADVERTISE_HOST below is left set ON PURPOSE. default_launcher checks
+  # PROXY_BASE first, so it is inert while the relay is on, and rollback is then
+  # the removal of ONE line rather than a restoration of two. (The precedence is
+  # not incidental: a leftover ADVERTISE_HOST shadowing PROXY_BASE would present
+  # as a worker that hangs, not as a misconfiguration, so it is pinned by
+  # tests/test_proxy_worker_launcher.py.)
   - patch: |-
       apiVersion: apps/v1
       kind: Deployment
@@ -283,9 +296,37 @@ patches:
                     valueFrom:
                       fieldRef:
                         fieldPath: status.podIP
+                  - name: VIVARIUM_WORKBENCH_ENV_WORKER_PROXY_BASE
+                    value: http://api:8000
     target:
       kind: Deployment
       name: workbench
+  # The api side of the same switch. viva-api binds the dial-back listener now,
+  # so the worker connects to THIS pod; the value is its own IP via the Downward
+  # API for exactly the reason the workbench's was -- viva-api may create Jobs
+  # but not Services, so a worker has no stable name to dial and the connection
+  # has to run the other way.
+  #
+  # Absent, the relay endpoints 503 and nothing else changes. That is what let
+  # viva-api#309 ship and deploy inert, ahead of this.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: api
+      spec:
+        template:
+          spec:
+            containers:
+              - name: api
+                env:
+                  - name: ENV_WORKER_RELAY_ADVERTISE_HOST
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: status.podIP
+    target:
+      kind: Deployment
+      name: api
   # ui.* deployment-config layer (vivarium-workbench#471), phase 2 of lifting
   # these bindings out of the workspace. Mounts the generated
   # workbench-deploy-config ConfigMap read-only and names it via
