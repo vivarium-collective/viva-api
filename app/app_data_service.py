@@ -723,6 +723,19 @@ class E2EDataService:
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
+    def compose_get_simulations_status_batch(self, simulation_ids: list[int]) -> list:  # type: ignore[type-arg]
+        """Status for MANY compose simulations in one call.
+
+        ``GET /compose/v1/simulations/status/batch?ids=1&ids=2`` — repeated
+        ``ids`` params, so ``params`` takes a list and httpx expands it. The
+        single-id endpoint beside this one is fine for one run; a campaign is
+        where it stops being fine, which is why viva-api grew this and why the
+        workbench's job layer polls through it rather than looping.
+        """
+        resp = self.client.get("/compose/v1/simulations/status/batch", params={"ids": simulation_ids})
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
     def compose_get_simulation_status(self, simulation_id: int) -> dict:  # type: ignore[type-arg]
         resp = self.client.get(f"/compose/v1/simulation/{simulation_id}/status")
         resp.raise_for_status()
