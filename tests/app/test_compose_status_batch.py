@@ -69,7 +69,7 @@ def test_rows_are_matched_by_any_of_the_id_fields_the_api_uses() -> None:
     matching on only one of them silently renders every row 'not found'."""
     svc = _svc(compose_get_simulations_status_batch=[{"sim_id": 7, "status": "running"}])
     with patch("app.cli.get_data_service", return_value=svc):
-        res = runner.invoke(cli_app, ["compose", "status", "7"] + ["8"])
+        res = runner.invoke(cli_app, ["compose", "status", "7", "8"])
     assert "running" in res.output
 
 
