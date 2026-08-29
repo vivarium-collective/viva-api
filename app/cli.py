@@ -232,6 +232,7 @@ simulation_cli = typer.Typer(help="Run and inspect simulation workflows.")
 parca_cli = typer.Typer(help="Inspect parca (parameter calculator) datasets and runs.")
 analysis_cli = typer.Typer(help="Inspect analysis jobs and outputs.")
 compose_cli = typer.Typer(help="Compose (process-bigraph) simulation commands.")
+worker_cli = typer.Typer(help="Run and call env workers (a simulator image as a live process).")
 demo_cli = typer.Typer(help="Demo and utility commands.")
 tui_cli = typer.Typer(help="TUI's command line interface.")
 gui_cli = typer.Typer(help="GUI's command line interface.")
@@ -242,10 +243,160 @@ cli.add_typer(simulation_cli, name="simulation")
 cli.add_typer(parca_cli, name="parca")
 cli.add_typer(analysis_cli, name="analysis")
 cli.add_typer(compose_cli, name="compose")
+cli.add_typer(worker_cli, name="worker")
 cli.add_typer(demo_cli, name="demo")
 cli.add_typer(tui_cli)
 cli.add_typer(gui_cli)
 cli.add_typer(tkapp_cli)
+
+
+# ---------------------------------------------------------------------------
+# Env workers (plan §C relay)
+#
+# An env worker is a simulator's own prebuilt image run as a LIVE process you can
+# ask questions of -- "what generators does this build have?", "build this
+# composite" -- without submitting a simulation. viva-api creates the Job, holds
+# its socket, and forwards JSON-RPC over HTTP, which is what makes this usable
+# from a laptop: the worker dials back, and an SSM tunnel has no inbound path,
+# so the workbench's own transport has no address to advertise from here.
+#
+# These replace the hand-rolled `curl` that was the only laptop client.
+# ---------------------------------------------------------------------------
+
+
+@worker_cli.command("start", help="Start an env worker for a simulator commit and wait for it to connect.")
+def worker_start(
+    commit: str = Argument(help="Simulator commit (the prebuilt image tag) to run."),
+    workspace: str = Option(
+        default="", help="Workspace path inside the worker container. Default: the image's own checkout."
+    ),
+    session_key: str = Option(default="", help="Owning session; makes the Job name unique per session."),
+    accept_timeout: float = Option(
+        default=300.0, help="Seconds to wait for the worker to dial back (pod schedule + image pull)."
+    ),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    from rich.panel import Panel
+
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+    # The wait is the interesting part -- a cold image pull dominates it -- so
+    # say what is being waited FOR rather than showing a bare spinner.
+    with console.status(f"[memphis.spinner]Starting env worker for {commit} (pod schedule + image pull)..."):
+        try:
+            result = data_service.worker_start(
+                commit=commit,
+                workspace=workspace or None,
+                session_key=session_key or None,
+                accept_timeout=accept_timeout,
+            )
+        except Exception as e:
+            console.print(_worker_error(e, "start"))
+            raise typer.Exit(1) from e
+    job = result.get("job_name", "")
+    console.print(Panel("[memphis.success]CONNECTED[/]", title=f"Env worker — {commit}", border_style="green"))
+    # highlight=False: a Job name is an IDENTIFIER the user copies, and Rich's
+    # auto-highlighter colours the digits inside it as if they were a number —
+    # which makes `env-worker-f78672f-cli0smok-c41a7961` render in three colours
+    # and reads as though part of it were special. Same for the copyable
+    # commands below.
+    console.print(f"[memphis.label]Job:[/]   {job}", highlight=False)
+    console.print(f"[memphis.label]Image:[/] {result.get('image', '')}", highlight=False)
+    console.print(f"\n[dim italic]Call it:[/] atlantis worker call {job} list_generators", highlight=False)
+    console.print(f"[dim italic]Stop it:[/] atlantis worker stop {job}", highlight=False)
+
+
+@worker_cli.command("call", help="Call one method on a running env worker.")
+def worker_call(
+    job_name: str = Argument(help="Job name from 'atlantis worker start'."),
+    method: str = Argument(help="Worker method, e.g. list_generators."),
+    params: str = Option(default="", help='JSON object of method params, e.g. \'{"ref": "pkg.composites.cell"}\'.'),
+    timeout: float = Option(default=300.0, help="Seconds to wait for this call's reply."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+
+    parsed: dict[str, object] = {}
+    if params:
+        try:
+            parsed = _json_mod.loads(params)
+        except _json_mod.JSONDecodeError as e:
+            # Say what was wrong with THEIR json, not just that json failed --
+            # this is the flag most likely to be typed by hand.
+            console.print(f"[memphis.error]--params is not valid JSON:[/] {e}")
+            raise typer.Exit(1) from e
+        if not isinstance(parsed, dict):
+            console.print("[memphis.error]--params must be a JSON object[/] (the worker takes named params)")
+            raise typer.Exit(1)
+
+    with console.status(f"[memphis.spinner]{method}..."):
+        try:
+            result = data_service.worker_call(job_name, method=method, params=parsed, timeout=timeout)
+        except Exception as e:
+            console.print(_worker_error(e, "call"))
+            raise typer.Exit(1) from e
+    # A worker result may legitimately be null (a method that only acts). Print
+    # something rather than handing display_json a None it will not accept.
+    payload = result.get("result")
+    if payload is None:
+        console.print("[dim](no result)[/]")
+    else:
+        display_json(payload, console)
+
+
+@worker_cli.command("stop", help="Stop an env worker and delete its Job.")
+def worker_stop(
+    job_name: str = Argument(help="Job name from 'atlantis worker start'."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+    try:
+        result = data_service.worker_stop(job_name)
+    except Exception as e:
+        console.print(_worker_error(e, "stop"))
+        raise typer.Exit(1) from e
+    was = result.get("was_connected")
+    console.print(
+        f"[memphis.success]Deleted[/] {job_name}" + ("" if was else " [dim](no live connection held)[/]"),
+        highlight=False,
+    )
+
+
+def _worker_error(exc: Exception, verb: str) -> str:
+    """Turn the relay's status codes into something actionable.
+
+    Each of these means a specific, different thing, and a bare stack trace
+    hides which -- 503 in particular is a DEPLOYMENT answer ("the relay is not
+    switched on here"), not a fault the caller can retry.
+    """
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    hints = {
+        503: "the relay is not enabled on this deployment "
+        "(ENV_WORKER_RELAY_ADVERTISE_HOST is unset on the api Deployment)",
+        404: "no such worker — it was never started here, or viva-api restarted and dropped its socket",
+        410: "the worker's connection is gone; start a new one",
+        422: "the worker ran and refused: check the method name and params",
+        409: "a Job of that name already exists or is still terminating",
+        504: "the worker never dialled back — check the image tag and the Job's logs",
+    }
+    hint = hints.get(status or 0)
+    head = f"[memphis.error]worker {verb} failed"
+    head += f" (HTTP {status})[/]" if status else "[/]"
+    detail = ""
+    try:
+        body = exc.response.json()  # type: ignore[attr-defined]
+        detail = body.get("detail") or body.get("error") or ""
+    except Exception:
+        detail = str(exc)[:200]
+    out = f"{head} {detail}"
+    if hint:
+        out += f"\n  [dim]{hint}[/]"
+    if status is None:
+        # No response at all: almost always the tunnel, on this path.
+        out += "\n  [dim]no response — is the tunnel up? (sms-proxy.sh -s smsvpctest)[/]"
+    return out
 
 
 def main() -> None:

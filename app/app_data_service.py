@@ -736,6 +736,65 @@ class E2EDataService:
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
+    # -- env-worker relay (plan §C) -----------------------------------------
+    #
+    # viva-api holds the worker socket and forwards JSON-RPC over HTTP, which is
+    # what makes these reachable from a LAPTOP at all: a worker dials back, and
+    # an SSM tunnel is laptop-initiated with no inbound path, so the workbench's
+    # own dial-back transport has no address to advertise from here.
+    #
+    # Plain httpx like the compose methods above, rather than the generated
+    # client: these are three small calls, and the generated wrappers would add
+    # a model-conversion layer for payloads that are already the shape the CLI
+    # prints.
+
+    def worker_start(
+        self,
+        commit: str,
+        workspace: str | None = None,
+        session_key: str | None = None,
+        accept_timeout: float | None = None,
+    ) -> dict:  # type: ignore[type-arg]
+        """Start a relayed env worker and wait for it to dial back.
+
+        The call returns only once the worker has connected (or the server gives
+        up), because a handle to a worker that never arrived is not useful --
+        ``accept_timeout`` covers pod scheduling and image pull, so it is
+        generous and separate from any per-call timeout.
+        """
+        body: dict[str, object] = {"commit": commit}
+        if workspace:
+            body["workspace"] = workspace
+        if session_key:
+            body["session_key"] = session_key
+        if accept_timeout is not None:
+            body["accept_timeout"] = accept_timeout
+        # Outlive the server's own accept window rather than racing it: timing
+        # out here would abandon a worker the server is still holding open for.
+        client_timeout = (accept_timeout or 300.0) + 60.0
+        resp = self.client.post("/env-worker/v1/relay/workers", json=body, timeout=client_timeout)
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    def worker_call(
+        self,
+        job_name: str,
+        method: str,
+        params: dict | None = None,  # type: ignore[type-arg]
+        timeout: float = 300.0,
+    ) -> dict:  # type: ignore[type-arg]
+        """Forward one JSON-RPC call to a relayed worker."""
+        body = {"method": method, "params": params or {}, "timeout": timeout}
+        resp = self.client.post(f"/env-worker/v1/relay/workers/{job_name}/call", json=body, timeout=timeout + 60.0)
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    def worker_stop(self, job_name: str) -> dict:  # type: ignore[type-arg]
+        """Drop the connection and delete the Job. Idempotent server-side."""
+        resp = self.client.delete(f"/env-worker/v1/relay/workers/{job_name}")
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
     def compose_get_simulation_status(self, simulation_id: int) -> dict:  # type: ignore[type-arg]
         resp = self.client.get(f"/compose/v1/simulation/{simulation_id}/status")
         resp.raise_for_status()
