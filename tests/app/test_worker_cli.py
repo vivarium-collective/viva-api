@@ -94,9 +94,7 @@ def test_call_with_a_null_result_says_so_rather_than_crashing() -> None:
 def test_call_parses_params_json() -> None:
     svc = _svc(worker_call={"result": 1})
     with patch("app.cli.get_data_service", return_value=svc):
-        runner.invoke(
-            cli_app, ["worker", "call", "j", "build", "--params", '{"ref": "pkg.c"}']
-        )
+        runner.invoke(cli_app, ["worker", "call", "j", "build", "--params", '{"ref": "pkg.c"}'])
     assert svc.worker_call.call_args.kwargs["params"] == {"ref": "pkg.c"}
 
 
