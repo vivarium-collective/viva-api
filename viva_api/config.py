@@ -278,6 +278,19 @@ class Settings(BaseSettings):
     # — under §2A.8 that copy IS the execution environment, so the worker reads it
     # rather than mounting the PVC (which is ReadWriteOnce and single-node anyway).
     env_worker_workspace_path: str = "/app/v2ecoli"
+    # --- caller identity (viva_api/api/auth.py) ---
+    # The request header this deployment takes caller identity from, e.g.
+    # X-Auth-Request-Email (oauth2-proxy), X-Amzn-Oidc-Identity (ALB OIDC), or
+    # whatever an institutional SSO proxy sets. EMPTY BY DEFAULT and legitimately
+    # so: most deployments have nothing in front of them that sets one, and
+    # anonymous is the correct answer there.
+    #
+    # This is NOT authentication -- a header is as trustworthy as the proxy that
+    # sets it, and where nothing sets one anybody may claim anything. It exists
+    # for attribution and to stop one accident (cancelling a run you did not
+    # start). See the module docstring in viva_api/api/auth.py.
+    identity_header: str = ""
+
     ray_ecr_repository: str = "v2ecoli"  # ECR repo for the workload-owned Ray image (built by submit_build_image_job)
     ray_parca_mode: str = "full"  # v2ecoli-parca --mode (fast for debug, full for production)
     ray_parca_cpus: int = 8  # v2ecoli-parca --cpus
