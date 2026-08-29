@@ -414,6 +414,24 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
 
         session_maker = async_sessionmaker(engine, expire_on_commit=True)
         compose_db = ComposeDatabaseService(session_maker)
+        # Env-worker task tier (plan §E option (e)): the durable record and the
+        # per-worker runner. Wired here rather than lazily so the relay's task
+        # endpoints answer 503 with a reason on a deployment that has no compose
+        # database, instead of failing at first use.
+        from viva_api.api.routers.env_worker import set_env_worker_task_service
+        from viva_api.compose.env_worker_relay import TaskRunner, set_runner
+
+        task_db = compose_db.get_env_worker_task_db()
+        set_env_worker_task_service(task_db)
+        set_runner(TaskRunner(task_db))
+        # A socket cannot outlive the process that held it, so anything this
+        # process finds RUNNING was left by a previous one and is already dead.
+        # Settle those rows rather than leaving them to hang forever.
+        stranded = await task_db.fail_unfinished_tasks(
+            "lost to a viva-api restart: the worker socket did not survive the process"
+        )
+        if stranded:
+            logger.warning("settled %d env-worker task(s) stranded by a restart", len(stranded))
 
         # Per-backend compose service registry, mirroring _init_simulation_service: the
         # deployment default (COMPUTE_BACKEND) is what the compose router uses, and the Ray

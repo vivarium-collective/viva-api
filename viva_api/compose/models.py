@@ -105,6 +105,29 @@ class ComposeHpcRun(BaseModel):
     error_message: str | None = None
 
 
+class EnvWorkerTask(BaseModel):
+    """One env-worker method call, recorded durably (plan §E option (e)).
+
+    ``created_by`` is who CLAIMED to submit it, and is None on every deployment
+    that has no identity-setting proxy in front of it -- which is most of them.
+    It is not verified; see viva_api/api/auth.py for what that does and does not
+    mean.
+    """
+
+    database_id: int
+    job_name: str
+    method: str
+    params: dict[str, object] | None = None
+    status: ComposeJobStatus
+    result: object | None = None
+    error_message: str | None = None
+    created_at: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+    created_by: str | None = None
+    correlation_id: str
+
+
 # ---------------------------------------------------------------------------
 # BiGraph compute registry
 # ---------------------------------------------------------------------------

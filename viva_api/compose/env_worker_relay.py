@@ -33,14 +33,23 @@ against the literal bytes the workbench sends.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import functools
 import json
 import secrets
 import socket
 import struct
 import threading
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import anyio.to_thread
+
+from viva_api.compose.models import ComposeJobStatus
+
+if TYPE_CHECKING:  # import-time cycle-free: only needed for the annotation
+    from viva_api.compose.database_service import EnvWorkerTaskDatabaseService
 
 __all__ = [
     "HANDSHAKE_FRAME_CAP",
@@ -285,6 +294,111 @@ class RelayRegistry:
 
 #: Process-wide registry. One per viva-api process, like the workbench's pool.
 registry = RelayRegistry()
+
+
+class TaskRunner:
+    """Drains queued tasks per worker, one at a time (plan §E option (e)).
+
+    **The FIFO is not new.** ``WorkerConnection.lock`` already serialises calls
+    on a socket, because the worker reads one request and writes one reply. What
+    this adds is not ordering but *not holding an HTTP request while ordering
+    happens*: a job-class call runs a study to completion, and no gateway will
+    hold a request that long.
+
+    One asyncio task per worker, so two submissions against one worker queue
+    behind each other rather than contending on the mutex, while different
+    workers proceed independently. ``anyio.to_thread`` around the call itself,
+    because ``WorkerConnection.call`` is blocking socket I/O and would otherwise
+    stall the event loop for every unrelated request in the process.
+
+    **Nothing here survives a restart, and the design says so rather than
+    pretending.** The queue is in memory and the socket cannot outlive the
+    process; what survives is the DB row, which
+    ``fail_unfinished_tasks`` settles on boot. Resumption is deliberately not
+    attempted -- by the time a ``run_study`` is interrupted it has already
+    written runs.db rows, parquet and a conclusion card, so re-dispatching would
+    duplicate exactly the double-run this arc removed.
+    """
+
+    def __init__(self, db: EnvWorkerTaskDatabaseService, call_timeout: float = 3600.0) -> None:
+        self._db = db
+        self._call_timeout = call_timeout
+        self._queues: dict[str, asyncio.Queue[int]] = {}
+        self._drainers: dict[str, asyncio.Task[None]] = {}
+        self._lock = asyncio.Lock()
+
+    async def submit(self, job_name: str, task_id: int) -> None:
+        """Queue a task for its worker, starting that worker's drainer if needed."""
+        async with self._lock:
+            queue = self._queues.get(job_name)
+            if queue is None:
+                queue = asyncio.Queue()
+                self._queues[job_name] = queue
+            drainer = self._drainers.get(job_name)
+            if drainer is None or drainer.done():
+                self._drainers[job_name] = asyncio.create_task(
+                    self._drain(job_name), name=f"env-worker-drain-{job_name}"
+                )
+        await queue.put(task_id)
+
+    async def _drain(self, job_name: str) -> None:
+        queue = self._queues[job_name]
+        while True:
+            try:
+                task_id = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            await self._run_one(job_name, task_id)
+
+    async def _run_one(self, job_name: str, task_id: int) -> None:
+        db = self._db
+        task = await db.get_task(task_id)
+        if task is None:
+            return
+        # A task cancelled while it sat in the queue must not then run. The queue
+        # cannot be searched, so the check happens here, at the last moment
+        # before the work starts.
+        if task.status not in (ComposeJobStatus.QUEUED,):
+            return
+        try:
+            conn = registry.get(job_name)
+        except WorkerUnavailable as e:
+            await db.finish_task(task_id, ComposeJobStatus.FAILED, error_message=str(e))
+            return
+        await db.start_task(task_id)
+        try:
+            result = await anyio.to_thread.run_sync(
+                functools.partial(conn.call, task.method, task.params, timeout=self._call_timeout)
+            )
+        except WorkerCallError as e:
+            # The worker ran and said no. That is an outcome, not a fault.
+            await db.finish_task(task_id, ComposeJobStatus.FAILED, error_message=str(e))
+        except WorkerUnavailable as e:
+            # The socket is gone or desynced. Drop it so the next submission is
+            # told to start a worker rather than inheriting a broken connection.
+            registry.drop(job_name)
+            await db.finish_task(task_id, ComposeJobStatus.FAILED, error_message=str(e))
+        except BaseException as e:
+            await db.finish_task(task_id, ComposeJobStatus.FAILED, error_message=f"runner error: {e}")
+        else:
+            await db.finish_task(task_id, ComposeJobStatus.COMPLETED, result=result)
+
+    async def close(self) -> None:
+        async with self._lock:
+            drainers = list(self._drainers.values())
+            self._drainers.clear()
+            self._queues.clear()
+        for d in drainers:
+            d.cancel()
+
+
+#: Process-wide runner, wired to a database service at startup.
+runner: TaskRunner | None = None
+
+
+def set_runner(value: TaskRunner | None) -> None:
+    global runner
+    runner = value
 
 
 def _recv_exact(sock: socket.socket, n: int) -> bytes | None:

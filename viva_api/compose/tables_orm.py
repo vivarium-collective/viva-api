@@ -25,6 +25,7 @@ from viva_api.compose.models import (
     ComposeJobType,
     ComposeSimulatorVersion,
     ComposeWorkerEvent,
+    EnvWorkerTask,
     PackageType,
     RegisteredPackage,
 )
@@ -263,6 +264,22 @@ class ORMEnvWorkerTask(ComposeBase):
     #: colleague's six-hour study -- not to withstand an adversary, who can set
     #: the header to anything. See viva_api/api/auth.py.
     created_by: Mapped[str | None] = mapped_column(nullable=True, index=True)
+
+    def to_task(self) -> "EnvWorkerTask":
+        return EnvWorkerTask(
+            database_id=self.id,
+            job_name=self.job_name,
+            method=self.method,
+            params=self.params,
+            status=self.status.to_job_status(),
+            result=self.result,
+            error_message=self.error_message,
+            created_at=str(self.created_at) if self.created_at else None,
+            started_at=str(self.started_at) if self.started_at else None,
+            ended_at=str(self.ended_at) if self.ended_at else None,
+            created_by=self.created_by,
+            correlation_id=self.correlation_id,
+        )
 
     #: Idempotency key, matching the convention compose already uses
     #: (compose/hpc_utils.get_correlation_id). Unique, so a resubmitted request

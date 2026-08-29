@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.61
+  version: 0.9.62
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -1191,7 +1191,7 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-08-28T22:47:51.481508'
+                  created_at: '2026-08-29T19:36:32.804288'
                 parca_config:
                   outdir: /projects/SMS/sms_api/jim/sims
       responses:
@@ -1981,6 +1981,19 @@ paths:
       tags:
       - Env Worker
       summary: Close a relayed worker's connection and delete its Job (idempotent)
+      description: "Stop a worker. NOT ownership-checked, deliberately \u2014 and\
+        \ its tasks are\nsettled with attribution instead.\n\nStopping a worker is\
+        \ overwhelmingly an AUTOMATIC operation: the workbench's\npool calls it on\
+        \ LRU eviction, idle reap, dead-worker replacement and process\nexit. The\
+        \ pool has no identity to present, so an ownership check here would\neither\
+        \ break it or have to let unidentified callers through \u2014 which is the\n\
+        very bypass such a check would exist to close, and would leave the perverse\n\
+        rule that anonymous callers may stop workers while identified ones may not.\n\
+        \nSo the worker is shared infrastructure with an automatic lifecycle; the\
+        \ task\nis the unit of work that has an owner. What is owed to someone whose\
+        \ task\ndies with a worker is not a veto but an EXPLANATION: their task moves\
+        \ to a\nterminal state naming what happened and, where identity is configured,\
+        \ who\ndid it \u2014 rather than hanging in `running` until somebody wonders."
       operationId: stop-relayed-env-worker
       parameters:
       - name: job_name
@@ -1998,6 +2011,136 @@ paths:
                 type: object
                 additionalProperties: true
                 title: Response Stop-Relayed-Env-Worker
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/tasks:
+    post:
+      tags:
+      - Env Worker
+      summary: Submit a long-running env-worker call; poll for its result
+      description: '202 with a task id. The row is written BEFORE this returns.
+
+
+        That ordering is compose''s contract and it matters more here: the client
+        is
+
+        told to poll and holds nothing else, so a status read that 404s because the
+
+        row had not been written yet would be indistinguishable from a lost task.'
+      operationId: submit-env-worker-task
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskSubmitRequest'
+        required: true
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/tasks/{task_id}:
+    get:
+      tags:
+      - Env Worker
+      summary: Status and result of one env-worker task
+      operationId: get-env-worker-task
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Task Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Env Worker
+      summary: Cancel a task you started
+      description: "The one authorization rule in this API: you cannot cancel someone\
+        \ else's work.\n\nIt exists to prevent an ACCIDENT \u2014 killing a colleague's\
+        \ six-hour study \u2014\nnot an adversary, who can set the identity header\
+        \ to anything. See\nviva_api/api/auth.py.\n\nA task nobody claimed (created_by\
+        \ NULL, which is every task on a deployment\nwith no identity proxy) is cancellable\
+        \ by anyone: there is no owner to\nprotect, and refusing would make the endpoint\
+        \ useless exactly where identity\nis unavailable.\n\nAnonymity is refused\
+        \ only HERE, and only because the alternative is a\ndecorative rule: if an\
+        \ unidentified caller could cancel anything, omitting\nthe header would bypass\
+        \ ownership entirely."
+      operationId: cancel-env-worker-task
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Task Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/tasks/status/batch:
+    get:
+      tags:
+      - Env Worker
+      summary: Status for many env-worker tasks in one call
+      description: 'Mirrors compose''s /simulations/status/batch. A campaign is many
+        tasks, and
+
+        polling them one at a time is the thing that endpoint exists to avoid.'
+      operationId: get-env-worker-tasks-batch
+      parameters:
+      - name: ids
+        in: query
+        required: true
+        schema:
+          type: array
+          items:
+            type: integer
+          title: Ids
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TaskResponse'
+                title: Response Get-Env-Worker-Tasks-Batch
         '422':
           description: Validation Error
           content:
@@ -3323,7 +3466,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-08-28 22:47:51.414209'
+          default: '2026-08-29 19:36:32.734426'
         job_id:
           anyOf:
           - type: string
@@ -3524,6 +3667,79 @@ components:
       - git_branch
       - database_id
       title: SimulatorVersion
+    TaskResponse:
+      properties:
+        task_id:
+          type: integer
+          title: Task Id
+        job_name:
+          type: string
+          title: Job Name
+        method:
+          type: string
+          title: Method
+        status:
+          type: string
+          title: Status
+        result:
+          anyOf:
+          - {}
+          - type: 'null'
+          title: Result
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+        created_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created By
+        created_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created At
+        started_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Started At
+        ended_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ended At
+      type: object
+      required:
+      - task_id
+      - job_name
+      - method
+      - status
+      title: TaskResponse
+    TaskSubmitRequest:
+      properties:
+        job_name:
+          type: string
+          title: Job Name
+          description: Relayed worker Job to run this on
+        method:
+          type: string
+          title: Method
+          description: Worker method (JSON-RPC)
+        params:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Params
+          description: Method params
+      type: object
+      required:
+      - job_name
+      - method
+      title: TaskSubmitRequest
     TsvOutputFile:
       properties:
         filename:

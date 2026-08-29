@@ -26,6 +26,7 @@ from viva_api.compose.models import (
     ComposeSimulatorVersion,
     ComposeSubmittedSimulation,
     ComposeWorkerEvent,
+    EnvWorkerTask,
     PackageOutline,
     PackageType,
     RegisteredPackage,
@@ -43,6 +44,7 @@ from viva_api.compose.tables_orm import (
     ORMComposeSimulator,
     ORMComposeSimulatorToPackage,
     ORMComposeWorkerEvent,
+    ORMEnvWorkerTask,
     PackageTypeDB,
 )
 
@@ -604,6 +606,167 @@ class AllowListORMExecutor(AllowListDatabaseService):
 # ---------------------------------------------------------------------------
 
 
+class EnvWorkerTaskDatabaseService(ABC):
+    """Durable records for env-worker calls that cannot be a synchronous request.
+
+    Deliberately a small, closed surface. Compare ``HPCDatabaseService``, which
+    grew eleven methods because a job's shape kept acquiring backends and chain
+    dispatch; a task has one lifecycle -- queued, running, terminal -- and this
+    should stay the set of transitions that lifecycle needs.
+    """
+
+    @abstractmethod
+    async def insert_task(
+        self,
+        job_name: str,
+        method: str,
+        params: dict[str, object] | None,
+        correlation_id: str,
+        created_by: str | None,
+    ) -> EnvWorkerTask: ...
+
+    @abstractmethod
+    async def get_task(self, task_id: int) -> EnvWorkerTask | None: ...
+
+    @abstractmethod
+    async def get_tasks(self, task_ids: list[int]) -> list[EnvWorkerTask]: ...
+
+    @abstractmethod
+    async def start_task(self, task_id: int) -> None: ...
+
+    @abstractmethod
+    async def finish_task(
+        self,
+        task_id: int,
+        status: ComposeJobStatus,
+        result: object | None = None,
+        error_message: str | None = None,
+    ) -> None: ...
+
+    @abstractmethod
+    async def list_unfinished_tasks(self) -> list[EnvWorkerTask]: ...
+
+    @abstractmethod
+    async def fail_unfinished_tasks(self, reason: str, job_name: str | None = None) -> list[EnvWorkerTask]: ...
+
+
+class EnvWorkerTaskORMExecutor(EnvWorkerTaskDatabaseService):
+    async_session_maker: async_sessionmaker[AsyncSession]
+
+    #: A task in one of these is finished and will not change again.
+    TERMINAL = (
+        ComposeJobStatusDB.COMPLETED,
+        ComposeJobStatusDB.FAILED,
+        ComposeJobStatusDB.CANCELLED,
+        ComposeJobStatusDB.TIMEOUT,
+    )
+
+    def __init__(self, session_maker: async_sessionmaker[AsyncSession]) -> None:
+        self.async_session_maker = session_maker
+
+    @override
+    async def insert_task(
+        self,
+        job_name: str,
+        method: str,
+        params: dict[str, object] | None,
+        correlation_id: str,
+        created_by: str | None,
+    ) -> EnvWorkerTask:
+        # Inserted QUEUED and inserted BEFORE the caller is answered -- compose's
+        # contract (handlers.py: "the row exists before the response so a status
+        # poll can't 404"), which matters more here because the client is told to
+        # poll and has nothing else to hold.
+        async with self.async_session_maker() as session, session.begin():
+            row = ORMEnvWorkerTask(
+                job_name=job_name,
+                method=method,
+                params=params,
+                status=ComposeJobStatusDB.QUEUED,
+                correlation_id=correlation_id,
+                created_by=created_by,
+            )
+            session.add(row)
+            await session.flush()
+            return row.to_task()
+
+    @override
+    async def get_task(self, task_id: int) -> EnvWorkerTask | None:
+        async with self.async_session_maker() as session:
+            row = await session.get(ORMEnvWorkerTask, task_id)
+            return row.to_task() if row else None
+
+    @override
+    async def get_tasks(self, task_ids: list[int]) -> list[EnvWorkerTask]:
+        if not task_ids:
+            return []
+        async with self.async_session_maker() as session:
+            result = await session.execute(select(ORMEnvWorkerTask).where(ORMEnvWorkerTask.id.in_(task_ids)))
+            return [row.to_task() for row in result.scalars().all()]
+
+    @override
+    async def start_task(self, task_id: int) -> None:
+        async with self.async_session_maker() as session, session.begin():
+            row = await session.get(ORMEnvWorkerTask, task_id)
+            if row is not None:
+                row.status = ComposeJobStatusDB.RUNNING
+                row.started_at = datetime.datetime.now()
+
+    @override
+    async def finish_task(
+        self,
+        task_id: int,
+        status: ComposeJobStatus,
+        result: object | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        async with self.async_session_maker() as session, session.begin():
+            row = await session.get(ORMEnvWorkerTask, task_id)
+            if row is None:
+                return
+            row.status = ComposeJobStatusDB(status.value)
+            row.ended_at = datetime.datetime.now()
+            if result is not None:
+                # JSONB, so a non-dict result (a list, a string) is wrapped
+                # rather than refused -- worker methods return all three shapes.
+                row.result = result if isinstance(result, dict) else {"value": result}
+            if error_message is not None:
+                row.error_message = error_message
+
+    @override
+    async def list_unfinished_tasks(self) -> list[EnvWorkerTask]:
+        async with self.async_session_maker() as session:
+            result = await session.execute(
+                select(ORMEnvWorkerTask).where(ORMEnvWorkerTask.status.not_in(self.TERMINAL))
+            )
+            return [row.to_task() for row in result.scalars().all()]
+
+    @override
+    async def fail_unfinished_tasks(self, reason: str, job_name: str | None = None) -> list[EnvWorkerTask]:
+        """Terminate unfinished tasks, returning what was actually terminated.
+
+        Two callers, one shape. On BOOT (job_name=None) it settles everything
+        left running by a process that no longer exists -- a socket cannot
+        outlive its process, so those tasks are already dead and only the row
+        does not know it yet. On WORKER STOP (job_name set) it settles that
+        worker's tasks, so someone whose work was killed by another person's
+        `worker stop` reads why instead of watching `running` forever.
+
+        Returns the affected rows so the caller can say how many, and to whom.
+        """
+        async with self.async_session_maker() as session, session.begin():
+            stmt = select(ORMEnvWorkerTask).where(ORMEnvWorkerTask.status.not_in(self.TERMINAL))
+            if job_name is not None:
+                stmt = stmt.where(ORMEnvWorkerTask.job_name == job_name)
+            rows = list((await session.execute(stmt)).scalars().all())
+            now = datetime.datetime.now()
+            for row in rows:
+                row.status = ComposeJobStatusDB.FAILED
+                row.ended_at = now
+                row.error_message = reason
+            return [row.to_task() for row in rows]
+
+
 class ComposeDatabaseService:
     """Aggregated database service for the compose subsystem."""
 
@@ -611,12 +774,14 @@ class ComposeDatabaseService:
     hpc_db: HPCDatabaseService
     package_db: PackageDatabaseService
     allow_list_db: AllowListDatabaseService
+    env_worker_task_db: EnvWorkerTaskDatabaseService
 
     def __init__(self, session_maker: async_sessionmaker[AsyncSession]) -> None:
         self.simulator_db = SimulatorORMExecutor(session_maker)
         self.hpc_db = HPCORMExecutor(session_maker)
         self.package_db = PackageORMExecutor(session_maker)
         self.allow_list_db = AllowListORMExecutor(session_maker)
+        self.env_worker_task_db = EnvWorkerTaskORMExecutor(session_maker)
 
     def get_simulator_db(self) -> SimulatorDatabaseService:
         return self.simulator_db
@@ -629,3 +794,6 @@ class ComposeDatabaseService:
 
     def get_allow_list_db(self) -> AllowListDatabaseService:
         return self.allow_list_db
+
+    def get_env_worker_task_db(self) -> EnvWorkerTaskDatabaseService:
+        return self.env_worker_task_db
