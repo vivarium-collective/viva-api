@@ -30,6 +30,7 @@ class HpcRun:
         chain_current_job_ids (Union[None, Unset, list[Union[None, str]]]):
         chain_current_generation (Union[None, Unset, list[Union[None, int]]]):
         chain_parca_done (Union[None, Unset, bool]):
+        multi_node_composite_id (Union[None, Unset, str]):
     """
 
     database_id: int
@@ -47,6 +48,7 @@ class HpcRun:
     chain_current_job_ids: Union[None, Unset, list[Union[None, str]]] = UNSET
     chain_current_generation: Union[None, Unset, list[Union[None, int]]] = UNSET
     chain_parca_done: Union[None, Unset, bool] = UNSET
+    multi_node_composite_id: Union[None, Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -135,6 +137,12 @@ class HpcRun:
         else:
             chain_parca_done = self.chain_parca_done
 
+        multi_node_composite_id: Union[None, Unset, str]
+        if isinstance(self.multi_node_composite_id, Unset):
+            multi_node_composite_id = UNSET
+        else:
+            multi_node_composite_id = self.multi_node_composite_id
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({
@@ -163,6 +171,8 @@ class HpcRun:
             field_dict["chain_current_generation"] = chain_current_generation
         if chain_parca_done is not UNSET:
             field_dict["chain_parca_done"] = chain_parca_done
+        if multi_node_composite_id is not UNSET:
+            field_dict["multi_node_composite_id"] = multi_node_composite_id
 
         return field_dict
 
@@ -320,6 +330,15 @@ class HpcRun:
 
         chain_parca_done = _parse_chain_parca_done(d.pop("chain_parca_done", UNSET))
 
+        def _parse_multi_node_composite_id(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        multi_node_composite_id = _parse_multi_node_composite_id(d.pop("multi_node_composite_id", UNSET))
+
         hpc_run = cls(
             database_id=database_id,
             correlation_id=correlation_id,
@@ -336,6 +355,7 @@ class HpcRun:
             chain_current_job_ids=chain_current_job_ids,
             chain_current_generation=chain_current_generation,
             chain_parca_done=chain_parca_done,
+            multi_node_composite_id=multi_node_composite_id,
         )
 
         hpc_run.additional_properties = d

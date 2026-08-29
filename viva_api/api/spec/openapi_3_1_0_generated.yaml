@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.53
+  version: 0.9.61
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -322,10 +322,7 @@ paths:
         content:
           application/json:
             schema:
-              anyOf:
-              - $ref: '#/components/schemas/AnalysisOptions'
-              - type: 'null'
-              title: Analysis Options
+              $ref: '#/components/schemas/Body_run-ecoli-simulation-new'
       responses:
         '200':
           description: Successful Response
@@ -1194,9 +1191,9 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-08-21T15:18:20.263698'
+                  created_at: '2026-08-28T22:47:51.481508'
                 parca_config:
-                  outdir: .
+                  outdir: /projects/SMS/sms_api/jim/sims
       responses:
         '200':
           description: Successful Response
@@ -1832,6 +1829,181 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/workers:
+    post:
+      tags:
+      - Env Worker
+      summary: Run a simulator image as an env worker that dials back to the caller
+      operationId: start-env-worker
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnvWorkerStartRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvWorkerStartResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/workers/{job_name}:
+    get:
+      tags:
+      - Env Worker
+      summary: Status of an env worker, with logs when it has failed
+      operationId: get-env-worker-status
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      - name: include_logs
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Include Logs
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvWorkerStatusResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Env Worker
+      summary: Delete an env worker Job (idempotent)
+      operationId: stop-env-worker
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: string
+                title: Response Stop-Env-Worker
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers:
+    post:
+      tags:
+      - Env Worker
+      summary: Start an env worker that dials back to viva-api, and hold its connection
+      operationId: start-relayed-env-worker
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RelayStartRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelayStartResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/call:
+    post:
+      tags:
+      - Env Worker
+      summary: Forward one JSON-RPC call to a relayed env worker
+      description: "One request, one reply \u2014 the worker protocol is already request/response.\n\
+        \nRuns on a worker thread: the call holds a per-worker mutex for its whole\n\
+        duration (the worker's FIFO contract), and blocking the event loop on that\n\
+        would stall every unrelated request in this process."
+      operationId: call-relayed-env-worker
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RelayCallRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelayCallResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}:
+    delete:
+      tags:
+      - Env Worker
+      summary: Close a relayed worker's connection and delete its Job (idempotent)
+      operationId: stop-relayed-env-worker
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Stop-Relayed-Env-Worker
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /:
     get:
       summary: Redirect Old Path
@@ -2181,6 +2353,25 @@ components:
       required:
       - sbml
       title: Body_compose-run-tellurium
+    Body_run-ecoli-simulation-new:
+      properties:
+        analysis_options:
+          anyOf:
+          - $ref: '#/components/schemas/AnalysisOptions'
+          - type: 'null'
+        extra_params:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Extra Params
+          description: "Additional composite-specific parameters not covered by the\
+            \ named params above (e.g. a composite's own `injected_processes`/`multi_node_dispatch`\
+            \ knobs). Merged into the resolved config without overriding any of the\
+            \ named params \u2014 a key here is ignored if the same key is already\
+            \ set by one of them."
+      type: object
+      title: Body_run-ecoli-simulation-new
     ChainProgress:
       properties:
         id:
@@ -2393,6 +2584,90 @@ components:
       title: ContainerizationFileRepr
       description: A textual container-definition file (e.g. a Singularity/apptainer
         def).
+    EnvWorkerStartRequest:
+      properties:
+        commit:
+          type: string
+          title: Commit
+          description: Simulator commit; the prebuilt image tag to run
+        callback_host:
+          type: string
+          title: Callback Host
+          description: Host/IP the worker dials back to (the workbench pod IP)
+        callback_port:
+          type: integer
+          maximum: 65535.0
+          minimum: 1.0
+          title: Callback Port
+          description: Port the workbench is listening on
+        token:
+          type: string
+          title: Token
+          description: One-time handshake token the worker must present
+        workspace:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Workspace
+          description: Workspace path inside the worker container; defaults to the
+            deployment's env_worker_workspace_path (the image's own checkout)
+        session_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Key
+          description: Owning session; makes the Job name unique per session
+      type: object
+      required:
+      - commit
+      - callback_host
+      - callback_port
+      - token
+      title: EnvWorkerStartRequest
+      description: "Where to dial back, and which environment to run.\n\n``commit``\
+        \ selects the environment: it is the tag of the prebuilt simulator\nimage,\
+        \ which under \xA72A.8 *is* the execution environment rather than a recipe\n\
+        for rebuilding one."
+    EnvWorkerStartResponse:
+      properties:
+        job_name:
+          type: string
+          title: Job Name
+        image:
+          type: string
+          title: Image
+        namespace:
+          type: string
+          title: Namespace
+      type: object
+      required:
+      - job_name
+      - image
+      - namespace
+      title: EnvWorkerStartResponse
+    EnvWorkerStatusResponse:
+      properties:
+        job_name:
+          type: string
+          title: Job Name
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+        exists:
+          type: boolean
+          title: Exists
+          default: true
+        logs:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Logs
+      type: object
+      required:
+      - job_name
+      title: EnvWorkerStatusResponse
     ExperimentAnalysisDTO:
       properties:
         database_id:
@@ -2635,6 +2910,11 @@ components:
           - type: boolean
           - type: 'null'
           title: Chain Parca Done
+        multi_node_composite_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Multi Node Composite Id
         job_id_ext:
           type: string
           title: Job Id Ext
@@ -2774,7 +3054,7 @@ components:
         parca_config:
           $ref: '#/components/schemas/ParcaOptions'
           default:
-            outdir: .
+            outdir: /projects/SMS/sms_api/jim/sims
       additionalProperties: true
       type: object
       required:
@@ -2785,7 +3065,7 @@ components:
         outdir:
           type: string
           title: Outdir
-          default: .
+          default: /projects/SMS/sms_api/jim/sims
       additionalProperties: true
       type: object
       title: ParcaOptions
@@ -2882,6 +3162,92 @@ components:
       required:
       - versions
       title: RegisteredSimulators
+    RelayCallRequest:
+      properties:
+        method:
+          type: string
+          title: Method
+          description: Worker method name (JSON-RPC)
+        params:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Params
+          description: Method params
+        timeout:
+          type: number
+          maximum: 3600.0
+          exclusiveMinimum: 0.0
+          title: Timeout
+          description: Seconds to wait for this call's reply
+          default: 300.0
+      type: object
+      required:
+      - method
+      title: RelayCallRequest
+    RelayCallResponse:
+      properties:
+        result:
+          anyOf:
+          - {}
+          - type: 'null'
+          title: Result
+      type: object
+      title: RelayCallResponse
+    RelayStartRequest:
+      properties:
+        commit:
+          type: string
+          title: Commit
+          description: Simulator commit; the prebuilt image tag to run
+        workspace:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Workspace
+          description: Workspace path inside the worker container
+        session_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Key
+          description: Owning session; makes the Job name unique per session
+        accept_timeout:
+          type: number
+          maximum: 1800.0
+          exclusiveMinimum: 0.0
+          title: Accept Timeout
+          description: Seconds to wait for the worker to dial back (pod schedule +
+            image pull)
+          default: 300.0
+      type: object
+      required:
+      - commit
+      title: RelayStartRequest
+      description: Start a worker that dials back to *viva-api* rather than to the
+        caller.
+    RelayStartResponse:
+      properties:
+        job_name:
+          type: string
+          title: Job Name
+        image:
+          type: string
+          title: Image
+        namespace:
+          type: string
+          title: Namespace
+        connected:
+          type: boolean
+          title: Connected
+      type: object
+      required:
+      - job_name
+      - image
+      - namespace
+      - connected
+      title: RelayStartResponse
     RepoDiscovery:
       properties:
         simulator_id:
@@ -2957,7 +3323,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-08-21 15:18:18.829455'
+          default: '2026-08-28 22:47:51.414209'
         job_id:
           anyOf:
           - type: string
@@ -2999,7 +3365,7 @@ components:
         parca_options:
           $ref: '#/components/schemas/ParcaOptions'
           default:
-            outdir: .
+            outdir: /projects/SMS/sms_api/jim/sims
         analysis_options:
           $ref: '#/components/schemas/AnalysisOptions'
           default: {}

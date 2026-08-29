@@ -259,3 +259,8 @@ tui/
 .claude/
 
 assets/info/
+
+# Local EUTE/debug scratch output (CLAUDE.md: `--dest ./debug`). Simulation
+# artifacts and analysis plots, regenerated per run — never a repo artifact.
+# 11 of these were swept into a commit by `git add -A` on 2026-08-28.
+debug/
