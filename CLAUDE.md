@@ -67,7 +67,36 @@ API requests hit FastAPI routers (`viva_api/api/routers/`) which depend on servi
 
 Backend selection is determined by `deployment_namespace` in `viva_api/config.py`:
 - **SLURM** (default): `sms-api-rke`, `sms-api-rke-dev` — UCONN CCAM on-prem HPC
+  — **UNSUPPORTED from this repo; see below**
 - **K8s + AWS Batch**: `sms-api-stanford`, `sms-api-stanford-test` — GovCloud
+
+> #### ⚠️ `sms-api-rke` / `sms-api-rke-dev` are currently UNSUPPORTED
+>
+> **Do not deploy to them from this repo.** They are not a maintained target;
+> the SLURM code paths remain in the tree and the Stanford namespaces are the
+> supported ones.
+>
+> The RKE service is **live** — `https://sms.cam.uchc.edu/version` answered
+> `"0.10.0-rc1"` on 2026-08-28 — but it is **not deployed from these overlays,
+> and 0.10.0-rc1 is not on `main`.** That version comes from `36849f0b`
+> ("bump version to 0.10.0-rc1 for pre-merge test image", 2026-06-02) on the
+> unmerged branch `feat/ptools-latency-mitigation`.
+>
+> **The danger is concrete:** the checked-in overlays read as authoritative and
+> are not. They pin `sms-api-rke: 0.9.4` and `sms-api-rke-dev: 0.9.1`, so
+> `kubectl apply -k kustomize/overlays/sms-api-rke` would **roll a live
+> deployment BACKWARDS** from 0.10.0-rc1 to 0.9.4.
+>
+> Their `*-db-migration` overlays are staler still — `0.4.9-dev` / `0.4.6-dev`,
+> untouched since Feb/Mar 2026 — and predate `db_reconcile.py` (added in
+> 0.9.19), so they still run bare `alembic upgrade head`. That is exactly the
+> failure the reconciler exists to prevent (see "Database migrations"). They
+> are inert only because nobody applies them.
+>
+> The cluster API (`155.37.250.221:6443`) is unreachable off-campus, so the
+> public `/version` is the only check available from a laptop. Before touching
+> anything RKE, find out who owns that deployment now and how it is actually
+> deployed — the answer is not in this repo.
 
 The dispatch happens in `dependencies.py` at startup: `SimulationServiceHpc` for SLURM, `SimulationServiceK8s` for K8s.
 
@@ -302,8 +331,9 @@ Follow this exact sequence to cut a release:
 - `pyproject.toml`
 - `kustomize/overlays/sms-api-stanford-test/kustomization.yaml` (the `sms-api` entry only — `sms-ptools` versions independently; **both Stanford sites are on 0.9.53** since 2026-08-24, so do NOT "restore" 0.5.9)
 - `kustomize/overlays/sms-api-stanford/kustomization.yaml`
-- `kustomize/overlays/sms-api-rke/kustomization.yaml`
-- `kustomize/overlays/sms-api-rke-dev/kustomization.yaml`
+- `kustomize/overlays/sms-api-rke/kustomization.yaml` — **unsupported target;
+  see the warning under "Compute Backend Dispatch" before touching it**
+- `kustomize/overlays/sms-api-rke-dev/kustomization.yaml` — same
 - **`vivarium-workbench` newTag and `ENV_WORKER_MODULE_IMAGE`** (in
   `kustomize/config/<ns>/shared.env`) — **keep these two EQUAL**. On a deployment
   running env workers (image-as-worker, vivarium-workbench#942) that one image is
@@ -405,8 +435,9 @@ uv run atlantis simulation outputs <SIM_ID> --dest ./debug
 - `viva_api/version.py`
 - `pyproject.toml`
 - `kustomize/overlays/sms-api-stanford-test/kustomization.yaml` (the `sms-api` image entry only — leave `sms-ptools` alone; it is on **0.9.53** on both Stanford sites, and only the UConn RKE overlays are still 0.5.9)
-- `kustomize/overlays/sms-api-rke/kustomization.yaml`
-- `kustomize/overlays/sms-api-rke-dev/kustomization.yaml`
+- `kustomize/overlays/sms-api-rke/kustomization.yaml` — **unsupported target;
+  see the warning under "Compute Backend Dispatch" before touching it**
+- `kustomize/overlays/sms-api-rke-dev/kustomization.yaml` — same
 
 Prefer bumping the tag to reusing the same one — a new tag is the unambiguous signal that a new image must exist on ghcr, and eliminates all "did the rollout actually pull new bits?" confusion.
 
