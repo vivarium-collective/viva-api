@@ -21,7 +21,8 @@ SMS API (Simulating Microbial Systems API, also known as Atlantis API) is a Fast
 ```
 viva_api/
 ├── api/           # FastAPI routes and generated OpenAPI client
-│   ├── routers/   # Route handlers: gateway, core, antibiotics, biofactory, inference, variants
+│   ├── routers/   # Route handlers: sms, core, compose, env_worker, antibiotics,
+│   │              #   biofactory, inference, variants
 │   ├── client/    # Auto-generated OpenAPI client (do NOT edit manually)
 │   └── spec/      # Generated OpenAPI spec
 ├── analysis/      # Analysis job orchestration (post-simulation)
@@ -116,6 +117,45 @@ The Atlantis logo (E. coli capsule + flagella squigglies) is defined in:
 - `app/cli_theme.py` — CLI Rich markup
 - `app/tui.py` — TUI with animated green↔purple gradient (`_animated_banner()`)
 - `app/gui.py` — GUI with HTML/CSS + SVG flagella
+
+#### Env workers, and the relay (`/env-worker`)
+
+viva-api runs a simulator's **prebuilt image as an env worker** — a Kubernetes
+Job it creates on the workbench's behalf, because the workbench has no cluster
+access. Two transports, and the difference is topological, not stylistic:
+
+| | who holds the socket | works for |
+|---|---|---|
+| **dial-back** | the **workbench** pod; the worker connects to it | in-cluster only |
+| **relay** (§C, 2026-08-29) | **viva-api**; calls forwarded over HTTP | in-cluster **and a laptop** |
+
+The relay exists because a laptop cannot be dialled: its SSM tunnel is
+laptop-initiated with no inbound path. Reversing direction does not help either
+— viva-api's ServiceAccount may create **Jobs but not Services**, so a worker pod
+has no stable name to dial. viva-api is the one party both sides can reach.
+
+```
+POST   /env-worker/v1/relay/workers              start + hold the connection
+POST   /env-worker/v1/relay/workers/{job}/call   forward one JSON-RPC call
+DELETE /env-worker/v1/relay/workers/{job}        drop + delete the Job
+```
+
+**Off unless configured.** The relay 503s until `ENV_WORKER_RELAY_ADVERTISE_HOST`
+is set (Downward API `status.podIP`); the workbench picks it with
+`VIVARIUM_WORKBENCH_ENV_WORKER_PROXY_BASE`. Live on `sms-api-stanford-test` only.
+
+**Diagnosing it:** call `/relay/workers/nope/call`. **404** = live. **503** =
+relay off. Through the tunnel a **JSON** 404 is the proof — an **HTML** 404 means
+the ALB fell through to PTools and the `/env-worker` listener rule is missing
+(see `docs/DEPLOY.md` §2b).
+
+> **TODO — expose this through the atlantis CLI.** Today the only laptop client
+> is hand-rolled `curl`, which is how it was verified and is not a tooling
+> experience. Per the EUTE rule below, end-user-facing paths are exercised
+> through `atlantis`, not curl — so this wants `atlantis worker start/call/stop/
+> list` against the same `--base-url`, then the same capability in the TUI and
+> GUI. The generated client already has the operations (`start_relayed_env_worker`,
+> `call_relayed_env_worker`, `stop_relayed_env_worker`).
 
 #### Not to be confused with: `vwb`, the workbench's own CLI
 

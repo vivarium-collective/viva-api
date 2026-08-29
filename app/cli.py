@@ -1069,25 +1069,71 @@ def compose_run(
         )
 
 
-@compose_cli.command("status", help="Get compose simulation job status.")
+@compose_cli.command("status", help="Get compose simulation job status. Accepts several IDs.")
 def compose_status(
-    simulation_id: int = Argument(help="Compose simulation database ID."),
+    simulation_ids: list[int] = Argument(help="One or more compose simulation database IDs."),
     base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
 ) -> None:
+    """Status for one simulation, or a whole campaign in ONE request.
+
+    Given several IDs this uses ``/compose/v1/simulations/status/batch`` rather
+    than looping — the endpoint viva-api grew for exactly this, and which the
+    workbench's job layer already polls through. Checking twenty runs should not
+    be twenty round trips, and through the SSM tunnel the difference is felt.
+
+    A single ID keeps the previous behaviour EXACTLY: same endpoint, same panel,
+    same JSON. The batch path is an addition, not a replacement, so no existing
+    invocation changes shape.
+    """
     from rich.panel import Panel
+    from rich.table import Table
 
     console = get_console()
     data_service = get_data_service(base_url=base_url)
-    result = data_service.compose_get_simulation_status(simulation_id=simulation_id)
-    s = (result.get("status") or "unknown").lower()
-    console.print(
-        Panel(
-            f"[{status_style(s)}]{s.upper()}[/]",
-            title=f"Compose simulation {simulation_id}",
-            border_style=status_border(s),
+
+    if len(simulation_ids) == 1:
+        simulation_id = simulation_ids[0]
+        result = data_service.compose_get_simulation_status(simulation_id=simulation_id)
+        s = (result.get("status") or "unknown").lower()
+        console.print(
+            Panel(
+                f"[{status_style(s)}]{s.upper()}[/]",
+                title=f"Compose simulation {simulation_id}",
+                border_style=status_border(s),
+            )
         )
-    )
-    display_json(result, console)
+        display_json(result, console)
+        return
+
+    rows = data_service.compose_get_simulations_status_batch(simulation_ids=simulation_ids)
+    by_id = {r.get("ref_id") or r.get("database_id") or r.get("sim_id"): r for r in rows if isinstance(r, dict)}
+
+    table = Table(title=f"Compose simulations ({len(simulation_ids)})", border_style="magenta")
+    table.add_column("ID", justify="right", style="memphis.label")
+    table.add_column("Status")
+    table.add_column("Error", overflow="fold")
+    missing = 0
+    for sid in simulation_ids:
+        row = by_id.get(sid)
+        if row is None:
+            # An id the server did not return is NOT "unknown status" — it is an
+            # id that does not exist here. Saying so beats a blank line the user
+            # has to investigate.
+            missing += 1
+            table.add_row(str(sid), "[dim]not found[/]", "")
+            continue
+        st = (row.get("status") or "unknown").lower()
+        table.add_row(str(sid), f"[{status_style(st)}]{st}[/]", str(row.get("error_message") or ""))
+    console.print(table)
+
+    counts: dict[str, int] = {}
+    for row in by_id.values():
+        st = (row.get("status") or "unknown").lower()
+        counts[st] = counts.get(st, 0) + 1
+    summary = "  ".join(f"[{status_style(k)}]{v} {k}[/]" for k, v in sorted(counts.items()))
+    if missing:
+        summary += f"  [dim]{missing} not found[/]"
+    console.print(summary, highlight=False)
 
 
 @compose_cli.command("results", help="Download compose simulation results as a zip file.")

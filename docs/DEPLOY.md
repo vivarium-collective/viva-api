@@ -82,6 +82,30 @@ Both failure directions were observed on 2026-08-27/28:
 
 Only `sms-api-stanford-test` sets these today.
 
+## 2c. The env-worker relay's two vars (dev only, since 2026-08-29)
+
+A third coupled pair, in the same two files, off unless **both** are present:
+
+| value | file | effect |
+|---|---|---|
+| `ENV_WORKER_RELAY_ADVERTISE_HOST` (← `status.podIP`) | overlay patch on the **api** Deployment | viva-api binds the dial-back listener; absent ⇒ relay endpoints 503 |
+| `VIVARIUM_WORKBENCH_ENV_WORKER_PROXY_BASE` | overlay patch on the **workbench** Deployment | the workbench selects `ProxyWorkerLauncher` |
+
+`VIVARIUM_WORKBENCH_ENV_WORKER_ADVERTISE_HOST` is deliberately **left set**
+alongside it. `default_launcher` checks `PROXY_BASE` **first**, so it is inert
+while the relay is on — which makes **rollback the deletion of one line**, with
+no image change. Do not "tidy" it away; restoring it later is a second edit
+under pressure.
+
+Verify on the live pods, not the apply output:
+
+```bash
+kubectl exec -n <ns> $APOD -- printenv ENV_WORKER_RELAY_ADVERTISE_HOST
+kubectl exec -n <ns> $WPOD -- python -c \
+  "from vivarium_workbench.lib import env_worker_launcher as L; print(type(L.default_launcher()).__name__)"
+# -> ProxyWorkerLauncher
+```
+
 ## 2b. What the ALB routes (and what silently doesn't)
 
 The internal ALB forwards by **path prefix**, and its **default action forwards to
@@ -92,6 +116,12 @@ working perfectly in-cluster (2026-08-28).
 
 Routed to the **api** target group: `/openapi.json`, `/home`, `/docs`, `/ws`,
 `/api`, `/core`, `/health`, `/version`, **`/compose`**, **`/env-worker`**.
+
+> The `/env-worker` rule became load-bearing on 2026-08-29: the env-worker
+> **relay** (a laptop's only route to a cluster worker) rides it. Its symptom
+> when missing is diagnostic — a request returns **HTML** 404 (PTools' page)
+> instead of sms-api's **JSON** 404, so *check the content type, not just the
+> status*.
 Routed to the **workbench** target group: `/workbench`, `/bigraph-loom`.
 Everything else → PTools.
 
