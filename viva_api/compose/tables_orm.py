@@ -197,6 +197,80 @@ class ORMComposeHpcRun(ComposeBase):
         )
 
 
+class ORMEnvWorkerTask(ComposeBase):
+    """One method call dispatched to an env worker, recorded durably.
+
+    Plan §E option (e). The relay (``compose/env_worker_relay.py``) forwards
+    interactive calls synchronously and that stays; this table exists for the
+    calls that CANNOT be a synchronous HTTP request — the job-class methods
+    (``run_study``, ``run_study_analyses``, ``run_investigation_analysis``),
+    which run a study's simulations to completion and are bounded by nothing
+    this layer can see.
+
+    **Why a table rather than ``ORMComposeHpcRun``.** That row models a job
+    handed to an external backend, keyed by ``job_id_ext`` + ``job_backend`` and
+    referencing a compose simulation or simulator. An env-worker task has no
+    external backend job and no such referent: it is a method name, its params,
+    and a socket that viva-api itself holds. Overloading the hpcrun row would
+    mean a third nullable referent and a job type that no monitor should ever
+    poll.
+
+    **What is durable here is the RECORD, not the EXECUTION.** A socket cannot
+    outlive the process holding it, so a viva-api restart ends the work; the row
+    survives and is marked failed with that reason, which is the difference
+    between a task that is known-lost and one that hangs in ``running`` forever.
+    Resumption is deliberately not attempted: by the time a ``run_study`` is
+    interrupted it has already written runs.db rows, parquet and a conclusion
+    card, so re-dispatching would duplicate exactly the double-run this arc
+    removed.
+    """
+
+    __tablename__ = "env_worker_task"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
+
+    #: The relayed worker Job this call belongs to. Indexed because the runner
+    #: drains per worker -- the FIFO is per socket, not global.
+    job_name: Mapped[str] = mapped_column(nullable=False, index=True)
+    method: Mapped[str] = mapped_column(nullable=False)
+    params: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+
+    #: Reuses ComposeJobStatusDB rather than minting a parallel enum: it already
+    #: carries queued/running/completed/failed/cancelled/timeout, and a second
+    #: status vocabulary in one schema is how two subsystems start disagreeing
+    #: about what "done" means.
+    status: Mapped[ComposeJobStatusDB] = mapped_column(nullable=False)
+
+    #: Small results inline. A job-class method's real output is already on disk
+    #: -- _run_study returns a HARVEST of run refs, a verdict and analysis paths,
+    #: not the simulation -- so this stays small by the shape of the work rather
+    #: than by a limit imposed here.
+    result: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(nullable=True)
+
+    started_at: Mapped[datetime.datetime | None] = mapped_column(nullable=True)
+    ended_at: Mapped[datetime.datetime | None] = mapped_column(nullable=True)
+
+    #: Who submitted this, when anything told us. NULLABLE and legitimately so:
+    #: viva-api has no authentication, deployments differ in whether anything
+    #: fronts them with an identity-setting proxy, and anonymous is the default
+    #: everywhere today. A NOT NULL column here would be a claim the system
+    #: cannot honour.
+    #:
+    #: Self-asserted, and the one rule keyed on it (you cannot cancel a task you
+    #: did not start) exists to prevent ACCIDENTS -- someone killing a
+    #: colleague's six-hour study -- not to withstand an adversary, who can set
+    #: the header to anything. See viva_api/api/auth.py.
+    created_by: Mapped[str | None] = mapped_column(nullable=True, index=True)
+
+    #: Idempotency key, matching the convention compose already uses
+    #: (compose/hpc_utils.get_correlation_id). Unique, so a resubmitted request
+    #: cannot silently become a second run of the same work -- the failure mode
+    #: this whole arc exists to remove.
+    correlation_id: Mapped[str] = mapped_column(nullable=False, index=True, unique=True)
+
+
 class ORMComposeWorkerEvent(ComposeBase):
     __tablename__ = "compose_worker_event"
 
