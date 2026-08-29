@@ -20,6 +20,8 @@ from .body_add_simulation_tags import BodyAddSimulationTags
 from .body_compose_run_copasi import BodyComposeRunCopasi
 from .body_compose_run_simulation import BodyComposeRunSimulation
 from .body_compose_run_tellurium import BodyComposeRunTellurium
+from .body_run_ecoli_simulation_new import BodyRunEcoliSimulationNew
+from .body_run_ecoli_simulation_new_extra_params_type_0 import BodyRunEcoliSimulationNewExtraParamsType0
 from .chain_progress import ChainProgress
 from .check_health_health_get_response_check_health_health_get import CheckHealthHealthGetResponseCheckHealthHealthGet
 from .compose_get_simulation_document_response_compose_get_simulation_document import (
@@ -34,6 +36,9 @@ from .compose_simulation_experiment_metadata import ComposeSimulationExperimentM
 from .compose_simulator_version import ComposeSimulatorVersion
 from .containerization_engine import ContainerizationEngine
 from .containerization_file_repr import ContainerizationFileRepr
+from .env_worker_start_request import EnvWorkerStartRequest
+from .env_worker_start_response import EnvWorkerStartResponse
+from .env_worker_status_response import EnvWorkerStatusResponse
 from .experiment_analysis_dto import ExperimentAnalysisDTO
 from .experiment_analysis_request import ExperimentAnalysisRequest
 from .hpc_run import HpcRun
@@ -51,6 +56,11 @@ from .parca_options import ParcaOptions
 from .ptools_analysis_config import PtoolsAnalysisConfig
 from .registered_package import RegisteredPackage
 from .registered_simulators import RegisteredSimulators
+from .relay_call_request import RelayCallRequest
+from .relay_call_request_params_type_0 import RelayCallRequestParamsType0
+from .relay_call_response import RelayCallResponse
+from .relay_start_request import RelayStartRequest
+from .relay_start_response import RelayStartResponse
 from .repo_discovery import RepoDiscovery
 from .repo_discovery_analysis_modules import RepoDiscoveryAnalysisModules
 from .run_ecoli_simulation_analysis_response_run_ecoli_simulation_analysis import (
@@ -70,6 +80,8 @@ from .simulation_observables_store import SimulationObservablesStore
 from .simulation_run import SimulationRun
 from .simulator import Simulator
 from .simulator_version import SimulatorVersion
+from .stop_env_worker_response_stop_env_worker import StopEnvWorkerResponseStopEnvWorker
+from .stop_relayed_env_worker_response_stop_relayed_env_worker import StopRelayedEnvWorkerResponseStopRelayedEnvWorker
 from .tsv_output_file import TsvOutputFile
 from .validation_error import ValidationError
 from .validation_error_context import ValidationErrorContext
@@ -95,6 +107,8 @@ __all__ = (
     "BodyComposeRunCopasi",
     "BodyComposeRunSimulation",
     "BodyComposeRunTellurium",
+    "BodyRunEcoliSimulationNew",
+    "BodyRunEcoliSimulationNewExtraParamsType0",
     "ChainProgress",
     "CheckHealthHealthGetResponseCheckHealthHealthGet",
     "ComposeGetSimulationDocumentResponseComposeGetSimulationDocument",
@@ -107,6 +121,9 @@ __all__ = (
     "ComposeSimulatorVersion",
     "ContainerizationEngine",
     "ContainerizationFileRepr",
+    "EnvWorkerStartRequest",
+    "EnvWorkerStartResponse",
+    "EnvWorkerStatusResponse",
     "ExperimentAnalysisDTO",
     "ExperimentAnalysisRequest",
     "HpcRun",
@@ -124,6 +141,11 @@ __all__ = (
     "PtoolsAnalysisConfig",
     "RegisteredPackage",
     "RegisteredSimulators",
+    "RelayCallRequest",
+    "RelayCallRequestParamsType0",
+    "RelayCallResponse",
+    "RelayStartRequest",
+    "RelayStartResponse",
     "RepoDiscovery",
     "RepoDiscoveryAnalysisModules",
     "RunEcoliSimulationAnalysisResponseRunEcoliSimulationAnalysis",
@@ -141,6 +163,8 @@ __all__ = (
     "SimulationRun",
     "Simulator",
     "SimulatorVersion",
+    "StopEnvWorkerResponseStopEnvWorker",
+    "StopRelayedEnvWorkerResponseStopRelayedEnvWorker",
     "TsvOutputFile",
     "ValidationError",
     "ValidationErrorContext",

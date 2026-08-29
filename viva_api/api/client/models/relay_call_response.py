@@ -1,46 +1,58 @@
 from collections.abc import Mapping
-from typing import Any, TypeVar, Union
+from typing import Any, TypeVar, Union, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-T = TypeVar("T", bound="ParcaOptions")
+T = TypeVar("T", bound="RelayCallResponse")
 
 
 @_attrs_define
-class ParcaOptions:
+class RelayCallResponse:
     """
     Attributes:
-        outdir (Union[Unset, str]):  Default: '/projects/SMS/sms_api/jim/sims'.
+        result (Union[Any, None, Unset]):
     """
 
-    outdir: Union[Unset, str] = "/projects/SMS/sms_api/jim/sims"
+    result: Union[Any, None, Unset] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        outdir = self.outdir
+        result: Union[Any, None, Unset]
+        if isinstance(self.result, Unset):
+            result = UNSET
+        else:
+            result = self.result
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
-        if outdir is not UNSET:
-            field_dict["outdir"] = outdir
+        if result is not UNSET:
+            field_dict["result"] = result
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        outdir = d.pop("outdir", UNSET)
 
-        parca_options = cls(
-            outdir=outdir,
+        def _parse_result(data: object) -> Union[Any, None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[Any, None, Unset], data)
+
+        result = _parse_result(d.pop("result", UNSET))
+
+        relay_call_response = cls(
+            result=result,
         )
 
-        parca_options.additional_properties = d
-        return parca_options
+        relay_call_response.additional_properties = d
+        return relay_call_response
 
     @property
     def additional_keys(self) -> list[str]:

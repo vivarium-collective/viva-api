@@ -1,46 +1,68 @@
 from collections.abc import Mapping
-from typing import Any, TypeVar, Union
+from typing import Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..types import UNSET, Unset
-
-T = TypeVar("T", bound="ParcaOptions")
+T = TypeVar("T", bound="RelayStartResponse")
 
 
 @_attrs_define
-class ParcaOptions:
+class RelayStartResponse:
     """
     Attributes:
-        outdir (Union[Unset, str]):  Default: '/projects/SMS/sms_api/jim/sims'.
+        job_name (str):
+        image (str):
+        namespace (str):
+        connected (bool):
     """
 
-    outdir: Union[Unset, str] = "/projects/SMS/sms_api/jim/sims"
+    job_name: str
+    image: str
+    namespace: str
+    connected: bool
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        outdir = self.outdir
+        job_name = self.job_name
+
+        image = self.image
+
+        namespace = self.namespace
+
+        connected = self.connected
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({})
-        if outdir is not UNSET:
-            field_dict["outdir"] = outdir
+        field_dict.update({
+            "job_name": job_name,
+            "image": image,
+            "namespace": namespace,
+            "connected": connected,
+        })
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        outdir = d.pop("outdir", UNSET)
+        job_name = d.pop("job_name")
 
-        parca_options = cls(
-            outdir=outdir,
+        image = d.pop("image")
+
+        namespace = d.pop("namespace")
+
+        connected = d.pop("connected")
+
+        relay_start_response = cls(
+            job_name=job_name,
+            image=image,
+            namespace=namespace,
+            connected=connected,
         )
 
-        parca_options.additional_properties = d
-        return parca_options
+        relay_start_response.additional_properties = d
+        return relay_start_response
 
     @property
     def additional_keys(self) -> list[str]:

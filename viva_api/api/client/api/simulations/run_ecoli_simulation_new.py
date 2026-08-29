@@ -5,7 +5,7 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.analysis_options import AnalysisOptions
+from ...models.body_run_ecoli_simulation_new import BodyRunEcoliSimulationNew
 from ...models.http_validation_error import HTTPValidationError
 from ...models.run_ecoli_simulation_new_composite_type_0 import RunEcoliSimulationNewCompositeType0
 from ...models.run_ecoli_simulation_new_vecoli_source_type_0 import RunEcoliSimulationNewVecoliSourceType0
@@ -15,7 +15,7 @@ from ...types import UNSET, Response, Unset
 
 def _get_kwargs(
     *,
-    body: Union["AnalysisOptions", None],
+    body: BodyRunEcoliSimulationNew,
     simulator_id: int,
     experiment_id: Union[None, Unset, str] = UNSET,
     simulation_config_filename: Union[Unset, str] = "api_simulation_default.json",
@@ -165,11 +165,7 @@ def _get_kwargs(
         "params": params,
     }
 
-    _kwargs["json"]: Union[None, dict[str, Any]]
-    if isinstance(body, AnalysisOptions):
-        _kwargs["json"] = body.to_dict()
-    else:
-        _kwargs["json"] = body
+    _kwargs["json"] = body.to_dict()
 
     headers["Content-Type"] = "application/json"
 
@@ -208,7 +204,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
-    body: Union["AnalysisOptions", None],
+    body: BodyRunEcoliSimulationNew,
     simulator_id: int,
     experiment_id: Union[None, Unset, str] = UNSET,
     simulation_config_filename: Union[Unset, str] = "api_simulation_default.json",
@@ -272,7 +268,7 @@ def sync_detailed(
         tags (Union[None, Unset, list[str]]): Free-form tags to attach to this simulation for
             later filtering (e.g. 'cd1'). Repeat the param for multiple tags. Tags can also be added
             later via POST /simulations/{id}/tags.
-        body (Union['AnalysisOptions', None]):
+        body (BodyRunEcoliSimulationNew):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -313,7 +309,7 @@ def sync_detailed(
 def sync(
     *,
     client: Union[AuthenticatedClient, Client],
-    body: Union["AnalysisOptions", None],
+    body: BodyRunEcoliSimulationNew,
     simulator_id: int,
     experiment_id: Union[None, Unset, str] = UNSET,
     simulation_config_filename: Union[Unset, str] = "api_simulation_default.json",
@@ -377,7 +373,7 @@ def sync(
         tags (Union[None, Unset, list[str]]): Free-form tags to attach to this simulation for
             later filtering (e.g. 'cd1'). Repeat the param for multiple tags. Tags can also be added
             later via POST /simulations/{id}/tags.
-        body (Union['AnalysisOptions', None]):
+        body (BodyRunEcoliSimulationNew):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -413,7 +409,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
-    body: Union["AnalysisOptions", None],
+    body: BodyRunEcoliSimulationNew,
     simulator_id: int,
     experiment_id: Union[None, Unset, str] = UNSET,
     simulation_config_filename: Union[Unset, str] = "api_simulation_default.json",
@@ -477,7 +473,7 @@ async def asyncio_detailed(
         tags (Union[None, Unset, list[str]]): Free-form tags to attach to this simulation for
             later filtering (e.g. 'cd1'). Repeat the param for multiple tags. Tags can also be added
             later via POST /simulations/{id}/tags.
-        body (Union['AnalysisOptions', None]):
+        body (BodyRunEcoliSimulationNew):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -516,7 +512,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: Union[AuthenticatedClient, Client],
-    body: Union["AnalysisOptions", None],
+    body: BodyRunEcoliSimulationNew,
     simulator_id: int,
     experiment_id: Union[None, Unset, str] = UNSET,
     simulation_config_filename: Union[Unset, str] = "api_simulation_default.json",
@@ -580,7 +576,7 @@ async def asyncio(
         tags (Union[None, Unset, list[str]]): Free-form tags to attach to this simulation for
             later filtering (e.g. 'cd1'). Repeat the param for multiple tags. Tags can also be added
             later via POST /simulations/{id}/tags.
-        body (Union['AnalysisOptions', None]):
+        body (BodyRunEcoliSimulationNew):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
