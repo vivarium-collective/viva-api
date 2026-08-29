@@ -82,6 +82,9 @@ from .simulator import Simulator
 from .simulator_version import SimulatorVersion
 from .stop_env_worker_response_stop_env_worker import StopEnvWorkerResponseStopEnvWorker
 from .stop_relayed_env_worker_response_stop_relayed_env_worker import StopRelayedEnvWorkerResponseStopRelayedEnvWorker
+from .task_response import TaskResponse
+from .task_submit_request import TaskSubmitRequest
+from .task_submit_request_params_type_0 import TaskSubmitRequestParamsType0
 from .tsv_output_file import TsvOutputFile
 from .validation_error import ValidationError
 from .validation_error_context import ValidationErrorContext
@@ -165,6 +168,9 @@ __all__ = (
     "SimulatorVersion",
     "StopEnvWorkerResponseStopEnvWorker",
     "StopRelayedEnvWorkerResponseStopRelayedEnvWorker",
+    "TaskResponse",
+    "TaskSubmitRequest",
+    "TaskSubmitRequestParamsType0",
     "TsvOutputFile",
     "ValidationError",
     "ValidationErrorContext",

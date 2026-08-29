@@ -58,6 +58,22 @@ def sync_detailed(
 ) -> Response[Union[HTTPValidationError, StopRelayedEnvWorkerResponseStopRelayedEnvWorker]]:
     """Close a relayed worker's connection and delete its Job (idempotent)
 
+     Stop a worker. NOT ownership-checked, deliberately — and its tasks are
+    settled with attribution instead.
+
+    Stopping a worker is overwhelmingly an AUTOMATIC operation: the workbench's
+    pool calls it on LRU eviction, idle reap, dead-worker replacement and process
+    exit. The pool has no identity to present, so an ownership check here would
+    either break it or have to let unidentified callers through — which is the
+    very bypass such a check would exist to close, and would leave the perverse
+    rule that anonymous callers may stop workers while identified ones may not.
+
+    So the worker is shared infrastructure with an automatic lifecycle; the task
+    is the unit of work that has an owner. What is owed to someone whose task
+    dies with a worker is not a veto but an EXPLANATION: their task moves to a
+    terminal state naming what happened and, where identity is configured, who
+    did it — rather than hanging in `running` until somebody wonders.
+
     Args:
         job_name (str):
 
@@ -87,6 +103,22 @@ def sync(
 ) -> Optional[Union[HTTPValidationError, StopRelayedEnvWorkerResponseStopRelayedEnvWorker]]:
     """Close a relayed worker's connection and delete its Job (idempotent)
 
+     Stop a worker. NOT ownership-checked, deliberately — and its tasks are
+    settled with attribution instead.
+
+    Stopping a worker is overwhelmingly an AUTOMATIC operation: the workbench's
+    pool calls it on LRU eviction, idle reap, dead-worker replacement and process
+    exit. The pool has no identity to present, so an ownership check here would
+    either break it or have to let unidentified callers through — which is the
+    very bypass such a check would exist to close, and would leave the perverse
+    rule that anonymous callers may stop workers while identified ones may not.
+
+    So the worker is shared infrastructure with an automatic lifecycle; the task
+    is the unit of work that has an owner. What is owed to someone whose task
+    dies with a worker is not a veto but an EXPLANATION: their task moves to a
+    terminal state naming what happened and, where identity is configured, who
+    did it — rather than hanging in `running` until somebody wonders.
+
     Args:
         job_name (str):
 
@@ -110,6 +142,22 @@ async def asyncio_detailed(
     client: Union[AuthenticatedClient, Client],
 ) -> Response[Union[HTTPValidationError, StopRelayedEnvWorkerResponseStopRelayedEnvWorker]]:
     """Close a relayed worker's connection and delete its Job (idempotent)
+
+     Stop a worker. NOT ownership-checked, deliberately — and its tasks are
+    settled with attribution instead.
+
+    Stopping a worker is overwhelmingly an AUTOMATIC operation: the workbench's
+    pool calls it on LRU eviction, idle reap, dead-worker replacement and process
+    exit. The pool has no identity to present, so an ownership check here would
+    either break it or have to let unidentified callers through — which is the
+    very bypass such a check would exist to close, and would leave the perverse
+    rule that anonymous callers may stop workers while identified ones may not.
+
+    So the worker is shared infrastructure with an automatic lifecycle; the task
+    is the unit of work that has an owner. What is owed to someone whose task
+    dies with a worker is not a veto but an EXPLANATION: their task moves to a
+    terminal state naming what happened and, where identity is configured, who
+    did it — rather than hanging in `running` until somebody wonders.
 
     Args:
         job_name (str):
@@ -137,6 +185,22 @@ async def asyncio(
     client: Union[AuthenticatedClient, Client],
 ) -> Optional[Union[HTTPValidationError, StopRelayedEnvWorkerResponseStopRelayedEnvWorker]]:
     """Close a relayed worker's connection and delete its Job (idempotent)
+
+     Stop a worker. NOT ownership-checked, deliberately — and its tasks are
+    settled with attribution instead.
+
+    Stopping a worker is overwhelmingly an AUTOMATIC operation: the workbench's
+    pool calls it on LRU eviction, idle reap, dead-worker replacement and process
+    exit. The pool has no identity to present, so an ownership check here would
+    either break it or have to let unidentified callers through — which is the
+    very bypass such a check would exist to close, and would leave the perverse
+    rule that anonymous callers may stop workers while identified ones may not.
+
+    So the worker is shared infrastructure with an automatic lifecycle; the task
+    is the unit of work that has an owner. What is owed to someone whose task
+    dies with a worker is not a veto but an EXPLANATION: their task moves to a
+    terminal state naming what happened and, where identity is configured, who
+    did it — rather than hanging in `running` until somebody wonders.
 
     Args:
         job_name (str):
