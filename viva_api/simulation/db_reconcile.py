@@ -154,6 +154,17 @@ async def _marker_jobstatus_pending_and_cancelled_uppercase(conn: AsyncConnectio
     )
 
 
+async def _marker_env_worker_task(conn: AsyncConnection) -> bool:
+    """True once the ``env_worker_task`` table exists (b4d7e9c02a15).
+
+    Satisfied for free by a create_all-bootstrapped database, because the table
+    is part of the compose metadata that ``create_compose_db`` creates at
+    startup — which is the property every marker in this list needs and which
+    two earlier markers had to be rewritten to obtain.
+    """
+    return await _table_exists(conn, "env_worker_task")
+
+
 # (revision, human-readable marker description, async predicate)
 # One marker per revision reachable by a legacy create_all database. New entries
 # are needed ONLY while create_all still bootstraps prod DBs (see module docstring):
@@ -170,6 +181,7 @@ LEGACY_FINGERPRINTS: list[tuple[str, str]] = [
     ("44335812e447", "enum jobstatusdb has values 'PENDING' and 'CANCELLED'"),
     ("71a5478673a8", "hpcrun.chain_current_job_ids column exists"),
     ("9c2e6b1f4a73", "hpcrun.multi_node_composite_id column exists"),
+    ("b4d7e9c02a15", "table 'env_worker_task' exists"),
 ]
 _LEGACY_PREDICATES = [
     _marker_baseline,
@@ -182,6 +194,7 @@ _LEGACY_PREDICATES = [
     _marker_jobstatus_pending_and_cancelled_uppercase,
     _marker_hpcrun_chain_current,
     _marker_hpcrun_multi_node_composite_id,
+    _marker_env_worker_task,
 ]
 
 
