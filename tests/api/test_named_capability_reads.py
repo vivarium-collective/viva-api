@@ -272,3 +272,64 @@ def test_every_named_read_is_a_GET() -> None:
         path = getattr(route, "path", "")
         if "/relay/workers/{job_name}/" in path and path.rsplit("/", 1)[-1] != "call":
             assert "GET" in getattr(route, "methods", set()), path
+
+
+# --- the generic /call, which the refactor broke and nothing noticed ---------
+#
+# Factoring `_relay_call` out of `call_relayed_worker` inserted the new helper
+# BETWEEN the `@router.post(...)` decorator and the endpoint it belonged to. The
+# decorator then described the helper, so FastAPI generated `/call` from
+# `_relay_call(job_name, method, params, timeout)`: `method` and `timeout`
+# became QUERY parameters and `params` became the whole body. Every test above
+# passed, `make check` passed, mypy passed, and the generated client quietly
+# renamed `RelayCallRequest` to `call_relayed_env_worker_body_type_0` -- which is
+# the only place it showed.
+#
+# So: pin the endpoint's shape, not just its behaviour.
+
+
+def _call_route() -> Any:
+    application = FastAPI()
+    application.include_router(ew.router, prefix="/env-worker/v1")
+    routes = [r for r in application.routes if getattr(r, "path", "").endswith("/call")]
+    assert len(routes) == 1, routes
+    return routes[0]
+
+
+def test_call_is_a_post_bound_to_the_endpoint_not_the_helper() -> None:
+    """`_relay_call` is a helper. If it is ever the registered endpoint, the
+    request contract silently changes shape."""
+    route = _call_route()
+    assert route.methods == {"POST"}
+    assert route.endpoint is ew.call_relayed_worker
+    assert route.endpoint is not ew._relay_call
+
+
+def test_call_takes_method_params_and_timeout_in_its_BODY() -> None:
+    """The three fields a caller sends. When the decorator slipped onto the
+    helper, `method` and `timeout` became query parameters and only `params`
+    remained in the body -- a breaking change to the escape hatch, invisible in
+    every behavioural test."""
+    fields = set(ew.RelayCallRequest.model_fields)
+    assert fields == {"method", "params", "timeout"}
+
+    route = _call_route()
+    body_params = [p for p in route.dependant.body_params]
+    assert [p.name for p in body_params] == ["request"]
+    assert body_params[0].field_info.annotation is ew.RelayCallRequest
+    # job_name is the only thing that belongs in the path/query.
+    assert {p.name for p in route.dependant.path_params} == {"job_name"}
+    assert not route.dependant.query_params
+
+
+def test_no_private_helper_is_registered_as_a_route() -> None:
+    """The general form of the bug: a decorator sitting above the wrong `def`.
+    An endpoint whose name starts with an underscore is a helper that escaped."""
+    application = FastAPI()
+    application.include_router(ew.router, prefix="/env-worker/v1")
+    leaked = [
+        getattr(r, "path", "")
+        for r in application.routes
+        if getattr(getattr(r, "endpoint", None), "__name__", "").startswith("_")
+    ]
+    assert not leaked, f"private helpers registered as routes: {leaked}"

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.67
+  version: 0.9.68
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -1191,7 +1191,7 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-08-30T09:18:47.267916'
+                  created_at: '2026-08-30T09:27:14.243514'
                 parca_config:
                   outdir: /projects/SMS/sms_api/jim/sims
       responses:
@@ -1945,20 +1945,11 @@ paths:
       tags:
       - Env Worker
       summary: Forward one JSON-RPC call to a relayed env worker
-      description: 'Forward one call down a held worker socket, mapping its failures
-        to HTTP.
-
-
-        Shared by the generic ``/call`` below and by every named capability endpoint,
-
-        so those cannot drift on what a lost socket or a refused call means.
-
-
-        Runs on a worker thread: the call holds a per-worker mutex for its whole
-
-        duration (the worker''s FIFO contract), and blocking the event loop on that
-
-        would stall every unrelated request in this process.'
+      description: "One request, one reply \u2014 the worker protocol is already request/response.\n\
+        \nDeliberately RAW: whatever the worker returned is handed back untouched,\n\
+        sentinels included. This is the escape hatch, and a caller reaching for it\n\
+        has asked for the protocol rather than for an interpretation of it. The\n\
+        named endpoints below are where sentinels become status codes."
       operationId: call-relayed-env-worker
       parameters:
       - name: job_name
@@ -1967,28 +1958,12 @@ paths:
         schema:
           type: string
           title: Job Name
-      - name: method
-        in: query
-        required: true
-        schema:
-          type: string
-          title: Method
-      - name: timeout
-        in: query
-        required: true
-        schema:
-          type: number
-          title: Timeout
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              anyOf:
-              - type: object
-                additionalProperties: true
-              - type: 'null'
-              title: Params
+              $ref: '#/components/schemas/RelayCallRequest'
       responses:
         '200':
           description: Successful Response
@@ -3585,6 +3560,30 @@ components:
       required:
       - versions
       title: RegisteredSimulators
+    RelayCallRequest:
+      properties:
+        method:
+          type: string
+          title: Method
+          description: Worker method name (JSON-RPC)
+        params:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Params
+          description: Method params
+        timeout:
+          type: number
+          maximum: 3600.0
+          exclusiveMinimum: 0.0
+          title: Timeout
+          description: Seconds to wait for this call's reply
+          default: 300.0
+      type: object
+      required:
+      - method
+      title: RelayCallRequest
     RelayCallResponse:
       properties:
         result:
@@ -3722,7 +3721,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-08-30 09:18:47.199522'
+          default: '2026-08-30 09:27:14.175632'
         job_id:
           anyOf:
           - type: string
