@@ -171,3 +171,47 @@ async def test_created_by_is_recorded_when_present_and_null_otherwise(task_db: E
     owned = await _new(task_db, by="kr0@stanford.edu")
     assert (await _get(task_db, anon.database_id)).created_by is None
     assert (await _get(task_db, owned.database_id)).created_by == "kr0@stanford.edu"
+
+
+# --- the batch endpoint's shape --------------------------------------------
+
+
+def test_batch_status_omits_result_payloads() -> None:
+    """A *status* endpoint returns status.
+
+    Measured on dev before this: five tasks came back as 1.19 MB, of which
+    1.185 MB was result payloads. The endpoint exists so a campaign can be polled
+    without N round trips; inlining every result reintroduced the cost in a
+    different dimension, and polling twenty tasks every few seconds would have
+    moved megabytes per cycle over an SSM tunnel.
+
+    Asserted on the MODEL rather than through HTTP because the guarantee is the
+    schema: `result` must not be a field a caller can receive here at all.
+    """
+    from viva_api.api.routers.env_worker import TaskResponse, TaskStatusResponse
+
+    assert "result" not in TaskStatusResponse.model_fields, "the batch endpoint must not ship result payloads"
+    # ...while the singular endpoint still must, since that is where a caller
+    # goes to collect it.
+    assert "result" in TaskResponse.model_fields
+
+
+def test_batch_status_says_whether_a_result_is_waiting() -> None:
+    """Omitting the payload must not force a caller to guess. `has_result` is
+    what makes one targeted GET obviously worthwhile."""
+    from viva_api.api.routers.env_worker import TaskStatusResponse, _to_status
+    from viva_api.compose.models import ComposeJobStatus, EnvWorkerTask
+
+    def _task(result: object | None) -> EnvWorkerTask:
+        return EnvWorkerTask(
+            database_id=1,
+            job_name="j",
+            method="m",
+            status=ComposeJobStatus.COMPLETED,
+            result=result,
+            correlation_id="c",
+        )
+
+    assert _to_status(_task({"generators": ["a"]})).has_result is True
+    assert _to_status(_task(None)).has_result is False
+    assert isinstance(_to_status(_task(None)), TaskStatusResponse)

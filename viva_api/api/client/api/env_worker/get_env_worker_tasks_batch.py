@@ -6,7 +6,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.http_validation_error import HTTPValidationError
-from ...models.task_response import TaskResponse
+from ...models.task_status_response import TaskStatusResponse
 from ...types import UNSET, Response
 
 
@@ -33,12 +33,12 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[HTTPValidationError, list["TaskResponse"]]]:
+) -> Optional[Union[HTTPValidationError, list["TaskStatusResponse"]]]:
     if response.status_code == 200:
         response_200 = []
         _response_200 = response.json()
         for response_200_item_data in _response_200:
-            response_200_item = TaskResponse.from_dict(response_200_item_data)
+            response_200_item = TaskStatusResponse.from_dict(response_200_item_data)
 
             response_200.append(response_200_item)
 
@@ -55,7 +55,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[HTTPValidationError, list["TaskResponse"]]]:
+) -> Response[Union[HTTPValidationError, list["TaskStatusResponse"]]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -68,11 +68,15 @@ def sync_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     ids: list[int],
-) -> Response[Union[HTTPValidationError, list["TaskResponse"]]]:
-    """Status for many env-worker tasks in one call
+) -> Response[Union[HTTPValidationError, list["TaskStatusResponse"]]]:
+    """Status for many env-worker tasks in one call (no result payloads)
 
-     Mirrors compose's /simulations/status/batch. A campaign is many tasks, and
-    polling them one at a time is the thing that endpoint exists to avoid.
+     Status only — results are deliberately omitted. See TaskStatusResponse.
+
+    Mirrors compose's /simulations/status/batch, which returns rows carrying no
+    large payload. A campaign is many tasks, and polling them one at a time is
+    what this endpoint exists to avoid; shipping every result inline reintroduced
+    the cost in a different dimension.
 
     Args:
         ids (list[int]):
@@ -82,7 +86,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[HTTPValidationError, list['TaskResponse']]]
+        Response[Union[HTTPValidationError, list['TaskStatusResponse']]]
     """
 
     kwargs = _get_kwargs(
@@ -100,11 +104,15 @@ def sync(
     *,
     client: Union[AuthenticatedClient, Client],
     ids: list[int],
-) -> Optional[Union[HTTPValidationError, list["TaskResponse"]]]:
-    """Status for many env-worker tasks in one call
+) -> Optional[Union[HTTPValidationError, list["TaskStatusResponse"]]]:
+    """Status for many env-worker tasks in one call (no result payloads)
 
-     Mirrors compose's /simulations/status/batch. A campaign is many tasks, and
-    polling them one at a time is the thing that endpoint exists to avoid.
+     Status only — results are deliberately omitted. See TaskStatusResponse.
+
+    Mirrors compose's /simulations/status/batch, which returns rows carrying no
+    large payload. A campaign is many tasks, and polling them one at a time is
+    what this endpoint exists to avoid; shipping every result inline reintroduced
+    the cost in a different dimension.
 
     Args:
         ids (list[int]):
@@ -114,7 +122,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[HTTPValidationError, list['TaskResponse']]
+        Union[HTTPValidationError, list['TaskStatusResponse']]
     """
 
     return sync_detailed(
@@ -127,11 +135,15 @@ async def asyncio_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     ids: list[int],
-) -> Response[Union[HTTPValidationError, list["TaskResponse"]]]:
-    """Status for many env-worker tasks in one call
+) -> Response[Union[HTTPValidationError, list["TaskStatusResponse"]]]:
+    """Status for many env-worker tasks in one call (no result payloads)
 
-     Mirrors compose's /simulations/status/batch. A campaign is many tasks, and
-    polling them one at a time is the thing that endpoint exists to avoid.
+     Status only — results are deliberately omitted. See TaskStatusResponse.
+
+    Mirrors compose's /simulations/status/batch, which returns rows carrying no
+    large payload. A campaign is many tasks, and polling them one at a time is
+    what this endpoint exists to avoid; shipping every result inline reintroduced
+    the cost in a different dimension.
 
     Args:
         ids (list[int]):
@@ -141,7 +153,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[HTTPValidationError, list['TaskResponse']]]
+        Response[Union[HTTPValidationError, list['TaskStatusResponse']]]
     """
 
     kwargs = _get_kwargs(
@@ -157,11 +169,15 @@ async def asyncio(
     *,
     client: Union[AuthenticatedClient, Client],
     ids: list[int],
-) -> Optional[Union[HTTPValidationError, list["TaskResponse"]]]:
-    """Status for many env-worker tasks in one call
+) -> Optional[Union[HTTPValidationError, list["TaskStatusResponse"]]]:
+    """Status for many env-worker tasks in one call (no result payloads)
 
-     Mirrors compose's /simulations/status/batch. A campaign is many tasks, and
-    polling them one at a time is the thing that endpoint exists to avoid.
+     Status only — results are deliberately omitted. See TaskStatusResponse.
+
+    Mirrors compose's /simulations/status/batch, which returns rows carrying no
+    large payload. A campaign is many tasks, and polling them one at a time is
+    what this endpoint exists to avoid; shipping every result inline reintroduced
+    the cost in a different dimension.
 
     Args:
         ids (list[int]):
@@ -171,7 +187,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[HTTPValidationError, list['TaskResponse']]
+        Union[HTTPValidationError, list['TaskStatusResponse']]
     """
 
     return (
