@@ -666,6 +666,28 @@ class EnvWorkerTaskORMExecutor(EnvWorkerTaskDatabaseService):
         ComposeJobStatusDB.TIMEOUT.value,
     )
 
+    #: Statuses a task can be settled FROM. Positively enumerated, and that is
+    #: the whole point.
+    #:
+    #: The sweep used to select `status NOT IN TERMINAL`, which fails open in the
+    #: destructive direction: any value it did not recognise was treated as
+    #: unfinished and OVERWRITTEN. That is not hypothetical -- rows written by
+    #: 0.9.63 stored the enum's NAME ('COMPLETED') rather than its value
+    #: ('completed'), so a later sweep saw eleven finished tasks as unfinished
+    #: and replaced their results with "lost to a viva-api restart". Completed
+    #: work, destroyed by housekeeping, because an unknown string defaulted to
+    #: "not done".
+    #:
+    #: Listing what CAN be settled inverts that: an unrecognised status is left
+    #: alone. The worst case becomes a row that stays stale -- visible, and
+    #: fixable -- rather than a result that is gone.
+    SETTLEABLE = (
+        ComposeJobStatusDB.QUEUED.value,
+        ComposeJobStatusDB.RUNNING.value,
+        ComposeJobStatusDB.PENDING.value,
+        ComposeJobStatusDB.WAITING.value,
+    )
+
     def __init__(self, session_maker: async_sessionmaker[AsyncSession]) -> None:
         self.async_session_maker = session_maker
 
@@ -741,9 +763,7 @@ class EnvWorkerTaskORMExecutor(EnvWorkerTaskDatabaseService):
     @override
     async def list_unfinished_tasks(self) -> list[EnvWorkerTask]:
         async with self.async_session_maker() as session:
-            result = await session.execute(
-                select(ORMEnvWorkerTask).where(ORMEnvWorkerTask.status.not_in(self.TERMINAL))
-            )
+            result = await session.execute(select(ORMEnvWorkerTask).where(ORMEnvWorkerTask.status.in_(self.SETTLEABLE)))
             return [row.to_task() for row in result.scalars().all()]
 
     @override
@@ -760,7 +780,9 @@ class EnvWorkerTaskORMExecutor(EnvWorkerTaskDatabaseService):
         Returns the affected rows so the caller can say how many, and to whom.
         """
         async with self.async_session_maker() as session, session.begin():
-            stmt = select(ORMEnvWorkerTask).where(ORMEnvWorkerTask.status.not_in(self.TERMINAL))
+            # in_(SETTLEABLE), never not_in(TERMINAL): see the constants above.
+            # An unrecognised status must be left alone, not destroyed.
+            stmt = select(ORMEnvWorkerTask).where(ORMEnvWorkerTask.status.in_(self.SETTLEABLE))
             if job_name is not None:
                 stmt = stmt.where(ORMEnvWorkerTask.job_name == job_name)
             rows = list((await session.execute(stmt)).scalars().all())

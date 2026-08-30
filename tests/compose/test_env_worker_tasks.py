@@ -215,3 +215,68 @@ def test_batch_status_says_whether_a_result_is_waiting() -> None:
     assert _to_status(_task({"generators": ["a"]})).has_result is True
     assert _to_status(_task(None)).has_result is False
     assert isinstance(_to_status(_task(None)), TaskStatusResponse)
+
+
+@pytest.mark.asyncio
+async def test_an_unrecognised_status_is_left_alone_not_destroyed(
+    task_db: EnvWorkerTaskORMExecutor,
+) -> None:
+    """THE regression. The sweep used to select `status NOT IN terminal`, so any
+    value it did not recognise was treated as unfinished and overwritten.
+
+    That destroyed real work: rows written by 0.9.63 stored the enum's NAME
+    ('COMPLETED') rather than its value ('completed'), and a later sweep replaced
+    eleven finished tasks' results with "lost to a viva-api restart". Housekeeping
+    is not allowed to delete a result because it did not recognise a string.
+    """
+    from sqlalchemy import text
+
+    task = await _new(task_db)
+    async with task_db.async_session_maker() as session, session.begin():
+        await session.execute(
+            text("UPDATE env_worker_task SET status='COMPLETED', result='{\"ok\": true}'::jsonb WHERE id=:i"),
+            {"i": task.database_id},
+        )
+
+    settled = await task_db.fail_unfinished_tasks("a sweep that should not touch it")
+    assert task.database_id not in {t.database_id for t in settled}
+
+    async with task_db.async_session_maker() as session:
+        row = (
+            await session.execute(
+                text("SELECT status, result FROM env_worker_task WHERE id=:i"),
+                {"i": task.database_id},
+            )
+        ).first()
+    assert row is not None
+    assert row[0] == "COMPLETED", "an unknown status must survive the sweep"
+    assert row[1] == {"ok": True}, "and so must its result"
+
+
+@pytest.mark.asyncio
+async def test_recognised_unfinished_statuses_are_still_settled(
+    task_db: EnvWorkerTaskORMExecutor,
+) -> None:
+    """Failing closed must not mean failing to do the job: every status the
+    system actually writes for unfinished work is still swept."""
+    from sqlalchemy import text
+
+    from viva_api.compose.tables_orm import ComposeJobStatusDB
+
+    ids = []
+    for status in (
+        ComposeJobStatusDB.QUEUED,
+        ComposeJobStatusDB.RUNNING,
+        ComposeJobStatusDB.PENDING,
+        ComposeJobStatusDB.WAITING,
+    ):
+        t = await _new(task_db)
+        async with task_db.async_session_maker() as session, session.begin():
+            await session.execute(
+                text("UPDATE env_worker_task SET status=:s WHERE id=:i"),
+                {"s": status.value, "i": t.database_id},
+            )
+        ids.append(t.database_id)
+
+    settled = {t.database_id for t in await task_db.fail_unfinished_tasks("restart")}
+    assert set(ids) <= settled, f"missed: {set(ids) - settled}"
