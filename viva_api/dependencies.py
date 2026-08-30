@@ -424,14 +424,6 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         task_db = compose_db.get_env_worker_task_db()
         set_env_worker_task_service(task_db)
         set_runner(TaskRunner(task_db))
-        # A socket cannot outlive the process that held it, so anything this
-        # process finds RUNNING was left by a previous one and is already dead.
-        # Settle those rows rather than leaving them to hang forever.
-        stranded = await task_db.fail_unfinished_tasks(
-            "lost to a viva-api restart: the worker socket did not survive the process"
-        )
-        if stranded:
-            logger.warning("settled %d env-worker task(s) stranded by a restart", len(stranded))
 
         # Per-backend compose service registry, mirroring _init_simulation_service: the
         # deployment default (COMPUTE_BACKEND) is what the compose router uses, and the Ray
@@ -467,6 +459,27 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         await compose_monitor.start_polling(interval_seconds=30)
 
         logger.info("✓ Compose subsystem initialized")
+        # Housekeeping goes LAST, and cannot take the subsystem with it.
+        #
+        # This sweep was originally placed above, right after the task services
+        # were wired -- and when it raised (a VARCHAR/enum mismatch), everything
+        # after it was skipped, including set_compose_services. The whole compose
+        # API returned 500 "Compose database service not initialized", logged as
+        # "non-fatal", which it emphatically was not.
+        #
+        # Two rules fell out of that, and they are why this block looks like it
+        # does: best-effort work runs AFTER everything it could break, and it
+        # catches its own exceptions rather than trusting an outer handler whose
+        # idea of "non-fatal" is scoped to the whole function.
+        try:
+            stranded = await task_db.fail_unfinished_tasks(
+                "lost to a viva-api restart: the worker socket did not survive the process"
+            )
+            if stranded:
+                logger.warning("settled %d env-worker task(s) stranded by a restart", len(stranded))
+        except Exception:
+            logger.warning("env-worker restart sweep failed (non-fatal, and it really is)", exc_info=True)
+
     except Exception:
         logger.warning("Compose subsystem initialization failed (non-fatal)", exc_info=True)
 

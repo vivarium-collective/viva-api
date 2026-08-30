@@ -654,11 +654,16 @@ class EnvWorkerTaskORMExecutor(EnvWorkerTaskDatabaseService):
     async_session_maker: async_sessionmaker[AsyncSession]
 
     #: A task in one of these is finished and will not change again.
+    #:
+    #: The enum's VALUES, not its members: the column is VARCHAR (see
+    #: ORMEnvWorkerTask.status). Comparing a VARCHAR column against enum members
+    #: is what produced `character varying <> composejobstatusdb` and took the
+    #: compose subsystem down on dev.
     TERMINAL = (
-        ComposeJobStatusDB.COMPLETED,
-        ComposeJobStatusDB.FAILED,
-        ComposeJobStatusDB.CANCELLED,
-        ComposeJobStatusDB.TIMEOUT,
+        ComposeJobStatusDB.COMPLETED.value,
+        ComposeJobStatusDB.FAILED.value,
+        ComposeJobStatusDB.CANCELLED.value,
+        ComposeJobStatusDB.TIMEOUT.value,
     )
 
     def __init__(self, session_maker: async_sessionmaker[AsyncSession]) -> None:
@@ -682,7 +687,7 @@ class EnvWorkerTaskORMExecutor(EnvWorkerTaskDatabaseService):
                 job_name=job_name,
                 method=method,
                 params=params,
-                status=ComposeJobStatusDB.QUEUED,
+                status=ComposeJobStatusDB.QUEUED.value,
                 correlation_id=correlation_id,
                 created_by=created_by,
             )
@@ -709,7 +714,7 @@ class EnvWorkerTaskORMExecutor(EnvWorkerTaskDatabaseService):
         async with self.async_session_maker() as session, session.begin():
             row = await session.get(ORMEnvWorkerTask, task_id)
             if row is not None:
-                row.status = ComposeJobStatusDB.RUNNING
+                row.status = ComposeJobStatusDB.RUNNING.value
                 row.started_at = datetime.datetime.now()
 
     @override
@@ -724,7 +729,7 @@ class EnvWorkerTaskORMExecutor(EnvWorkerTaskDatabaseService):
             row = await session.get(ORMEnvWorkerTask, task_id)
             if row is None:
                 return
-            row.status = ComposeJobStatusDB(status.value)
+            row.status = status.value
             row.ended_at = datetime.datetime.now()
             if result is not None:
                 # JSONB, so a non-dict result (a list, a string) is wrapped
@@ -761,7 +766,7 @@ class EnvWorkerTaskORMExecutor(EnvWorkerTaskDatabaseService):
             rows = list((await session.execute(stmt)).scalars().all())
             now = datetime.datetime.now()
             for row in rows:
-                row.status = ComposeJobStatusDB.FAILED
+                row.status = ComposeJobStatusDB.FAILED.value
                 row.ended_at = now
                 row.error_message = reason
             return [row.to_task() for row in rows]
