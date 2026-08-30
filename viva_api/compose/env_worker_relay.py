@@ -37,16 +37,20 @@ import asyncio
 import contextlib
 import functools
 import json
+import logging
 import secrets
 import socket
 import struct
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import anyio.to_thread
 
 from viva_api.compose.models import ComposeJobStatus
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # import-time cycle-free: only needed for the annotation
     from viva_api.compose.database_service import EnvWorkerTaskDatabaseService
@@ -320,12 +324,42 @@ class TaskRunner:
     duplicate exactly the double-run this arc removed.
     """
 
-    def __init__(self, db: EnvWorkerTaskDatabaseService, call_timeout: float = 3600.0) -> None:
+    def __init__(
+        self,
+        db: EnvWorkerTaskDatabaseService,
+        call_timeout: float = 3600.0,
+        explain_exit: Callable[[str], str | None] | None = None,
+    ) -> None:
         self._db = db
         self._call_timeout = call_timeout
+        # Optional: given a job name, say why its pod stopped. Injected rather
+        # than imported so this module keeps knowing nothing about Kubernetes,
+        # and so a test can supply a plain function. ``None`` is a supported
+        # deployment, not a degraded one -- the message is simply less specific.
+        self._explain_exit = explain_exit
         self._queues: dict[str, asyncio.Queue[int]] = {}
         self._drainers: dict[str, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
+
+    async def _describe_unavailable(self, job_name: str, error: Exception) -> str:
+        """The socket's account of the failure, plus the cluster's if it has one.
+
+        "worker closed the connection" is true of an OOM kill, a segfault and a
+        `kubectl delete` alike, and a caller cannot act on it. The pod's
+        terminated state distinguishes them, so append it when it is there --
+        without ever letting the diagnosis raise: the fault being reported
+        matters more than the note explaining it.
+        """
+        message = str(error)
+        explain = self._explain_exit
+        if explain is None:
+            return message
+        try:
+            reason = await anyio.to_thread.run_sync(functools.partial(explain, job_name))
+        except Exception:
+            logger.warning("could not explain exit of env-worker %s", job_name, exc_info=True)
+            return message
+        return f"{message} (worker pod: {reason})" if reason else message
 
     async def submit(self, job_name: str, task_id: int) -> None:
         """Queue a task for its worker, starting that worker's drainer if needed."""
@@ -363,7 +397,9 @@ class TaskRunner:
         try:
             conn = registry.get(job_name)
         except WorkerUnavailable as e:
-            await db.finish_task(task_id, ComposeJobStatus.FAILED, error_message=str(e))
+            await db.finish_task(
+                task_id, ComposeJobStatus.FAILED, error_message=await self._describe_unavailable(job_name, e)
+            )
             return
         await db.start_task(task_id)
         try:
@@ -377,7 +413,9 @@ class TaskRunner:
             # The socket is gone or desynced. Drop it so the next submission is
             # told to start a worker rather than inheriting a broken connection.
             registry.drop(job_name)
-            await db.finish_task(task_id, ComposeJobStatus.FAILED, error_message=str(e))
+            await db.finish_task(
+                task_id, ComposeJobStatus.FAILED, error_message=await self._describe_unavailable(job_name, e)
+            )
         except BaseException as e:
             await db.finish_task(task_id, ComposeJobStatus.FAILED, error_message=f"runner error: {e}")
         else:

@@ -301,3 +301,56 @@ def test_workspace_defaults_to_the_deployment_setting_when_caller_omits_it(
     svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN, workspace=None)
     c = _created_job(k8s).spec.template.spec.containers[0]
     assert "/app/v2ecoli" in c.args
+
+
+# --- the environment the worker actually runs in ----------------------------
+
+
+def test_the_worker_runs_in_utf8_mode(service: tuple[EnvWorkerService, MagicMock]) -> None:
+    """The container sets no locale, so Python's default text encoding is ASCII.
+
+    The workbench has ~130 text reads/writes with no explicit ``encoding=``, and
+    every one of them raises ``UnicodeEncodeError`` the first time a study title
+    contains an em dash. Two were fixed at the call site (workbench 0.3.70 and
+    0.3.71) before it was clear the fault was the environment, not the code.
+    This is the class fix, and it belongs in the pod spec.
+    """
+    svc, k8s = service
+    svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN)
+    c = _created_job(k8s).spec.template.spec.containers[0]
+    env = {e.name: e.value for e in c.env}
+    assert env["PYTHONUTF8"] == "1"
+
+
+# --- why a worker stopped ---------------------------------------------------
+
+
+def test_explain_exit_reports_the_reason_and_the_code(service: tuple[EnvWorkerService, MagicMock]) -> None:
+    """An OOM kill and a deliberate delete are the same event at the socket.
+
+    The caller of a task that died mid-call gets "worker closed the connection",
+    which is true of both. The pod's terminated state is the only thing that
+    tells them apart, so it has to reach the caller.
+    """
+    svc, k8s = service
+    k8s.get_pod_termination.return_value = "OOMKilled (exit 137)"
+    assert svc.explain_exit("env-worker-234dc76-shared") == "OOMKilled (exit 137)"
+    k8s.get_pod_termination.assert_called_once_with("env-worker-234dc76-shared")
+
+
+def test_explain_exit_is_silent_when_the_pod_is_gone(service: tuple[EnvWorkerService, MagicMock]) -> None:
+    """Job TTL reaps pods, so "no answer" is routine, not exceptional."""
+    svc, k8s = service
+    k8s.get_pod_termination.return_value = None
+    assert svc.explain_exit("env-worker-234dc76-shared") is None
+
+
+def test_a_failing_diagnosis_never_masks_the_fault_it_describes(
+    service: tuple[EnvWorkerService, MagicMock],
+) -> None:
+    """This runs only when something has ALREADY gone wrong. An unreachable K8s
+    API must not convert a reported failure into a raised one — the caller would
+    lose the real error and gain one about looking the real error up."""
+    svc, k8s = service
+    k8s.get_pod_termination.side_effect = RuntimeError("API server unreachable")
+    assert svc.explain_exit("env-worker-234dc76-shared") is None

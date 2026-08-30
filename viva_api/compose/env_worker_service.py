@@ -160,6 +160,19 @@ class EnvWorkerService:
         worker fails to dial back."""
         return self._k8s.get_job_logs(job_name)
 
+    def explain_exit(self, job_name: str) -> str | None:
+        """Why the worker's pod stopped, in a few words — or ``None``.
+
+        Used to turn "worker closed the connection" into something a caller can
+        act on. Best-effort: the pod may be gone, and a missing answer must
+        never turn a reported failure into a raised one.
+        """
+        try:
+            return self._k8s.get_pod_termination(job_name)
+        except Exception:
+            logger.warning("could not read pod termination for env-worker Job %s", job_name)
+            return None
+
     def stop(self, job_name: str) -> None:
         """Delete the Job (foreground propagation kills the pod). Idempotent."""
         try:
@@ -194,6 +207,14 @@ class EnvWorkerService:
             k8s_client.V1EnvVar(name="PYTHONPATH", value=MODULE_MOUNT),
             # Keep scratch writes off the container layer.
             k8s_client.V1EnvVar(name="TMPDIR", value=SCRATCH_MOUNT),
+            # UTF-8 mode, because the container sets no locale at all and so
+            # Python's default text encoding here is ASCII. The workbench has
+            # ~130 text reads/writes that pass no `encoding=`, and every one of
+            # them raises UnicodeEncodeError the first time a study title
+            # carries an em dash. Two of those sites were fixed by hand
+            # (workbench 0.3.70, 0.3.71) before it was clear the fault was
+            # environmental rather than local; this fixes the class.
+            k8s_client.V1EnvVar(name="PYTHONUTF8", value="1"),
         ]
         return k8s_client.V1Job(
             metadata=k8s_client.V1ObjectMeta(name=job_name, labels=labels),

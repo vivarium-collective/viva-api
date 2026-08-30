@@ -423,7 +423,7 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
 
         task_db = compose_db.get_env_worker_task_db()
         set_env_worker_task_service(task_db)
-        set_runner(TaskRunner(task_db))
+        set_runner(TaskRunner(task_db, explain_exit=_explain_env_worker_exit))
 
         # Per-backend compose service registry, mirroring _init_simulation_service: the
         # deployment default (COMPUTE_BACKEND) is what the compose router uses, and the Ray
@@ -482,6 +482,24 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
 
     except Exception:
         logger.warning("Compose subsystem initialization failed (non-fatal)", exc_info=True)
+
+
+def _explain_env_worker_exit(job_name: str) -> str | None:
+    """Why an env worker's pod stopped — resolved late, on purpose.
+
+    The compose subsystem (and with it the task runner) is wired BEFORE
+    ``_init_env_worker_service``, so the service does not exist yet at
+    construction time. Reordering the two to make an eager reference work is
+    exactly the change that took compose down on dev once; this reads the
+    router's global at call time instead, which is correct in every ordering
+    and costs nothing on a path that only runs when a worker has already died.
+    """
+    from viva_api.api.routers import env_worker as env_worker_router
+
+    service = env_worker_router._env_worker_service
+    if service is None:
+        return None
+    return service.explain_exit(job_name)
 
 
 def _init_env_worker_service() -> None:
