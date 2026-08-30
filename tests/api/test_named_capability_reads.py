@@ -279,7 +279,9 @@ def test_every_named_read_is_a_GET() -> None:
     reads = [r for r in application.routes if ew._READS in getattr(r, "tags", [])]
     assert len(reads) >= 8, "the read endpoints should still be here"
     for route in reads:
-        assert route.methods == {"GET"}, route.path
+        # getattr, because starlette types these as BaseRoute -- the attributes
+        # exist on APIRoute only, and mypy is right to say so.
+        assert getattr(route, "methods", None) == {"GET"}, getattr(route, "path", route)
 
 
 # --- the generic /call, which the refactor broke and nothing noticed ---------
