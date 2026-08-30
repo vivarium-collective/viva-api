@@ -237,11 +237,21 @@ class ORMEnvWorkerTask(ComposeBase):
     method: Mapped[str] = mapped_column(nullable=False)
     params: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
 
-    #: Reuses ComposeJobStatusDB rather than minting a parallel enum: it already
-    #: carries queued/running/completed/failed/cancelled/timeout, and a second
-    #: status vocabulary in one schema is how two subsystems start disagreeing
-    #: about what "done" means.
-    status: Mapped[ComposeJobStatusDB] = mapped_column(nullable=False)
+    #: A plain string holding a ComposeJobStatusDB VALUE, not a Mapped[enum].
+    #:
+    #: This WAS `Mapped[ComposeJobStatusDB]` and it took the compose subsystem
+    #: down on dev. SQLAlchemy maps a Mapped[enum] to a PG ENUM type, while the
+    #: migration deliberately creates VARCHAR (so create_all and Alembic cannot
+    #: each mint a differently-named enum type). Those agree on a
+    #: create_all-bootstrapped database and DISAGREE on an Alembic-managed one,
+    #: where any comparison raises
+    #:     operator does not exist: character varying <> composejobstatusdb
+    #:
+    #: The rule, learned the hard way: one column with two creation mechanisms
+    #: needs ONE type both render identically. VARCHAR is that type. Validation
+    #: stays in Python — every writer passes a ComposeJobStatusDB value and
+    #: every reader gets a ComposeJobStatus back out of to_task().
+    status: Mapped[str] = mapped_column(nullable=False)
 
     #: Small results inline. A job-class method's real output is already on disk
     #: -- _run_study returns a HARVEST of run refs, a verdict and analysis paths,
@@ -271,7 +281,7 @@ class ORMEnvWorkerTask(ComposeBase):
             job_name=self.job_name,
             method=self.method,
             params=self.params,
-            status=self.status.to_job_status(),
+            status=ComposeJobStatus(self.status),
             result=self.result,
             error_message=self.error_message,
             created_at=str(self.created_at) if self.created_at else None,

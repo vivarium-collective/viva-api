@@ -67,6 +67,22 @@ async def _columns(engine: AsyncEngine) -> set[str]:
         return {r[0] for r in rows}
 
 
+async def _column_types(engine: AsyncEngine) -> dict[str, str]:
+    """Name -> data type. Names alone are not enough, and that gap was expensive.
+
+    The first version of this file compared only NAMES, so it passed while
+    `status` was a PG enum under create_all and VARCHAR under the migration.
+    That difference is invisible until a query compares the column — and then it
+    is `operator does not exist: character varying <> composejobstatusdb`, which
+    on dev took the whole compose subsystem down.
+    """
+    async with engine.connect() as conn:
+        rows = await conn.execute(
+            text("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'env_worker_task'")
+        )
+        return {r[0]: r[1] for r in rows}
+
+
 @pytest.mark.asyncio
 async def test_migration_creates_the_table_on_an_alembic_owned_database(postgres_url: str) -> None:
     """The FRESH case: Alembic owns the schema, nothing has run create_all."""
@@ -138,3 +154,43 @@ def test_the_orm_table_is_registered_in_the_compose_metadata() -> None:
     """If it is not in ComposeBase, create_all never makes it and the whole
     idempotency argument above is moot."""
     assert "env_worker_task" in ComposeBase.metadata.tables
+
+
+@pytest.mark.asyncio
+async def test_the_orm_and_the_migration_agree_on_the_column_types(postgres_url: str) -> None:
+    """Names agreeing is not enough — and this is the test that was missing.
+
+    `status` was `Mapped[ComposeJobStatusDB]` in the ORM (a PG enum) and VARCHAR
+    in the migration. Both produced a column called `status`, so the NAME
+    comparison passed; the first query to compare that column on an
+    Alembic-managed database then failed with `operator does not exist:
+    character varying <> composejobstatusdb`, and the compose subsystem did not
+    start.
+    """
+    engine = create_async_engine(postgres_url, echo=False)
+    try:
+        await _fresh(engine)
+        await create_compose_db(engine)
+        from_orm = await _column_types(engine)
+        await _fresh(engine)
+        await _apply(engine)
+        from_sql = await _column_types(engine)
+        differing = {k: (from_orm.get(k), from_sql.get(k)) for k in from_orm if from_orm.get(k) != from_sql.get(k)}
+        assert not differing, f"ORM vs migration type mismatch: {differing}"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_status_is_a_plain_string_column_in_both(postgres_url: str) -> None:
+    """Pinned explicitly, because VARCHAR here is a DECISION — one column with
+    two creation mechanisms needs one type both render identically — and not an
+    incidental detail for someone to tidy into an enum later."""
+    engine = create_async_engine(postgres_url, echo=False)
+    try:
+        for build in (create_compose_db, _apply):
+            await _fresh(engine)
+            await build(engine)
+            assert (await _column_types(engine))["status"] == "character varying"
+    finally:
+        await engine.dispose()
