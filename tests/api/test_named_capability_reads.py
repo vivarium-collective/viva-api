@@ -265,13 +265,23 @@ def test_job_class_methods_get_no_synchronous_endpoint() -> None:
 
 def test_every_named_read_is_a_GET() -> None:
     """These answer questions; none of them changes anything. A POST here would
-    make them uncacheable and unlinkable for no gain."""
+    make them uncacheable and unlinkable for no gain.
+
+    Keyed on the TAG, not the path. The first version asserted that every route
+    under `/relay/workers/{job_name}/` except `call` was a GET, which was true
+    only until step 6b added the document-shaped POSTs beside them -- a test that
+    fails because correct new work arrived is a test pinning the wrong thing.
+    What is actually invariant is that anything presented to callers as a READ
+    is safe to GET.
+    """
     application = FastAPI()
     application.include_router(ew.router, prefix="/env-worker/v1")
-    for route in application.routes:
-        path = getattr(route, "path", "")
-        if "/relay/workers/{job_name}/" in path and path.rsplit("/", 1)[-1] != "call":
-            assert "GET" in getattr(route, "methods", set()), path
+    reads = [r for r in application.routes if ew._READS in getattr(r, "tags", [])]
+    assert len(reads) >= 8, "the read endpoints should still be here"
+    for route in reads:
+        # getattr, because starlette types these as BaseRoute -- the attributes
+        # exist on APIRoute only, and mypy is right to say so.
+        assert getattr(route, "methods", None) == {"GET"}, getattr(route, "path", route)
 
 
 # --- the generic /call, which the refactor broke and nothing noticed ---------

@@ -12,6 +12,7 @@ import functools
 import logging
 import os
 import secrets
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import anyio.to_thread
@@ -430,9 +431,79 @@ def _unwrap(result: object, *, method: str) -> object:
     return result
 
 
+#: A per-endpoint in-band failure rule: given the worker's payload, return the
+#: status it deserves, or None to let it through as a 200.
+InBandRule = Callable[[dict[str, object]], int | None]
+
+
+def _fails_on_ok_false(payload: dict[str, object]) -> int | None:
+    """`{"ok": false, "stage": ..., "error": ...}` -- the worker ran and said no.
+
+    NOT a global rule, and that is the point. `run_process` and
+    `process_template` document this shape as a degradation from a failure.
+    `viz_preview` uses the same key to mean something else entirely: its
+    docstring says "every render outcome (including a raise) is a 200 body", so
+    applying this to it would contradict a contract the workbench relies on.
+    """
+    return 422 if payload.get("ok") is False else None
+
+
+def _fails_on_nested_result_status(payload: dict[str, object]) -> int | None:
+    """`analysis_viewers` launch: `{"result": {"error": ..., "status": 404}}`.
+
+    A FOURTH way of saying no, and the only one that carries the status it wants
+    -- `_av_resolve_launch` returns 404 for an unknown uid, 400 for a viewer that
+    is not launchable, and 500 when the contributor's own callable raised. Those
+    are already the right answers; the bug was returning all three as 200.
+
+    A launch resolves WHERE to go (the UI fetches this, then opens the returned
+    `{"url": ...}`), so a caller that cannot tell "no such viewer" from "here is
+    your link" will happily navigate to nothing.
+    """
+    result = payload.get("result")
+    if not isinstance(result, dict) or "error" not in result:
+        return None
+    status = result.get("status")
+    # Trust it only if it is a plausible HTTP error code; a contributor's dict is
+    # not a trusted source of status codes.
+    return status if isinstance(status, int) and 400 <= status <= 599 else 422
+
+
+def _fails_on_not_registered_status(payload: dict[str, object]) -> int | None:
+    """`viz_preview`'s own idiom: `{"status": "not_registered"}`, which its
+    docstring says "the workbench maps to 404". Same mapping here."""
+    return 404 if payload.get("status") == "not_registered" else None
+
+
+async def _named_call(
+    job_name: str,
+    method: str,
+    params: dict[str, object] | None = None,
+    *,
+    rules: tuple[InBandRule, ...] = (),
+) -> object:
+    """One named capability: forward, then turn an in-band failure into a status.
+
+    `rules` are endpoint-specific and run AFTER the shared sentinel table, because
+    the worker has more than one way of saying no and they do not agree with each
+    other -- see `_fails_on_ok_false`.
+    """
+    result = _unwrap(await _relay_call(job_name, method, params, _NAMED_READ_TIMEOUT), method=method)
+    if isinstance(result, dict):
+        for rule in rules:
+            status = rule(result)
+            if status is not None:
+                # Keep the whole payload: `stage` and `error` together are what
+                # make a probe failure actionable, and a flattened string loses
+                # the half that says WHERE it stopped.
+                raise HTTPException(status, {"method": method, **result})
+    return result
+
+
 async def _named_read(job_name: str, method: str, params: dict[str, object] | None = None) -> object:
-    """One named read: forward, then turn an in-band failure into a status."""
-    return _unwrap(await _relay_call(job_name, method, params, _NAMED_READ_TIMEOUT), method=method)
+    """One named read. Kept as its own name because a GET has no endpoint-specific
+    in-band rules -- the shared sentinel table is the whole story for a read."""
+    return await _named_call(job_name, method, params)
 
 
 #: Reads are interactive by definition -- the worker answers a question about the
@@ -539,6 +610,287 @@ async def read_reexport_map(job_name: str, include: list[str] = Query(default=[]
     `?include=a&include=b`. The worker imports each one, so an empty list means
     "scan nothing" -- which is why it is not defaulted to something broader."""
     return await _named_read(job_name, "reexport_map", {"include": sorted(set(include))})
+
+
+# --------------------------------------------------------------------------- #
+# Named capability endpoints, part two (step 6b) — the document-shaped
+#
+# These carry a composite, a config, a state document or a list of node paths, so
+# they are POST. Their bodies follow this codebase's passthrough-config
+# convention: declare only the fields VIVA-API is authoritative about -- the ones
+# whose absence it can reject better than the worker can -- and let everything
+# else through under `extra="allow"`. The meaning of a config or a state document
+# belongs to the workspace, and re-declaring it here would create a second,
+# staler copy of a schema we do not own.
+#
+# What the boundary IS good for: refusing a request the worker could only answer
+# with a confusing sentinel. `observables` accepts a `ref` OR an inline
+# `{state, schema}`; sending neither returns `__not_registered__`, which reads as
+# "your ref is wrong" to someone who sent no ref at all. That is a 422 here.
+#
+# EXCLUDED, for the same reason as `data_sources_provider` in 6a:
+# `validate_generated_visualization` interpolates caller-supplied `pkg` and
+# `module` into a module name, then imports it -- and RELOADS it if already
+# imported, re-running module-level code. It is a write-path verify whose only
+# legitimate caller is the workbench, immediately after writing the file it
+# checks. There is no client-side use for it, so it does not get a documented
+# endpoint on an API with no authentication. It stays reachable via `/call`.
+# --------------------------------------------------------------------------- #
+
+
+class _WorkerBody(BaseModel):
+    """Passthrough base: declared fields are validated, unknown ones forwarded."""
+
+    model_config = {"extra": "allow"}
+
+    def to_params(self) -> dict[str, object]:
+        """Body -> worker params, dropping keys the caller did not send.
+
+        `exclude_none` matters: several worker handlers branch on PRESENCE
+        (`if ref is not None`), so forwarding an explicit null would take a
+        different path than omitting the field.
+
+        `by_alias` matters more, and less visibly. `CompositeSelector.schema_`
+        carries `alias="schema"` because a bare `schema` shadows a BaseModel
+        attribute; without `by_alias` the dump emits `schema_`, the worker never
+        sees the `schema` it looks for, and `observables` silently takes its
+        `ref` branch on a request that supplied an inline state. Nothing raises
+        -- the answer is just about a different composite.
+        """
+        return self.model_dump(exclude_none=True, by_alias=True)
+
+
+class CompositeRef(_WorkerBody):
+    """A composite named by a registered generator, optionally with overrides."""
+
+    ref: str = Field(..., min_length=1, description="Registered @composite_generator name")
+    overrides: dict[str, object] | None = Field(None, description="Generator parameter overrides")
+
+
+class InnerCompositeRef(_WorkerBody):
+    """`hops` is a LIST OF NODE PATHS, each itself a list of key segments -- which
+    is why this is a POST and not the GET the plan first assumed."""
+
+    ref: str = Field(..., min_length=1)
+    hops: list[list[str]] = Field(..., min_length=1, description="One node path per drill level")
+
+
+class ConfigDocument(_WorkerBody):
+    config: dict[str, object] = Field(..., description="vEcoli-style config to translate")
+
+
+class StateDocument(_WorkerBody):
+    document: dict[str, object] = Field(..., description="An already-resolved composite state")
+    ref: str | None = Field(None, description="Generator whose core_extensions resolve bare addresses")
+
+
+class CompositeSelector(_WorkerBody):
+    """A composite given EITHER by `ref` OR inline as `{state, schema}`.
+
+    Both forms are real and the worker accepts either; sending neither is the
+    mistake worth catching here, because the worker answers it with
+    `__not_registered__` -- which reads as "your ref is wrong" to a caller who
+    sent no ref at all.
+    """
+
+    ref: str | None = None
+    state: dict[str, object] | None = None
+    schema_: dict[str, object] | None = Field(None, alias="schema")
+
+    def model_post_init(self, __context: object) -> None:
+        if self.ref is None and self.state is None:
+            raise ValueError("provide either 'ref' (a registered generator) or an inline 'state' (with 'schema')")
+
+
+class ReadoutCheck(CompositeSelector):
+    spec: dict[str, object] = Field(..., description="The study spec whose readouts are checked")
+
+
+class ProcessAddress(_WorkerBody):
+    address: str = Field(..., min_length=1, description="Registry address of a Process or Step")
+    config: dict[str, object] | None = None
+
+
+class ProcessRun(ProcessAddress):
+    """One `update()` -- a probe, not a job. `env_worker._run_process` is
+    deliberately NOT job-class: it builds one class, fills its ports and runs a
+    single step, which is the Composite Explorer's "try this process" button."""
+
+    inputs: dict[str, object] | None = None
+    interval: float | None = None
+
+
+class VizDoc(_WorkerBody):
+    viz_doc: dict[str, object] = Field(..., description="A visualization composite document")
+
+
+class VizPreview(_WorkerBody):
+    address: str = Field(..., min_length=1, description="Visualization class address")
+    config: dict[str, object] | None = None
+    source: str | None = Field(None, description="demo | streaming | investigation")
+    note_prefix: str | None = None
+    investigation_inputs_store: dict[str, object] | None = None
+
+
+class ViewerLaunch(_WorkerBody):
+    """`analysis_viewers` carries two operations behind an `action` flag. They are
+    split into two routes here: listing is a read, launching invokes a
+    contributor's callable. One endpoint with a mode string would hide that."""
+
+    uid: str = Field(..., min_length=1, description="Viewer uid from the listing")
+    study: str | None = None
+    run: str | None = None
+    ctx: dict[str, object] | None = None
+
+
+_DOCS = "Env Worker Documents"
+
+
+@router.post(
+    path="/relay/workers/{job_name}/composite-state",
+    operation_id="resolve-env-worker-composite-state",
+    tags=[_DOCS],
+    summary="Build a registered generator's composite state",
+)
+async def resolve_composite_state(job_name: str, body: CompositeRef) -> object:
+    return await _named_call(job_name, "resolve_composite_state", body.to_params())
+
+
+@router.post(
+    path="/relay/workers/{job_name}/composite-state/inner",
+    operation_id="resolve-env-worker-inner-composite-state",
+    tags=[_DOCS],
+    summary="Drill into a Composite Process and return the inner composite's state",
+)
+async def resolve_inner_composite_state(job_name: str, body: InnerCompositeRef) -> object:
+    """Dispatchable in the worker but absent from its `_CAPABILITIES` list, so
+    `initialize`'s handshake does not advertise it. Given a URL here, it is at
+    least discoverable from the OpenAPI document."""
+    return await _named_call(job_name, "resolve_inner_composite_state", body.to_params())
+
+
+@router.post(
+    path="/relay/workers/{job_name}/composite-state/from-config",
+    operation_id="convert-env-worker-config-to-composite",
+    tags=[_DOCS],
+    summary="Translate a vEcoli-style config into a composite document",
+)
+async def config_to_composite(job_name: str, body: ConfigDocument) -> object:
+    """501 where the workspace ships no translator -- the worker's
+    `__unavailable__`, which is a property of the workspace and not of the request."""
+    return await _named_call(job_name, "config_to_composite", body.to_params())
+
+
+@router.post(
+    path="/relay/workers/{job_name}/composite-state/docs",
+    operation_id="attach-env-worker-process-docs",
+    tags=[_DOCS],
+    summary="Attach per-process docstrings to a resolved composite state",
+)
+async def attach_process_docs(job_name: str, body: StateDocument) -> object:
+    return await _named_call(job_name, "attach_process_docs", body.to_params())
+
+
+@router.post(
+    path="/relay/workers/{job_name}/observables",
+    operation_id="read-env-worker-observables",
+    tags=[_DOCS],
+    summary="Observable leaves and catalogs of a composite",
+)
+async def read_observables(job_name: str, body: CompositeSelector) -> object:
+    return await _named_call(job_name, "observables", body.to_params())
+
+
+@router.post(
+    path="/relay/workers/{job_name}/readout-check",
+    operation_id="check-env-worker-study-readouts",
+    tags=[_DOCS],
+    summary="Validate a study's readouts against its composite's real structure",
+)
+async def check_study_readouts(job_name: str, body: ReadoutCheck) -> object:
+    """The never-fabricate guard: it is what stops a study declaring a readout
+    the composite cannot produce."""
+    return await _named_call(job_name, "study_readout_check", body.to_params())
+
+
+@router.post(
+    path="/relay/workers/{job_name}/process-template",
+    operation_id="read-env-worker-process-template",
+    tags=[_DOCS],
+    summary="Resolved default config and input-port values for a process or step",
+)
+async def read_process_template(job_name: str, body: ProcessAddress) -> object:
+    return await _named_call(job_name, "process_template", body.to_params(), rules=(_fails_on_ok_false,))
+
+
+@router.post(
+    path="/relay/workers/{job_name}/process-run",
+    operation_id="run-env-worker-process-probe",
+    tags=[_DOCS],
+    summary="Run a single update() of one process — a probe, not a job",
+)
+async def run_process_probe(job_name: str, body: ProcessRun) -> object:
+    """ONE update. Named `probe` in the summary on purpose: `run_process` reads
+    like a job-class method and is not one, and that misreading has already been
+    made once in this codebase (see `env_worker_routing.JOB_CLASS_METHODS`)."""
+    return await _named_call(job_name, "run_process", body.to_params(), rules=(_fails_on_ok_false,))
+
+
+@router.post(
+    path="/relay/workers/{job_name}/visualizations/render",
+    operation_id="render-env-worker-visualization-doc",
+    tags=[_DOCS],
+    summary="Render one visualization composite document to HTML",
+)
+async def render_visualization_doc(job_name: str, body: VizDoc) -> object:
+    return await _named_call(job_name, "render_viz_doc", body.to_params())
+
+
+@router.post(
+    path="/relay/workers/{job_name}/visualizations/preview",
+    operation_id="preview-env-worker-visualization",
+    tags=[_DOCS],
+    summary="Render a visualization class to preview HTML",
+)
+async def preview_visualization(job_name: str, body: VizPreview) -> object:
+    """`ok: false` here is NOT an error, deliberately. The worker's contract is
+    that every render outcome including a raise comes back as a 200 body with
+    notes; only an unregistered address is non-200."""
+    return await _named_call(job_name, "viz_preview", body.to_params(), rules=(_fails_on_not_registered_status,))
+
+
+@router.get(
+    path="/relay/workers/{job_name}/analysis-viewers",
+    operation_id="list-env-worker-analysis-viewers",
+    tags=[_READS],
+    summary="Viewer descriptors contributed by the workspace's packages",
+)
+async def list_analysis_viewers(job_name: str) -> object:
+    """The listing half of `analysis_viewers`. A GET, because it is a read --
+    the `action` flag that used to hide this behind the same name as `launch` is
+    exactly the kind of thing named endpoints exist to separate."""
+    return await _named_read(job_name, "analysis_viewers", {"action": "list"})
+
+
+@router.post(
+    path="/relay/workers/{job_name}/analysis-viewers/launch",
+    operation_id="launch-env-worker-analysis-viewer",
+    tags=[_DOCS],
+    summary="Resolve and invoke one contributed viewer's launch",
+)
+async def launch_analysis_viewer(job_name: str, body: ViewerLaunch) -> object:
+    """POST rather than GET: this invokes a contributor's callable, which may do
+    anything the workspace's code can do. Same operation as `?action=launch`,
+    with `uid` required instead of silently defaulting to the listing."""
+    # The literal goes LAST. `action` is passthrough-eligible on the body model,
+    # so with the spread second a caller could send `action: "list"` and turn
+    # this route into the other one -- which the test for this line found.
+    return await _named_call(
+        job_name,
+        "analysis_viewers",
+        {**body.to_params(), "action": "launch"},
+        rules=(_fails_on_nested_result_status,),
+    )
 
 
 # --------------------------------------------------------------------------- #
