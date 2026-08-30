@@ -382,6 +382,50 @@ class TaskResponse(BaseModel):
     ended_at: str | None = None
 
 
+class TaskStatusResponse(BaseModel):
+    """A task WITHOUT its result — the shape the batch endpoint returns.
+
+    Measured on dev before this existed: five tasks came back as **1.19 MB**,
+    of which 1.185 MB was result payloads. The endpoint exists so a campaign can
+    be polled without N round trips; inlining every result defeats exactly that,
+    and the cost grows with both the number of tasks and the size of what they
+    returned. Polling twenty tasks every few seconds would have moved megabytes
+    per cycle over an SSM tunnel.
+
+    So a *status* endpoint returns status. Fetch the singular
+    ``GET /tasks/{id}`` for the payload, which is one request at the one moment
+    a caller actually wants it.
+    """
+
+    task_id: int
+    job_name: str
+    method: str
+    status: str
+    error_message: str | None = None
+    created_by: str | None = None
+    created_at: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+    #: Whether a result is waiting, without shipping it. Lets a poller know it is
+    #: worth one GET rather than guessing from `status`.
+    has_result: bool = False
+
+
+def _to_status(task: EnvWorkerTask) -> TaskStatusResponse:
+    return TaskStatusResponse(
+        task_id=task.database_id,
+        job_name=task.job_name,
+        method=task.method,
+        status=task.status.value,
+        error_message=task.error_message,
+        created_by=task.created_by,
+        created_at=task.created_at,
+        started_at=task.started_at,
+        ended_at=task.ended_at,
+        has_result=task.result is not None,
+    )
+
+
 def _to_response(task: EnvWorkerTask) -> TaskResponse:
     return TaskResponse(
         task_id=task.database_id,
@@ -449,14 +493,19 @@ async def get_task(task_id: int) -> TaskResponse:
 @router.get(
     path="/tasks/status/batch",
     operation_id="get-env-worker-tasks-batch",
-    response_model=list[TaskResponse],
+    response_model=list[TaskStatusResponse],
     tags=["Env Worker"],
-    summary="Status for many env-worker tasks in one call",
+    summary="Status for many env-worker tasks in one call (no result payloads)",
 )
-async def get_tasks_batch(ids: list[int] = Query()) -> list[TaskResponse]:
-    """Mirrors compose's /simulations/status/batch. A campaign is many tasks, and
-    polling them one at a time is the thing that endpoint exists to avoid."""
-    return [_to_response(t) for t in await _require_task_db().get_tasks(ids)]
+async def get_tasks_batch(ids: list[int] = Query()) -> list[TaskStatusResponse]:
+    """Status only — results are deliberately omitted. See TaskStatusResponse.
+
+    Mirrors compose's /simulations/status/batch, which returns rows carrying no
+    large payload. A campaign is many tasks, and polling them one at a time is
+    what this endpoint exists to avoid; shipping every result inline reintroduced
+    the cost in a different dimension.
+    """
+    return [_to_status(t) for t in await _require_task_db().get_tasks(ids)]
 
 
 @router.delete(
