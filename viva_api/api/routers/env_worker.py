@@ -264,13 +264,6 @@ async def start_relayed_worker(request: RelayStartRequest) -> RelayStartResponse
     return RelayStartResponse(job_name=handle.job_name, image=handle.image, namespace=handle.namespace, connected=True)
 
 
-@router.post(
-    path="/relay/workers/{job_name}/call",
-    operation_id="call-relayed-env-worker",
-    response_model=RelayCallResponse,
-    tags=["Env Worker"],
-    summary="Forward one JSON-RPC call to a relayed env worker",
-)
 async def _relay_call(job_name: str, method: str, params: dict[str, object] | None, timeout: float) -> object:
     """Forward one call down a held worker socket, mapping its failures to HTTP.
 
@@ -298,6 +291,13 @@ async def _relay_call(job_name: str, method: str, params: dict[str, object] | No
         raise HTTPException(410, str(e)) from e
 
 
+@router.post(
+    path="/relay/workers/{job_name}/call",
+    operation_id="call-relayed-env-worker",
+    response_model=RelayCallResponse,
+    tags=["Env Worker"],
+    summary="Forward one JSON-RPC call to a relayed env worker",
+)
 async def call_relayed_worker(job_name: str, request: RelayCallRequest) -> RelayCallResponse:
     """One request, one reply — the worker protocol is already request/response.
 

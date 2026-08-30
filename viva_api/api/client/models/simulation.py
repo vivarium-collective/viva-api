@@ -24,7 +24,7 @@ class Simulation:
         config (SimulationConfig):
         simulation_config_filename (str):
         experiment_id (str):
-        last_updated (Union[Unset, str]):  Default: '2026-08-30 09:18:47.199522'.
+        last_updated (Union[Unset, str]):  Default: '2026-08-30 09:27:14.175632'.
         job_id (Union[None, Unset, str]):
         num_seeds (Union[None, Unset, int]):
         tags (Union[Unset, list[str]]):
@@ -36,7 +36,7 @@ class Simulation:
     config: "SimulationConfig"
     simulation_config_filename: str
     experiment_id: str
-    last_updated: Union[Unset, str] = "2026-08-30 09:18:47.199522"
+    last_updated: Union[Unset, str] = "2026-08-30 09:27:14.175632"
     job_id: Union[None, Unset, str] = UNSET
     num_seeds: Union[None, Unset, int] = UNSET
     tags: Union[Unset, list[str]] = UNSET
