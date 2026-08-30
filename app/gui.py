@@ -1014,6 +1014,264 @@ def _():
 
 
 @app.cell
+def _(mo):
+    # ── Env workers: the task tier (plan §E option (e) step 7) ──────────────
+    #
+    # Parity with `atlantis worker` and the TUI's Env Workers panel. The service
+    # layer is shared, so what differs is only the medium; the substance kept
+    # identical across all three is the distinction the tier exists to draw --
+    # a task that FAILED (the job died) versus one that COMPLETED carrying stage
+    # errors (the science failed).
+    wrk_identity = mo.ui.text(label="Identity", placeholder="you@example.com — blank = anonymous", full_width=False)
+    wrk_commit = mo.ui.text(value="f78672f", label="Commit", full_width=False)
+    wrk_start_button = mo.ui.run_button(label="\u25b6 Start worker", kind="success")
+    wrk_job = mo.ui.text(label="Job", placeholder="filled in by Start, or paste one", full_width=True)
+    wrk_method = mo.ui.text(value="run_study", label="Method", full_width=False)
+    wrk_params = mo.ui.text_area(
+        value='{"workspace": "/app/v2ecoli", "study_slug": "true-partial-probe", "steps": 3}',
+        label="Params (JSON object)",
+        rows=3,
+    )
+    wrk_submit_button = mo.ui.run_button(label="\u2b06 Submit task", kind="success")
+    wrk_task_id = mo.ui.number(label="Task ID", start=1, stop=999999, value=1)
+    wrk_detail_button = mo.ui.run_button(label="\U0001f50e Detail")
+    wrk_cancel_button = mo.ui.run_button(label="\u2716 Cancel task", kind="danger")
+    wrk_stop_button = mo.ui.run_button(label="\u23f9 Stop worker", kind="danger")
+    return (
+        wrk_cancel_button,
+        wrk_commit,
+        wrk_detail_button,
+        wrk_identity,
+        wrk_job,
+        wrk_method,
+        wrk_params,
+        wrk_start_button,
+        wrk_stop_button,
+        wrk_submit_button,
+        wrk_task_id,
+    )
+
+
+@app.cell
+def _(
+    mo,
+    wrk_cancel_button,
+    wrk_commit,
+    wrk_detail_button,
+    wrk_identity,
+    wrk_job,
+    wrk_method,
+    wrk_params,
+    wrk_start_button,
+    wrk_stop_button,
+    wrk_submit_button,
+    wrk_task_id,
+):
+    wrk_panel = mo.vstack([
+        mo.md("### Env workers"),
+        mo.md(
+            "_Identity is **attribution, not authentication**. It lets you cancel your own "
+            "tasks and stops you cancelling someone else's; where the server has no "
+            "`IDENTITY_HEADER` configured it is ignored and everything stays anonymous._"
+        ),
+        mo.hstack([wrk_identity, wrk_commit, wrk_start_button], justify="start"),
+        wrk_job,
+        mo.hstack([wrk_method, wrk_submit_button], justify="start"),
+        wrk_params,
+        mo.hstack([wrk_task_id, wrk_detail_button, wrk_cancel_button, wrk_stop_button], justify="start"),
+    ])
+    wrk_panel
+    return
+
+
+@app.cell
+def _(base_url_dropdown, wrk_identity):
+    from app.app_data_service import get_data_service as _get_data_service
+
+    def get_worker_svc():
+        """A service carrying the panel's identity.
+
+        Rebuilt on every change rather than cached: both the identity and the
+        base URL are live UI inputs, and a stale client would quietly keep using
+        the previous one -- which for identity means submitting as the wrong
+        person.
+        """
+        return _get_data_service(
+            base_url=base_url_dropdown.value, timeout=600, identity=wrk_identity.value.strip() or None
+        )
+
+    return (get_worker_svc,)
+
+
+@app.cell
+def _(card, get_worker_svc, mo, traceback, wrk_commit, wrk_start_button):
+    _start_out = mo.Html("")
+    if wrk_start_button.value:
+        try:
+            _res = get_worker_svc().worker_start(commit=wrk_commit.value.strip(), accept_timeout=420.0)
+            _start_out = mo.Html(
+                card(
+                    "Worker connected",
+                    "\U0001f50c",
+                    f"<strong>Job:</strong> <code>{_res.get('job_name', '')}</code><br>"
+                    f"<span style='opacity:0.7'>{_res.get('image', '')}</span><br><br>"
+                    "<em>Copy the job name into the Job field above.</em>",
+                    color="green",
+                )
+            )
+        except Exception:
+            _start_out = mo.Html(
+                card("Start failed", "\u26a0\ufe0f", f"<pre>{traceback.format_exc()}</pre>", color="magenta")
+            )
+    _start_out
+    return
+
+
+@app.cell
+def _(card, get_worker_svc, json, mo, traceback, wrk_job, wrk_method, wrk_params, wrk_submit_button):
+    _submit_out = mo.Html("")
+    if wrk_submit_button.value:
+        try:
+            _raw = wrk_params.value.strip()
+            _parsed = json.loads(_raw) if _raw else {}
+            # A JSON array or scalar parses fine and then means nothing to the
+            # worker, which takes NAMED params -- so reject it here with a
+            # message about the shape rather than letting it 422 downstream.
+            if isinstance(_parsed, dict):
+                _task = get_worker_svc().worker_submit(
+                    wrk_job.value.strip(), method=wrk_method.value.strip(), params=_parsed
+                )
+            else:
+                _task = {"task_id": None, "method": wrk_method.value.strip(), "created_by": None}
+            # Do not claim an identity the server did not record -- the user
+            # would only find out at cancel time, when their own task refuses
+            # them. Same warning the CLI and TUI give.
+            _warn = ""
+            if _task.get("task_id") is None:
+                _warn = (
+                    "<br><span class='memphis-status-failed'>Not submitted</span> &mdash; params must be a "
+                    "JSON <em>object</em>; the worker takes named params."
+                )
+            elif not _task.get("created_by"):
+                _warn = (
+                    "<br><span class='memphis-status-failed'>Recorded as anonymous</span> "
+                    "&mdash; the server has no <code>IDENTITY_HEADER</code> configured, so anyone may cancel this."
+                )
+            _submit_out = mo.Html(
+                card(
+                    "Task queued",
+                    "\u2b06",
+                    f"<strong>Task {_task.get('task_id')}</strong> &mdash; {_task.get('method', '')}<br>"
+                    f"<strong>Owner:</strong> {_task.get('created_by') or 'anonymous'}{_warn}",
+                    color="green",
+                )
+            )
+        except Exception:
+            _submit_out = mo.Html(
+                card("Submit failed", "\u26a0\ufe0f", f"<pre>{traceback.format_exc()}</pre>", color="magenta")
+            )
+    _submit_out
+    return
+
+
+@app.cell
+def _(card, get_worker_svc, json, mo, traceback, wrk_detail_button, wrk_task_id):
+    _detail_out = mo.Html("")
+    if wrk_detail_button.value:
+        try:
+            _t = get_worker_svc().worker_task(int(wrk_task_id.value))
+            # THE distinction this whole tier exists for. A dead worker and a
+            # study whose variants failed are different events with different
+            # fixes; only one is a fault in the caller's science.
+            _lines = [
+                f"<strong>Task {_t.get('task_id')}</strong> &mdash; {_t.get('method', '')} "
+                f"&mdash; <strong>{str(_t.get('status', '')).upper()}</strong>",
+                f"<strong>Worker:</strong> <code>{_t.get('job_name', '')}</code>",
+                f"<strong>Owner:</strong> {_t.get('created_by') or 'anonymous'}",
+            ]
+            if _t.get("error_message"):
+                _lines.append(f"<span class='memphis-status-failed'>The job failed:</span> {_t['error_message']}")
+            _result = _t.get("result")
+            if isinstance(_result, dict) and _result.get("errors"):
+                _errs = _result["errors"]
+                _lines.append(f"<strong>The job completed, but {len(_errs)} stage(s) failed:</strong>")
+                for _e in _errs:
+                    _stage = _e.get("stage", "?") if isinstance(_e, dict) else "?"
+                    _msg = _e.get("error", "") if isinstance(_e, dict) else str(_e)
+                    _lines.append(f"&nbsp;&nbsp;<code>{_stage}</code> {_msg}")
+            if _result is not None:
+                _lines.append(
+                    f"<pre style='font-size:0.7rem; max-height:22rem; overflow:auto;'>"
+                    f"{json.dumps(_result, indent=2, default=str)}</pre>"
+                )
+            _detail_out = mo.Html(card("Task detail", "\U0001f50e", "<br>".join(_lines), color="cyan"))
+        except Exception:
+            _detail_out = mo.Html(
+                card("Read failed", "\u26a0\ufe0f", f"<pre>{traceback.format_exc()}</pre>", color="magenta")
+            )
+    _detail_out
+    return
+
+
+@app.cell
+def _(card, get_worker_svc, mo, traceback, wrk_cancel_button, wrk_identity, wrk_task_id):
+    _cancel_out = mo.Html("")
+    if wrk_cancel_button.value:
+        _tid = int(wrk_task_id.value)
+        try:
+            _res = get_worker_svc().worker_cancel(_tid)
+            _cancel_out = mo.Html(
+                card(
+                    "Task cancelled",
+                    "\u2716",
+                    f"<strong>Task {_tid}</strong> &mdash; {_res.get('status', '')}",
+                    color="yellow",
+                )
+            )
+        except Exception as _e:
+            # 401 and 403 mean different things and the fix differs, so say which
+            # rather than dumping a traceback the user has to decode.
+            _status = getattr(getattr(_e, "response", None), "status_code", None)
+            if _status == 401:
+                _body = (
+                    "Cancelling destroys someone's work, so it is the one operation that asks who you are.<br>"
+                    "Put an address in the <strong>Identity</strong> field above."
+                )
+            elif _status == 403:
+                _body = (
+                    f"That task belongs to someone else. You are "
+                    f"<code>{wrk_identity.value.strip() or 'anonymous'}</code>.<br>"
+                    "You cannot cancel a task you did not start."
+                )
+            else:
+                _body = f"<pre>{traceback.format_exc()}</pre>"
+            _cancel_out = mo.Html(card("Cancel refused", "\u26a0\ufe0f", _body, color="magenta"))
+    _cancel_out
+    return
+
+
+@app.cell
+def _(card, get_worker_svc, mo, traceback, wrk_job, wrk_stop_button):
+    _stop_out = mo.Html("")
+    if wrk_stop_button.value:
+        try:
+            _res = get_worker_svc().worker_stop(wrk_job.value.strip())
+            _settled = _res.get("tasks_settled") or 0
+            # Stopping a worker kills its tasks. How many were settled is the
+            # explanation owed to whoever submitted them.
+            _extra = f"<br><strong>{_settled}</strong> unfinished task(s) were settled as failed." if _settled else ""
+            _stop_out = mo.Html(
+                card("Worker stopped", "\u23f9", f"<code>{wrk_job.value.strip()}</code>{_extra}", color="yellow")
+            )
+        except Exception:
+            _stop_out = mo.Html(
+                card("Stop failed", "\u26a0\ufe0f", f"<pre>{traceback.format_exc()}</pre>", color="magenta")
+            )
+    _stop_out
+    return
+
+
+@app.cell
 def _(simulations_component):
     simulations_component
     return
