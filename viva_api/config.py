@@ -278,6 +278,19 @@ class Settings(BaseSettings):
     # — under §2A.8 that copy IS the execution environment, so the worker reads it
     # rather than mounting the PVC (which is ReadWriteOnce and single-node anyway).
     env_worker_workspace_path: str = "/app/v2ecoli"
+    # Memory the worker pod may use. Settings rather than constants because the
+    # right ceiling is a property of the SITE's nodes, not of this code: dev runs
+    # t3.xlarge (~14.4Gi allocatable, 11% requested), and a site on smaller nodes
+    # must be able to come down without a code change.
+    #
+    # The default was 2Gi, sized when a worker only answered list/resolve/preview
+    # queries. The task tier (plan §E option (e)) made a worker the thing that
+    # RUNS a study, and the sizing did not follow: every composite run on dev was
+    # OOMKilled at 137 within ~60 s, with no logs, reported to the caller as
+    # "worker closed the connection". The request stays small so scheduling is
+    # unaffected; only the ceiling moves.
+    env_worker_memory_request: str = "512Mi"
+    env_worker_memory_limit: str = "8Gi"
     # --- caller identity (viva_api/api/auth.py) ---
     # The request header this deployment takes caller identity from, e.g.
     # X-Auth-Request-Email (oauth2-proxy), X-Amzn-Oidc-Identity (ALB OIDC), or

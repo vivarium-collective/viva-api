@@ -113,6 +113,38 @@ class K8sJobService:
             if e.status != 404:
                 raise
 
+    def get_pod_termination(self, job_name: str) -> str | None:
+        """Why this Job's pod stopped, as a short phrase — or ``None``.
+
+        Kubernetes knows things the socket does not. When a worker dies mid-call
+        the caller gets "worker closed the connection", which is true and
+        useless: an OOM kill, a segfault and a deliberate delete are
+        indistinguishable at the socket. The pod's terminated state names the
+        cause, so read it and pass it on.
+
+        Best-effort by construction — the pod may already be gone (Job TTL), the
+        API may be unreachable, and neither is a reason to fail the caller's
+        request. ``None`` means "no better answer available", never "it exited
+        cleanly".
+        """
+        try:
+            pods = self._core_api.list_namespaced_pod(
+                namespace=self._namespace,
+                label_selector=f"job-name={job_name}",
+            )
+        except k8s_client.rest.ApiException:
+            logger.warning(f"Failed to read pod termination for Job {job_name}")
+            return None
+        for pod in pods.items:
+            for status in (pod.status.container_statuses or []) if pod.status else []:
+                terminated = getattr(status.state, "terminated", None) if status.state else None
+                if terminated is None:
+                    continue
+                reason = terminated.reason or "terminated"
+                code = terminated.exit_code
+                return f"{reason} (exit {code})" if code is not None else str(reason)
+        return None
+
     def get_job_logs(self, job_name: str) -> str | None:
         """Get logs from the first pod of a Job."""
         try:

@@ -35,13 +35,17 @@ from viva_api.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# A worker is interactive: it answers list/resolve/render-preview queries (spec
-# §12). Simulations and heavy analyses are jobs elsewhere, so this pod stays
-# small — sized like the workbench itself rather than like a compute node.
+# A worker was once only interactive — list/resolve/render-preview queries (spec
+# §12) — and was sized like the workbench rather than like a compute node.
+#
+# The task tier (plan §E option (e)) changed what a worker is FOR: `run_study`
+# now runs to completion inside it. The sizing did not follow, and the result was
+# not a slow run but an invisible one — every composite run on dev was OOMKilled
+# (exit 137) inside ~60 s, with no logs, and the caller was told only "worker
+# closed the connection". CPU is unchanged; memory moved, and moved into settings
+# because the right ceiling belongs to the site's nodes, not to this file.
 WORKER_CPU_REQUEST = "250m"
 WORKER_CPU_LIMIT = "1"
-WORKER_MEM_REQUEST = "512Mi"
-WORKER_MEM_LIMIT = "2Gi"
 
 # Backstop only. The workbench deletes its worker when the session ends; this
 # catches the case where it never gets the chance (pod evicted, browser closed
@@ -160,6 +164,19 @@ class EnvWorkerService:
         worker fails to dial back."""
         return self._k8s.get_job_logs(job_name)
 
+    def explain_exit(self, job_name: str) -> str | None:
+        """Why the worker's pod stopped, in a few words — or ``None``.
+
+        Used to turn "worker closed the connection" into something a caller can
+        act on. Best-effort: the pod may be gone, and a missing answer must
+        never turn a reported failure into a raised one.
+        """
+        try:
+            return self._k8s.get_pod_termination(job_name)
+        except Exception:
+            logger.warning("could not read pod termination for env-worker Job %s", job_name)
+            return None
+
     def stop(self, job_name: str) -> None:
         """Delete the Job (foreground propagation kills the pod). Idempotent."""
         try:
@@ -182,6 +199,7 @@ class EnvWorkerService:
         workspace: str,
         session_key: str | None,
     ) -> k8s_client.V1Job:
+        settings = get_settings()
         labels = {"app": "sms-api", "job-type": "env-worker", "commit": commit}
         if session_key:
             labels["session"] = _label_safe(session_key)
@@ -194,6 +212,14 @@ class EnvWorkerService:
             k8s_client.V1EnvVar(name="PYTHONPATH", value=MODULE_MOUNT),
             # Keep scratch writes off the container layer.
             k8s_client.V1EnvVar(name="TMPDIR", value=SCRATCH_MOUNT),
+            # UTF-8 mode, because the container sets no locale at all and so
+            # Python's default text encoding here is ASCII. The workbench has
+            # ~130 text reads/writes that pass no `encoding=`, and every one of
+            # them raises UnicodeEncodeError the first time a study title
+            # carries an em dash. Two of those sites were fixed by hand
+            # (workbench 0.3.70, 0.3.71) before it was clear the fault was
+            # environmental rather than local; this fixes the class.
+            k8s_client.V1EnvVar(name="PYTHONUTF8", value="1"),
         ]
         return k8s_client.V1Job(
             metadata=k8s_client.V1ObjectMeta(name=job_name, labels=labels),
@@ -225,8 +251,8 @@ class EnvWorkerService:
                                     k8s_client.V1VolumeMount(name="scratch", mount_path=SCRATCH_MOUNT),
                                 ],
                                 resources=k8s_client.V1ResourceRequirements(
-                                    requests={"cpu": WORKER_CPU_REQUEST, "memory": WORKER_MEM_REQUEST},
-                                    limits={"cpu": WORKER_CPU_LIMIT, "memory": WORKER_MEM_LIMIT},
+                                    requests={"cpu": WORKER_CPU_REQUEST, "memory": settings.env_worker_memory_request},
+                                    limits={"cpu": WORKER_CPU_LIMIT, "memory": settings.env_worker_memory_limit},
                                 ),
                             ),
                         ],
