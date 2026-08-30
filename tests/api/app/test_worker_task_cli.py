@@ -170,7 +170,7 @@ def test_the_worker_commands_are_registered() -> None:
 
 def test_submit_warns_when_the_server_ignored_the_identity() -> None:
     """Found on dev: `--as jim@…` printed "as jim@…" and the task came back
-    `Owner: anonymous`, because VIVA_API_IDENTITY_HEADER is unset there.
+    `Owner: anonymous`, because IDENTITY_HEADER is unset there.
 
     The seam behaving that way is correct -- absent configuration means anonymous.
     The CLI claiming otherwise is not: the user only discovers it at cancel time,
@@ -181,4 +181,4 @@ def test_submit_warns_when_the_server_ignored_the_identity() -> None:
 
     source = inspect.getsource(worker_submit)
     assert 'if identity and not task.get("created_by")' in source
-    assert "VIVA_API_IDENTITY_HEADER" in source
+    assert "IDENTITY_HEADER" in source

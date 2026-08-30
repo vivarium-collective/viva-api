@@ -34,7 +34,7 @@ images:
   # implementation existed at all). Also clarifies the #283 409's message
   # (the analysis id is a separate id space from the simulation id).
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.71
+    newTag: 0.9.72
   # ptools 0.5.9 -> 0.9.53 (DEV ONLY — prod sms-api-stanford stays on 0.5.9 while
   # this soaks). The long-standing 0.5.9 pin existed because CI builds only
   # sms-api (scripts/build_action.sh), so no newer sms-ptools existed on ghcr.io
@@ -324,6 +324,24 @@ patches:
                     valueFrom:
                       fieldRef:
                         fieldPath: status.podIP
+                  # Caller identity (viva_api/api/auth.py). NAMES a header; it
+                  # does NOT authenticate. Nothing in front of this deployment
+                  # sets X-Auth-Request-Email today, so anyone may claim any
+                  # value -- which is the honest description of what this buys:
+                  # attribution, and one accident-prevention rule (you cannot
+                  # cancel a task you did not start). It is not a boundary, and
+                  # the day something here needs to be a boundary this variable
+                  # is not what makes it one.
+                  #
+                  # Chosen because it is what oauth2-proxy sets, so a future
+                  # proxy in front needs no change here. Unset elsewhere: prod
+                  # and the UConn sites stay anonymous, which is their current
+                  # behaviour exactly.
+                  #
+                  # Rollback is deleting these two lines; every endpoint then
+                  # behaves as it did, and tasks record created_by = NULL.
+                  - name: IDENTITY_HEADER
+                    value: X-Auth-Request-Email
     target:
       kind: Deployment
       name: api

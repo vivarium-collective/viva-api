@@ -473,14 +473,14 @@ def worker_submit(
         highlight=False,
     )
     # Do not claim an identity the server did not accept. The header is only read
-    # where a deployment names one (VIVA_API_IDENTITY_HEADER); where it does not,
+    # where a deployment names one (IDENTITY_HEADER); where it does not,
     # the row is anonymous and the caller will NOT be able to cancel this task.
     # Printing "as you@example.com" and leaving them to discover that at cancel
     # time would be the CLI lying about what happened.
     if identity and not task.get("created_by"):
         console.print(
             "[memphis.warn]The server did not record that identity[/] — it has no "
-            "VIVA_API_IDENTITY_HEADER configured, so this task is anonymous and "
+            "IDENTITY_HEADER configured, so this task is anonymous and "
             "anyone may cancel it.",
         )
     if not poll:
