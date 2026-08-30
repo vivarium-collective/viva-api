@@ -154,7 +154,7 @@ images:
   # unrelated sms-api bump (v0.9.61) doesn't downgrade it; not this session's
   # own change to author a changelog entry for.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.71
+    newTag: 0.3.72
 
 replicas:
   - count: 1
