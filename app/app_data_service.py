@@ -73,13 +73,64 @@ async def async_client(base_url: BaseUrl, timeout: int = 300) -> AsyncIterator[A
         pass
 
 
+#: Header the server reads caller identity from, when a deployment configures one
+#: (viva_api/api/auth.py, VIVA_API_IDENTITY_HEADER). Overridable because the name
+#: is a property of whatever proxy sits in front -- oauth2-proxy sets
+#: X-Auth-Request-Email, an ALB OIDC action sets X-Amzn-Oidc-Identity.
+DEFAULT_IDENTITY_HEADER = "X-Auth-Request-Email"
+
+
+def _identity_headers(identity: str | None, header: str | None) -> dict[str, str]:
+    """The identity header, or nothing at all.
+
+    THIS IS NOT AUTHENTICATION and the CLI must not imply that it is. A header is
+    exactly as trustworthy as the proxy that sets it, and where nothing sets one
+    anybody may claim anything. It buys attribution and one accident-prevention
+    rule -- you cannot cancel a task you did not start -- and nothing more.
+
+    Sending it where the server is not configured for it is harmless: an
+    unrecognised header is ignored, and the caller stays anonymous.
+    """
+    value = (identity or os.environ.get("ATLANTIS_IDENTITY") or "").strip()
+    if not value:
+        return {}
+    name = (header or os.environ.get("ATLANTIS_IDENTITY_HEADER") or DEFAULT_IDENTITY_HEADER).strip()
+    return {name: value}
+
+
+#: The named read endpoints (viva-api step 6a), as URL path suffixes.
+#: Kept as data so `worker_read`'s possible URLs are enumerable and therefore
+#: checkable -- see its docstring.
+READ_CAPABILITIES = (
+    "generators",
+    "registry",
+    "composites",
+    "composites/full",
+    "visualizations",
+    "visualizations/inputs",
+    "core-snapshot",
+    "reexports",
+    "analysis-viewers",
+)
+
+
 class E2EDataService:
     base_url: BaseUrl
     client: httpx.Client
 
-    def __init__(self, base_url: BaseUrl, timeout: int = 300) -> None:
+    def __init__(
+        self,
+        base_url: BaseUrl,
+        timeout: int = 300,
+        identity: str | None = None,
+        identity_header: str | None = None,
+    ) -> None:
         self.base_url = base_url
-        self.client = httpx.Client(base_url=self.base_url, timeout=timeout)
+        self.client = httpx.Client(
+            base_url=self.base_url,
+            timeout=timeout,
+            headers=_identity_headers(identity, identity_header),
+        )
 
     # -- Simulator --
 
@@ -795,6 +846,77 @@ class E2EDataService:
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
+    # -- Env worker: the task tier (plan §E option (e)) --
+    #
+    # `worker_call` above is synchronous and stays that way -- an interactive
+    # method answers in seconds. These are for the job-class methods (run_study
+    # and friends), which run a study to completion: no gateway will hold a
+    # request that long, so the work is submitted, recorded and polled.
+
+    def worker_submit(
+        self,
+        job_name: str,
+        method: str,
+        params: dict | None = None,  # type: ignore[type-arg]
+    ) -> dict:  # type: ignore[type-arg]
+        """Queue one task on a worker. Returns immediately with its id.
+
+        The server writes the row BEFORE responding, so the status poll below can
+        never 404 on a task it just accepted.
+        """
+        body = {"job_name": job_name, "method": method, "params": params or {}}
+        resp = self.client.post("/env-worker/v1/tasks", json=body)
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    def worker_task(self, task_id: int) -> dict:  # type: ignore[type-arg]
+        """One task: status, and its result or error once it settles."""
+        resp = self.client.get(f"/env-worker/v1/tasks/{task_id}")
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    def worker_tasks(self, task_ids: list[int]) -> list[dict]:  # type: ignore[type-arg]
+        """Several tasks in one request.
+
+        Deliberately WITHOUT results: this endpoint reports `has_result` instead
+        of the payload, because a handful of run_study results is megabytes and a
+        poll loop would re-download all of it every few seconds.
+        """
+        params: list[tuple[str, str | int | float | bool | None]] = [("ids", str(i)) for i in task_ids]
+        resp = self.client.get("/env-worker/v1/tasks/status/batch", params=params)
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    def worker_cancel(self, task_id: int) -> dict:  # type: ignore[type-arg]
+        """Cancel a task. The one authorization rule in the API lives here: you
+        cannot cancel a task you did not start, so this is the single place an
+        identity is REQUIRED rather than merely recorded."""
+        resp = self.client.delete(f"/env-worker/v1/tasks/{task_id}")
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    def worker_read(self, job_name: str, capability: str, params: dict | None = None) -> object:  # type: ignore[type-arg]
+        """One of the named read endpoints (step 6a).
+
+        Named rather than `worker_call`, because these turn the worker's in-band
+        failures into status codes -- `{"__unavailable__": true}` comes back as a
+        501 rather than a 200 containing nothing.
+
+        `capability` is checked against READ_CAPABILITIES rather than pasted
+        straight into the URL. Two reasons, and the second is the real one:
+        a typo becomes a local error instead of a 404 from the server, AND the
+        set of paths this method can produce stays ENUMERABLE -- which is what
+        lets `test_no_route_drift` verify them. A fully dynamic path segment is
+        exactly the static-analysis blind spot that survey warned about, and this
+        method was caught by that test on its first run.
+        """
+        if capability not in READ_CAPABILITIES:
+            known = ", ".join(READ_CAPABILITIES)
+            raise ValueError(f"unknown worker capability {capability!r}; expected one of {known}")
+        resp = self.client.get(f"/env-worker/v1/relay/workers/{job_name}/{capability}", params=params or {})
+        resp.raise_for_status()
+        return resp.json()
+
     def compose_get_simulation_status(self, simulation_id: int) -> dict:  # type: ignore[type-arg]
         resp = self.client.get(f"/compose/v1/simulation/{simulation_id}/status")
         resp.raise_for_status()
@@ -922,7 +1044,15 @@ class E2EDataService:
         return resp.json()  # type: ignore[no-any-return]
 
 
-def get_data_service(base_url: BaseUrl | str | None = None, timeout: int | None = None) -> E2EDataService:
+def get_data_service(
+    base_url: BaseUrl | str | None = None,
+    timeout: int | None = None,
+    identity: str | None = None,
+    identity_header: str | None = None,
+) -> E2EDataService:
     return E2EDataService(
-        base_url=BaseUrl(base_url) if base_url else DEFAULT_BASE_URL, timeout=timeout or DEFAULT_REQUEST_TIMEOUT
+        base_url=BaseUrl(base_url) if base_url else DEFAULT_BASE_URL,
+        timeout=timeout or DEFAULT_REQUEST_TIMEOUT,
+        identity=identity,
+        identity_header=identity_header,
     )

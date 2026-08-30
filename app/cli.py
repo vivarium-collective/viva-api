@@ -23,7 +23,7 @@ import httpx
 import typer
 from typer import Argument, Option
 
-from app.app_data_service import get_data_service
+from app.app_data_service import READ_CAPABILITIES, E2EDataService, get_data_service
 from app.cli_theme import display_json, get_console, print_banner, status_border, status_style
 from app.tui import AtlantisTUI
 
@@ -362,6 +362,332 @@ def worker_stop(
         f"[memphis.success]Deleted[/] {job_name}" + ("" if was else " [dim](no live connection held)[/]"),
         highlight=False,
     )
+
+
+@worker_cli.command("read", help="Read one of the worker's named capabilities.")
+def worker_read(
+    job_name: str = Argument(help="Job name from 'atlantis worker start'."),
+    capability: str = Argument(help=f"One of: {', '.join(READ_CAPABILITIES)}."),
+    package_path: str = Option(default="", help="For core-snapshot: the workspace package to import."),
+    include: list[str] = Option(default=[], help="For reexports: a package to scan. Repeatable."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    """Prefer this to `worker call` for reads.
+
+    The named endpoints turn the worker's in-band failures into status codes:
+    `{"__unavailable__": true}` arrives as 501 rather than as a 200 whose body
+    the caller has to know to inspect. `worker call` is the raw escape hatch and
+    hands those back untouched.
+    """
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+    if capability not in READ_CAPABILITIES:
+        console.print(f"[memphis.error]unknown capability[/] {capability}")
+        console.print(f"[dim]expected one of: {', '.join(READ_CAPABILITIES)}[/]")
+        raise typer.Exit(1)
+
+    params: dict[str, object] = {}
+    if package_path:
+        params["package_path"] = package_path
+    if include:
+        params["include"] = list(include)
+    if capability == "core-snapshot" and not package_path:
+        # Required server-side; saying so here beats a 422 the user has to decode.
+        console.print("[memphis.error]core-snapshot needs --package-path[/] (the worker imports <package>.core)")
+        raise typer.Exit(1)
+
+    with console.status(f"[memphis.spinner]{capability}..."):
+        try:
+            payload = data_service.worker_read(job_name, capability, params or None)
+        except Exception as e:
+            console.print(_worker_error(e, "read"))
+            raise typer.Exit(1) from e
+    if isinstance(payload, dict | list | str):
+        display_json(payload, console)
+    else:
+        # A read whose whole answer is a scalar. Rare, but printing nothing
+        # because the renderer only takes containers would be worse.
+        console.print(payload)
+
+
+# --------------------------------------------------------------------------- #
+# The task tier (plan §E option (e) step 7)
+#
+# `worker call` is synchronous and stays that way -- an interactive method
+# answers in seconds. `run_study` and friends run a study to completion, which no
+# gateway will hold a request for, so they are submitted and polled instead.
+# --------------------------------------------------------------------------- #
+
+#: Methods that MUST go through the task tier. Mirrors the workbench's
+#: `env_worker_routing.JOB_CLASS_METHODS`, including its correction that
+#: `run_process` is NOT one despite the prefix -- it builds one class and runs a
+#: single update(), which is a probe.
+JOB_CLASS_METHODS = ("run_study", "run_study_analyses", "run_investigation_analysis")
+
+_TERMINAL = ("completed", "failed", "cancelled")
+
+
+def _identity_note(identity: str) -> str:
+    """Say what the identity is FOR, without implying it is a login."""
+    if identity:
+        return f"[dim italic]as {identity} — attribution only, not authentication[/]"
+    return "[dim italic]anonymous — set --as to be able to cancel this later[/]"
+
+
+@worker_cli.command("submit", help="Submit a long-running method as a task, and optionally poll it.")
+def worker_submit(
+    job_name: str = Argument(help="Job name from 'atlantis worker start'."),
+    method: str = Argument(help=f"Worker method, e.g. {JOB_CLASS_METHODS[0]}."),
+    params: str = Option(default="", help='JSON object of method params, e.g. \'{"study_slug": "s1"}\'.'),
+    poll: bool = Option(default=False, help="Wait for the task to settle, printing status as it changes."),
+    interval: float = Option(default=10.0, help="Seconds between polls when --poll is set."),
+    identity: str = Option("", "--as", help="Caller identity to record on the task."),
+    identity_header: str = Option(default="", help="Header the server reads identity from."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    console = get_console()
+    data_service = get_data_service(
+        base_url=base_url, identity=identity or None, identity_header=identity_header or None
+    )
+
+    parsed = _worker_params(console, params)
+    if method not in JOB_CLASS_METHODS:
+        # Not refused: the tier accepts any method, and a caller may have a
+        # reason. But an interactive method submitted as a task is almost always
+        # a mistake for `worker call`, and silently doing it would leave them
+        # polling something that had already finished.
+        console.print(
+            f"[memphis.warn]{method} is not a job-class method[/] "
+            f"[dim](those are: {', '.join(JOB_CLASS_METHODS)}) — 'atlantis worker call' answers directly[/]"
+        )
+
+    try:
+        task = data_service.worker_submit(job_name, method=method, params=parsed)
+    except Exception as e:
+        console.print(_worker_error(e, "submit"))
+        raise typer.Exit(1) from e
+
+    task_id = task.get("task_id")
+    console.print(
+        f"[memphis.success]Queued[/] task [memphis.value]{task_id}[/]  {method}  {_identity_note(identity)}",
+        highlight=False,
+    )
+    # Do not claim an identity the server did not accept. The header is only read
+    # where a deployment names one (VIVA_API_IDENTITY_HEADER); where it does not,
+    # the row is anonymous and the caller will NOT be able to cancel this task.
+    # Printing "as you@example.com" and leaving them to discover that at cancel
+    # time would be the CLI lying about what happened.
+    if identity and not task.get("created_by"):
+        console.print(
+            "[memphis.warn]The server did not record that identity[/] — it has no "
+            "VIVA_API_IDENTITY_HEADER configured, so this task is anonymous and "
+            "anyone may cancel it.",
+        )
+    if not poll:
+        console.print(f"\n[dim italic]Watch it:[/]  atlantis worker task {task_id}", highlight=False)
+        console.print(f"[dim italic]Cancel it:[/] atlantis worker cancel {task_id}", highlight=False)
+        return
+    _poll_task(console, data_service, int(task_id or 0), interval)
+
+
+@worker_cli.command("task", help="Show one task's status, and its result or error once it settles.")
+def worker_task(
+    task_id: int = Argument(help="Task id from 'atlantis worker submit'."),
+    poll: bool = Option(default=False, help="Wait for the task to settle."),
+    interval: float = Option(default=10.0, help="Seconds between polls when --poll is set."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+    if poll:
+        _poll_task(console, data_service, task_id, interval)
+        return
+    try:
+        task = data_service.worker_task(task_id)
+    except Exception as e:
+        console.print(_worker_error(e, "task"))
+        raise typer.Exit(1) from e
+    _print_task(console, task)
+
+
+@worker_cli.command("tasks", help="Status of several tasks at once.")
+def worker_tasks(
+    task_ids: list[int] = Argument(help="Task ids, space separated."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    """Results are deliberately NOT included: a handful of run_study results is
+    megabytes, and a poll loop would re-download all of it every few seconds. The
+    listing says whether a result is waiting; `worker task <id>` fetches it."""
+    from rich.table import Table
+
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+    try:
+        rows = data_service.worker_tasks(list(task_ids))
+    except Exception as e:
+        console.print(_worker_error(e, "tasks"))
+        raise typer.Exit(1) from e
+
+    missing = sorted(set(task_ids) - {int(r.get("task_id", -1)) for r in rows})
+    table = Table(title="Env worker tasks", border_style="magenta")
+    for col in ("ID", "Method", "Status", "Result", "Owner"):
+        table.add_column(col)
+    for row in rows:
+        status = str(row.get("status", ""))
+        table.add_row(
+            str(row.get("task_id", "")),
+            str(row.get("method", "")),
+            f"[{_status_style(status)}]{status}[/]",
+            "yes" if row.get("has_result") else "—",
+            str(row.get("created_by") or "[dim]anonymous[/]"),
+        )
+    console.print(table)
+    if missing:
+        # Say which, rather than letting a shorter table be the only clue.
+        console.print(f"[dim]not found: {', '.join(str(m) for m in missing)}[/]")
+
+
+@worker_cli.command("cancel", help="Cancel a task you started.")
+def worker_cancel(
+    task_id: int = Argument(help="Task id from 'atlantis worker submit'."),
+    identity: str = Option("", "--as", help="Caller identity; must match whoever submitted the task."),
+    identity_header: str = Option(default="", help="Header the server reads identity from."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    """The one authorization rule in the API. Everything else -- start, call,
+    submit, poll -- is open to anonymous callers; only DESTROYING someone else's
+    work asks who you are."""
+    console = get_console()
+    data_service = get_data_service(
+        base_url=base_url, identity=identity or None, identity_header=identity_header or None
+    )
+    try:
+        result = data_service.worker_cancel(task_id)
+    except Exception as e:
+        console.print(_worker_cancel_error(e, identity))
+        raise typer.Exit(1) from e
+    console.print(f"[memphis.success]Cancelled[/] task [memphis.value]{task_id}[/]", highlight=False)
+    if result.get("status"):
+        console.print(f"[memphis.label]Status:[/] {result['status']}", highlight=False)
+
+
+def _worker_cancel_error(exc: Exception, identity: str) -> str:
+    """401 and 403 mean different things here and the fix differs, so say which.
+
+    A bare "403 Forbidden" invites the user to retry with a different flag; the
+    useful thing is that the task HAS an owner and it is not them.
+    """
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status == 401:
+        return (
+            "[memphis.error]cancel needs an identity[/]\n"
+            "  Cancelling destroys someone's work, so it is the one operation that asks who you are.\n"
+            "  Pass [memphis.value]--as you@example.com[/] (or set ATLANTIS_IDENTITY)."
+        )
+    if status == 403:
+        detail = _worker_detail(exc)
+        who = f" ({detail})" if detail else ""
+        return (
+            f"[memphis.error]that task belongs to someone else{who}[/]\n"
+            + (f"  You are identified as [memphis.value]{identity}[/].\n" if identity else "")
+            + "  You cannot cancel a task you did not start."
+        )
+    return _worker_error(exc, "cancel")
+
+
+def _worker_detail(exc: Exception) -> str:
+    """The server's own message, when there is one."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return ""
+    try:
+        detail = response.json().get("detail")
+    except Exception:
+        return ""
+    return detail if isinstance(detail, str) else ""
+
+
+def _status_style(status: str) -> str:
+    return {
+        "completed": "memphis.success",
+        "failed": "memphis.error",
+        "cancelled": "yellow",
+        "running": "memphis.spinner",
+    }.get(status, "dim")
+
+
+def _print_task(console: Console, task: dict[str, Any]) -> None:
+    from rich.panel import Panel
+
+    status = str(task.get("status", ""))
+    console.print(
+        Panel(
+            f"[{_status_style(status)}]{status.upper()}[/]",
+            title=f"Task {task.get('task_id')} — {task.get('method')}",
+            border_style="magenta",
+        )
+    )
+    for label, key in (("Worker", "job_name"), ("Started", "started_at"), ("Ended", "ended_at")):
+        if task.get(key):
+            console.print(f"[memphis.label]{label}:[/] {task[key]}", highlight=False)
+    console.print(f"[memphis.label]Owner:[/]  {task.get('created_by') or '[dim]anonymous[/]'}", highlight=False)
+    # A FAILED task and a task whose RESULT carries errors are different things,
+    # and the distinction is the whole point of the tier -- see the plan's
+    # "What a caller can actually tell apart". Show both, separately.
+    if task.get("error_message"):
+        console.print(f"\n[memphis.error]The job failed:[/] {task['error_message']}", highlight=False)
+    result = task.get("result")
+    if result is not None:
+        errors = result.get("errors") if isinstance(result, dict) else None
+        if errors:
+            console.print(f"\n[memphis.warn]The job completed, but {len(errors)} stage(s) failed:[/]")
+            for entry in errors:
+                stage = entry.get("stage", "?") if isinstance(entry, dict) else "?"
+                message = entry.get("error", "") if isinstance(entry, dict) else str(entry)
+                console.print(f"  [memphis.label]{stage}[/] {message}", highlight=False)
+        console.print()
+        display_json(result, console)
+
+
+def _poll_task(console: Console, data_service: E2EDataService, task_id: int, interval: float) -> None:
+    """Poll until terminal, printing each status CHANGE rather than every tick.
+
+    A line per poll would bury the two moments that matter (queued -> running,
+    running -> settled) in a wall of identical text.
+    """
+    import time as _time
+
+    seen = ""
+    while True:
+        try:
+            task = data_service.worker_task(task_id)
+        except Exception as e:
+            console.print(_worker_error(e, "task"))
+            raise typer.Exit(1) from e
+        status = str(task.get("status", ""))
+        if status != seen:
+            console.print(f"  [{_status_style(status)}]{status}[/]", highlight=False)
+            seen = status
+        if status in _TERMINAL:
+            console.print()
+            _print_task(console, task)
+            return
+        _time.sleep(interval)
+
+
+def _worker_params(console: Console, params: str) -> dict[str, Any]:
+    """Parse --params, saying what was wrong with THEIR json."""
+    if not params:
+        return {}
+    try:
+        parsed = _json_mod.loads(params)
+    except _json_mod.JSONDecodeError as e:
+        console.print(f"[memphis.error]--params is not valid JSON:[/] {e}")
+        raise typer.Exit(1) from e
+    if not isinstance(parsed, dict):
+        console.print("[memphis.error]--params must be a JSON object[/] (the worker takes named params)")
+        raise typer.Exit(1)
+    return parsed
 
 
 def _worker_error(exc: Exception, verb: str) -> str:
