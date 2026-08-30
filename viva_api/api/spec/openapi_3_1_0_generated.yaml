@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.65
+  version: 0.9.67
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -1191,7 +1191,7 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-08-29T23:37:40.315332'
+                  created_at: '2026-08-30T09:18:47.267916'
                 parca_config:
                   outdir: /projects/SMS/sms_api/jim/sims
       responses:
@@ -1945,10 +1945,20 @@ paths:
       tags:
       - Env Worker
       summary: Forward one JSON-RPC call to a relayed env worker
-      description: "One request, one reply \u2014 the worker protocol is already request/response.\n\
-        \nRuns on a worker thread: the call holds a per-worker mutex for its whole\n\
-        duration (the worker's FIFO contract), and blocking the event loop on that\n\
-        would stall every unrelated request in this process."
+      description: 'Forward one call down a held worker socket, mapping its failures
+        to HTTP.
+
+
+        Shared by the generic ``/call`` below and by every named capability endpoint,
+
+        so those cannot drift on what a lost socket or a refused call means.
+
+
+        Runs on a worker thread: the call holds a per-worker mutex for its whole
+
+        duration (the worker''s FIFO contract), and blocking the event loop on that
+
+        would stall every unrelated request in this process.'
       operationId: call-relayed-env-worker
       parameters:
       - name: job_name
@@ -1957,12 +1967,28 @@ paths:
         schema:
           type: string
           title: Job Name
+      - name: method
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Method
+      - name: timeout
+        in: query
+        required: true
+        schema:
+          type: number
+          title: Timeout
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RelayCallRequest'
+              anyOf:
+              - type: object
+                additionalProperties: true
+              - type: 'null'
+              title: Params
       responses:
         '200':
           description: Successful Response
@@ -2011,6 +2037,259 @@ paths:
                 type: object
                 additionalProperties: true
                 title: Response Stop-Relayed-Env-Worker
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/generators:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Composite generators registered in the worker's workspace
+      description: 'The health check that actually proves the arc, and the reason
+        this one
+
+        earns an endpoint despite having no workbench caller.
+
+
+        `ping` and `initialize` pass even when the workspace is wrong. This does not:
+
+        a worker that could not import the workspace falls back to a GLOBAL scan of
+
+        everything installed in the image, and the give-away is the count of
+
+        generators from packages the workspace does not own.'
+      operationId: list-env-worker-generators
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response List-Env-Worker-Generators
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/registry:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Process/step/type names in the worker's core
+      operationId: read-env-worker-registry
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Read-Env-Worker-Registry
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/composites:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Composites discoverable in the worker's workspace
+      operationId: discover-env-worker-composites
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Discover-Env-Worker-Composites
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/composites/full:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Discovered composites with their resolved detail
+      description: 'The expensive sibling of `/composites`: it resolves each one.
+        Separate
+
+        URLs rather than a `?full=` flag, because the cost difference is large enough
+
+        that a caller should have to ask for it in the path.'
+      operationId: read-env-worker-composites-full
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Read-Env-Worker-Composites-Full
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/visualizations:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Visualization classes available in the worker's workspace
+      operationId: list-env-worker-visualizations
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response List-Env-Worker-Visualizations
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/visualizations/inputs:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Declared input ports of each visualization class
+      operationId: read-env-worker-visualization-inputs
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Read-Env-Worker-Visualization-Inputs
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/core-snapshot:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Registry snapshot plus the workspace document, for a report render
+      description: '`package_path` is REQUIRED rather than defaulted. The worker imports
+
+        `<package_path>.core` and `<package_path>.document`; a default here would
+
+        guess at the caller''s workspace and import whatever that guess named.'
+      operationId: read-env-worker-core-snapshot
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      - name: package_path
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          title: Package Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Read-Env-Worker-Core-Snapshot
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/reexports:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Which allow-listed package re-exports each class
+      description: '`include` is the caller''s allow-list of packages to scan, repeated:
+
+        `?include=a&include=b`. The worker imports each one, so an empty list means
+
+        "scan nothing" -- which is why it is not defaulted to something broader.'
+      operationId: read-env-worker-reexport-map
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      - name: include
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+          default: []
+          title: Include
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Read-Env-Worker-Reexport-Map
         '422':
           description: Validation Error
           content:
@@ -3306,30 +3585,6 @@ components:
       required:
       - versions
       title: RegisteredSimulators
-    RelayCallRequest:
-      properties:
-        method:
-          type: string
-          title: Method
-          description: Worker method name (JSON-RPC)
-        params:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Params
-          description: Method params
-        timeout:
-          type: number
-          maximum: 3600.0
-          exclusiveMinimum: 0.0
-          title: Timeout
-          description: Seconds to wait for this call's reply
-          default: 300.0
-      type: object
-      required:
-      - method
-      title: RelayCallRequest
     RelayCallResponse:
       properties:
         result:
@@ -3467,7 +3722,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-08-29 23:37:40.248627'
+          default: '2026-08-30 09:18:47.199522'
         job_id:
           anyOf:
           - type: string

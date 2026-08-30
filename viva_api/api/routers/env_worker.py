@@ -271,8 +271,11 @@ async def start_relayed_worker(request: RelayStartRequest) -> RelayStartResponse
     tags=["Env Worker"],
     summary="Forward one JSON-RPC call to a relayed env worker",
 )
-async def call_relayed_worker(job_name: str, request: RelayCallRequest) -> RelayCallResponse:
-    """One request, one reply — the worker protocol is already request/response.
+async def _relay_call(job_name: str, method: str, params: dict[str, object] | None, timeout: float) -> object:
+    """Forward one call down a held worker socket, mapping its failures to HTTP.
+
+    Shared by the generic ``/call`` below and by every named capability endpoint,
+    so those cannot drift on what a lost socket or a refused call means.
 
     Runs on a worker thread: the call holds a per-worker mutex for its whole
     duration (the worker's FIFO contract), and blocking the event loop on that
@@ -283,9 +286,7 @@ async def call_relayed_worker(job_name: str, request: RelayCallRequest) -> Relay
     except relay.WorkerUnavailable as e:
         raise HTTPException(404, str(e)) from e
     try:
-        result = await anyio.to_thread.run_sync(
-            functools.partial(conn.call, request.method, request.params, timeout=request.timeout)
-        )
+        return await anyio.to_thread.run_sync(functools.partial(conn.call, method, params, timeout=timeout))
     except relay.WorkerCallError as e:
         # The worker ran and said no. That is the caller's answer, not a viva-api
         # fault -- 502 would blame the wrong party and hide the worker's message.
@@ -295,6 +296,17 @@ async def call_relayed_worker(job_name: str, request: RelayCallRequest) -> Relay
         # start a new worker instead of inheriting a broken connection.
         relay.registry.drop(job_name)
         raise HTTPException(410, str(e)) from e
+
+
+async def call_relayed_worker(job_name: str, request: RelayCallRequest) -> RelayCallResponse:
+    """One request, one reply — the worker protocol is already request/response.
+
+    Deliberately RAW: whatever the worker returned is handed back untouched,
+    sentinels included. This is the escape hatch, and a caller reaching for it
+    has asked for the protocol rather than for an interpretation of it. The
+    named endpoints below are where sentinels become status codes.
+    """
+    result = await _relay_call(job_name, request.method, request.params, request.timeout)
     return RelayCallResponse(result=result)
 
 
@@ -337,6 +349,196 @@ async def stop_relayed_worker(request: Request, job_name: str) -> dict[str, obje
         "was_connected": dropped,
         "tasks_settled": len(settled),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Named capability endpoints (plan §E option (e), step 6) — the read-shaped nine
+#
+# `POST /relay/workers/{job}/call` reaches all 27 worker methods, but untyped:
+# the caller supplies a method name as a string, gets an untyped blob back, and
+# nothing is discoverable from the OpenAPI document. These give the reads a URL,
+# a summary and a place in the schema.
+#
+# THE SUBSTANCE IS NOT THE URL. Several worker methods answer failure IN BAND --
+# `{"__unavailable__": true}`, `{"__error__": "..."}` -- returned with a JSON-RPC
+# `result`, so `/call` hands them back as HTTP 200. A caller that does not know
+# the sentinel vocabulary reads a successful response containing no data. Every
+# endpoint below routes those to a status code instead, which is the whole
+# reason a named endpoint beats a string method name.
+#
+# WHICH METHODS ARE HERE, and which are deliberately not:
+#
+#   * The 3 LIFECYCLE methods (ping, initialize, shutdown) get no endpoints;
+#     start/stop already cover them.
+#   * The 3 JOB-CLASS methods (run_study, run_study_analyses,
+#     run_investigation_analysis) are task-tier only -- POST /tasks. A synchronous
+#     endpoint for them would rebuild the request-held-open bug the task tier
+#     exists to remove.
+#   * `data_sources_provider` is EXCLUDED, and not for tidiness. It takes a
+#     caller-supplied `module:func`, imports it and calls it -- arbitrary code
+#     execution in the worker. In the workbench that string comes from the
+#     workspace's own `workspace.yaml` (`dashboard.data_sources`) and never from
+#     a request; a named endpoint taking it as a parameter would be a materially
+#     different and worse thing on an API with no authentication (§E Q3, open).
+#     Giving it one needs a worker-side change so the worker reads its own
+#     workspace.yaml, and an identity boundary in front. Until then it stays
+#     reachable only through the raw `/call`, unadvertised.
+#   * The 12 document-shaped methods (they carry a composite, a config, a state
+#     document, or a list of node paths) are POST and are step 6b.
+#
+# That leaves the nine reads below -- eight of them here plus
+# `resolve_inner_composite_state`, which turned out to take `hops` as a LIST OF
+# NODE PATHS and so is document-shaped after all. The plan's count of "9 GET,
+# 13 POST" was written before the params were read; the measured split is 8 and 13.
+# --------------------------------------------------------------------------- #
+
+#: In-band failures the worker returns as a successful `result`, and the status
+#: each deserves. Ordered most-specific first; `__error__` is the catch-all.
+_SENTINEL_STATUS: tuple[tuple[str, int], ...] = (
+    # The workspace does not provide this capability at all (e.g. no v2ecoli
+    # translator installed). The request was understood; nothing here implements it.
+    ("__unavailable__", 501),
+    # A reference that names nothing. 404 on the referent, not on the endpoint.
+    ("__not_registered__", 404),
+    # The worker ran and failed: building, validating, introspecting. Same 422 as
+    # a WorkerCallError, because it is the same event -- the worker said no.
+    ("__build_error__", 422),
+    ("__validate_error__", 422),
+    ("__introspect_error__", 422),
+    ("__no_validator__", 422),
+    ("__error__", 422),
+)
+
+
+def _unwrap(result: object, *, method: str) -> object:
+    """Return the worker's payload, or raise the status its sentinel means.
+
+    Only the NAMED endpoints do this. `/call` stays raw on purpose: a caller
+    asking for a method by name has asked for the protocol, and rewriting its
+    answers would break the workbench, which knows the sentinels and depends on
+    reading them.
+    """
+    if not isinstance(result, dict):
+        return result
+    for key, status in _SENTINEL_STATUS:
+        if key not in result:
+            continue
+        detail = result[key]
+        # `{"__unavailable__": true}` carries no message; the others carry the text.
+        message = detail if isinstance(detail, str) and detail else f"{method}: {key.strip('_')}"
+        raise HTTPException(status, message)
+    return result
+
+
+async def _named_read(job_name: str, method: str, params: dict[str, object] | None = None) -> object:
+    """One named read: forward, then turn an in-band failure into a status."""
+    return _unwrap(await _relay_call(job_name, method, params, _NAMED_READ_TIMEOUT), method=method)
+
+
+#: Reads are interactive by definition -- the worker answers a question about the
+#: environment rather than running science. Anything slower than this is either a
+#: cold `build_core()` (which is why it is not 30s) or something that should have
+#: been a task.
+_NAMED_READ_TIMEOUT = 300.0
+
+_READS = "Env Worker Reads"
+
+
+@router.get(
+    path="/relay/workers/{job_name}/generators",
+    operation_id="list-env-worker-generators",
+    tags=[_READS],
+    summary="Composite generators registered in the worker's workspace",
+)
+async def read_generators(job_name: str) -> object:
+    """The health check that actually proves the arc, and the reason this one
+    earns an endpoint despite having no workbench caller.
+
+    `ping` and `initialize` pass even when the workspace is wrong. This does not:
+    a worker that could not import the workspace falls back to a GLOBAL scan of
+    everything installed in the image, and the give-away is the count of
+    generators from packages the workspace does not own.
+    """
+    return await _named_read(job_name, "list_generators")
+
+
+@router.get(
+    path="/relay/workers/{job_name}/registry",
+    operation_id="read-env-worker-registry",
+    tags=[_READS],
+    summary="Process/step/type names in the worker's core",
+)
+async def read_registry_catalog(job_name: str) -> object:
+    return await _named_read(job_name, "registry_catalog")
+
+
+@router.get(
+    path="/relay/workers/{job_name}/composites",
+    operation_id="discover-env-worker-composites",
+    tags=[_READS],
+    summary="Composites discoverable in the worker's workspace",
+)
+async def read_composites(job_name: str) -> object:
+    return await _named_read(job_name, "discover_composites")
+
+
+@router.get(
+    path="/relay/workers/{job_name}/composites/full",
+    operation_id="read-env-worker-composites-full",
+    tags=[_READS],
+    summary="Discovered composites with their resolved detail",
+)
+async def read_composites_full(job_name: str) -> object:
+    """The expensive sibling of `/composites`: it resolves each one. Separate
+    URLs rather than a `?full=` flag, because the cost difference is large enough
+    that a caller should have to ask for it in the path."""
+    return await _named_read(job_name, "composites_full")
+
+
+@router.get(
+    path="/relay/workers/{job_name}/visualizations",
+    operation_id="list-env-worker-visualizations",
+    tags=[_READS],
+    summary="Visualization classes available in the worker's workspace",
+)
+async def read_visualizations(job_name: str) -> object:
+    return await _named_read(job_name, "viz_classes")
+
+
+@router.get(
+    path="/relay/workers/{job_name}/visualizations/inputs",
+    operation_id="read-env-worker-visualization-inputs",
+    tags=[_READS],
+    summary="Declared input ports of each visualization class",
+)
+async def read_visualization_inputs(job_name: str) -> object:
+    return await _named_read(job_name, "viz_class_inputs")
+
+
+@router.get(
+    path="/relay/workers/{job_name}/core-snapshot",
+    operation_id="read-env-worker-core-snapshot",
+    tags=[_READS],
+    summary="Registry snapshot plus the workspace document, for a report render",
+)
+async def read_core_snapshot(job_name: str, package_path: str = Query(..., min_length=1)) -> object:
+    """`package_path` is REQUIRED rather than defaulted. The worker imports
+    `<package_path>.core` and `<package_path>.document`; a default here would
+    guess at the caller's workspace and import whatever that guess named."""
+    return await _named_read(job_name, "report_core_snapshot", {"package_path": package_path})
+
+
+@router.get(
+    path="/relay/workers/{job_name}/reexports",
+    operation_id="read-env-worker-reexport-map",
+    tags=[_READS],
+    summary="Which allow-listed package re-exports each class",
+)
+async def read_reexport_map(job_name: str, include: list[str] = Query(default=[])) -> object:
+    """`include` is the caller's allow-list of packages to scan, repeated:
+    `?include=a&include=b`. The worker imports each one, so an empty list means
+    "scan nothing" -- which is why it is not defaulted to something broader."""
+    return await _named_read(job_name, "reexport_map", {"include": sorted(set(include))})
 
 
 # --------------------------------------------------------------------------- #

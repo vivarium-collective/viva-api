@@ -5,25 +5,40 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.call_relayed_env_worker_body_type_0 import CallRelayedEnvWorkerBodyType0
 from ...models.http_validation_error import HTTPValidationError
-from ...models.relay_call_request import RelayCallRequest
 from ...models.relay_call_response import RelayCallResponse
-from ...types import Response
+from ...types import UNSET, Response
 
 
 def _get_kwargs(
     job_name: str,
     *,
-    body: RelayCallRequest,
+    body: Union["CallRelayedEnvWorkerBodyType0", None],
+    method: str,
+    timeout: float,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
+
+    params: dict[str, Any] = {}
+
+    params["method"] = method
+
+    params["timeout"] = timeout
+
+    params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
     _kwargs: dict[str, Any] = {
         "method": "post",
         "url": f"/env-worker/v1/relay/workers/{job_name}/call",
+        "params": params,
     }
 
-    _kwargs["json"] = body.to_dict()
+    _kwargs["json"]: Union[None, dict[str, Any]]
+    if isinstance(body, CallRelayedEnvWorkerBodyType0):
+        _kwargs["json"] = body.to_dict()
+    else:
+        _kwargs["json"] = body
 
     headers["Content-Type"] = "application/json"
 
@@ -63,11 +78,16 @@ def sync_detailed(
     job_name: str,
     *,
     client: Union[AuthenticatedClient, Client],
-    body: RelayCallRequest,
+    body: Union["CallRelayedEnvWorkerBodyType0", None],
+    method: str,
+    timeout: float,
 ) -> Response[Union[HTTPValidationError, RelayCallResponse]]:
     """Forward one JSON-RPC call to a relayed env worker
 
-     One request, one reply — the worker protocol is already request/response.
+     Forward one call down a held worker socket, mapping its failures to HTTP.
+
+    Shared by the generic ``/call`` below and by every named capability endpoint,
+    so those cannot drift on what a lost socket or a refused call means.
 
     Runs on a worker thread: the call holds a per-worker mutex for its whole
     duration (the worker's FIFO contract), and blocking the event loop on that
@@ -75,7 +95,9 @@ def sync_detailed(
 
     Args:
         job_name (str):
-        body (RelayCallRequest):
+        method (str):
+        timeout (float):
+        body (Union['CallRelayedEnvWorkerBodyType0', None]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -88,6 +110,8 @@ def sync_detailed(
     kwargs = _get_kwargs(
         job_name=job_name,
         body=body,
+        method=method,
+        timeout=timeout,
     )
 
     response = client.get_httpx_client().request(
@@ -101,11 +125,16 @@ def sync(
     job_name: str,
     *,
     client: Union[AuthenticatedClient, Client],
-    body: RelayCallRequest,
+    body: Union["CallRelayedEnvWorkerBodyType0", None],
+    method: str,
+    timeout: float,
 ) -> Optional[Union[HTTPValidationError, RelayCallResponse]]:
     """Forward one JSON-RPC call to a relayed env worker
 
-     One request, one reply — the worker protocol is already request/response.
+     Forward one call down a held worker socket, mapping its failures to HTTP.
+
+    Shared by the generic ``/call`` below and by every named capability endpoint,
+    so those cannot drift on what a lost socket or a refused call means.
 
     Runs on a worker thread: the call holds a per-worker mutex for its whole
     duration (the worker's FIFO contract), and blocking the event loop on that
@@ -113,7 +142,9 @@ def sync(
 
     Args:
         job_name (str):
-        body (RelayCallRequest):
+        method (str):
+        timeout (float):
+        body (Union['CallRelayedEnvWorkerBodyType0', None]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -127,6 +158,8 @@ def sync(
         job_name=job_name,
         client=client,
         body=body,
+        method=method,
+        timeout=timeout,
     ).parsed
 
 
@@ -134,11 +167,16 @@ async def asyncio_detailed(
     job_name: str,
     *,
     client: Union[AuthenticatedClient, Client],
-    body: RelayCallRequest,
+    body: Union["CallRelayedEnvWorkerBodyType0", None],
+    method: str,
+    timeout: float,
 ) -> Response[Union[HTTPValidationError, RelayCallResponse]]:
     """Forward one JSON-RPC call to a relayed env worker
 
-     One request, one reply — the worker protocol is already request/response.
+     Forward one call down a held worker socket, mapping its failures to HTTP.
+
+    Shared by the generic ``/call`` below and by every named capability endpoint,
+    so those cannot drift on what a lost socket or a refused call means.
 
     Runs on a worker thread: the call holds a per-worker mutex for its whole
     duration (the worker's FIFO contract), and blocking the event loop on that
@@ -146,7 +184,9 @@ async def asyncio_detailed(
 
     Args:
         job_name (str):
-        body (RelayCallRequest):
+        method (str):
+        timeout (float):
+        body (Union['CallRelayedEnvWorkerBodyType0', None]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -159,6 +199,8 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         job_name=job_name,
         body=body,
+        method=method,
+        timeout=timeout,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -170,11 +212,16 @@ async def asyncio(
     job_name: str,
     *,
     client: Union[AuthenticatedClient, Client],
-    body: RelayCallRequest,
+    body: Union["CallRelayedEnvWorkerBodyType0", None],
+    method: str,
+    timeout: float,
 ) -> Optional[Union[HTTPValidationError, RelayCallResponse]]:
     """Forward one JSON-RPC call to a relayed env worker
 
-     One request, one reply — the worker protocol is already request/response.
+     Forward one call down a held worker socket, mapping its failures to HTTP.
+
+    Shared by the generic ``/call`` below and by every named capability endpoint,
+    so those cannot drift on what a lost socket or a refused call means.
 
     Runs on a worker thread: the call holds a per-worker mutex for its whole
     duration (the worker's FIFO contract), and blocking the event loop on that
@@ -182,7 +229,9 @@ async def asyncio(
 
     Args:
         job_name (str):
-        body (RelayCallRequest):
+        method (str):
+        timeout (float):
+        body (Union['CallRelayedEnvWorkerBodyType0', None]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -197,5 +246,7 @@ async def asyncio(
             job_name=job_name,
             client=client,
             body=body,
+            method=method,
+            timeout=timeout,
         )
     ).parsed

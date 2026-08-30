@@ -22,6 +22,7 @@ from .body_compose_run_simulation import BodyComposeRunSimulation
 from .body_compose_run_tellurium import BodyComposeRunTellurium
 from .body_run_ecoli_simulation_new import BodyRunEcoliSimulationNew
 from .body_run_ecoli_simulation_new_extra_params_type_0 import BodyRunEcoliSimulationNewExtraParamsType0
+from .call_relayed_env_worker_body_type_0 import CallRelayedEnvWorkerBodyType0
 from .chain_progress import ChainProgress
 from .check_health_health_get_response_check_health_health_get import CheckHealthHealthGetResponseCheckHealthHealthGet
 from .compose_get_simulation_document_response_compose_get_simulation_document import (
@@ -56,8 +57,6 @@ from .parca_options import ParcaOptions
 from .ptools_analysis_config import PtoolsAnalysisConfig
 from .registered_package import RegisteredPackage
 from .registered_simulators import RegisteredSimulators
-from .relay_call_request import RelayCallRequest
-from .relay_call_request_params_type_0 import RelayCallRequestParamsType0
 from .relay_call_response import RelayCallResponse
 from .relay_start_request import RelayStartRequest
 from .relay_start_response import RelayStartResponse
@@ -113,6 +112,7 @@ __all__ = (
     "BodyComposeRunTellurium",
     "BodyRunEcoliSimulationNew",
     "BodyRunEcoliSimulationNewExtraParamsType0",
+    "CallRelayedEnvWorkerBodyType0",
     "ChainProgress",
     "CheckHealthHealthGetResponseCheckHealthHealthGet",
     "ComposeGetSimulationDocumentResponseComposeGetSimulationDocument",
@@ -145,8 +145,6 @@ __all__ = (
     "PtoolsAnalysisConfig",
     "RegisteredPackage",
     "RegisteredSimulators",
-    "RelayCallRequest",
-    "RelayCallRequestParamsType0",
     "RelayCallResponse",
     "RelayStartRequest",
     "RelayStartResponse",
