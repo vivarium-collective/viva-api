@@ -125,7 +125,7 @@ def test_require_401_on_an_unconfigured_deployment_explains_why(
     with pytest.raises(HTTPException) as ei:
         auth.require_caller(_Req())
     assert ei.value.status_code == 401
-    assert "VIVA_API_IDENTITY_HEADER" in ei.value.detail
+    assert "IDENTITY_HEADER" in ei.value.detail
     assert "unset" in ei.value.detail
 
 
@@ -143,3 +143,76 @@ def test_the_setting_defaults_to_unconfigured() -> None:
     from viva_api.config import get_settings
 
     assert get_settings().identity_header == ""
+
+
+# --- the env var name, which was wrong in production for a day ---------------
+
+
+def test_the_setting_reads_the_env_var_its_docs_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deployed once as `VIVA_API_IDENTITY_HEADER` -- the name used in the plan
+    and in every docstring around it -- which pydantic-settings silently ignored,
+    because these Settings carry no `env_prefix`. The variable was on the pod,
+    `settings.identity_header` was still `""`, and the entire seam was dead
+    config: tasks recorded `created_by = NULL` and the cancel rule could never
+    fire. Nothing failed; it just did nothing.
+
+    So assert the binding itself, not the prose about it.
+    """
+    from viva_api.config import Settings
+
+    monkeypatch.setenv("IDENTITY_HEADER", "X-Auth-Request-Email")
+    assert Settings().identity_header == "X-Auth-Request-Email"
+
+
+def test_the_prefixed_name_is_NOT_what_is_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The other half, and the one that would have caught it: a prefixed name
+    must not appear to work. If someone adds an env_prefix or an alias later,
+    this fails and the overlays get revisited deliberately."""
+    from viva_api.config import Settings
+
+    monkeypatch.delenv("IDENTITY_HEADER", raising=False)
+    monkeypatch.setenv("VIVA_API_IDENTITY_HEADER", "X-Auth-Request-Email")
+    assert Settings().identity_header == "", (
+        "a prefixed env var now sets this; kustomize/overlays/*/kustomization.yaml "
+        "name the unprefixed one and must be updated together"
+    )
+
+
+def test_every_env_var_the_overlay_sets_is_actually_read() -> None:
+    """Generalises it: an env var nobody reads is dead config, and dead config
+    fails silently -- which is how both this bug and the earlier
+    ENV_WORKER_WORKSPACE_PATH one survived a whole rollout.
+
+    "Read" means EITHER a Settings field of that name (no env_prefix, so the
+    field name uppercased) OR a direct `os.environ` lookup somewhere in
+    viva_api. The second is not hypothetical: ENV_WORKER_RELAY_ADVERTISE_HOST is
+    read straight from the environment in the env-worker router, deliberately,
+    and this test found it while asserting the narrower rule. Two mechanisms is
+    itself worth knowing about; the invariant that matters is that SOMETHING
+    consumes the name.
+    """
+    import re
+    from pathlib import Path
+
+    from viva_api.config import Settings
+
+    repo = Path(__file__).resolve().parents[2]
+    fields = {name.upper() for name in Settings.model_fields}
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (repo / "viva_api").rglob("*.py")
+        if "api/client/" not in path.as_posix()
+    )
+    overlay = (repo / "kustomize" / "overlays" / "sms-api-stanford-test" / "kustomization.yaml").read_text(
+        encoding="utf-8"
+    )
+    # Capture the WHOLE name. The first version matched
+    # `(IDENTITY_HEADER|ENV_WORKER_[A-Z_]+)` unanchored, so reintroducing the bug
+    # -- `VIVA_API_IDENTITY_HEADER` -- still matched, on the substring, and the
+    # test passed against the very mistake it was written for.
+    named = set(re.findall(r"- name: ([A-Z][A-Z0-9_]*)", overlay))
+    # Only the names this repo owns; VIVARIUM_* belongs to the workbench, and
+    # K8s/AWS/Postgres inject plenty of their own.
+    ours = {n for n in named if "IDENTITY_HEADER" in n or n.startswith("ENV_WORKER")}
+    unread = sorted(n for n in ours if n not in fields and f'"{n}"' not in source)
+    assert not unread, f"overlay sets env vars nothing reads: {unread}"

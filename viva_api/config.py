@@ -302,6 +302,13 @@ class Settings(BaseSettings):
     # sets it, and where nothing sets one anybody may claim anything. It exists
     # for attribution and to stop one accident (cancelling a run you did not
     # start). See the module docstring in viva_api/api/auth.py.
+    # Env var is IDENTITY_HEADER -- the field name uppercased, because these
+    # Settings carry NO env_prefix. Worth stating: this was deployed once as
+    # VIVA_API_IDENTITY_HEADER (the name used in the plan and in every docstring
+    # around it), which pydantic-settings silently ignored -- the variable was on
+    # the pod, `settings.identity_header` was still "", and the whole seam was
+    # dead config. The same mistake had already been made once here with
+    # ENV_WORKER_WORKSPACE_PATH.
     identity_header: str = ""
 
     ray_ecr_repository: str = "v2ecoli"  # ECR repo for the workload-owned Ray image (built by submit_build_image_job)

@@ -74,7 +74,7 @@ async def async_client(base_url: BaseUrl, timeout: int = 300) -> AsyncIterator[A
 
 
 #: Header the server reads caller identity from, when a deployment configures one
-#: (viva_api/api/auth.py, VIVA_API_IDENTITY_HEADER). Overridable because the name
+#: (viva_api/api/auth.py, IDENTITY_HEADER). Overridable because the name
 #: is a property of whatever proxy sits in front -- oauth2-proxy sets
 #: X-Auth-Request-Email, an ALB OIDC action sets X-Amzn-Oidc-Identity.
 DEFAULT_IDENTITY_HEADER = "X-Auth-Request-Email"

@@ -21,7 +21,7 @@ that rules out anything cleverer:
 What every one of those *can* have is a proxy that sets a header —
 institutional SSO, ``oauth2-proxy`` (``X-Auth-Request-Email``), an ALB OIDC
 action (``X-Amzn-Oidc-Identity``). So the header's NAME is configuration
-(``VIVA_API_IDENTITY_HEADER``) and its absence is the default.
+(``IDENTITY_HEADER``) and its absence is the default.
 
 **The honest limits, stated once so they are not rediscovered as a surprise:**
 
@@ -99,7 +99,7 @@ def require_caller(request: Request) -> str:
         raise HTTPException(
             401,
             "this deployment records no caller identity "
-            "(VIVA_API_IDENTITY_HEADER is unset), so ownership cannot be "
+            "(IDENTITY_HEADER is unset), so ownership cannot be "
             "established; cancel it from the client that started it, or "
             "configure an identity header",
         )
