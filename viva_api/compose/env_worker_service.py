@@ -35,13 +35,17 @@ from viva_api.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# A worker is interactive: it answers list/resolve/render-preview queries (spec
-# §12). Simulations and heavy analyses are jobs elsewhere, so this pod stays
-# small — sized like the workbench itself rather than like a compute node.
+# A worker was once only interactive — list/resolve/render-preview queries (spec
+# §12) — and was sized like the workbench rather than like a compute node.
+#
+# The task tier (plan §E option (e)) changed what a worker is FOR: `run_study`
+# now runs to completion inside it. The sizing did not follow, and the result was
+# not a slow run but an invisible one — every composite run on dev was OOMKilled
+# (exit 137) inside ~60 s, with no logs, and the caller was told only "worker
+# closed the connection". CPU is unchanged; memory moved, and moved into settings
+# because the right ceiling belongs to the site's nodes, not to this file.
 WORKER_CPU_REQUEST = "250m"
 WORKER_CPU_LIMIT = "1"
-WORKER_MEM_REQUEST = "512Mi"
-WORKER_MEM_LIMIT = "2Gi"
 
 # Backstop only. The workbench deletes its worker when the session ends; this
 # catches the case where it never gets the chance (pod evicted, browser closed
@@ -195,6 +199,7 @@ class EnvWorkerService:
         workspace: str,
         session_key: str | None,
     ) -> k8s_client.V1Job:
+        settings = get_settings()
         labels = {"app": "sms-api", "job-type": "env-worker", "commit": commit}
         if session_key:
             labels["session"] = _label_safe(session_key)
@@ -246,8 +251,8 @@ class EnvWorkerService:
                                     k8s_client.V1VolumeMount(name="scratch", mount_path=SCRATCH_MOUNT),
                                 ],
                                 resources=k8s_client.V1ResourceRequirements(
-                                    requests={"cpu": WORKER_CPU_REQUEST, "memory": WORKER_MEM_REQUEST},
-                                    limits={"cpu": WORKER_CPU_LIMIT, "memory": WORKER_MEM_LIMIT},
+                                    requests={"cpu": WORKER_CPU_REQUEST, "memory": settings.env_worker_memory_request},
+                                    limits={"cpu": WORKER_CPU_LIMIT, "memory": settings.env_worker_memory_limit},
                                 ),
                             ),
                         ],

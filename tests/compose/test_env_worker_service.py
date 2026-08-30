@@ -41,6 +41,8 @@ def service(monkeypatch: pytest.MonkeyPatch) -> tuple[EnvWorkerService, MagicMoc
         k8s_job_namespace = "sms-api-stanford-test"
         env_worker_module_image = "ghcr.io/vivarium-collective/vivarium-workbench:0.3.57"
         env_worker_workspace_path = "/app/v2ecoli"
+        env_worker_memory_request = "512Mi"
+        env_worker_memory_limit = "8Gi"
 
     monkeypatch.setattr("viva_api.compose.env_worker_service.get_settings", lambda: _S())
     k8s = MagicMock()
@@ -56,6 +58,8 @@ def test_missing_ecr_account_refuses_rather_than_guessing(monkeypatch: pytest.Mo
         k8s_job_namespace = "ns"
         env_worker_module_image = "ghcr.io/vivarium-collective/vivarium-workbench:0.3.57"
         env_worker_workspace_path = "/app/v2ecoli"
+        env_worker_memory_request = "512Mi"
+        env_worker_memory_limit = "8Gi"
 
     monkeypatch.setattr("viva_api.compose.env_worker_service.get_settings", lambda: _S())
     svc = EnvWorkerService(k8s=MagicMock(), namespace="ns")
@@ -109,11 +113,17 @@ def test_job_does_not_respawn_and_has_a_ttl_backstop(service: tuple[EnvWorkerSer
     assert spec.template.spec.restart_policy == "Never"
 
 
-def test_worker_is_sized_for_interactive_queries_not_compute(service: tuple[EnvWorkerService, MagicMock]) -> None:
+def test_worker_cpu_stays_sized_for_one_call_at_a_time(service: tuple[EnvWorkerService, MagicMock]) -> None:
+    """This test used to read `test_worker_is_sized_for_interactive_queries_not
+    compute` and assert 2Gi. That premise expired: the task tier made a worker
+    the thing that RUNS a study, and 2Gi OOMKilled every composite run on dev.
+    Memory moved to settings (see below); CPU did not, because a worker still
+    serves exactly one call at a time -- `_serve` is strictly serial."""
     svc, k8s = service
     svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN)
     res = _created_job(k8s).spec.template.spec.containers[0].resources
-    assert res.limits["memory"] == "2Gi" and res.limits["cpu"] == "1"
+    assert res.limits["cpu"] == "1"
+    assert res.requests["cpu"] == "250m"
 
 
 def test_two_sessions_on_one_commit_get_distinct_jobs(service: tuple[EnvWorkerService, MagicMock]) -> None:
@@ -256,6 +266,8 @@ def test_missing_module_image_refuses_rather_than_guessing(monkeypatch: pytest.M
         k8s_job_namespace = "ns"
         env_worker_module_image = ""
         env_worker_workspace_path = "/app/v2ecoli"
+        env_worker_memory_request = "512Mi"
+        env_worker_memory_limit = "8Gi"
 
     monkeypatch.setattr("viva_api.compose.env_worker_service.get_settings", lambda: _S())
     svc = EnvWorkerService(k8s=MagicMock(), namespace="ns")
@@ -354,3 +366,47 @@ def test_a_failing_diagnosis_never_masks_the_fault_it_describes(
     svc, k8s = service
     k8s.get_pod_termination.side_effect = RuntimeError("API server unreachable")
     assert svc.explain_exit("env-worker-234dc76-shared") is None
+
+
+def test_worker_memory_comes_from_settings_not_from_this_file(
+    service: tuple[EnvWorkerService, MagicMock],
+) -> None:
+    """A worker used to only answer queries, and 2Gi was right for that. The task
+    tier made it the thing that RUNS a study, and at 2Gi every composite run on
+    dev was OOMKilled inside ~60 s with no logs — reported to the caller as
+    "worker closed the connection".
+
+    The ceiling is now a setting because it is a property of the site's nodes.
+    The REQUEST deliberately stays small: raising it would change scheduling on
+    every deployment to buy nothing, since the pod is idle between calls.
+    """
+    svc, k8s = service
+    svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN)
+    c = _created_job(k8s).spec.template.spec.containers[0]
+    assert c.resources.limits["memory"] == "8Gi"
+    assert c.resources.requests["memory"] == "512Mi"
+
+
+def test_a_site_can_lower_the_ceiling_without_a_code_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The point of the setting. A site on smaller nodes must be able to come
+    down; hard-coding the dev-node answer would strand them."""
+
+    class _S:
+        ecr_account_id = "476270107793"
+        batch_region = "us-gov-west-1"
+        ray_ecr_repository = "v2ecoli"
+        k8s_job_namespace = "ns"
+        env_worker_module_image = "ghcr.io/vivarium-collective/vivarium-workbench:0.3.72"
+        env_worker_workspace_path = "/app/v2ecoli"
+        env_worker_memory_request = "256Mi"
+        env_worker_memory_limit = "3Gi"
+
+    monkeypatch.setattr("viva_api.compose.env_worker_service.get_settings", lambda: _S())
+    k8s = MagicMock()
+    svc = EnvWorkerService(k8s=k8s, namespace="ns")
+    svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN)
+    c = _created_job(k8s).spec.template.spec.containers[0]
+    assert c.resources.limits["memory"] == "3Gi"
+    assert c.resources.requests["memory"] == "256Mi"
