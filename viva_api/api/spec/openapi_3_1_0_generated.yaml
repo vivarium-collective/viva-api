@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.68
+  version: 0.9.70
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -1191,7 +1191,7 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-08-30T09:27:14.243514'
+                  created_at: '2026-08-30T13:17:29.078525'
                 parca_config:
                   outdir: /projects/SMS/sms_api/jim/sims
       responses:
@@ -2271,6 +2271,422 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/composite-state:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Build a registered generator's composite state
+      operationId: resolve-env-worker-composite-state
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompositeRef'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Resolve-Env-Worker-Composite-State
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/composite-state/inner:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Drill into a Composite Process and return the inner composite's state
+      description: 'Dispatchable in the worker but absent from its `_CAPABILITIES`
+        list, so
+
+        `initialize`''s handshake does not advertise it. Given a URL here, it is at
+
+        least discoverable from the OpenAPI document.'
+      operationId: resolve-env-worker-inner-composite-state
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InnerCompositeRef'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Resolve-Env-Worker-Inner-Composite-State
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/composite-state/from-config:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Translate a vEcoli-style config into a composite document
+      description: '501 where the workspace ships no translator -- the worker''s
+
+        `__unavailable__`, which is a property of the workspace and not of the request.'
+      operationId: convert-env-worker-config-to-composite
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigDocument'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Convert-Env-Worker-Config-To-Composite
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/composite-state/docs:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Attach per-process docstrings to a resolved composite state
+      operationId: attach-env-worker-process-docs
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StateDocument'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Attach-Env-Worker-Process-Docs
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/observables:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Observable leaves and catalogs of a composite
+      operationId: read-env-worker-observables
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompositeSelector'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Read-Env-Worker-Observables
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/readout-check:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Validate a study's readouts against its composite's real structure
+      description: 'The never-fabricate guard: it is what stops a study declaring
+        a readout
+
+        the composite cannot produce.'
+      operationId: check-env-worker-study-readouts
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReadoutCheck'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Check-Env-Worker-Study-Readouts
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/process-template:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Resolved default config and input-port values for a process or step
+      operationId: read-env-worker-process-template
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcessAddress'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Read-Env-Worker-Process-Template
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/process-run:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: "Run a single update() of one process \u2014 a probe, not a job"
+      description: 'ONE update. Named `probe` in the summary on purpose: `run_process`
+        reads
+
+        like a job-class method and is not one, and that misreading has already been
+
+        made once in this codebase (see `env_worker_routing.JOB_CLASS_METHODS`).'
+      operationId: run-env-worker-process-probe
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcessRun'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Run-Env-Worker-Process-Probe
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/visualizations/render:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Render one visualization composite document to HTML
+      operationId: render-env-worker-visualization-doc
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VizDoc'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Render-Env-Worker-Visualization-Doc
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/visualizations/preview:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Render a visualization class to preview HTML
+      description: '`ok: false` here is NOT an error, deliberately. The worker''s
+        contract is
+
+        that every render outcome including a raise comes back as a 200 body with
+
+        notes; only an unregistered address is non-200.'
+      operationId: preview-env-worker-visualization
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VizPreview'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Preview-Env-Worker-Visualization
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/analysis-viewers:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Viewer descriptors contributed by the workspace's packages
+      description: 'The listing half of `analysis_viewers`. A GET, because it is a
+        read --
+
+        the `action` flag that used to hide this behind the same name as `launch`
+        is
+
+        exactly the kind of thing named endpoints exist to separate.'
+      operationId: list-env-worker-analysis-viewers
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response List-Env-Worker-Analysis-Viewers
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /env-worker/v1/relay/workers/{job_name}/analysis-viewers/launch:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Resolve and invoke one contributed viewer's launch
+      description: 'POST rather than GET: this invokes a contributor''s callable,
+        which may do
+
+        anything the workspace''s code can do. Same operation as `?action=launch`,
+
+        with `uid` required instead of silently defaulting to the listing.'
+      operationId: launch-env-worker-analysis-viewer
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ViewerLaunch'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Launch-Env-Worker-Analysis-Viewer
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /env-worker/v1/tasks:
     post:
       tags:
@@ -2959,6 +3375,70 @@ components:
       - packages
       - database_id
       title: ComposeSimulatorVersion
+    CompositeRef:
+      properties:
+        ref:
+          type: string
+          minLength: 1
+          title: Ref
+          description: Registered @composite_generator name
+        overrides:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Overrides
+          description: Generator parameter overrides
+      additionalProperties: true
+      type: object
+      required:
+      - ref
+      title: CompositeRef
+      description: A composite named by a registered generator, optionally with overrides.
+    CompositeSelector:
+      properties:
+        ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ref
+        state:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: State
+        schema:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Schema
+      additionalProperties: true
+      type: object
+      title: CompositeSelector
+      description: 'A composite given EITHER by `ref` OR inline as `{state, schema}`.
+
+
+        Both forms are real and the worker accepts either; sending neither is the
+
+        mistake worth catching here, because the worker answers it with
+
+        `__not_registered__` -- which reads as "your ref is wrong" to a caller who
+
+        sent no ref at all.'
+    ConfigDocument:
+      properties:
+        config:
+          additionalProperties: true
+          type: object
+          title: Config
+          description: vEcoli-style config to translate
+      additionalProperties: true
+      type: object
+      required:
+      - config
+      title: ConfigDocument
     ContainerizationEngine:
       type: integer
       enum:
@@ -3331,6 +3811,31 @@ components:
       - job_id_ext
       - job_backend
       title: HpcRun
+    InnerCompositeRef:
+      properties:
+        ref:
+          type: string
+          minLength: 1
+          title: Ref
+        hops:
+          items:
+            items:
+              type: string
+            type: array
+          type: array
+          minItems: 1
+          title: Hops
+          description: One node path per drill level
+      additionalProperties: true
+      type: object
+      required:
+      - ref
+      - hops
+      title: InnerCompositeRef
+      description: '`hops` is a LIST OF NODE PATHS, each itself a list of key segments
+        -- which
+
+        is why this is a POST and not the GET the plan first assumed.'
     JobStatus:
       type: string
       enum:
@@ -3467,6 +3972,60 @@ components:
       additionalProperties: true
       type: object
       title: ParcaOptions
+    ProcessAddress:
+      properties:
+        address:
+          type: string
+          minLength: 1
+          title: Address
+          description: Registry address of a Process or Step
+        config:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Config
+      additionalProperties: true
+      type: object
+      required:
+      - address
+      title: ProcessAddress
+    ProcessRun:
+      properties:
+        address:
+          type: string
+          minLength: 1
+          title: Address
+          description: Registry address of a Process or Step
+        config:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Config
+        inputs:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Inputs
+        interval:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Interval
+      additionalProperties: true
+      type: object
+      required:
+      - address
+      title: ProcessRun
+      description: 'One `update()` -- a probe, not a job. `env_worker._run_process`
+        is
+
+        deliberately NOT job-class: it builds one class, fills its ports and runs
+        a
+
+        single step, which is the Composite Explorer''s "try this process" button.'
     PtoolsAnalysisConfig:
       properties:
         name:
@@ -3514,6 +4073,35 @@ components:
         \ not per-module.\nFully supported for ``single`` analyses.  Aggregated types\n\
         (``multigeneration``, ``multiseed``) do not currently respect these\nfilters\
         \ due to a known vEcoli limitation."
+    ReadoutCheck:
+      properties:
+        ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ref
+        state:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: State
+        schema:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Schema
+        spec:
+          additionalProperties: true
+          type: object
+          title: Spec
+          description: The study spec whose readouts are checked
+      additionalProperties: true
+      type: object
+      required:
+      - spec
+      title: ReadoutCheck
     RegisteredPackage:
       properties:
         database_id:
@@ -3721,7 +4309,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-08-30 09:27:14.175632'
+          default: '2026-08-30 13:17:29.009960'
         job_id:
           anyOf:
           - type: string
@@ -3922,6 +4510,24 @@ components:
       - git_branch
       - database_id
       title: SimulatorVersion
+    StateDocument:
+      properties:
+        document:
+          additionalProperties: true
+          type: object
+          title: Document
+          description: An already-resolved composite state
+        ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ref
+          description: Generator whose core_extensions resolve bare addresses
+      additionalProperties: true
+      type: object
+      required:
+      - document
+      title: StateDocument
     TaskResponse:
       properties:
         task_id:
@@ -4114,3 +4720,84 @@ components:
       - msg
       - type
       title: ValidationError
+    ViewerLaunch:
+      properties:
+        uid:
+          type: string
+          minLength: 1
+          title: Uid
+          description: Viewer uid from the listing
+        study:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Study
+        run:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Run
+        ctx:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Ctx
+      additionalProperties: true
+      type: object
+      required:
+      - uid
+      title: ViewerLaunch
+      description: '`analysis_viewers` carries two operations behind an `action` flag.
+        They are
+
+        split into two routes here: listing is a read, launching invokes a
+
+        contributor''s callable. One endpoint with a mode string would hide that.'
+    VizDoc:
+      properties:
+        viz_doc:
+          additionalProperties: true
+          type: object
+          title: Viz Doc
+          description: A visualization composite document
+      additionalProperties: true
+      type: object
+      required:
+      - viz_doc
+      title: VizDoc
+    VizPreview:
+      properties:
+        address:
+          type: string
+          minLength: 1
+          title: Address
+          description: Visualization class address
+        config:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Config
+        source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source
+          description: demo | streaming | investigation
+        note_prefix:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note Prefix
+        investigation_inputs_store:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Investigation Inputs Store
+      additionalProperties: true
+      type: object
+      required:
+      - address
+      title: VizPreview
