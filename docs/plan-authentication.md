@@ -1,39 +1,58 @@
 # Plan: Authentication for viva-api
 
-**Started 2026-08-30.** Written after the identity seam went live on
-`sms-api-stanford-test` and the question "should we run Keycloak?" was asked
-seriously. This is a *plan*, not a description of current practice — everything
-in "Where we are" was verified on that date; everything under "Open questions"
-is genuinely open and should not be read as settled.
+**Started 2026-08-30. Phases 0 and 2 landed the same day.** Written after the
+identity seam went live on `sms-api-stanford-test` and the question "should we
+run Keycloak?" was asked seriously.
+
+This is a *plan*, not a description of current practice — everything in "Where we
+are" was verified against the running systems on that date, and everything under
+"Open questions" is genuinely open and should not be read as settled.
 
 Companion to [`DEPLOY.md`](DEPLOY.md), which describes what is deployed today.
 
 ---
 
-## Status: NOT STARTED
+## Status: PHASES 0 AND 2 DONE — BLOCKED ON A DOMAIN
 
-Phases 0 and 2 are filed and ready to pick up — [#336](https://github.com/vivarium-collective/viva-api/issues/336)
-(CORS) and [#337](https://github.com/vivarium-collective/viva-api/issues/337)
-(JWKS validation). Neither depends on the certificate question that blocks the
-rest. No phase below has begun. The identity **seam** exists (`viva_api/api/auth.py`,
-live on stanford-test since 2026-08-30) and is deliberately not authentication.
+| Phase | State | Shipped |
+|---|---|---|
+| 0 — CORS | **DONE** ([#336](https://github.com/vivarium-collective/viva-api/issues/336)) | 0.9.74, deployed stanford-test 2026-08-30 |
+| 1 — TLS + certificate | **BLOCKED** — no domain chosen | — |
+| 2 — Token validation | **DONE** ([#337](https://github.com/vivarium-collective/viva-api/issues/337)) | 0.9.75, deployed **inert** (no issuer set) |
+| 3 — A token per client | Not started; needs Phase 1 | — |
+| 4 — What is protected | Not started; the large one | — |
+
+**Nothing is enforced.** viva-api still has 79 routes and no route requires a
+credential. Phase 2 made an identity *readable* where an issuer is configured; it
+did not make one *required*, and no deployment configures an issuer today.
+
+**The critical path now runs through a decision, not through code.** Phases 0 and
+2 were the two pieces that did not need a domain, a budget or an owner. Both are
+done. Everything remaining waits on question 1 below.
+
+The identity **seam** (`viva_api/api/auth.py`) is live on stanford-test and is
+still deliberately not authentication — but since Phase 2 it has two sources, and
+the verified one wins. See that module's docstring.
 
 ---
 
 ## Where we are
 
-Verified 2026-08-30 against the running systems and the CDK sources.
+Verified 2026-08-30 against the running systems and the CDK sources. Rows are
+marked where Phases 0 and 2 changed them.
 
 | Fact | Evidence |
 |---|---|
-| 79 routes, **zero** security schemes, no per-operation security | `api/spec/openapi_3_1_0_generated.yaml` |
+| 79 routes, **zero** security schemes, no per-operation security | `api/spec/openapi_3_1_0_generated.yaml` — **unchanged by Phase 2**, which made identity readable, not required |
 | One authorization rule exists: you cannot cancel a task you did not start | `api/routers/env_worker.py`, `api/auth.py` |
-| Identity is one configurable header, `IDENTITY_HEADER` | `config.py` — note: **no `env_prefix`**, so it is not `VIVA_API_*` |
+| Identity has **two** sources: a verified OIDC token, else a configurable header | `api/oidc.py`, `api/auth.py` — *changed by Phase 2*; the verified source wins |
+| No deployment sets `OIDC_ISSUER`, so token validation is **inert everywhere** | the api pod's startup log says so on purpose |
+| Env vars bind to the field name uppercased — `IDENTITY_HEADER`, `OIDC_ISSUER` | `config.py` — **no `env_prefix`**, so never `VIVA_API_*` |
 | Stanford dev + prod are unreachable without an AWS session | internal ALB, `internetFacing: false`, SSM tunnel only |
 | **UConn prod is on the open internet with no auth challenge** | `curl -sI https://sms.cam.uchc.edu/docs` → `HTTP/2 200`, no `www-authenticate` |
-| The internal ALB listener is **HTTP:80, no certificate** | `sms-cdk/lib/internal-alb-stack.ts` |
+| The internal ALB listener is **HTTP:80, no certificate** | `sms-cdk/lib/internal-alb-stack.ts` — **still the blocker** |
 | Neither GovCloud config defines a domain, so **no ACM certificate is created** | `config/stanford-vpc-test.json`, `config/stanford.json` — both have no `domain` block |
-| CORS is `allow_origins=["*"]` **with** `allow_credentials=True` | `api/main.py:111-112`; the correct list is defined at `:44` and never passed |
+| ~~CORS is `["*"]` with `allow_credentials=True`~~ → now `APP_ORIGINS` with credentials off | `api/main.py` — *fixed by Phase 0* |
 
 > **Correction, recorded because it was asserted in discussion and was wrong.**
 > The ACM certificate machinery in `shared-stack.ts` *does* exist and *is*
@@ -71,14 +90,29 @@ Three narrower reasons point the same way, and any one of them is sufficient:
 3. The `AWSELBAuthSessionCookie` that ALB OIDC sets is itself a session
    credential.
 
-## Phase 0 — Fix CORS *(independent of everything else)* — [#336](https://github.com/vivarium-collective/viva-api/issues/336)
+## Phase 0 — Fix CORS — **DONE** ([#336](https://github.com/vivarium-collective/viva-api/issues/336), 0.9.74)
 
-`allow_origins=["*"]` together with `allow_credentials=True` is rejected by
-browsers per spec, so it is already wrong. It is harmless only because nothing
-currently carries a credential — which stops being true at Phase 2.
+`allow_origins=["*"]` with `allow_credentials=True` is rejected by browsers per
+spec, so the pair did not mean "permissive" — it meant *credentialed
+cross-origin requests fail*, which is a different thing and not what the code
+read as.
 
-The correct list already exists in the file as `APP_ORIGINS` and is never passed
-to the middleware. This is a small change and should not wait for the rest.
+Now `allow_origins=APP_ORIGINS` (the list that sat defined-and-unused directly
+above the middleware) and `allow_credentials=False`.
+
+**What the investigation found**, since the risk was breaking a caller nobody
+remembers: there is **no credentialed cross-origin browser caller at all**.
+`/docs`, `/documentation` and `/home` are served *by* viva-api and are
+same-origin; the marimo GUI's API calls run in the marimo *kernel* (httpx,
+server-side), not the browser; the CLI and TUI are not browsers; the workbench UI
+is same-origin behind the shared ALB. Ports 4200–4202 are leftovers from an
+Angular frontend not in this repo, left in place rather than pruned.
+
+Narrowing also closed one small real hole: a developer with the SSM tunnel open
+has an internal API on `localhost`, and `["*"]` let any page they visited read it.
+
+A comment at the call site says what to do when a credentialed browser client
+appears — add its origin; **do not widen back to `["*"]`**.
 
 ## Phase 1 — TLS on the client-facing hop
 
@@ -112,23 +146,40 @@ sitting behind it.
 > real name fails. Every developer will need a hosts entry or equivalent. It is
 > workable, and it changes the daily loop for everyone.
 
-## Phase 2 — Token validation in viva-api — [#337](https://github.com/vivarium-collective/viva-api/issues/337)
+## Phase 2 — Token validation in viva-api — **DONE** ([#337](https://github.com/vivarium-collective/viva-api/issues/337), 0.9.75)
 
-Small, and the piece that actually delivers **provider substitutability**.
+`viva_api/api/oidc.py`. Validates a bearer token against a configured issuer's
+discovery document and JWKS — signature, `iss`, `aud`, `exp`, `nbf` — and hands
+the subject to the seam. **`resolve_caller` now has two sources and the verified
+one wins**: letting an unverified header override a verified token would make the
+header a way to impersonate anyone, which is what token validation exists to stop.
 
-Validate a JWT against a configured issuer's OIDC discovery document and JWKS —
-signature, `iss`, `aud`, `exp` — and hand the subject to the seam that already
-exists. Roughly 150 lines.
+Deployed **inert**. `OIDC_ISSUER` is unset everywhere, so nothing changed; the
+startup log says so, deliberately reporting whether validation is *usable* rather
+than merely *set*.
 
-Done at the standards layer, Keycloak, Entra, Okta, an ALB OIDC action and a
-customer's own provider become interchangeable *by construction*. This is the
-answer to "could different deployments substitute their own OIDC provider":
-yes, and it is why this belongs in the standards layer rather than in a second
-bespoke header.
+**Provider substitutability is delivered.** Because validation is at the
+standards layer, Keycloak, Entra, Okta, an ALB OIDC action and a customer's own
+provider are interchangeable by construction. Discovery is *fetched*, not
+assumed — hardcoding Keycloak's `certs` path would have broken that on the first
+deployment that pointed elsewhere.
 
-**`resolve_caller` gains a second source.** The header source stays. Off unless
-an issuer is configured, so this ships and deploys inert — the same posture that
-let the relay ship ahead of being switched on.
+**Half-configured refuses rather than degrades.** Validation disables itself
+entirely, saying why once, when the audience is unset (an issuer-only check
+accepts tokens the same IdP minted for a different relying party), when the
+algorithm list names `none` or an HMAC algorithm, or when the issuer is not
+https. A deployment that set `OIDC_ISSUER` meant to turn something on; failing
+loudly beats quietly validating less than it appears to.
+
+**Known trade, stated in the module:** an invalid token is anonymous rather than
+a 401, because `resolve_caller` must never break a request. So an expired token
+looks like no token. The clients cover it from the other side — `atlantis worker
+submit` warns when the server did not record the identity it was given.
+
+> **This did not make anything secure.** A verified token over the current
+> HTTP:80 listener is replayable by anyone who can observe the VPC, and no route
+> requires one. Shipping it first was a sequencing choice — it was reversible and
+> unblocked — not a claim that the API is now protected.
 
 ## Phase 3 — Getting a token into each client
 
@@ -199,7 +250,8 @@ These are genuinely unanswered. Do not treat any of them as decided.
 
 1. **Which domain?** `jcschaff.org` is gone. Phase 1 cannot start without a name
    we control. Is there a Stanford-side domain available, or does this want a
-   new registration?
+   new registration? **This is now the single blocking question** — with Phases 0
+   and 2 done, nothing else can proceed until it is answered.
 2. **Is ALB `authenticate-oidc` available in AWS GovCloud?** Not verified. This
    single fact decides whether the hybrid above exists. Cheap to check with
    console access.
@@ -211,12 +263,16 @@ These are genuinely unanswered. Do not treat any of them as decided.
 5. **Does auth apply to prod before dev?** Unusually, the exposure argument runs
    the opposite way to the normal rollout order.
 
-## Sequencing note
+## Sequencing note *(now history)*
 
-Phases 0 and 2 are independent of the certificate question and can proceed now.
-Phase 2 ships inert. That ordering deliberately front-loads the reversible work
-and leaves the decision that needs a domain, a budget and an owner until it has
-those.
+Phases 0 and 2 were chosen first because they were independent of the
+certificate question, reversible, and shippable inert. Both are done, and the
+ordering held: neither required a decision anyone had to make.
+
+What that leaves is the part the ordering was designed to expose. **Everything
+remaining is blocked on a question, not on effort** — Phase 1 needs a domain,
+Phase 3 needs Phase 1, and Phase 4 needs somebody to decide what a protected
+route is. There is no more code that can usefully be written ahead of those.
 
 ## A trap this repository has already fallen into
 
@@ -232,9 +288,19 @@ Whatever gets built here needs a test that proves the **binding**, not the
 intent. `tests/api/test_auth_seam.py` now has three, including a general one:
 every env var an overlay sets must be read by something.
 
+Phase 2 was built with that in mind, which is why it logs at startup whether
+validation is *usable* rather than merely *set*, and why `pyjwt[crypto]` is
+declared explicitly rather than relied on transitively — a transitive pin that
+moved would have broken token validation silently, which is the same failure
+shape a third time.
+
 ## References
 
 - `viva_api/api/auth.py` — the seam, and its docstring on what it is not
+- `viva_api/api/oidc.py` — Phase 2's validator, and its docstring on what it does
+  not make secure
+- `tests/api/test_oidc.py` — signed with a real keypair; biased toward every way
+  validation could fail OPEN
 - `docs/DEPLOY.md` §2b — what the ALB routes, and what silently does not
 - `sms-cdk/lib/internal-alb-stack.ts` — the HTTP:80 listener
 - `sms-cdk/lib/shared-stack.ts` — the unused ACM certificate path
