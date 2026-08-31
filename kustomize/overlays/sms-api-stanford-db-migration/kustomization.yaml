@@ -39,7 +39,7 @@ images:
     # live (UndefinedColumnError spam in the api pod, confirmed via real logs)
     # by deploying the app first; fixed there, and this overlay updated first
     # here specifically to not repeat it in prod.
-    newTag: 0.9.56
+    newTag: 0.9.78
 
 resources:
   - alembic-job.yaml
