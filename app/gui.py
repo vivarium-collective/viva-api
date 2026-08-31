@@ -1199,6 +1199,16 @@ def _(card, get_worker_svc, json, mo, traceback, wrk_detail_button, wrk_task_id)
                     _stage = _e.get("stage", "?") if isinstance(_e, dict) else "?"
                     _msg = _e.get("error", "") if isinstance(_e, dict) else str(_e)
                     _lines.append(f"&nbsp;&nbsp;<code>{_stage}</code> {_msg}")
+            # The verdict is the one thing here a scientist might act on.
+            _v = _result.get("verdict") if isinstance(_result, dict) else None
+            _inc = _v.get("evidence_incomplete") if isinstance(_v, dict) else None
+            if _inc:
+                _lines.append(
+                    f"<span class='memphis-status-failed'>Verdict not graded</span> &mdash; was "
+                    f"<code>{_inc.get('overall_before')}</code>, but "
+                    f"{len(_inc.get('failed_stages') or [])} stage(s) of this run did not happen. "
+                    "The card on disk is unchanged."
+                )
             if _result is not None:
                 _lines.append(
                     f"<pre style='font-size:0.7rem; max-height:22rem; overflow:auto;'>"

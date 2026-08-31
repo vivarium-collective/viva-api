@@ -656,6 +656,19 @@ def _print_task(console: Console, task: dict[str, Any]) -> None:
                 stage = entry.get("stage", "?") if isinstance(entry, dict) else "?"
                 message = entry.get("error", "") if isinstance(entry, dict) else str(entry)
                 console.print(f"  [memphis.label]{stage}[/] {message}", highlight=False)
+        # A conclusion card sitting under a partly-failed run is the one thing
+        # here a scientist might act on, so say plainly that it is not about this
+        # run. The harvest already demoted `overall`; without this the demotion
+        # is only visible to someone reading the raw JSON.
+        verdict = result.get("verdict") if isinstance(result, dict) else None
+        incomplete = verdict.get("evidence_incomplete") if isinstance(verdict, dict) else None
+        if incomplete:
+            console.print(
+                f"\n[memphis.warn]Verdict not graded[/] [dim]— was "
+                f"'{incomplete.get('overall_before')}', but "
+                f"{len(incomplete.get('failed_stages') or [])} stage(s) of this run did not "
+                f"happen. The card on disk is unchanged.[/]"
+            )
         console.print()
         display_json(result, console)
 
