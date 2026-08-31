@@ -995,6 +995,60 @@ def _to_response(task: EnvWorkerTask) -> TaskResponse:
     )
 
 
+#: Job-class methods that name a study and can therefore be scale-checked before
+#: they are accepted. `run_investigation_analysis` is job-class too but takes an
+#: investigation rather than a study, so there is nothing to multiply.
+_SCALE_CHECKED_METHODS = ("run_study", "run_study_analyses")
+
+
+async def _refuse_if_over_tier_budget(body: TaskSubmitRequest) -> None:
+    """Ask the worker whether this study belongs in this tier, before accepting it.
+
+    THE TIER DECIDES WHERE WORK GOES — that is what makes it a tier rather than a
+    queue. The same declared-scale check already runs inside the worker
+    (`launch_into_study`, workstream 8 step 2b), but by then the answer arrives
+    as an entry in a harvest's `errors[]`, which under this tier's own semantics
+    reads as *the science failed*. It did not: the caller sent 10,000 simulations
+    somewhere sized for a handful. Refusing at submit says so.
+
+    **This covers the SCALE axis only.** A study can declare one simulation and
+    still be unrunnable here — `basal` declares 1 and needs a ParCa cache the
+    worker has no way to stage. That is a different axis (environment
+    capability), it is deliberately not inferred (`env-worker-routing.md` §4: a
+    `@composite_generator` is arbitrary Python), and it is handled by failing
+    fast with a legible error instead. Do not extend this function to guess at it.
+
+    Never blocks on its own failure: an old worker without `study_precheck`, a
+    dropped socket, or a malformed answer all fall through to accepting the task.
+    A precheck that could refuse work by breaking would be worse than no precheck.
+    """
+    if body.method not in _SCALE_CHECKED_METHODS:
+        return
+    params = body.params or {}
+    if not params.get("study_slug"):
+        return
+    try:
+        conn = relay.registry.get(body.job_name)
+        verdict = await anyio.to_thread.run_sync(
+            functools.partial(conn.call, "study_precheck", dict(params), timeout=30.0)
+        )
+    except Exception:
+        logger.info("study_precheck unavailable for %s; accepting the task unchecked", body.job_name)
+        return
+    if not isinstance(verdict, dict) or not verdict.get("exceeds"):
+        return
+    raise HTTPException(
+        422,
+        {
+            "error": "declared run scale exceeds what an env worker may take",
+            "declared_simulations": verdict.get("declared"),
+            "budget": verdict.get("budget"),
+            "hint": verdict.get("hint") or "dispatch this to Batch instead",
+            "method": body.method,
+        },
+    )
+
+
 @router.post(
     path="/tasks",
     operation_id="submit-env-worker-task",
@@ -1019,6 +1073,7 @@ async def submit_task(request: Request, body: TaskSubmitRequest) -> TaskResponse
         relay.registry.get(body.job_name)
     except relay.WorkerUnavailable as e:
         raise HTTPException(404, str(e)) from e
+    await _refuse_if_over_tier_budget(body)
     task = await db.insert_task(
         job_name=body.job_name,
         method=body.method,

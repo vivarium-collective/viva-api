@@ -345,3 +345,115 @@ async def test_the_listing_is_unaffected_by_the_launch_rule(
     r = await _get(application, "/analysis-viewers")
     assert r.status_code == 200
     assert r.json()["viewers"][0]["uid"] == "u1"
+
+
+# --- the tier decides where work goes (option 3: split by scale) -------------
+#
+# The same declared-scale check already runs INSIDE the worker
+# (`launch_into_study`, workstream 8 step 2b). By then it is too late to be
+# useful: the worker is occupied, and the refusal comes back as an entry in a
+# harvest's `errors[]` — which under this tier's own semantics reads as *the
+# science failed*, when it means *you sent this to the wrong tier*. Asking
+# first is what makes this a tier rather than a queue.
+
+
+def _submit_app(monkeypatch: pytest.MonkeyPatch, precheck: Any) -> tuple[FastAPI, list[str]]:
+    """The submit endpoint with a stubbed worker connection and task db."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    calls: list[str] = []
+
+    class _Conn:
+        def call(self, method: str, params: Any, timeout: float = 0) -> Any:
+            calls.append(method)
+            if isinstance(precheck, Exception):
+                raise precheck
+            return precheck
+
+    monkeypatch.setattr("viva_api.compose.env_worker_relay.registry.get", lambda job: _Conn())
+    db = MagicMock()
+    db.insert_task = AsyncMock(return_value=MagicMock(database_id=1))
+    monkeypatch.setattr(ew, "_require_task_db", lambda: db)
+    runner = MagicMock()
+    runner.submit = AsyncMock()
+    monkeypatch.setattr(ew, "_require_runner", lambda: runner)
+    monkeypatch.setattr(
+        ew, "_to_response", lambda t: {"task_id": 1, "job_name": "j", "method": "m", "status": "queued"}
+    )
+    application = FastAPI()
+    application.include_router(ew.router, prefix="/env-worker/v1")
+    return application, calls
+
+
+async def _submit(app: FastAPI, method: str, params: Any) -> Any:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        return await c.post("/env-worker/v1/tasks", json={"job_name": "job-1", "method": method, "params": params})
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_study_is_refused_at_submit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """422 naming the numbers, before a worker is committed to it."""
+    app, calls = _submit_app(
+        monkeypatch, {"exceeds": True, "declared": 10000, "budget": 50, "hint": "dispatch it to Batch instead"}
+    )
+    r = await _submit(app, "run_study", {"study_slug": "big"})
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert detail["declared_simulations"] == 10000
+    assert detail["budget"] == 50
+    assert "Batch" in detail["hint"], "a refusal must say where the work should go instead"
+    assert calls == ["study_precheck"]
+
+
+@pytest.mark.asyncio
+async def test_a_small_study_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    app, calls = _submit_app(monkeypatch, {"exceeds": False, "declared": 1, "budget": 50})
+    r = await _submit(app, "run_study", {"study_slug": "small"})
+    assert r.status_code == 202
+    assert calls == ["study_precheck"]
+
+
+@pytest.mark.asyncio
+async def test_a_method_that_names_no_study_is_not_prechecked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`run_process` is a probe and `run_investigation_analysis` takes an
+    investigation — there is nothing to multiply, so do not pay a round trip."""
+    app, calls = _submit_app(monkeypatch, {"exceeds": True, "declared": 999999, "budget": 50})
+    assert (await _submit(app, "run_process", {"address": "local:P"})).status_code == 202
+    assert (await _submit(app, "run_investigation_analysis", {"investigation": "i"})).status_code == 202
+    assert calls == [], "neither should have been prechecked"
+
+
+@pytest.mark.asyncio
+async def test_a_run_study_without_a_slug_is_not_prechecked(monkeypatch: pytest.MonkeyPatch) -> None:
+    app, calls = _submit_app(monkeypatch, {"exceeds": True, "declared": 999, "budget": 50})
+    assert (await _submit(app, "run_study", {})).status_code == 202
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_precheck_that_fails_never_blocks_the_submit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An old worker without `study_precheck`, a dropped socket, a malformed
+    answer: all fall through to accepting. A precheck that could refuse work by
+    BREAKING would be worse than no precheck at all."""
+    for outcome in (RuntimeError("no such method"), None, "not a dict", {"no_verdict_key": 1}):
+        app, _ = _submit_app(monkeypatch, outcome)
+        r = await _submit(app, "run_study", {"study_slug": "s"})
+        assert r.status_code == 202, outcome
+
+
+@pytest.mark.asyncio
+async def test_the_precheck_is_asked_about_the_callers_own_knobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A caller overriding n_seeds upward must be judged on what they sent, so
+    the whole params dict goes to the worker rather than just the slug."""
+    seen: dict[str, Any] = {}
+
+    class _Conn:
+        def call(self, method: str, params: Any, timeout: float = 0) -> Any:
+            seen.update(params)
+            return {"exceeds": False}
+
+    monkeypatch.setattr("viva_api.compose.env_worker_relay.registry.get", lambda job: _Conn())
+    app, _ = _submit_app(monkeypatch, {"exceeds": False})
+    monkeypatch.setattr("viva_api.compose.env_worker_relay.registry.get", lambda job: _Conn())
+    await _submit(app, "run_study", {"study_slug": "s", "n_seeds": 900, "n_generations": 10})
+    assert seen.get("n_seeds") == 900 and seen.get("n_generations") == 10
