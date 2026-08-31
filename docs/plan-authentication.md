@@ -12,7 +12,10 @@ Companion to [`DEPLOY.md`](DEPLOY.md), which describes what is deployed today.
 
 ## Status: NOT STARTED
 
-No phase below has begun. The identity **seam** exists (`viva_api/api/auth.py`,
+Phases 0 and 2 are filed and ready to pick up — [#336](https://github.com/vivarium-collective/viva-api/issues/336)
+(CORS) and [#337](https://github.com/vivarium-collective/viva-api/issues/337)
+(JWKS validation). Neither depends on the certificate question that blocks the
+rest. No phase below has begun. The identity **seam** exists (`viva_api/api/auth.py`,
 live on stanford-test since 2026-08-30) and is deliberately not authentication.
 
 ---
@@ -68,7 +71,7 @@ Three narrower reasons point the same way, and any one of them is sufficient:
 3. The `AWSELBAuthSessionCookie` that ALB OIDC sets is itself a session
    credential.
 
-## Phase 0 — Fix CORS *(independent of everything else)*
+## Phase 0 — Fix CORS *(independent of everything else)* — [#336](https://github.com/vivarium-collective/viva-api/issues/336)
 
 `allow_origins=["*"]` together with `allow_credentials=True` is rejected by
 browsers per spec, so it is already wrong. It is harmless only because nothing
@@ -109,7 +112,7 @@ sitting behind it.
 > real name fails. Every developer will need a hosts entry or equivalent. It is
 > workable, and it changes the daily loop for everyone.
 
-## Phase 2 — Token validation in viva-api
+## Phase 2 — Token validation in viva-api — [#337](https://github.com/vivarium-collective/viva-api/issues/337)
 
 Small, and the piece that actually delivers **provider substitutability**.
 
@@ -235,6 +238,7 @@ every env var an overlay sets must be read by something.
 - `docs/DEPLOY.md` §2b — what the ALB routes, and what silently does not
 - `sms-cdk/lib/internal-alb-stack.ts` — the HTTP:80 listener
 - `sms-cdk/lib/shared-stack.ts` — the unused ACM certificate path
+- [#336](https://github.com/vivarium-collective/viva-api/issues/336), [#337](https://github.com/vivarium-collective/viva-api/issues/337) — the two unblocked phases, filed
 - vivarium-workbench#1000 — the workbench's missing `Principal`
 - `vivarium-workbench/docs/run-orchestration-consolidation.md` §E — where the
   access-control question was first recorded as open
