@@ -217,3 +217,33 @@ patches:
     target:
       kind: Deployment
       name: api
+  # Env workers (vivarium-workbench#942 / REFACTOR-PLAN 2A.8). The api relays a
+  # worker's dial-back connection, so it must advertise a routable address for
+  # itself: viva_api/api/routers/env_worker.py reads ENV_WORKER_RELAY_ADVERTISE_HOST
+  # and app/cli.py errors out by name when it is unset. Pod IP rather than the
+  # Service name because the worker connects back to THIS replica, not to a
+  # load-balanced endpoint. Matches the sms-api-stanford-test overlay.
+  #
+  # Deliberately NOT copying that overlay's neighbouring IDENTITY_HEADER=X-Auth-
+  # Request-Email: the value is already DEFAULT_IDENTITY_HEADER in
+  # app/app_data_service.py, and the env var actually consulted there is
+  # ATLANTIS_IDENTITY_HEADER -- so setting IDENTITY_HEADER changes nothing and is
+  # unrelated to env workers.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: api
+      spec:
+        template:
+          spec:
+            containers:
+              - name: api
+                env:
+                  - name: ENV_WORKER_RELAY_ADVERTISE_HOST
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: status.podIP
+    target:
+      kind: Deployment
+      name: api
