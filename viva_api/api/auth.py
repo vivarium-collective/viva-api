@@ -1,10 +1,25 @@
 """Caller identity — a seam, not a security boundary.
 
-**Read this before using anything here.** viva-api performs no authentication.
-There are no security schemes, no token verification, and CORS is currently
-``allow_origins=["*"]``. This module does not change that. It answers one
-question — *who is claiming to make this request* — so that work can be
-attributed and so that one destructive operation can refuse an obvious accident.
+**Read this before using anything here.** viva-api performs no
+*authorization*: there are no security schemes and no route requires a
+credential. This module answers one question — *who is making this request* — so
+that work can be attributed and one destructive operation can refuse an obvious
+accident.
+
+Since #337 there are two sources, and they differ in kind:
+
+* an **OIDC bearer token**, verified against the issuer's published keys
+  (:mod:`viva_api.api.oidc`). Configured-or-absent, off by default. This one
+  carries evidence.
+* the **identity header** described below, which does not.
+
+Everything the rest of this docstring says about the header's limits remains
+exactly true *of the header*. It is no longer true of the whole module, and the
+distinction matters: with an issuer configured, ``resolve_caller`` can return an
+identity the caller could not have fabricated.
+
+**What has not changed:** nothing here makes a token *required*. A caller with no
+credential is anonymous and is refused only by the one rule below.
 
 **Why a header, and why a configurable one.** The deployments differ in a way
 that rules out anything cleverer:
@@ -62,12 +77,29 @@ def identity_header_name() -> str:
 
 
 def resolve_caller(request: Request) -> str | None:
-    """Who this request claims to be, or ``None`` for anonymous.
+    """Who this request is, or claims to be — or ``None`` for anonymous.
+
+    Two sources, and the VERIFIED one wins:
+
+    1. an OIDC bearer token, checked against the issuer's published keys
+       (:mod:`viva_api.api.oidc`) — an identity the issuer asserted;
+    2. the configured identity header — an identity the caller typed.
+
+    A deployment may have either, both or neither. Where both are present the
+    token is authoritative, because it is the only one carrying evidence: letting
+    an unverified header override a verified token would make the header a way to
+    impersonate anyone, which is precisely what adding token validation was for.
 
     Never raises and never refuses: reading identity must not be able to break a
     request, because on most deployments there is none to read and that is
     normal. Callers decide what to do with ``None``.
     """
+    from viva_api.api import oidc
+
+    verified = oidc.subject_from_bearer(request)
+    if verified:
+        return verified[:MAX_IDENTITY_LEN] if len(verified) > MAX_IDENTITY_LEN else verified
+
     header = identity_header_name()
     if not header:
         return None

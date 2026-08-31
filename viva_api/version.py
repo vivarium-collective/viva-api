@@ -625,4 +625,4 @@
 #          (#283): "Use GET /analyses/{id}/status" read as the SIMULATION id,
 #          not the separate analysis id space -- now spells out
 #          GET /simulations/{id}/analyses as the lookup step first.
-__version__ = "0.9.74"
+__version__ = "0.9.75"

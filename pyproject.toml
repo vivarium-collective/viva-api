@@ -1,6 +1,6 @@
 [project]
 name = "viva_api"
-version = "0.9.74"
+version = "0.9.75"
 description = "This is the api server for Vivarium simulation services."
 authors = [{ name = "Alex Patrie", email = "alexanderpatrie@gmail.com" }, { name = "Jim Schaff", email = "jschaff@gmail.com" }]
 requires-python = ">=3.13,<3.14"
@@ -22,6 +22,12 @@ dependencies = [
     "Mako>=1.3.12",
     "async-lru>=2.0.5,<3",
     "httpx>=0.28.1,<0.29",
+    # OIDC bearer-token validation (viva_api/api/oidc.py). Declared explicitly
+    # rather than relied on transitively: PyJWT arrives today via another
+    # dependency, and a transitive pin that moves would break token validation
+    # silently, which is the exact failure mode this feature is prone to.
+    # The [crypto] extra brings `cryptography`, needed for RS256.
+    "pyjwt[crypto]>=2.10,<3",
     "polars-lts-cpu[pyarrow]>=1.31.0,<2",
     "python-multipart>=0.0.27",
     "marimo>=0.23.0,<1",
