@@ -595,6 +595,17 @@ def _worker_cancel_error(exc: Exception, identity: str) -> str:
     return _worker_error(exc, "cancel")
 
 
+def _worker_error_detail(exc: Exception) -> object:
+    """The server's `detail`, whatever shape it is. Never raises."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return None
+    try:
+        return response.json().get("detail")
+    except Exception:
+        return None
+
+
 def _worker_detail(exc: Exception) -> str:
     """The server's own message, when there is one."""
     response = getattr(exc, "response", None)
@@ -698,6 +709,18 @@ def _worker_error(exc: Exception, verb: str) -> str:
     switched on here"), not a fault the caller can retry.
     """
     status = getattr(getattr(exc, "response", None), "status_code", None)
+    # A tier refusal is also a 422, and the generic hint below ("check the method
+    # name and params") actively contradicts it: the method was right and the
+    # params were understood -- the work was simply too big for this tier. Detect
+    # it by its own field rather than by status, and say what to do instead.
+    if status == 422:
+        detail = _worker_error_detail(exc)
+        if isinstance(detail, dict) and detail.get("declared_simulations") is not None:
+            return (
+                f"[memphis.error]too big for an env worker[/] "
+                f"[dim](declared {detail['declared_simulations']} simulations, budget "
+                f"{detail.get('budget')})[/]\n  {detail.get('hint', '')}"
+            )
     hints = {
         503: "the relay is not enabled on this deployment "
         "(ENV_WORKER_RELAY_ADVERTISE_HOST is unset on the api Deployment)",

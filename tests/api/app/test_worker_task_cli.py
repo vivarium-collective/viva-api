@@ -182,3 +182,34 @@ def test_submit_warns_when_the_server_ignored_the_identity() -> None:
     source = inspect.getsource(worker_submit)
     assert 'if identity and not task.get("created_by")' in source
     assert "IDENTITY_HEADER" in source
+
+
+def test_a_tier_refusal_does_not_reuse_the_generic_422_hint() -> None:
+    """Found live on dev, immediately after shipping the tier split.
+
+    A tier refusal is a 422, and the generic hint for 422 reads "the worker ran
+    and refused: check the method name and params" — which contradicts the
+    detail printed right above it. The method was right and the params were
+    understood; the work was simply too big for this tier. Detect it by its own
+    field, not by status.
+    """
+    import inspect
+
+    from app.cli import _worker_error
+
+    source = inspect.getsource(_worker_error)
+    assert "declared_simulations" in source, "the tier refusal is not recognised"
+    assert source.index("declared_simulations") < source.index("check the method name"), (
+        "the tier branch must come BEFORE the generic 422 hint, or it never fires"
+    )
+
+
+def test_the_tier_refusal_message_says_what_to_do_instead() -> None:
+    """A refusal that does not name the alternative just blocks somebody."""
+    import inspect
+
+    from app.cli import _worker_error
+
+    source = inspect.getsource(_worker_error)
+    assert "too big for an env worker" in source
+    assert "hint" in source, "the server's hint (which names Batch) must be surfaced"
