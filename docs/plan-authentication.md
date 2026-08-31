@@ -28,7 +28,9 @@ did not make one *required*, and no deployment configures an issuer today.
 
 **The critical path now runs through a decision, not through code.** Phases 0 and
 2 were the two pieces that did not need a domain, a budget or an owner. Both are
-done. Everything remaining waits on question 1 below.
+done. Everything remaining waits on question 1 below — **which is now the only
+open question with nothing behind it**, since GovCloud support was settled on
+2026-08-30 and it turns out to depend on a domain too.
 
 The identity **seam** (`viva_api/api/auth.py`) is live on stanford-test and is
 still deliberately not authentication — but since Phase 2 it has two sources, and
@@ -207,6 +209,7 @@ authenticates with `VIVARIUM_ENV_WORKER_TOKEN`, a separate concern).
 
 Attractive because it would inject `X-Amzn-Oidc-Identity`, which
 `resolve_caller` **already reads** — zero application code for the browser case.
+Confirmed available in GovCloud (see "GovCloud support, settled" above).
 
 Two constraints:
 
@@ -229,6 +232,64 @@ Because `authenticate-oidc` is a **per-rule** action, a hybrid is available:
 Both halves can point at the same Keycloak, which is the strongest practical
 argument for running one.
 
+## GovCloud support, settled *(2026-08-30)*
+
+**`authenticate-oidc` is available in AWS GovCloud. `authenticate-cognito` is
+not — and we do not want it.** Four converging lines of evidence, none of them
+requiring console access:
+
+1. The GovCloud ELB differences page lists exactly one authentication exclusion:
+   *"Cognito authentication is not available."* Cognito specifically; OIDC is not
+   mentioned.
+2. In the ALB authentication guide, the **"Regions Available"** list that omits
+   GovCloud sits under *"Prepare to use Amazon Cognito"*. The *"Prepare to use an
+   OIDC-compliant IdP"* section carries **no region restriction at all**.
+3. That guide publishes **GovCloud-specific endpoints** for fetching the public
+   keys that verify `x-amzn-oidc-data` — a header produced *only* by ALB
+   authentication:
+   `https://s3-us-gov-west-1.amazonaws.com/aws-elb-public-keys-prod-us-gov-west-1/{key-id}`
+4. **Those buckets exist.** Checked against a control, because `AccessDenied`
+   alone proves nothing:
+
+   ```
+   aws-elb-public-keys-prod-us-gov-west-1        -> AccessDenied   (exists)
+   definitely-not-a-real-bucket-…-99213          -> NoSuchBucket   (does not)
+   ```
+
+An empirical `create-rule` probe was tried first and is **provably useless**: a
+nonexistent listener returns `ListenerNotFound` before any action-type
+validation, and `authenticate-cognito` — known-unsupported — returns exactly the
+same error as `forward`. Anyone tempted to re-check this way should not bother
+without a real listener ARN.
+
+### What the same page constrains, which matters more than the answer
+
+ALB OIDC imposes requirements on the **IdP** that bear directly on running
+Keycloak in-cluster:
+
+> * "The IdP's DNS must be publicly resolvable."
+> * "The DNS entries for the endpoints must be publicly resolvable, **even if
+>   they resolve to private IP addresses**."
+> * "The IdP endpoints certificates **should be issued by a trusted public
+>   certificate authority**."
+> * "The load balancer must be able to communicate with the IdP token endpoint
+>   and the IdP user info endpoint."
+
+So an in-cluster Keycloak reachable only by Kubernetes-internal DNS **cannot be
+used by ALB OIDC**. The private-IP allowance keeps it workable — a public DNS
+record pointing at a private address is explicitly fine — but it rules out the
+self-signed / internal-CA shape for the IdP, and it means Keycloak needs a
+public name of its own.
+
+**This converges the blockers rather than adding one.** The domain that blocks
+Phase 1 is the same domain that would host Keycloak, and the "public CA"
+requirement removes ACM Private CA and self-signed from the *IdP's* certificate
+options specifically. One decision unblocks both paths; without it neither moves.
+
+It also sources a claim this plan had been asserting from memory: *"The
+`authenticate-cognito` and `authenticate-oidc` action types are supported only
+with HTTPS listeners."*
+
 ## On Keycloak specifically
 
 **For.** No dependency on anyone else's SSO and no procurement. Works inside
@@ -244,6 +305,16 @@ upgrade path. It becomes a hard dependency: if Keycloak is down, nobody uses the
 API. Someone owns it, and that person is not currently identified. And it
 answers *identity* only — **enforcement is still Phase 4** regardless.
 
+**Added by the GovCloud finding:** if the ALB is to authenticate against it,
+Keycloak needs a **publicly resolvable DNS name** and a certificate from a
+**public CA** — the private-IP allowance means the name may resolve to an
+address inside the VPC, but "in-cluster with a self-signed cert and internal
+DNS" is not a configuration ALB OIDC can use. Note this constrains only the
+ALB path: viva-api's own Phase 2 validator talks to the issuer directly and has
+no such requirement, so a purely bearer-token deployment could use an internal
+Keycloak. That is a real fork worth deciding deliberately rather than drifting
+into.
+
 ## Open questions
 
 These are genuinely unanswered. Do not treat any of them as decided.
@@ -252,9 +323,9 @@ These are genuinely unanswered. Do not treat any of them as decided.
    we control. Is there a Stanford-side domain available, or does this want a
    new registration? **This is now the single blocking question** — with Phases 0
    and 2 done, nothing else can proceed until it is answered.
-2. **Is ALB `authenticate-oidc` available in AWS GovCloud?** Not verified. This
-   single fact decides whether the hybrid above exists. Cheap to check with
-   console access.
+2. ~~**Is ALB `authenticate-oidc` available in AWS GovCloud?**~~ **ANSWERED
+   2026-08-30: yes.** See "GovCloud support, settled" below. `authenticate-cognito`
+   is *not*, but we do not want it.
 3. **Who owns Keycloak** if we run it?
 4. **What happens to `sms.cam.uchc.edu`?** It is the one deployment with a real
    exposure and, per `CLAUDE.md`, it is *not deployed from this repository*. It
@@ -299,6 +370,9 @@ shape a third time.
 - `viva_api/api/auth.py` — the seam, and its docstring on what it is not
 - `viva_api/api/oidc.py` — Phase 2's validator, and its docstring on what it does
   not make secure
+- AWS: [ELB in GovCloud](https://docs.aws.amazon.com/govcloud-us/latest/UserGuide/govcloud-elb.html)
+  and [Authenticate users using an ALB](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/listener-authenticate-users.html)
+  — the two pages that settle GovCloud support and constrain the IdP
 - `tests/api/test_oidc.py` — signed with a real keypair; biased toward every way
   validation could fail OPEN
 - `docs/DEPLOY.md` §2b — what the ALB routes, and what silently does not
