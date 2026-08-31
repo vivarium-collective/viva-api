@@ -232,7 +232,7 @@ images:
   # Workbench-only change -- no viva-api/scheduler/dispatch code touched.
   # Built via the same native-AMD64 Batch DinD infra as prior releases.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.55
+    newTag: 0.3.78
 
 replicas:
   # Single writer: workbench holds a git working copy + SQLite on an RWO EBS volume.
@@ -320,3 +320,59 @@ patches:
     target:
       kind: Deployment
       name: workbench
+  # Env workers (vivarium-workbench#942). The workbench launches a worker that
+  # dials BACK to it, so it advertises its own pod IP, and proxies that worker's
+  # traffic through the api. Mirrors overlays/sms-api-stanford-test.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: workbench
+      spec:
+        template:
+          spec:
+            containers:
+              - name: workbench
+                env:
+                  - name: VIVARIUM_WORKBENCH_ENV_WORKER_ADVERTISE_HOST
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: status.podIP
+                  - name: VIVARIUM_WORKBENCH_ENV_WORKER_PROXY_BASE
+                    value: http://api:8000
+    target:
+      kind: Deployment
+      name: workbench
+  # ui.* deployment bindings (vivarium-workbench#471, lib/deploy_config.py).
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: workbench
+      spec:
+        template:
+          spec:
+            containers:
+              - name: workbench
+                env:
+                  - name: VIVARIUM_WORKBENCH_DEPLOY_CONFIG
+                    value: /etc/vivarium-workbench/deploy.yaml
+                volumeMounts:
+                  - name: deploy-config
+                    mountPath: /etc/vivarium-workbench
+                    readOnly: true
+            volumes:
+              - name: deploy-config
+                configMap:
+                  name: workbench-deploy-config
+    target:
+      kind: Deployment
+      name: workbench
+
+# `files:` rather than `envs:` because the workbench reads a YAML document, not
+# key=value pairs. The content hash in the generated name rolls the Deployment
+# automatically when the file changes.
+configMapGenerator:
+  - name: workbench-deploy-config
+    files:
+      - deploy.yaml=workbench-deploy.yaml
