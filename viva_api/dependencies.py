@@ -388,6 +388,13 @@ async def init_standalone(enable_ssl: bool = True) -> None:
         # non-fatal posture as the compose subsystem above.
         _init_env_worker_service()
 
+        # Say out loud whether token validation is USABLE, not merely set. The
+        # failure this repo has had twice is configuration that exists and is
+        # never read -- and here it is worse than usual, because a misconfigured
+        # issuer means every caller is silently anonymous, which is a supported
+        # state and therefore indistinguishable from working.
+        _log_oidc_status()
+
     except Exception as e:
         logger.error(f"Failed to initialize standalone services: {e}", exc_info=True)
         raise
@@ -482,6 +489,26 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
 
     except Exception:
         logger.warning("Compose subsystem initialization failed (non-fatal)", exc_info=True)
+
+
+def _log_oidc_status() -> None:
+    """One line at boot describing bearer-token validation."""
+    from viva_api.api import oidc
+
+    status = oidc.oidc_status()
+    if not status["issuer_set"]:
+        logger.info(
+            "OIDC bearer tokens: not configured (OIDC_ISSUER unset) — callers are anonymous or header-identified"
+        )
+        return
+    if not status["usable"]:
+        logger.error(
+            "OIDC_ISSUER is set (%s) but token validation is NOT ACTIVE — see the warnings above. "
+            "Every caller will be anonymous, which looks exactly like working.",
+            status["issuer"],
+        )
+        return
+    logger.info("✓ OIDC bearer tokens validated against %s (algorithms=%s)", status["issuer"], status["algorithms"])
 
 
 def _explain_env_worker_exit(job_name: str) -> str | None:
