@@ -106,12 +106,39 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 
 
 app = FastAPI(title=APP_TITLE, version=APP_VERSION, lifespan=lifespan, redoc_url="/documentation", docs_url="/docs")
+# CORS. Two things are deliberate here and both were wrong before (#336).
+#
+# `allow_origins=["*"]` together with `allow_credentials=True` is INVALID per the
+# CORS spec -- a browser rejects `Access-Control-Allow-Origin: *` on any request
+# made with credentials. So the old combination did not mean "permissive"; it
+# meant "credentialed cross-origin requests fail", which is a different thing and
+# not what the code read as.
+#
+# `allow_credentials=False` is the honest setting TODAY, because nothing sends a
+# credential: this API has no cookies, no session and no Authorization header
+# (79 routes, zero security schemes). The browsers viva-api serves -- /docs,
+# /documentation, /home -- are same-origin, so CORS does not apply to them at
+# all. The marimo GUI's calls run in the marimo KERNEL (httpx, server-side), and
+# the CLI and TUI are not browsers, so none of the three clients is a CORS
+# caller either.
+#
+# The origin list is narrowed from `["*"]` back to APP_ORIGINS, which is what it
+# was always meant to be -- it has sat unused above since the `["*"]` was
+# introduced. Narrowing costs nothing today (every real caller is same-origin or
+# not a browser) and closes one small real hole: a developer with the SSM tunnel
+# open on localhost has an internal API reachable from their browser, and `["*"]`
+# lets any page they happen to visit read it.
+#
+# WHEN #337 LANDS and a bearer token becomes a thing, revisit this: a credentialed
+# browser client would need `allow_credentials=True`, and that is only valid with
+# an explicit origin list -- which is the one below. Add the origin, do not widen
+# back to `["*"]`.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=APP_ORIGINS,
+    allow_credentials=False,
     allow_methods=["*"],
-    allow_headers=["*"],  # TODO: change origins back to allowed
+    allow_headers=["*"],
 )
 
 # rely on core router for:
