@@ -112,6 +112,19 @@ images:
   # chain-dispatch campaign or multi-node composite instead of falling through
   # to a store neither shape ever writes. Already live-verified on smsvpctest
   # before promoting here.
+  # 0.9.78: catches this overlay up from 0.9.57 in one step -- 21 releases,
+  # including the env-worker relay + task tier (§E option (e)), named capability
+  # endpoints, the OIDC/JWKS seam and the CORS fix. All ship INERT here except
+  # the env workers enabled separately in #352. DB migrated 9c2e6b1f4a73 ->
+  # b4d7e9c02a15 (additive: env_worker_task) by the reconciler Job first.
+  #
+  # NOTE on the 0.9.39 entry above: the Array-jobs dispatch it describes was
+  # REMOVED in backlog item 33's rework (_submit_array / _array_sim_command /
+  # _ensure_array_job_def deleted; the canonical sweep now goes to
+  # submit_chain_dispatch_job). RAY_ARRAY_QUEUE / RAY_ARRAY_JOB_DEFINITION
+  # therefore had no reader and were dropped from shared.env alongside adding
+  # RAY_CONTAINER_* (item 71 Phase 2). The 0.9.39 entry stays as written -- it
+  # is an accurate record of what 0.9.39 did, not a live instruction.
   - name: ghcr.io/vivarium-collective/sms-api
     newTag: 0.9.78
   # ptools 0.5.9 -> 0.9.53, promoting to prod what has been running on
