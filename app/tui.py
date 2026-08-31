@@ -939,6 +939,18 @@ class AtlantisTUI(App[None]):
                 stage = entry.get("stage", "?") if isinstance(entry, dict) else "?"
                 message = entry.get("error", "") if isinstance(entry, dict) else str(entry)
                 self.write_log(f"  [bold]{stage}[/] {message}")
+        # The verdict is the one thing here a scientist might act on. The harvest
+        # demotes it when stages failed; surface that, or the demotion is visible
+        # only in the raw JSON below.
+        _verdict = result.get("verdict") if isinstance(result, dict) else None
+        _incomplete = _verdict.get("evidence_incomplete") if isinstance(_verdict, dict) else None
+        if _incomplete:
+            self.write_log(
+                f"[yellow]Verdict not graded[/yellow] [dim]— was "
+                f"'{_incomplete.get('overall_before')}', but "
+                f"{len(_incomplete.get('failed_stages') or [])} stage(s) of this run did not "
+                f"happen. The card on disk is unchanged.[/dim]"
+            )
         if result is not None:
             self._show_json(result, "Result")
         else:

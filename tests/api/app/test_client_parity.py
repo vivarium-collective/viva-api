@@ -135,3 +135,36 @@ def test_401_and_403_on_cancel_are_told_apart(client: str, source: str) -> None:
     403 is "this is not yours". One shared error path would send the user to the
     wrong remedy."""
     assert "401" in source and "403" in source, f"{client} collapses the two cancel refusals"
+
+
+# --- the demoted verdict must be visible in all three ------------------------
+#
+# The harvest demotes `overall` to `ungraded` and attaches `evidence_incomplete`
+# when stages failed (workbench#1006). A demotion only visible in raw JSON is
+# not much better than the original bug: the conclusion card is the one thing in
+# a harvest a scientist might act on, and it is the part least likely to be read
+# as terminal output.
+
+
+@pytest.mark.parametrize(("client", "source"), [("tui", _TUI), ("gui", _GUI)])
+def test_each_client_surfaces_an_ungraded_verdict(client: str, source: str) -> None:
+    assert "evidence_incomplete" in source, f"{client} never reads the qualification"
+    assert "not graded" in source.lower(), f"{client} does not tell the reader the verdict was demoted"
+
+
+@pytest.mark.parametrize(("client", "source"), [("tui", _TUI), ("gui", _GUI)])
+def test_each_client_says_the_card_on_disk_is_unchanged(client: str, source: str) -> None:
+    """Otherwise a reader reasonably assumes their study's saved card was
+    rewritten by a run — which would be a much bigger claim than what happened."""
+    assert "card on disk is unchanged" in source, f"{client} does not say the artifact is intact"
+
+
+def test_the_cli_surfaces_it_too() -> None:
+    import inspect
+
+    import app.cli as cli
+
+    source = inspect.getsource(cli)
+    assert "evidence_incomplete" in source
+    assert "Verdict not graded" in source
+    assert "card on disk is unchanged" in source
