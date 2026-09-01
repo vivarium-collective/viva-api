@@ -625,4 +625,17 @@
 #          (#283): "Use GET /analyses/{id}/status" read as the SIMULATION id,
 #          not the separate analysis id space -- now spells out
 #          GET /simulations/{id}/analyses as the lookup step first.
-__version__ = "0.9.78"
+# 0.9.79 — a legacy config's swap_processes/add_processes/exclude_processes/
+#          variants/parca_options.new_genes now reach the chain-dispatch
+#          path (submit_chain_dispatch_job + JobScheduler's per-tick seed
+#          advance), not just the composite-comparison MNP path -- found via
+#          a real GovCloud dispatch (backlog item 93) whose requested KPI
+#          column was completely absent from output because the canonical
+#          (composite=None, generations>1) dispatch shape routes to
+#          submit_chain_dispatch_job, never _sim_command's own multi-gen
+#          branch, which was the only place this passthrough previously
+#          existed (and was unreachable from that call site regardless).
+#          Same class of fix as the extra_params mechanism (0.9.5x era,
+#          backlog items 86/88); byte-for-byte unaffected when a config sets
+#          none of these fields.
+__version__ = "0.9.79"

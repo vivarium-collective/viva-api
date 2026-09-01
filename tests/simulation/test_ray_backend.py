@@ -4,6 +4,7 @@ and SimulationServiceRay submission/status/cancel (boto3 mocked, Postgres via te
 import asyncio
 import json
 import shlex
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,6 +20,7 @@ from viva_api.simulation.simulation_service_ray import (
     V2ECOLI_DIR,
     SimulationServiceRay,
     analysis_modules_for,
+    injected_processes_from_config,
 )
 
 if TYPE_CHECKING:
@@ -1536,6 +1538,100 @@ class TestSeedGenerationCommand:
             )
         assert len(cmd) < 8192, f"seed-generation command is {len(cmd)} bytes, over the real AWS Batch cap"
 
+    def test_injected_processes_and_variants_omitted_when_absent(self) -> None:
+        """Backlog item 93 regression: a caller that doesn't pass
+        injected_processes/variants (every caller before this item, and the
+        single-generation phase0 path today) builds the exact same overrides
+        dict as before these params existed -- no new keys leak in."""
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+        ):
+            cmd = service._seed_generation_command(
+                seed=0,
+                generation_index=0,
+                experiment_id="exp-no-injection",
+                runner_s3_uri="s3://mybucket/vecoli-output/exp-no-injection/run_pbg.py",
+            )
+        overrides = self._overrides(cmd)
+        assert "injected_processes" not in overrides
+        assert "variants" not in overrides
+
+    def test_injected_processes_and_variants_forwarded_when_present(self) -> None:
+        """Backlog item 93: the actual fix -- when a caller (JobScheduler, via
+        injected_processes_from_config) passes these through, they land in
+        the overrides dict verbatim, using ecoli_baseline.baseline()'s own
+        real kwarg names."""
+        service = SimulationServiceRay()
+        injected = {
+            "swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"},
+            "add_processes": [],
+            "exclude_processes": ["exchange_data"],
+            "fork_repo": "",
+        }
+        variants = {"strain_design": {"perturbations": {"value": [{"EG11005": 0.0}]}}}
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+        ):
+            cmd = service._seed_generation_command(
+                seed=0,
+                generation_index=0,
+                experiment_id="exp-run4",
+                runner_s3_uri="s3://mybucket/vecoli-output/exp-run4/run_pbg.py",
+                injected_processes=injected,
+                variants=variants,
+            )
+        overrides = self._overrides(cmd)
+        assert overrides["injected_processes"] == injected
+        assert overrides["variants"] == variants
+
+
+class TestInjectedProcessesFromConfig:
+    """injected_processes_from_config (backlog item 93): the shared helper
+    JobScheduler uses to turn a legacy config's swap_processes/add_processes/
+    exclude_processes into ecoli_baseline.baseline()'s own injected_processes
+    kwarg shape -- confirmed against v2ecoli's real consumer
+    (composites/ecoli_baseline.py:2019-2042, scripts/_compare/inject.py's
+    resolve_injections/assert_injection_sourcing) before this was written."""
+
+    def test_none_when_nothing_set(self) -> None:
+        config = SimpleNamespace()
+        assert injected_processes_from_config(config) is None
+
+    def test_none_when_fields_present_but_empty(self) -> None:
+        """swap_processes={}/add_processes=[]/exclude_processes=[] are the
+        real SimulationConfig/ExperimentRequest defaults (models.py) -- an
+        ordinary dispatch with no injection intent must still resolve to
+        None, not an empty-but-truthy injected_processes dict."""
+        config = SimpleNamespace(swap_processes={}, add_processes=[], exclude_processes=[])
+        assert injected_processes_from_config(config) is None
+
+    def test_builds_the_real_baseline_kwarg_shape_from_swap_processes_alone(self) -> None:
+        """Run 4's own real config (fss_pathway_oe_native_oe_carina.json) sets
+        ONLY swap_processes -- add_processes/exclude_processes[minus this one
+        real field] are absent entirely, not just empty, so getattr's default
+        must cover the missing-attribute case too, not just falsy-but-present."""
+        config = SimpleNamespace(swap_processes={"ecoli-metabolism": "ecoli-metabolism-redux"})
+        result = injected_processes_from_config(config)
+        assert result == {
+            "swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"},
+            "add_processes": [],
+            "exclude_processes": [],
+            "fork_repo": "",
+        }
+
+    def test_fork_repo_always_empty_native_path(self) -> None:
+        """Every caller of this helper dispatches through ecoli_baseline (the
+        native, fork-free composite) -- fork_repo must always come back
+        empty-string, matching assert_injection_sourcing's own native-path
+        rule (a non-empty fork_repo there is a hard caller error)."""
+        config = SimpleNamespace(add_processes=["some_new_process"])
+        result = injected_processes_from_config(config)
+        assert result is not None
+        assert result["fork_repo"] == ""
+
 
 class TestIsUpstreamVecoli:
     """The single routing predicate shared by submit_ecoli_simulation_job and _sim_command."""
@@ -1926,6 +2022,36 @@ class TestChainDispatchSubmission:
         assert "containerOverrides" in parca_call.kwargs  # container-type, not MNP nodeOverrides
         env = _container_env_of(parca_call)
         assert "v2ecoli-parca" in env["CONTAINER_JOB_CMD"]
+        assert "--new-genes" not in env["CONTAINER_JOB_CMD"]  # regression: absent when not set
+
+    async def test_forwards_new_genes_to_parca_when_config_sets_it(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """Backlog item 93: the real gap a live Run 4 smoke dispatch found --
+        parca_options.new_genes (a real SimulationConfig field, matches
+        v2ecoli-parca's own --new-genes SUBDIR flag) must reach the ParCa
+        command chain-dispatch actually submits, not just the composite's own
+        overrides -- without a violacein-aware simData, the sim can't secrete
+        violacein regardless of any other fix."""
+        setattr(experiment_request.config, "n_init_sims", 2)  # noqa: B010
+        experiment_request.config.generations = 3
+        setattr(experiment_request.config.parca_options, "new_genes", "violacein_MG1655_M5")  # noqa: B010
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+        mock_batch = _fake_container_batch(["parca-1"])
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            await service.submit_chain_dispatch_job(ecoli_simulation=simulation, database_service=database_service)
+
+        (parca_call,) = mock_batch.submit_job.call_args_list
+        env = _container_env_of(parca_call)
+        assert "--new-genes violacein_MG1655_M5" in env["CONTAINER_JOB_CMD"]
 
     async def test_writes_initial_campaign_row_with_empty_per_seed_state(
         self,
@@ -2025,6 +2151,80 @@ class TestSubmitChainGeneration:
             overrides["initial_carry_state_path"] == "s3://mybucket/vecoli-output/exp-1/daughter-state/seed2/gen0.pkl"
         )
         assert overrides["daughter_state_out_path"] == "s3://mybucket/vecoli-output/exp-1/daughter-state/seed2/gen1.pkl"
+
+    async def test_submit_chain_generation_forwards_injected_processes_and_variants(self) -> None:
+        """Backlog item 93: JobScheduler passes these through on every seed's
+        every generation (re-derived from Simulation.config each tick) --
+        confirms submit_chain_generation threads them into the real overrides
+        payload rather than dropping them at this layer."""
+        mock_batch = _fake_container_batch(["s0g0"])
+        injected = {
+            "swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"},
+            "add_processes": [],
+            "exclude_processes": ["exchange_data"],
+            "fork_repo": "",
+        }
+        variants = {"strain_design": {"perturbations": {"value": [{"EG11005": 0.0}]}}}
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            service.submit_chain_generation(
+                seed=0,
+                generation_index=0,
+                experiment_id="exp-run4",
+                commit="abc1234",
+                cache_s3="s3://mybucket/cache/abc1234",
+                runner_s3_uri="s3://mybucket/runner/run_pbg.py",
+                tags={"Project": "v2ecoli-comparison"},
+                injected_processes=injected,
+                variants=variants,
+            )
+        (call,) = mock_batch.submit_job.call_args_list
+        env = _container_env_of(call)
+        tokens = shlex.split(env["CONTAINER_JOB_CMD"])
+        overrides = json.loads(tokens[tokens.index("--overrides") + 1])
+        assert overrides["injected_processes"] == injected
+        assert overrides["variants"] == variants
+
+    async def test_batch_forwards_injected_processes_and_variants_to_every_seed(self) -> None:
+        """Backlog item 93: submit_chain_generation_batch's own fan-out loop
+        (the generation-0 burst) must pass the SAME injected_processes/
+        variants to every seed -- one campaign, one config."""
+        mock_batch = _fake_container_batch(["s0g0", "s1g0"])
+        injected = {
+            "swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"},
+            "add_processes": [],
+            "exclude_processes": [],
+            "fork_repo": "",
+        }
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.simulation_service_ray._SubmitJobPacer.wait", new=AsyncMock()),
+        ):
+            submitted = await service.submit_chain_generation_batch(
+                seeds=[0, 1],
+                generation_index=0,
+                experiment_id="exp-run4",
+                commit="abc1234",
+                cache_s3="s3://mybucket/cache/abc1234",
+                runner_s3_uri="s3://mybucket/runner/run_pbg.py",
+                tags={"Project": "v2ecoli-comparison"},
+                injected_processes=injected,
+                variants=None,
+            )
+        assert submitted == {0: "s0g0", 1: "s1g0"}
+        for call in mock_batch.submit_job.call_args_list:
+            env = _container_env_of(call)
+            tokens = shlex.split(env["CONTAINER_JOB_CMD"])
+            overrides = json.loads(tokens[tokens.index("--overrides") + 1])
+            assert overrides["injected_processes"] == injected
+            assert "variants" not in overrides  # None -> omitted, matches _seed_generation_command's own contract
 
     async def test_batch_fans_out_generation_zero_for_every_seed_paced_and_isolates_failures(self) -> None:
         """The one remaining genuine submission burst: every seed's
