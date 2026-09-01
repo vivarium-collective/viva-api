@@ -638,4 +638,27 @@
 #          Same class of fix as the extra_params mechanism (0.9.5x era,
 #          backlog items 86/88); byte-for-byte unaffected when a config sets
 #          none of these fields.
-__version__ = "0.9.79"
+# 0.9.80 — fix: every run_pbg.py invocation now sets PYTHONPATH=V2ECOLI_DIR.
+#          ecoli_baseline.baseline()'s injection branch (taken whenever a
+#          composite dispatch carries injected_processes -- 0.9.79's own
+#          swap_processes/add_processes/exclude_processes passthrough, and
+#          item 88's multi-node/colony composite path) does
+#          `from scripts._compare.inject import (...)`, a bare absolute import
+#          that only resolves when the repo root (which DOES contain
+#          scripts/, copied in by sms-ecoli's own Dockerfile `COPY . .`) is on
+#          sys.path. Every call site invokes the runner via an absolute
+#          /tmp/run_pbg.py path, which puts /tmp on sys.path[0] instead of the
+#          cwd -- `cd {V2ECOLI_DIR}` alone never fixed this. Found live
+#          2026-09-01 (backlog item 93's own independent swap_processes
+#          verification): a real chain-dispatch run with a non-empty
+#          injected_processes failed ModuleNotFoundError('scripts') despite
+#          the cd already being correct, and 0.9.79's fix genuinely reaching
+#          the container. All 3 run_pbg.py call sites in
+#          simulation_service_ray.py (the multi-gen batch path,
+#          _seed_generation_command, _multi_node_composite_command) now share
+#          one PBG_RUNNER_ENV constant instead of duplicating the env string,
+#          so this class of drift can't happen at 2 of 3 sites again. The
+#          separate /compose/v1/* full-emit path (a different, unverified
+#          code shape not used by item 93/96's own dispatch route) is
+#          deliberately out of scope here.
+__version__ = "0.9.80"

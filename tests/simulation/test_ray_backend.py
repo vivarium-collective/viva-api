@@ -700,6 +700,26 @@ class TestSubmitMultiNodeComposite:
 
         assert composite_call.kwargs["tags"]["CompositeId"] == "some_workspace.composites.some_multi_node_composite"
 
+    def test_multi_node_composite_command_sets_pythonpath_for_injection_imports(self) -> None:
+        """Direct unit test of _multi_node_composite_command's own command string
+        (backlog item 93): a colony/multi-node composite can carry
+        injected_processes the same way ecoli_baseline's chain-dispatch path can,
+        so it needs the same PYTHONPATH fix, not just chain-dispatch's own two
+        call sites (see TestSimulationServiceRayBuild/TestSeedGenerationCommand's
+        sibling assertions)."""
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._multi_node_composite_command(
+                composite_id="some_workspace.composites.some_multi_node_composite",
+                params={"n_cells": 6},
+                steps=3,
+                runner_s3_uri="s3://mybucket/vecoli-output/sim9-colony/run_pbg.py",
+                n_shards_default=None,
+            )
+        assert "cd /app/v2ecoli" in cmd
+        assert "PYTHONPATH=/app/v2ecoli" in cmd
+        assert "python /tmp/run_pbg.py" in cmd
+
     @pytest.mark.asyncio
     async def test_multi_node_dispatch_requires_composite_id(
         self,
@@ -1326,6 +1346,11 @@ class TestSimulationServiceRayBuild:
         # own comment in simulation_service_ray.py for the full incident history).
         assert "--composite-id v2ecoli.composites.ecoli_baseline.ecoli_baseline " in cmd
         assert "PBG_CORE_BUILDER=v2ecoli.core:build_core" in cmd
+        # PYTHONPATH=V2ECOLI_DIR (backlog item 93): ecoli_baseline.baseline()'s
+        # injection branch does `from scripts._compare.inject import (...)`, a bare
+        # absolute import that only resolves with the repo root on sys.path --
+        # `python /tmp/run_pbg.py` alone puts /tmp there instead, regardless of cwd.
+        assert "PYTHONPATH=/app/v2ecoli" in cmd
         assert "-n 1" in cmd
 
         # The overrides are a real, single-quoted JSON blob -- unpack it via shlex to
@@ -1406,6 +1431,8 @@ class TestSeedGenerationCommand:
         assert "aws s3 cp s3://mybucket/vecoli-output/sim47-chain-experiment/run_pbg.py /tmp/run_pbg.py" in cmd
         assert "--composite-id v2ecoli.composites.ecoli_baseline.ecoli_baseline " in cmd
         assert "PBG_CORE_BUILDER=v2ecoli.core:build_core" in cmd
+        # Backlog item 93's sys.path fix -- see the sibling assertion above for why.
+        assert "PYTHONPATH=/app/v2ecoli" in cmd
         assert "-n 1" in cmd
         # No array-index resolution left anywhere -- the whole point of the rework.
         assert "AWS_BATCH_JOB_ARRAY_INDEX" not in cmd
