@@ -243,6 +243,41 @@ def _is_upstream_vecoli(composite: CompositeEngine | None) -> bool:
     return composite == "vecoli"
 
 
+def injected_processes_from_config(config: Any) -> dict[str, Any] | None:
+    """Build ``ecoli_baseline.baseline()``'s own ``injected_processes`` kwarg
+    (backlog item 93) from a legacy config's ``swap_processes``/
+    ``add_processes``/``exclude_processes`` -- real ``ExperimentRequest``
+    fields (``viva_api/simulation/models.py``) that ride through
+    ``SimulationConfig`` as extras (``extra="allow"``), so ``getattr`` is the
+    correct read whether or not the field was ever declared on the model.
+
+    Returns ``None`` when none of the three are set, so a config with no
+    injection intent produces the exact ``overrides`` dict this dispatch path
+    already built before this existed -- the byte-for-byte-unchanged
+    regression property backlog items 86/88's own ``extra_params`` passthrough
+    established for this same class of fix.
+
+    ``fork_repo`` is always ``""``: every caller of this helper dispatches
+    through ``ecoli_baseline``, the NATIVE (fork-free) composite --
+    ``assert_injection_sourcing`` (v2ecoli's ``composites/ecoli_baseline.py``)
+    rejects a non-empty ``fork_repo`` for a native composite outright, and
+    ``scripts._compare.inject.resolve_injections`` indexes
+    ``injected_processes["fork_repo"]`` directly (not ``.get``), so the key
+    must be present even though it is always empty on this path.
+    """
+    swap_processes = getattr(config, "swap_processes", None) or {}
+    add_processes = getattr(config, "add_processes", None) or []
+    exclude_processes = getattr(config, "exclude_processes", None) or []
+    if not (swap_processes or add_processes or exclude_processes):
+        return None
+    return {
+        "swap_processes": swap_processes,
+        "add_processes": add_processes,
+        "exclude_processes": exclude_processes,
+        "fork_repo": "",
+    }
+
+
 @dataclass
 class ChainCampaignPollResult:
     """A chain-dispatch campaign's analysis-fan-in poll outcome — backlog item 33.
@@ -616,7 +651,7 @@ class SimulationServiceRay(SimulationService):
         logger.info("Submitted container job %s (id=%s) to %s", job_name, batch_job_id, settings.ray_container_queue)
         return batch_job_id
 
-    def _parca_command(self) -> str:
+    def _parca_command(self, *, new_genes: str | None = None) -> str:
         """Run ParCa, then hydrate the sim-input bundle into PARCA_CACHE_DIR (out/cache).
 
         v2ecoli's sim loads ``out/cache/{initial_state.json, sim_data_cache.dill, ...}`` via
@@ -625,12 +660,19 @@ class SimulationServiceRay(SimulationService):
         into the bundle. build_cache.py/load_parca_state read a GZIPPED fixture, so gzip the
         parca output first (the round-trip bridges v2ecoli's .pkl→.pkl.gz mismatch). Only
         PARCA_CACHE_DIR is synced to S3 (RAY_OUT_DIR), and that is exactly what the sim stages.
+
+        ``new_genes`` (backlog item 93): a legacy config's own ``parca_options.new_genes``
+        (e.g. a custom strain's new-gene insertion subdir) -- generic passthrough to
+        ``v2ecoli-parca``'s own ``--new-genes SUBDIR`` flag (default ``"off"``, so omitting
+        or passing ``"off"`` builds byte-for-byte the same command as before this param
+        existed). No caller-side change required for any dispatch that doesn't set it.
         """
         settings = get_settings()
+        new_genes_flag = f" --new-genes {shlex.quote(new_genes)}" if new_genes and new_genes != "off" else ""
         return (
             f"cd {V2ECOLI_DIR}"
             f" && v2ecoli-parca --mode {settings.ray_parca_mode} --cpus {settings.ray_parca_cpus}"
-            f" -o {PARCA_SIMDATA_DIR} --cache-dir {PARCA_CACHE_DIR}"
+            f" -o {PARCA_SIMDATA_DIR} --cache-dir {PARCA_CACHE_DIR}{new_genes_flag}"
             f" && gzip -f -k {PARCA_SIMDATA_DIR}/parca_state.pkl"
             f" && python scripts/build_cache.py"
             f" --fixture {PARCA_SIMDATA_DIR}/parca_state.pkl.gz --cache {PARCA_CACHE_DIR}"
@@ -793,6 +835,8 @@ class SimulationServiceRay(SimulationService):
         generation_index: int,
         experiment_id: str,
         runner_s3_uri: str,
+        injected_processes: dict[str, Any] | None = None,
+        variants: dict[str, Any] | None = None,
     ) -> str:
         """Build ONE seed's ONE generation's command (backlog item 33 rework —
         per-seed independent job chains, mirroring vEcoli-private's own
@@ -816,6 +860,14 @@ class SimulationServiceRay(SimulationService):
         generation writes its own daughter state out, including the final
         one — a harmless no-op read by nobody if the chain ends there, cheaper
         than a special case to skip it.
+
+        ``injected_processes``/``variants`` (backlog item 93): generic
+        passthrough of ``ecoli_baseline.baseline()``'s own same-named kwargs —
+        built by ``injected_processes_from_config``/read off the legacy config
+        by this method's callers, never by this method itself. Both default to
+        ``None`` and are omitted from ``overrides`` entirely when absent, so
+        any caller not passing them builds the exact same command as before
+        these params existed.
 
         CROSS-REPO CONTRACT: overrides threading these 3 keys through to
         ``v2ecoli/composites/ecoli_baseline.py``'s ``baseline()`` signature (the
@@ -862,6 +914,10 @@ class SimulationServiceRay(SimulationService):
             "initial_carry_state_path": initial_carry_state_path,
             "daughter_state_out_path": daughter_state_out_path,
         }
+        if injected_processes:
+            overrides["injected_processes"] = injected_processes
+        if variants:
+            overrides["variants"] = variants
         env = f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER}"
         return (
             f"cd {V2ECOLI_DIR}"
@@ -1246,7 +1302,11 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         # the matching pair so the staged simData is consistent across all nodes.
         is_upstream = _is_upstream_vecoli(composite)
         cache_s3 = self._upstream_cache_s3_uri(commit) if is_upstream else self.cache_s3_uri(commit)
-        parca_command = self._upstream_parca_command() if is_upstream else self._parca_command()
+        # Backlog item 93: same generic new_genes passthrough as
+        # submit_chain_dispatch_job -- irrelevant to the upstream-vEcoli
+        # engine (its own config_path-driven mechanism, item 87, is separate).
+        new_genes = None if is_upstream else getattr(config.parca_options, "new_genes", None)
+        parca_command = self._upstream_parca_command() if is_upstream else self._parca_command(new_genes=new_genes)
 
         # Only the composite-driven comparison-ensemble path can still reach here
         # with n_generations > 1 (the non-composite canonical shape is routed to
@@ -1536,6 +1596,8 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         runner_s3_uri: str,
         tags: dict[str, str],
         batch_client: Any = None,
+        injected_processes: dict[str, Any] | None = None,
+        variants: dict[str, Any] | None = None,
     ) -> str:
         """Submit ONE seed's ONE generation as a standalone container-type job
         (backlog item 71 Phase 4) — the app-level-gated replacement for the
@@ -1549,6 +1611,12 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         part of the sequencing at all. Mirrors ``_seed_generation_command``'s
         own per-seed S3 layout exactly (unchanged by this migration — see that
         method's docstring); only the job TYPE and dependency model change.
+
+        ``injected_processes``/``variants`` (backlog item 93): passed straight
+        through to ``_seed_generation_command`` — see that method's own
+        docstring. ``JobScheduler`` is the real caller, re-deriving both from
+        the campaign's own ``Simulation.config`` every tick (restart-safe,
+        same as every other piece of per-tick state here).
         """
         job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
         return self._submit_container(
@@ -1559,6 +1627,8 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
                 generation_index=generation_index,
                 experiment_id=experiment_id,
                 runner_s3_uri=runner_s3_uri,
+                injected_processes=injected_processes,
+                variants=variants,
             ),
             out_s3=data_layout.RayLayout.seed_results_uri(experiment_id, seed),
             out_dir=SIM_OUT_DIR,
@@ -1578,6 +1648,8 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         cache_s3: str,
         runner_s3_uri: str,
         tags: dict[str, str],
+        injected_processes: dict[str, Any] | None = None,
+        variants: dict[str, Any] | None = None,
     ) -> dict[int, str]:
         """Submit the SAME generation index for MULTIPLE seeds at once,
         TPS-paced below the account-wide ``SubmitJob`` rate limit (reuses
@@ -1594,6 +1666,10 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         and that seed is simply omitted from the returned mapping — mirrors
         the superseded design's own "truncate just this seed's chain" failure
         semantics; other seeds are unaffected.
+
+        ``injected_processes``/``variants`` (backlog item 93): the SAME dict
+        for every seed in this batch — one campaign, one config — forwarded to
+        each seed's own ``submit_chain_generation`` call below.
         """
         pacer = _SubmitJobPacer()
         submit_client = boto3.client(
@@ -1614,6 +1690,8 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
                     runner_s3_uri=runner_s3_uri,
                     tags=tags,
                     batch_client=submit_client,
+                    injected_processes=injected_processes,
+                    variants=variants,
                 )
             except Exception:
                 logger.exception(
@@ -1815,10 +1893,15 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         base_tags = self.chain_base_tags(simulation=ecoli_simulation, commit=commit)
         container_job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
 
+        # Backlog item 93: a legacy config's own parca_options.new_genes (e.g.
+        # a custom strain's new-gene insertion) is a real SimulationConfig
+        # field, not an extra -- read directly, matching config.generations
+        # above (extra="allow" only applies to genuinely undeclared keys).
+        new_genes = getattr(config.parca_options, "new_genes", None)
         parca_job_id = self._submit_container(
             job_name=f"ray-parca-{commit}-{_rand_suffix()}",
             job_definition=container_job_def,
-            job_cmd=self._parca_command(),
+            job_cmd=self._parca_command(new_genes=new_genes),
             out_s3=cache_s3,
             out_dir=PARCA_CACHE_DIR,
             tags={**base_tags, "Phase": "parca"},

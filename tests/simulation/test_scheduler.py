@@ -93,6 +93,8 @@ async def insert_chain_campaign_job(
     chain_current_job_ids: list[str | None] | None = None,
     chain_current_generation: list[int | None] | None = None,
     chain_final_job_ids: list[str] | None = None,
+    swap_processes: dict[str, str] | None = None,
+    variants: dict[str, object] | None = None,
 ) -> tuple[Simulation, HpcRun]:
     """Insert a Simulation + a chain-dispatch-campaign-shaped HpcRun row
     (backlog item 71 Phase 4 — app-level per-seed gating), the fixture shape
@@ -101,6 +103,13 @@ async def insert_chain_campaign_job(
     every seed slot empty) — the same initial state
     ``SimulationServiceRay.submit_chain_dispatch_job`` itself writes; pass the
     ``chain_*`` kwargs explicitly to represent a campaign already mid-flight.
+
+    ``swap_processes``/``variants`` (backlog item 93): both default to
+    ``None`` (every existing caller keeps building a plain no-injection
+    campaign, unchanged) — set either to give the inserted Simulation's own
+    config real injection intent, exercising
+    ``injected_processes_from_config``'s live consumer,
+    ``JobScheduler._advance_parca_gate``/``_advance_seed_generations``.
     """
     latest_commit_hash = str(uuid.uuid4())
     simulator = await database_service.insert_simulator(
@@ -114,6 +123,10 @@ async def insert_chain_campaign_job(
     experiment_id = f"test-chain-campaign-{str(uuid.uuid4())[:8]!s}"
     config = SimulationConfig(experiment_id=experiment_id, generations=chain_n_generations)
     setattr(config, "n_init_sims", n_seeds)  # noqa: B010
+    if swap_processes is not None:
+        setattr(config, "swap_processes", swap_processes)  # noqa: B010
+    if variants is not None:
+        setattr(config, "variants", variants)  # noqa: B010
     simulation_request = SimulationRequest(
         simulation_config_filename="config_filename",
         experiment_id=experiment_id,
@@ -308,6 +321,107 @@ class TestAdvanceChainCampaign:
         assert refetched.chain_current_job_ids == ["s0g1", "s1g0"]  # seed 0 advanced, seed 1 untouched
         assert refetched.chain_current_generation == [1, 0]
         assert refetched.chain_final_job_ids == []
+
+    @pytest.mark.asyncio
+    async def test_generation_zero_fanout_forwards_injected_processes_and_variants(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        """Backlog item 93: _advance_parca_gate re-derives injected_processes/
+        variants from the campaign's own Simulation.config (re-read fresh by
+        _tick every poll, so this is restart-safe for free) and forwards them
+        to submit_chain_generation_batch's generation-0 fan-out -- the real,
+        live mechanism a Run 4 dispatch depends on."""
+        _simulation, hpcrun = await insert_chain_campaign_job(
+            database_service,
+            job_id_ext="parca-done-run4",
+            chain_n_generations=3,
+            n_seeds=2,
+            swap_processes={"ecoli-metabolism": "ecoli-metabolism-redux"},
+            variants={"strain_design": {"perturbations": {"value": [{"EG11005": 0.0}]}}},
+        )
+        mock_ray = _mock_ray_service()
+        mock_ray.get_job_status.return_value = JobStatusInfo(
+            job_id=JobId.ray("parca-done-run4"), status=JobStatus.COMPLETED
+        )
+        mock_ray.submit_chain_generation_batch.return_value = {0: "s0g0", 1: "s1g0"}
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_chain_campaign(hpcrun, mock_ray)
+
+        mock_ray.submit_chain_generation_batch.assert_awaited_once()
+        call_kwargs = mock_ray.submit_chain_generation_batch.call_args.kwargs
+        assert call_kwargs["injected_processes"] == {
+            "swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"},
+            "add_processes": [],
+            "exclude_processes": [],
+            "fork_repo": "",
+        }
+        assert call_kwargs["variants"] == {"strain_design": {"perturbations": {"value": [{"EG11005": 0.0}]}}}
+
+    @pytest.mark.asyncio
+    async def test_generation_zero_fanout_omits_injection_keys_when_config_has_none(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        """Regression: the existing no-injection campaign shape (every test
+        above this one) must keep forwarding None/None, not an empty-but-
+        truthy dict, matching injected_processes_from_config's own contract."""
+        _simulation, hpcrun = await insert_chain_campaign_job(
+            database_service, job_id_ext="parca-done-plain", chain_n_generations=3, n_seeds=2
+        )
+        mock_ray = _mock_ray_service()
+        mock_ray.get_job_status.return_value = JobStatusInfo(
+            job_id=JobId.ray("parca-done-plain"), status=JobStatus.COMPLETED
+        )
+        mock_ray.submit_chain_generation_batch.return_value = {0: "s0g0", 1: "s1g0"}
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_chain_campaign(hpcrun, mock_ray)
+
+        call_kwargs = mock_ray.submit_chain_generation_batch.call_args.kwargs
+        assert call_kwargs["injected_processes"] is None
+        assert call_kwargs["variants"] is None
+
+    @pytest.mark.asyncio
+    async def test_seed_advance_forwards_injected_processes_and_variants(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        """Backlog item 93: _advance_seed_generations (phase 2 -- every
+        generation AFTER generation 0) must forward the same config-derived
+        injected_processes/variants on every per-seed advance, not just the
+        generation-0 burst -- otherwise a swap/new-gene composite would
+        regress to the stock process the moment the campaign moves past its
+        first generation."""
+        _simulation, hpcrun = await insert_chain_campaign_job(
+            database_service,
+            job_id_ext="parca-1",
+            chain_n_generations=3,
+            n_seeds=1,
+            chain_parca_done=True,
+            chain_current_job_ids=["s0g0"],
+            chain_current_generation=[0],
+            swap_processes={"ecoli-metabolism": "ecoli-metabolism-redux"},
+        )
+        mock_ray = _mock_ray_service()
+        mock_ray.get_batch_job_statuses = MagicMock(return_value={"s0g0": JobStatus.COMPLETED})
+        mock_ray.submit_chain_generation = MagicMock(return_value="s0g1")
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_chain_campaign(hpcrun, mock_ray)
+
+        call_kwargs = mock_ray.submit_chain_generation.call_args.kwargs
+        assert call_kwargs["injected_processes"] == {
+            "swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"},
+            "add_processes": [],
+            "exclude_processes": [],
+            "fork_repo": "",
+        }
+        assert call_kwargs["variants"] is None
 
     @pytest.mark.asyncio
     async def test_seed_succeeds_on_its_last_generation_resolves_the_seed(
