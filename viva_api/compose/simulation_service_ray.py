@@ -64,7 +64,12 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
 
         self._ray = SimulationServiceRay()
 
-    def _image_uri(self) -> str:
+    def _image_uri(self, commit: str | None = None) -> str:
+        # A resolved per-commit build (item 98: ComposeSimulationRequest.simulator_id)
+        # takes the exact same TRUE-commit-image shape the vEcoli ensemble path uses —
+        # delegate to the shared primitive rather than re-deriving it.
+        if commit is not None:
+            return self._ray._image_uri(commit)
         settings = get_settings()
         if not settings.compose_ray_image_tag:
             # Fail here, at submit, with the setting name — not 10 minutes later as an
@@ -101,7 +106,7 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
             f" {COMPOSE_DOC_PATH} -o {COMPOSE_OUT_DIR} -n {steps}"
         )
 
-    def _parca_staging(self) -> tuple[str | None, str | None]:
+    def _parca_staging(self, commit: str | None = None) -> tuple[str | None, str | None]:
         """(stage_s3, stage_dir) for the commit-keyed ParCa cache, or (None, None).
 
         The ensemble path stages this cache by passing these same two args to
@@ -111,16 +116,39 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         must keep the staging, or a composite whose ``cache_dir`` expects a populated
         ParCa bundle (v2ecoli's ``baseline``) starts against an empty directory.
 
-        Keyed by the image tag because that IS the workspace commit, and the ParCa
-        cache is commit-addressed. Disabled when no cache dir is configured.
+        Keyed by ``commit`` when a per-run build was resolved (item 98: a resolved
+        ``simulator_id`` implies a real, distinct commit — staging the deploy-wide
+        tag's cache instead would silently serve the wrong commit's data). Otherwise
+        keyed by the deploy-wide image tag, since that IS the workspace commit in the
+        static-image case. Disabled either way when no cache dir is configured.
         """
         settings = get_settings()
         if not settings.compose_parca_cache_dir:
             return None, None
         return (
-            data_layout.RayLayout.parca_cache_uri(settings.compose_ray_image_tag),
+            data_layout.RayLayout.parca_cache_uri(commit or settings.compose_ray_image_tag),
             settings.compose_parca_cache_dir,
         )
+
+    async def _resolve_commit(self, simulator_id: int | None) -> str | None:
+        """Resolve a per-run ``simulator_id`` to its git commit, or None when unset.
+
+        None preserves today's exact behavior (the deploy-wide static image).
+        ``simulator_id`` resolves against the LEGACY simulator registry (same one
+        ``POST /api/v1/simulations`` already uses), not this module's own
+        ``ComposeSimulatorVersion`` -- see ``ComposeSimulationRequest.simulator_id``.
+        """
+        if simulator_id is None:
+            return None
+        from viva_api.dependencies import get_database_service
+
+        database_service = get_database_service()
+        if database_service is None:
+            raise RuntimeError("Database service not initialized; cannot resolve simulator_id.")
+        simulator = await database_service.get_simulator(simulator_id=simulator_id)
+        if simulator is None:
+            raise ValueError(f"Simulator {simulator_id} not found")
+        return simulator.git_commit_hash
 
     @override
     async def submit_simulation_job(
@@ -154,11 +182,13 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         runner_s3_uri = data_layout.s3_uri(runner_key)
 
         steps = int(simulation.sim_request.end_time_point)
-        image = self._image_uri()
+        commit = await self._resolve_commit(simulation.sim_request.simulator_id)
+        image = self._image_uri(commit)
         # `_ensure_mnp_job_def` keys the derived revision by a tag string — reuse the
-        # image tag as that key so resubmits with the same image reuse the revision.
-        job_def = self._ray._ensure_mnp_job_def(image, get_settings().compose_ray_image_tag)
-        stage_s3, stage_dir = self._parca_staging()
+        # resolved commit (or, absent one, the deploy-wide image tag) as that key so
+        # resubmits against the same image reuse the revision.
+        job_def = self._ray._ensure_mnp_job_def(image, commit or get_settings().compose_ray_image_tag)
+        stage_s3, stage_dir = self._parca_staging(commit)
         batch_job_id = self._ray._submit_mnp(
             job_name=f"compose-{experiment_id}"[:128],
             job_definition=job_def,

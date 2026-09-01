@@ -230,6 +230,14 @@ class ComposeSimulationRequest(BaseModel):
     simulation_file_type: SimulationFileType
     end_time_point: float = 1.0
     is_batch: bool
+    # Optional per-commit workspace build to run this document against, resolved
+    # against the LEGACY simulator registry (viva_api.simulation.database_service,
+    # the same one POST /api/v1/simulations already uses) -- distinct from this
+    # module's own ComposeSimulatorVersion (a container-def identity computed from
+    # the uploaded document + extra_pip_deps, tracked on every compose backend
+    # regardless of this field). None preserves today's exact behavior: one static
+    # deploy-wide image (COMPOSE_RAY_IMAGE_TAG). Only the Ray backend consumes it.
+    simulator_id: int | None = None
 
 
 class ComposeSimulationResults(BaseModel):

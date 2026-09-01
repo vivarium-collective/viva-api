@@ -116,12 +116,14 @@ async def submit_simulation(
     uploaded_file: UploadFile,
     interval_time: float = 1.0,
     batch_submission: bool = False,
+    simulator_id: int | None = None,
     extra_pip_deps: list[str] | None = Query(default=None),
 ) -> ComposeSimulationExperiment:
     if interval_time < 0 or interval_time > 1000:
         raise HTTPException(400, "interval_time must be between 0 and 1000")
     simulation_request = await _parse_upload(uploaded_file, batch_submission)
     simulation_request.end_time_point = interval_time
+    simulation_request.simulator_id = simulator_id
     db = _require_db()
     allow_list = await db.get_allow_list_db().list_allow_list() or DEFAULT_COMPOSE_ALLOW_LIST
     return await run_compose_simulation(
