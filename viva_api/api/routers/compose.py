@@ -1,5 +1,6 @@
 """Compose (process-bigraph) simulation router — mounted at /compose/v1/."""
 
+import json
 import logging
 import os
 import tempfile
@@ -28,6 +29,7 @@ from viva_api.compose.models import (
     BiomodelsRegressionResult,
     BiomodelsRunRequest,
     BiomodelsRunResult,
+    ComposeDocumentSubmission,
     ComposeHpcRun,
     ComposeJobType,
     ComposeRegisteredSimulators,
@@ -99,6 +101,41 @@ async def _parse_upload(uploaded_file: UploadFile, batch_submission: bool = Fals
     )
 
 
+def _from_document(document: dict[str, object], batch_submission: bool = False) -> ComposeSimulationRequest:
+    """The JSON-body sibling of ``_parse_upload``: write the inline document to
+    a temp ``.pbg`` file (plain JSON — ``run_pbg.py`` reads it via
+    ``json.loads``) so both transports converge on the identical downstream
+    ``ComposeSimulationRequest`` shape and dispatch path.
+    """
+    if not document:
+        raise HTTPException(400, "Empty document")
+    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".pbg") as tmp_file:
+        json.dump(document, tmp_file)
+    return ComposeSimulationRequest(
+        request_file_path=Path(tmp_file.name),
+        simulation_file_type=SimulationFileType.PBG,
+        is_batch=batch_submission,
+    )
+
+
+async def _dispatch_submission(
+    simulation_request: ComposeSimulationRequest,
+    background_tasks: BackgroundTasks,
+    extra_pip_deps: list[str] | None,
+) -> ComposeSimulationExperiment:
+    db = _require_db()
+    allow_list = await db.get_allow_list_db().list_allow_list() or DEFAULT_COMPOSE_ALLOW_LIST
+    return await run_compose_simulation(
+        simulation_request=simulation_request,
+        database_service=db,
+        simulation_service=_require_sim(),
+        job_monitor=_require_monitor(),
+        pb_allow_list=PBAllowList(allow_list=allow_list),
+        background_tasks=background_tasks,
+        extra_pip_deps=extra_pip_deps,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Simulation endpoints
 # ---------------------------------------------------------------------------
@@ -124,17 +161,30 @@ async def submit_simulation(
     simulation_request = await _parse_upload(uploaded_file, batch_submission)
     simulation_request.end_time_point = interval_time
     simulation_request.simulator_id = simulator_id
-    db = _require_db()
-    allow_list = await db.get_allow_list_db().list_allow_list() or DEFAULT_COMPOSE_ALLOW_LIST
-    return await run_compose_simulation(
-        simulation_request=simulation_request,
-        database_service=db,
-        simulation_service=_require_sim(),
-        job_monitor=_require_monitor(),
-        pb_allow_list=PBAllowList(allow_list=allow_list),
-        background_tasks=background_tasks,
-        extra_pip_deps=extra_pip_deps,
-    )
+    return await _dispatch_submission(simulation_request, background_tasks, extra_pip_deps)
+
+
+@router.post(
+    path="/simulation/run-document",
+    operation_id="compose-run-simulation-document",
+    response_model=ComposeSimulationExperiment,
+    tags=["Compose Simulation"],
+    summary="Run a process-bigraph simulation (document as inline JSON)",
+)
+async def submit_simulation_document(
+    background_tasks: BackgroundTasks,
+    body: ComposeDocumentSubmission,
+) -> ComposeSimulationExperiment:
+    """The JSON-body sibling of ``submit_simulation`` — same dispatch, no
+    multipart file needed. For a programmatic caller (a CLI, a generated
+    client, or a future workbench path) that already holds the document as a
+    Python/JSON value, this skips the upload-file round-trip entirely."""
+    if body.interval_time < 0 or body.interval_time > 1000:
+        raise HTTPException(400, "interval_time must be between 0 and 1000")
+    simulation_request = _from_document(body.document, body.batch_submission)
+    simulation_request.end_time_point = body.interval_time
+    simulation_request.simulator_id = body.simulator_id
+    return await _dispatch_submission(simulation_request, background_tasks, body.extra_pip_deps)
 
 
 # ---------------------------------------------------------------------------

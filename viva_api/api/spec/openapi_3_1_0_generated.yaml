@@ -1191,7 +1191,7 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-09-01T10:05:44.068768'
+                  created_at: '2026-09-01T10:23:00.079423'
                 parca_config:
                   outdir: /projects/SMS/sms_api/prod/sims
       responses:
@@ -1294,6 +1294,35 @@ paths:
           multipart/form-data:
             schema:
               $ref: '#/components/schemas/Body_compose-run-simulation'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeSimulationExperiment'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/simulation/run-document:
+    post:
+      tags:
+      - Compose Simulation
+      summary: Run a process-bigraph simulation (document as inline JSON)
+      description: "The JSON-body sibling of ``submit_simulation`` \u2014 same dispatch,\
+        \ no\nmultipart file needed. For a programmatic caller (a CLI, a generated\n\
+        client, or a future workbench path) that already holds the document as a\n\
+        Python/JSON value, this skips the upload-file round-trip entirely."
+      operationId: compose-run-simulation-document
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComposeDocumentSubmission'
+        required: true
       responses:
         '200':
           description: Successful Response
@@ -3234,6 +3263,47 @@ components:
         \ instead. Not a new\ndata source \u2014 the SAME already-tracked ``HpcRun.chain_final_job_ids``\
         \ and\nthe SAME ``describe_jobs`` polling ``JobScheduler.update_chain_campaigns``\n\
         already runs, just returned unflattened."
+    ComposeDocumentSubmission:
+      properties:
+        document:
+          additionalProperties: true
+          type: object
+          title: Document
+          description: The composite document itself, as JSON
+        interval_time:
+          type: number
+          title: Interval Time
+          default: 1.0
+        batch_submission:
+          type: boolean
+          title: Batch Submission
+          default: false
+        simulator_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Simulator Id
+        extra_pip_deps:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Extra Pip Deps
+      type: object
+      required:
+      - document
+      title: ComposeDocumentSubmission
+      description: 'A process-bigraph document submitted inline as JSON (POST body),
+        the
+
+        sibling of ComposeSimulationRequest''s file-upload transport -- same
+
+        downstream dispatch, different input shape. Field name/shape mirrors
+
+        env_worker.py''s own StateDocument.document for naming consistency across
+
+        this repo''s two JSON-body document-submission paths.'
     ComposeHpcRun:
       properties:
         database_id:
@@ -4317,7 +4387,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-09-01 10:05:44.004133'
+          default: '2026-09-01 10:23:00.012161'
         job_id:
           anyOf:
           - type: string

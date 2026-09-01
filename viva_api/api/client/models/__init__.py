@@ -24,6 +24,8 @@ from .body_run_ecoli_simulation_new import BodyRunEcoliSimulationNew
 from .body_run_ecoli_simulation_new_extra_params_type_0 import BodyRunEcoliSimulationNewExtraParamsType0
 from .chain_progress import ChainProgress
 from .check_health_health_get_response_check_health_health_get import CheckHealthHealthGetResponseCheckHealthHealthGet
+from .compose_document_submission import ComposeDocumentSubmission
+from .compose_document_submission_document import ComposeDocumentSubmissionDocument
 from .compose_get_simulation_document_response_compose_get_simulation_document import (
     ComposeGetSimulationDocumentResponseComposeGetSimulationDocument,
 )
@@ -141,6 +143,8 @@ __all__ = (
     "BodyRunEcoliSimulationNewExtraParamsType0",
     "ChainProgress",
     "CheckHealthHealthGetResponseCheckHealthHealthGet",
+    "ComposeDocumentSubmission",
+    "ComposeDocumentSubmissionDocument",
     "ComposeGetSimulationDocumentResponseComposeGetSimulationDocument",
     "ComposeHpcRun",
     "ComposeJobStatus",

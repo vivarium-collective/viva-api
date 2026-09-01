@@ -240,6 +240,21 @@ class ComposeSimulationRequest(BaseModel):
     simulator_id: int | None = None
 
 
+class ComposeDocumentSubmission(BaseModel):
+    """A process-bigraph document submitted inline as JSON (POST body), the
+    sibling of ComposeSimulationRequest's file-upload transport -- same
+    downstream dispatch, different input shape. Field name/shape mirrors
+    env_worker.py's own StateDocument.document for naming consistency across
+    this repo's two JSON-body document-submission paths.
+    """
+
+    document: dict[str, Any] = Field(..., description="The composite document itself, as JSON")
+    interval_time: float = 1.0
+    batch_submission: bool = False
+    simulator_id: int | None = None
+    extra_pip_deps: list[str] | None = None
+
+
 class ComposeSimulationResults(BaseModel):
     path_on_server: Path
 
