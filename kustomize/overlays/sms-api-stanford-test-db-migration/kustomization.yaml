@@ -19,7 +19,10 @@ images:
     # multi_node_composite_id migration, 9c2e6b1f4a73) -- the app was deployed
     # slightly ahead of this Job (real, caught live via UndefinedColumnError
     # spam in the api pod's own logs, fixed the same few minutes).
-    newTag: 0.9.78
+    newTag: 0.9.79
+    # 2026-09-01: 0.9.78 -> 0.9.79, matching the app overlay bump (item 93's
+    # chain-dispatch config passthrough -- no new Alembic migration this release,
+    # kept in sync per the version-sync checklist's own "keep it equal" rule).
     # 0.9.60 -> 0.9.63: this pin had drifted THREE releases behind the app, which
     # is the exact failure docs/DEPLOY.md and CLAUDE.md's version-sync checklist
     # warn about -- the Job runs the reconciler from THIS image, so it can only
