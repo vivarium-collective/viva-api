@@ -127,6 +127,16 @@ V2ECOLI_DIR = "/app/v2ecoli"
 PARCA_CACHE_DIR = f"{V2ECOLI_DIR}/out/cache"
 PARCA_SIMDATA_DIR = f"{V2ECOLI_DIR}/out/sim_data"
 SIM_OUT_DIR = f"{V2ECOLI_DIR}/.pbg/runs/phase0-xarray"
+# ecoli_baseline.baseline()'s injection branch (taken whenever injected_processes
+# is passed) does `from scripts._compare.inject import (...)` -- a bare absolute
+# import that only resolves when V2ECOLI_DIR (which DOES contain scripts/, copied
+# in by sms-ecoli's Dockerfile `COPY . .`) is on sys.path. Every run_pbg.py
+# invocation below runs it via an absolute /tmp path, which makes CPython put
+# /tmp on sys.path[0] instead of the cwd -- the `cd {V2ECOLI_DIR}` alone doesn't
+# fix this; PYTHONPATH does. Found live 2026-09-01 (backlog item 93): a real
+# chain-dispatch run with a non-empty injected_processes failed
+# ModuleNotFoundError('scripts') despite the cd already being correct.
+PBG_RUNNER_ENV = f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER} PYTHONPATH={V2ECOLI_DIR}"
 # The analysis DAG node writes its outputs straight to S3 (see _analysis_command),
 # so this local dir normally never exists and the entrypoint's RAY_OUT_DIR sync is a
 # documented no-op ("no <dir>; nothing to upload"). It is still declared so anything
@@ -815,7 +825,7 @@ class SimulationServiceRay(SimulationService):
                 "analyses": "none",
                 "parallel": "ray",
             }
-            env = f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER}"
+            env = PBG_RUNNER_ENV
             return (
                 f"cd {V2ECOLI_DIR}"
                 f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
@@ -918,7 +928,7 @@ class SimulationServiceRay(SimulationService):
             overrides["injected_processes"] = injected_processes
         if variants:
             overrides["variants"] = variants
-        env = f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER}"
+        env = PBG_RUNNER_ENV
         return (
             f"cd {V2ECOLI_DIR}"
             f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
@@ -1447,7 +1457,7 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         ``transport='ray'`` on the head attaches to the real multi-node cluster
         with zero code changes anywhere in this chain.
         """
-        env = f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER}"
+        env = PBG_RUNNER_ENV
         if n_shards_default:
             env = f"{env} RAY_SHARDS_DEFAULT={int(n_shards_default)}"
         return (
