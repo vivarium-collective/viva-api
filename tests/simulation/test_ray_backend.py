@@ -1367,6 +1367,105 @@ class TestSimulationServiceRayBuild:
             "parallel": "ray",
         }
 
+    def test_sim_command_batch_threads_injected_processes_swap(self) -> None:
+        """CD2 native seam: a config carrying swap_processes must reach the
+        --composite-id batch overrides as ecoli_baseline.baseline()'s own
+        injected_processes kwarg, or the composite runs plain basal despite the
+        requested metabolism-redux/violacein swap (depends on v2ecoli #640)."""
+        service = SimulationServiceRay()
+        injected = {
+            "swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"},
+            "add_processes": [],
+            "exclude_processes": [],
+            "fork_repo": "",
+        }
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._sim_command(
+                n_seeds=2,
+                n_steps=600,
+                chunk=60,
+                n_generations=3,
+                experiment_id="cd2-swap",
+                runner_s3_uri="s3://b/cd2-swap/run_pbg.py",
+                injected_processes=injected,
+            )
+        tokens = shlex.split(cmd)
+        overrides = json.loads(tokens[tokens.index("--overrides") + 1])
+        assert overrides["injected_processes"] == injected
+        # The swap survived into the native composite's own kwarg shape.
+        assert overrides["injected_processes"]["swap_processes"] == {
+            "ecoli-metabolism": "ecoli-metabolism-redux"
+        }
+
+    def test_sim_command_batch_threads_all_domain_fields(self) -> None:
+        """variants/config_overrides/features/exchange_fluxes(+basis) are the
+        remaining ecoli_baseline batch-mode kwargs -- each must reach --overrides
+        when the config carries it."""
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._sim_command(
+                n_seeds=1,
+                n_steps=600,
+                chunk=60,
+                n_generations=2,
+                experiment_id="cd2-full",
+                runner_s3_uri="s3://b/cd2-full/run_pbg.py",
+                variants={"grid": {"a": {"p.k": [1.0]}}},
+                config_overrides={"ecoli-metabolism-redux.foo": 1},
+                features=["exchange_flux"],
+                exchange_fluxes={"GLC": "EX_glc__D_e"},
+                exchange_flux_basis="mmol_per_gDCW_per_hr",
+            )
+        overrides = json.loads(shlex.split(cmd)[shlex.split(cmd).index("--overrides") + 1])
+        assert overrides["variants"] == {"grid": {"a": {"p.k": [1.0]}}}
+        assert overrides["config_overrides"] == {"ecoli-metabolism-redux.foo": 1}
+        assert overrides["features"] == ["exchange_flux"]
+        assert overrides["exchange_fluxes"] == {"GLC": "EX_glc__D_e"}
+        assert overrides["exchange_flux_basis"] == "mmol_per_gDCW_per_hr"
+
+    def test_sim_command_batch_no_domain_fields_is_byte_for_byte_unchanged(self) -> None:
+        """Regression guard: a config with no swap/variant intent produces the
+        exact overrides dict this path built before threading was added -- no
+        stray domain keys leak in."""
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._sim_command(
+                n_seeds=2,
+                n_steps=600,
+                chunk=60,
+                n_generations=3,
+                experiment_id="plain",
+                runner_s3_uri="s3://b/plain/run_pbg.py",
+            )
+        overrides = json.loads(shlex.split(cmd)[shlex.split(cmd).index("--overrides") + 1])
+        assert overrides == {
+            "n_seeds": 2,
+            "n_generations": 3,
+            "cache_dir": PARCA_CACHE_DIR,
+            "out_dir": SIM_OUT_DIR,
+            "experiment_id": "plain",
+            "analyses": "none",
+            "parallel": "ray",
+        }
+
+    def test_sim_command_batch_flux_basis_omitted_without_flux_map(self) -> None:
+        """exchange_flux_basis only matters alongside a flux map -- it is omitted
+        when no exchange_fluxes are supplied (composite defaults it to '')."""
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._sim_command(
+                n_seeds=1,
+                n_steps=600,
+                chunk=60,
+                n_generations=2,
+                experiment_id="no-flux",
+                runner_s3_uri="s3://b/no-flux/run_pbg.py",
+                exchange_flux_basis="mmol_per_gDCW_per_hr",
+            )
+        overrides = json.loads(shlex.split(cmd)[shlex.split(cmd).index("--overrides") + 1])
+        assert "exchange_flux_basis" not in overrides
+        assert "exchange_fluxes" not in overrides
+
     def test_sim_command_multi_generation_requires_experiment_id_and_runner_uri(self) -> None:
         """No silent placeholder default -- both must be supplied explicitly or the
         dispatch fails loudly instead of running against the wrong experiment_id."""

@@ -288,6 +288,43 @@ def injected_processes_from_config(config: Any) -> dict[str, Any] | None:
     }
 
 
+def _batch_domain_overrides(
+    *,
+    injected_processes: dict[str, Any] | None = None,
+    variants: dict[str, Any] | None = None,
+    config_overrides: dict[str, Any] | None = None,
+    features: list[Any] | None = None,
+    exchange_fluxes: dict[str, Any] | None = None,
+    exchange_flux_basis: str | None = None,
+) -> dict[str, Any]:
+    """The submitted config's DOMAIN fields as ``ecoli_baseline.baseline()``'s own
+    batch-mode ``--overrides`` keys (the CD2 native seam).
+
+    v2ecoli #640 threaded ``injected_processes``/``features``/``exchange_fluxes``/
+    ``exchange_flux_basis`` through ``_build_batch_document``; ``config_overrides``
+    and ``variants`` already existed. Each key is emitted ONLY when non-empty, so a
+    config with no injection/variant intent yields ``{}`` and the caller's overrides
+    dict is byte-for-byte what this path built before threading was added -- the
+    same regression contract as ``injected_processes_from_config`` and the 0.9.79
+    chain-dispatch passthrough. ``exchange_flux_basis`` rides only alongside a flux
+    map (the composite defaults it to "").
+    """
+    out: dict[str, Any] = {}
+    if injected_processes:
+        out["injected_processes"] = injected_processes
+    if variants:
+        out["variants"] = variants
+    if config_overrides:
+        out["config_overrides"] = config_overrides
+    if features:
+        out["features"] = features
+    if exchange_fluxes:
+        out["exchange_fluxes"] = exchange_fluxes
+        if exchange_flux_basis:
+            out["exchange_flux_basis"] = exchange_flux_basis
+    return out
+
+
 @dataclass
 class ChainCampaignPollResult:
     """A chain-dispatch campaign's analysis-fan-in poll outcome — backlog item 33.
@@ -766,6 +803,12 @@ class SimulationServiceRay(SimulationService):
         n_generations: int = 1,
         experiment_id: str | None = None,
         runner_s3_uri: str | None = None,
+        injected_processes: dict[str, Any] | None = None,
+        variants: dict[str, Any] | None = None,
+        config_overrides: dict[str, Any] | None = None,
+        features: list[Any] | None = None,
+        exchange_fluxes: dict[str, Any] | None = None,
+        exchange_flux_basis: str | None = None,
     ) -> str:
         # When ``composite`` is set, run the two-engine comparison driver — both
         # engines (v2ecoli port + vEcoli imported via build_composite_native)
@@ -812,7 +855,7 @@ class SimulationServiceRay(SimulationService):
                     "runner_s3_uri is required for multi-generation batch dispatch "
                     "(the generic run_pbg.py runner must be staged to S3 first)"
                 )
-            overrides = {
+            overrides: dict[str, Any] = {
                 "n_seeds": int(n_seeds),
                 "n_generations": int(n_generations),
                 "cache_dir": PARCA_CACHE_DIR,
@@ -825,6 +868,36 @@ class SimulationServiceRay(SimulationService):
                 "analyses": "none",
                 "parallel": "ray",
             }
+            # Thread the submitted config's DOMAIN fields into the batch composite's
+            # own overrides so the native ``ecoli_baseline.baseline()`` batch run
+            # actually carries the metabolism-redux/violacein swap (the CD2 native
+            # seam). Without these keys the composite runs a plain basal baseline
+            # even though the config requested a swap -- the composite never sees it.
+            #
+            # These are exactly ``ecoli_baseline.baseline()``'s own batch-mode kwargs
+            # (v2ecoli #640 threaded injected_processes/features/exchange_fluxes/
+            # exchange_flux_basis through ``_build_batch_document``; config_overrides
+            # and variants already existed). Each is added ONLY when non-empty, so a
+            # config with no injection/variant intent produces the exact overrides
+            # dict this path built before -- the byte-for-byte-unchanged regression
+            # property (mirrors ``injected_processes_from_config``'s own contract and
+            # the 0.9.79 chain-dispatch passthrough).
+            #
+            # ``injected_processes`` is the mapped shape ``baseline()`` expects
+            # ({swap_processes, add_processes, exclude_processes, fork_repo}), built
+            # by ``injected_processes_from_config`` from the legacy config's
+            # ``swap_processes`` -- the SAME mapping ``_seed_generation_command`` and
+            # the chain-dispatch/JobScheduler path already use.
+            overrides.update(
+                _batch_domain_overrides(
+                    injected_processes=injected_processes,
+                    variants=variants,
+                    config_overrides=config_overrides,
+                    features=features,
+                    exchange_fluxes=exchange_fluxes,
+                    exchange_flux_basis=exchange_flux_basis,
+                )
+            )
             env = PBG_RUNNER_ENV
             return (
                 f"cd {V2ECOLI_DIR}"
@@ -1371,6 +1444,19 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
                 n_generations=n_generations,
                 experiment_id=str(experiment_id),
                 runner_s3_uri=runner_s3_uri,
+                # CD2 native seam: thread the submitted config's domain fields so the
+                # --composite-id batch run carries the metabolism-redux/violacein swap.
+                # injected_processes maps the legacy config's swap_processes ->
+                # ecoli_baseline.baseline()'s injected_processes kwarg (same helper the
+                # chain-dispatch/JobScheduler path uses); the rest are ecoli_baseline
+                # batch-mode kwargs read straight off the config (extra="allow"), all
+                # no-ops when the config sets none of them.
+                injected_processes=injected_processes_from_config(config),
+                variants=getattr(config, "variants", None),
+                config_overrides=getattr(config, "config_overrides", None),
+                features=getattr(config, "features", None),
+                exchange_fluxes=getattr(config, "exchange_fluxes", None),
+                exchange_flux_basis=getattr(config, "exchange_flux_basis", None),
             ),
             out_s3=self._results_s3_uri(experiment_id),
             out_dir=SIM_OUT_DIR,
