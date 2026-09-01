@@ -84,6 +84,23 @@ def test_image_uri_builds_the_commit_pinned_uri(monkeypatch: pytest.MonkeyPatch)
     assert uri == "111122223333.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:a08e20bd"
 
 
+# --- item 98: resolved per-run simulator_id overrides the deploy-wide static image ---
+
+
+def test_image_uri_with_commit_delegates_to_the_shared_ensemble_primitive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A resolved commit (item 98) must take the TRUE-commit-image shape the vEcoli
+    ensemble path already uses -- not re-derive it -- so the two paths can never drift.
+    Asserted by direct equality against the real delegation target, not a hardcoded
+    string, so this doesn't need to know or duplicate that primitive's own format."""
+    monkeypatch.setattr(mod, "get_settings", lambda: _settings(compose_ray_image_tag="deploy-wide-tag"))
+    svc = ComposeSimulationServiceRay()
+    uri = svc._image_uri(commit="a-different-per-run-commit")
+    assert uri == svc._ray._image_uri("a-different-per-run-commit")
+    # NOT the static deploy-wide tag -- the resolved per-run commit took over.
+    assert "deploy-wide-tag" not in uri
+    assert "a-different-per-run-commit" in uri
+
+
 # --- B2: the driver swap must not drop the ensemble path's ParCa cache staging ---
 
 
@@ -109,6 +126,24 @@ def test_parca_staging_is_keyed_by_the_image_tag_commit(monkeypatch: pytest.Monk
     assert stage_s3.endswith("ray-parca-cache/a08e20bd/")
 
 
+def test_parca_staging_with_commit_keys_by_the_resolved_commit_not_the_deploy_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """item 98: a resolved per-run simulator_id implies a real, distinct commit --
+    staging the deploy-wide tag's cache instead would silently serve the WRONG
+    commit's ParCa data. Regression target: this must key off `commit`, not the tag."""
+    monkeypatch.setattr(
+        mod,
+        "get_settings",
+        lambda: _settings(compose_ray_image_tag="deploy-wide-tag", compose_parca_cache_dir="/app/v2ecoli/out/cache"),
+    )
+    stage_s3, stage_dir = ComposeSimulationServiceRay()._parca_staging(commit="resolved-per-run-commit")
+    assert stage_dir == "/app/v2ecoli/out/cache"
+    assert stage_s3 is not None
+    assert stage_s3.endswith("ray-parca-cache/resolved-per-run-commit/")
+    assert "deploy-wide-tag" not in stage_s3
+
+
 # --- B3: name the workspace's own core builder so its registered TYPES resolve ---
 
 
@@ -124,6 +159,51 @@ def test_compose_command_omits_core_builder_when_unset(monkeypatch: pytest.Monke
     monkeypatch.setattr(mod, "get_settings", lambda: _settings(compose_pbg_core_builder=""))
     cmd = ComposeSimulationServiceRay()._compose_command("s3://b/i.pbg", "s3://b/run_pbg.py", steps=3)
     assert "PBG_CORE_BUILDER" not in cmd
+
+
+# --- item 98: _resolve_commit against the LEGACY simulator registry ---
+
+
+@pytest.mark.asyncio
+async def test_resolve_commit_returns_none_when_simulator_id_unset() -> None:
+    """None preserves today's exact behavior (the deploy-wide static image) and must
+    not touch the database service at all."""
+    with patch("viva_api.dependencies.get_database_service") as get_db:
+        assert await ComposeSimulationServiceRay()._resolve_commit(None) is None
+        get_db.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_commit_resolves_the_git_commit_hash() -> None:
+    fake_simulator = types.SimpleNamespace(git_commit_hash="9e2040093e", git_repo_url="x", git_branch="main")
+    fake_db = AsyncMock()
+    fake_db.get_simulator = AsyncMock(return_value=fake_simulator)
+    with patch("viva_api.dependencies.get_database_service", return_value=fake_db):
+        commit = await ComposeSimulationServiceRay()._resolve_commit(42)
+    assert commit == "9e2040093e"
+    fake_db.get_simulator.assert_awaited_once_with(simulator_id=42)
+
+
+@pytest.mark.asyncio
+async def test_resolve_commit_raises_when_simulator_not_found() -> None:
+    """Fail loud, naming the id -- matching the same convention the ensemble path
+    uses for an unresolvable simulator_id (simulation_service_ray.py)."""
+    fake_db = AsyncMock()
+    fake_db.get_simulator = AsyncMock(return_value=None)
+    with (
+        patch("viva_api.dependencies.get_database_service", return_value=fake_db),
+        pytest.raises(ValueError, match="Simulator 42 not found"),
+    ):
+        await ComposeSimulationServiceRay()._resolve_commit(42)
+
+
+@pytest.mark.asyncio
+async def test_resolve_commit_raises_when_database_service_not_initialized() -> None:
+    with (
+        patch("viva_api.dependencies.get_database_service", return_value=None),
+        pytest.raises(RuntimeError, match="Database service not initialized"),
+    ):
+        await ComposeSimulationServiceRay()._resolve_commit(42)
 
 
 @pytest.mark.asyncio
@@ -173,3 +253,79 @@ async def test_submit_simulation_job_uses_the_unified_ray_num_nodes_setting(
         await svc.submit_simulation_job(simulation, experiment_id="exp-1")
 
     assert captured["num_nodes"] == 24
+
+
+@pytest.mark.asyncio
+async def test_submit_simulation_job_with_simulator_id_uses_the_resolved_per_commit_image(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """item 98 end-to-end: a request carrying simulator_id must dispatch against that
+    build's OWN commit -- image, job-def revision key, AND ParCa cache staging -- not
+    the deploy-wide static tag, and without touching ComposeSimulatorVersion (a
+    different, container-def-based identity tracked regardless of this field)."""
+    monkeypatch.setattr(
+        mod,
+        "get_settings",
+        lambda: _settings(
+            compose_ray_image_tag="deploy-wide-tag",
+            compose_parca_cache_dir="/app/v2ecoli/out/cache",
+            ray_num_nodes=4,
+        ),
+    )
+
+    doc_path = tmp_path / "input.pbg"
+    doc_path.write_text("{}")
+    simulation = ComposeSimulation(
+        database_id=1,
+        sim_request=ComposeSimulationRequest(
+            request_file_path=doc_path,
+            simulation_file_type=SimulationFileType.PBG,
+            is_batch=False,
+            simulator_id=42,
+        ),
+        simulator_version=ComposeSimulatorVersion(
+            database_id=1,
+            singularity_def=ContainerizationFileRepr(representation="Bootstrap: docker\n"),
+            singularity_def_hash="x",
+            packages=None,
+        ),
+    )
+
+    svc = ComposeSimulationServiceRay()
+
+    captured_job_def_args: dict[str, str] = {}
+
+    def _capture_ensure_job_def(image: str, commit: str) -> str:
+        captured_job_def_args["image"] = image
+        captured_job_def_args["commit"] = commit
+        return "smscdk-ray-mnp:1"
+
+    monkeypatch.setattr(svc._ray, "_ensure_mnp_job_def", _capture_ensure_job_def)
+
+    captured_submit: dict[str, object] = {}
+
+    def _capture_submit_mnp(**kwargs: object) -> str:
+        captured_submit.update(kwargs)
+        return "batch-job-id"
+
+    monkeypatch.setattr(svc._ray, "_submit_mnp", _capture_submit_mnp)
+
+    fake_file_service = AsyncMock()
+    fake_file_service.upload_file = AsyncMock()
+    fake_simulator = types.SimpleNamespace(git_commit_hash="resolved-commit-42", git_repo_url="x", git_branch="main")
+    fake_db = AsyncMock()
+    fake_db.get_simulator = AsyncMock(return_value=fake_simulator)
+
+    with (
+        patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+        patch("viva_api.dependencies.get_database_service", return_value=fake_db),
+    ):
+        await svc.submit_simulation_job(simulation, experiment_id="exp-1")
+
+    fake_db.get_simulator.assert_awaited_once_with(simulator_id=42)
+    assert captured_job_def_args["commit"] == "resolved-commit-42"
+    assert "resolved-commit-42" in captured_job_def_args["image"]
+    assert "deploy-wide-tag" not in captured_job_def_args["image"]
+    stage_s3 = captured_submit["stage_s3"]
+    assert isinstance(stage_s3, str)
+    assert stage_s3.endswith("ray-parca-cache/resolved-commit-42/")

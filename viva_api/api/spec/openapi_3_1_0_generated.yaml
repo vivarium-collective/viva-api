@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.70
+  version: 0.9.81
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -1191,9 +1191,9 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-08-30T13:17:29.078525'
+                  created_at: '2026-09-01T10:46:18.496415'
                 parca_config:
-                  outdir: /projects/SMS/sms_api/jim/sims
+                  outdir: /projects/SMS/sms_api/prod/sims
       responses:
         '200':
           description: Successful Response
@@ -1270,6 +1270,22 @@ paths:
           type: boolean
           default: false
           title: Batch Submission
+      - name: simulator_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Simulator Id
+      - name: compute_backend
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - $ref: '#/components/schemas/ComputeBackend'
+          - type: 'null'
+          title: Compute Backend
       - name: extra_pip_deps
         in: query
         required: false
@@ -1286,6 +1302,35 @@ paths:
           multipart/form-data:
             schema:
               $ref: '#/components/schemas/Body_compose-run-simulation'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeSimulationExperiment'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/simulation/run-document:
+    post:
+      tags:
+      - Compose Simulation
+      summary: Run a process-bigraph simulation (document as inline JSON)
+      description: "The JSON-body sibling of ``submit_simulation`` \u2014 same dispatch,\
+        \ no\nmultipart file needed. For a programmatic caller (a CLI, a generated\n\
+        client, or a future workbench path) that already holds the document as a\n\
+        Python/JSON value, this skips the upload-file round-trip entirely."
+      operationId: compose-run-simulation-document
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComposeDocumentSubmission'
+        required: true
       responses:
         '200':
           description: Successful Response
@@ -3226,6 +3271,51 @@ components:
         \ instead. Not a new\ndata source \u2014 the SAME already-tracked ``HpcRun.chain_final_job_ids``\
         \ and\nthe SAME ``describe_jobs`` polling ``JobScheduler.update_chain_campaigns``\n\
         already runs, just returned unflattened."
+    ComposeDocumentSubmission:
+      properties:
+        document:
+          additionalProperties: true
+          type: object
+          title: Document
+          description: The composite document itself, as JSON
+        interval_time:
+          type: number
+          title: Interval Time
+          default: 1.0
+        batch_submission:
+          type: boolean
+          title: Batch Submission
+          default: false
+        simulator_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Simulator Id
+        compute_backend:
+          anyOf:
+          - $ref: '#/components/schemas/ComputeBackend'
+          - type: 'null'
+        extra_pip_deps:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Extra Pip Deps
+      type: object
+      required:
+      - document
+      title: ComposeDocumentSubmission
+      description: 'A process-bigraph document submitted inline as JSON (POST body),
+        the
+
+        sibling of ComposeSimulationRequest''s file-upload transport -- same
+
+        downstream dispatch, different input shape. Field name/shape mirrors
+
+        env_worker.py''s own StateDocument.document for naming consistency across
+
+        this repo''s two JSON-body document-submission paths.'
     ComposeHpcRun:
       properties:
         database_id:
@@ -3427,6 +3517,14 @@ components:
         `__not_registered__` -- which reads as "your ref is wrong" to a caller who
 
         sent no ref at all.'
+    ComputeBackend:
+      type: string
+      enum:
+      - slurm
+      - batch
+      - ray
+      title: ComputeBackend
+      description: Compute backend for simulation workloads.
     ConfigDocument:
       properties:
         config:
@@ -3957,7 +4055,7 @@ components:
         parca_config:
           $ref: '#/components/schemas/ParcaOptions'
           default:
-            outdir: /projects/SMS/sms_api/jim/sims
+            outdir: /projects/SMS/sms_api/prod/sims
       additionalProperties: true
       type: object
       required:
@@ -3968,7 +4066,7 @@ components:
         outdir:
           type: string
           title: Outdir
-          default: /projects/SMS/sms_api/jim/sims
+          default: /projects/SMS/sms_api/prod/sims
       additionalProperties: true
       type: object
       title: ParcaOptions
@@ -4309,7 +4407,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-08-30 13:17:29.009960'
+          default: '2026-09-01 10:46:18.434765'
         job_id:
           anyOf:
           - type: string
@@ -4351,7 +4449,7 @@ components:
         parca_options:
           $ref: '#/components/schemas/ParcaOptions'
           default:
-            outdir: /projects/SMS/sms_api/jim/sims
+            outdir: /projects/SMS/sms_api/prod/sims
         analysis_options:
           $ref: '#/components/schemas/AnalysisOptions'
           default: {}
