@@ -39,6 +39,7 @@ from viva_api.compose.models import (
     SimulationFileType,
 )
 from viva_api.compose.simulation_service import ComposeSimulationService
+from viva_api.config import ComputeBackend
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +71,26 @@ def _require_db() -> ComposeDatabaseService:
     return _compose_db_service
 
 
-def _require_sim() -> ComposeSimulationService:
+def _require_sim(compute_backend: ComputeBackend | None = None) -> ComposeSimulationService:
     if _compose_sim_service is None:
         raise HTTPException(500, "Compose simulation service not initialized")
-    return _compose_sim_service
+    if compute_backend is None:
+        return _compose_sim_service
+    # Explicit per-request backend (item 98) -- fail loud when it isn't registered
+    # rather than silently substitute the default, unlike the ensemble path's own
+    # get_simulation_service_for_backend (an internal repo-inference helper, not a
+    # caller-facing request param): a caller who explicitly asked for one backend
+    # and silently got another is exactly the "looked successful, ran the wrong
+    # thing" class of bug viva-api#353 flagged as costing real debugging time.
+    registry = _compose_job_monitor.sim_registry if _compose_job_monitor is not None else {}
+    service: ComposeSimulationService | None = registry.get(compute_backend)
+    if service is None:
+        raise HTTPException(
+            400,
+            f"compute_backend={compute_backend.value!r} is not available on this deployment "
+            f"(registered: {sorted(b.value for b in registry)})",
+        )
+    return service
 
 
 def _require_monitor() -> ComposeJobMonitor:
@@ -128,7 +145,7 @@ async def _dispatch_submission(
     return await run_compose_simulation(
         simulation_request=simulation_request,
         database_service=db,
-        simulation_service=_require_sim(),
+        simulation_service=_require_sim(simulation_request.compute_backend),
         job_monitor=_require_monitor(),
         pb_allow_list=PBAllowList(allow_list=allow_list),
         background_tasks=background_tasks,
@@ -154,6 +171,7 @@ async def submit_simulation(
     interval_time: float = 1.0,
     batch_submission: bool = False,
     simulator_id: int | None = None,
+    compute_backend: ComputeBackend | None = None,
     extra_pip_deps: list[str] | None = Query(default=None),
 ) -> ComposeSimulationExperiment:
     if interval_time < 0 or interval_time > 1000:
@@ -161,6 +179,7 @@ async def submit_simulation(
     simulation_request = await _parse_upload(uploaded_file, batch_submission)
     simulation_request.end_time_point = interval_time
     simulation_request.simulator_id = simulator_id
+    simulation_request.compute_backend = compute_backend
     return await _dispatch_submission(simulation_request, background_tasks, extra_pip_deps)
 
 
@@ -184,6 +203,7 @@ async def submit_simulation_document(
     simulation_request = _from_document(body.document, body.batch_submission)
     simulation_request.end_time_point = body.interval_time
     simulation_request.simulator_id = body.simulator_id
+    simulation_request.compute_backend = body.compute_backend
     return await _dispatch_submission(simulation_request, background_tasks, body.extra_pip_deps)
 
 

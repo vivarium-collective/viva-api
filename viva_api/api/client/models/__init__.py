@@ -41,6 +41,7 @@ from .composite_ref_overrides_type_0 import CompositeRefOverridesType0
 from .composite_selector import CompositeSelector
 from .composite_selector_schema_type_0 import CompositeSelectorSchemaType0
 from .composite_selector_state_type_0 import CompositeSelectorStateType0
+from .compute_backend import ComputeBackend
 from .config_document import ConfigDocument
 from .config_document_config import ConfigDocumentConfig
 from .containerization_engine import ContainerizationEngine
@@ -158,6 +159,7 @@ __all__ = (
     "CompositeSelector",
     "CompositeSelectorSchemaType0",
     "CompositeSelectorStateType0",
+    "ComputeBackend",
     "ConfigDocument",
     "ConfigDocumentConfig",
     "ContainerizationEngine",

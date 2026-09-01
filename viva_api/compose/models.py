@@ -14,6 +14,7 @@ from pydantic import BaseModel as _BaseModel
 from pydantic import Field
 
 from viva_api.compose.container_def import ContainerizationFileRepr
+from viva_api.config import ComputeBackend
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -238,6 +239,14 @@ class ComposeSimulationRequest(BaseModel):
     # regardless of this field). None preserves today's exact behavior: one static
     # deploy-wide image (COMPOSE_RAY_IMAGE_TAG). Only the Ray backend consumes it.
     simulator_id: int | None = None
+    # Which registered ComposeSimulationService to dispatch to (item 98). None
+    # preserves today's exact behavior: the deployment's single default service.
+    # Only values actually registered for compose (RAY/SLURM as of this field's
+    # introduction -- see _init_compose_subsystem) are honored; requesting an
+    # unregistered backend fails loud rather than silently substituting the
+    # default (the class of bug viva-api#353 flagged as costing real debugging
+    # time on this exact deployment).
+    compute_backend: ComputeBackend | None = None
 
 
 class ComposeDocumentSubmission(BaseModel):
@@ -252,6 +261,7 @@ class ComposeDocumentSubmission(BaseModel):
     interval_time: float = 1.0
     batch_submission: bool = False
     simulator_id: int | None = None
+    compute_backend: ComputeBackend | None = None
     extra_pip_deps: list[str] | None = None
 
 

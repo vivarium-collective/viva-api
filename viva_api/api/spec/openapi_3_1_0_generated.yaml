@@ -1191,7 +1191,7 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-09-01T10:23:00.079423'
+                  created_at: '2026-09-01T10:46:18.496415'
                 parca_config:
                   outdir: /projects/SMS/sms_api/prod/sims
       responses:
@@ -1278,6 +1278,14 @@ paths:
           - type: integer
           - type: 'null'
           title: Simulator Id
+      - name: compute_backend
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - $ref: '#/components/schemas/ComputeBackend'
+          - type: 'null'
+          title: Compute Backend
       - name: extra_pip_deps
         in: query
         required: false
@@ -3283,6 +3291,10 @@ components:
           - type: integer
           - type: 'null'
           title: Simulator Id
+        compute_backend:
+          anyOf:
+          - $ref: '#/components/schemas/ComputeBackend'
+          - type: 'null'
         extra_pip_deps:
           anyOf:
           - items:
@@ -3505,6 +3517,14 @@ components:
         `__not_registered__` -- which reads as "your ref is wrong" to a caller who
 
         sent no ref at all.'
+    ComputeBackend:
+      type: string
+      enum:
+      - slurm
+      - batch
+      - ray
+      title: ComputeBackend
+      description: Compute backend for simulation workloads.
     ConfigDocument:
       properties:
         config:
@@ -4387,7 +4407,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-09-01 10:23:00.012161'
+          default: '2026-09-01 10:46:18.434765'
         job_id:
           anyOf:
           - type: string

@@ -7,6 +7,7 @@ from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.body_compose_run_simulation import BodyComposeRunSimulation
 from ...models.compose_simulation_experiment import ComposeSimulationExperiment
+from ...models.compute_backend import ComputeBackend
 from ...models.http_validation_error import HTTPValidationError
 from ...types import UNSET, Response, Unset
 
@@ -17,6 +18,7 @@ def _get_kwargs(
     interval_time: Union[Unset, float] = 1.0,
     batch_submission: Union[Unset, bool] = False,
     simulator_id: Union[None, Unset, int] = UNSET,
+    compute_backend: Union[ComputeBackend, None, Unset] = UNSET,
     extra_pip_deps: Union[None, Unset, list[str]] = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
@@ -33,6 +35,15 @@ def _get_kwargs(
     else:
         json_simulator_id = simulator_id
     params["simulator_id"] = json_simulator_id
+
+    json_compute_backend: Union[None, Unset, str]
+    if isinstance(compute_backend, Unset):
+        json_compute_backend = UNSET
+    elif isinstance(compute_backend, ComputeBackend):
+        json_compute_backend = compute_backend.value
+    else:
+        json_compute_backend = compute_backend
+    params["compute_backend"] = json_compute_backend
 
     json_extra_pip_deps: Union[None, Unset, list[str]]
     if isinstance(extra_pip_deps, Unset):
@@ -93,6 +104,7 @@ def sync_detailed(
     interval_time: Union[Unset, float] = 1.0,
     batch_submission: Union[Unset, bool] = False,
     simulator_id: Union[None, Unset, int] = UNSET,
+    compute_backend: Union[ComputeBackend, None, Unset] = UNSET,
     extra_pip_deps: Union[None, Unset, list[str]] = UNSET,
 ) -> Response[Union[ComposeSimulationExperiment, HTTPValidationError]]:
     """Run a process-bigraph simulation (OMEX/PBG/SBML upload)
@@ -101,6 +113,7 @@ def sync_detailed(
         interval_time (Union[Unset, float]):  Default: 1.0.
         batch_submission (Union[Unset, bool]):  Default: False.
         simulator_id (Union[None, Unset, int]):
+        compute_backend (Union[ComputeBackend, None, Unset]):
         extra_pip_deps (Union[None, Unset, list[str]]):
         body (BodyComposeRunSimulation):
 
@@ -117,6 +130,7 @@ def sync_detailed(
         interval_time=interval_time,
         batch_submission=batch_submission,
         simulator_id=simulator_id,
+        compute_backend=compute_backend,
         extra_pip_deps=extra_pip_deps,
     )
 
@@ -134,6 +148,7 @@ def sync(
     interval_time: Union[Unset, float] = 1.0,
     batch_submission: Union[Unset, bool] = False,
     simulator_id: Union[None, Unset, int] = UNSET,
+    compute_backend: Union[ComputeBackend, None, Unset] = UNSET,
     extra_pip_deps: Union[None, Unset, list[str]] = UNSET,
 ) -> Optional[Union[ComposeSimulationExperiment, HTTPValidationError]]:
     """Run a process-bigraph simulation (OMEX/PBG/SBML upload)
@@ -142,6 +157,7 @@ def sync(
         interval_time (Union[Unset, float]):  Default: 1.0.
         batch_submission (Union[Unset, bool]):  Default: False.
         simulator_id (Union[None, Unset, int]):
+        compute_backend (Union[ComputeBackend, None, Unset]):
         extra_pip_deps (Union[None, Unset, list[str]]):
         body (BodyComposeRunSimulation):
 
@@ -159,6 +175,7 @@ def sync(
         interval_time=interval_time,
         batch_submission=batch_submission,
         simulator_id=simulator_id,
+        compute_backend=compute_backend,
         extra_pip_deps=extra_pip_deps,
     ).parsed
 
@@ -170,6 +187,7 @@ async def asyncio_detailed(
     interval_time: Union[Unset, float] = 1.0,
     batch_submission: Union[Unset, bool] = False,
     simulator_id: Union[None, Unset, int] = UNSET,
+    compute_backend: Union[ComputeBackend, None, Unset] = UNSET,
     extra_pip_deps: Union[None, Unset, list[str]] = UNSET,
 ) -> Response[Union[ComposeSimulationExperiment, HTTPValidationError]]:
     """Run a process-bigraph simulation (OMEX/PBG/SBML upload)
@@ -178,6 +196,7 @@ async def asyncio_detailed(
         interval_time (Union[Unset, float]):  Default: 1.0.
         batch_submission (Union[Unset, bool]):  Default: False.
         simulator_id (Union[None, Unset, int]):
+        compute_backend (Union[ComputeBackend, None, Unset]):
         extra_pip_deps (Union[None, Unset, list[str]]):
         body (BodyComposeRunSimulation):
 
@@ -194,6 +213,7 @@ async def asyncio_detailed(
         interval_time=interval_time,
         batch_submission=batch_submission,
         simulator_id=simulator_id,
+        compute_backend=compute_backend,
         extra_pip_deps=extra_pip_deps,
     )
 
@@ -209,6 +229,7 @@ async def asyncio(
     interval_time: Union[Unset, float] = 1.0,
     batch_submission: Union[Unset, bool] = False,
     simulator_id: Union[None, Unset, int] = UNSET,
+    compute_backend: Union[ComputeBackend, None, Unset] = UNSET,
     extra_pip_deps: Union[None, Unset, list[str]] = UNSET,
 ) -> Optional[Union[ComposeSimulationExperiment, HTTPValidationError]]:
     """Run a process-bigraph simulation (OMEX/PBG/SBML upload)
@@ -217,6 +238,7 @@ async def asyncio(
         interval_time (Union[Unset, float]):  Default: 1.0.
         batch_submission (Union[Unset, bool]):  Default: False.
         simulator_id (Union[None, Unset, int]):
+        compute_backend (Union[ComputeBackend, None, Unset]):
         extra_pip_deps (Union[None, Unset, list[str]]):
         body (BodyComposeRunSimulation):
 
@@ -235,6 +257,7 @@ async def asyncio(
             interval_time=interval_time,
             batch_submission=batch_submission,
             simulator_id=simulator_id,
+            compute_backend=compute_backend,
             extra_pip_deps=extra_pip_deps,
         )
     ).parsed

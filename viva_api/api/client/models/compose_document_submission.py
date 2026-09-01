@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, Union, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.compute_backend import ComputeBackend
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -26,6 +27,7 @@ class ComposeDocumentSubmission:
             interval_time (Union[Unset, float]):  Default: 1.0.
             batch_submission (Union[Unset, bool]):  Default: False.
             simulator_id (Union[None, Unset, int]):
+            compute_backend (Union[ComputeBackend, None, Unset]):
             extra_pip_deps (Union[None, Unset, list[str]]):
     """
 
@@ -33,6 +35,7 @@ class ComposeDocumentSubmission:
     interval_time: Union[Unset, float] = 1.0
     batch_submission: Union[Unset, bool] = False
     simulator_id: Union[None, Unset, int] = UNSET
+    compute_backend: Union[ComputeBackend, None, Unset] = UNSET
     extra_pip_deps: Union[None, Unset, list[str]] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -49,6 +52,14 @@ class ComposeDocumentSubmission:
         else:
             simulator_id = self.simulator_id
 
+        compute_backend: Union[None, Unset, str]
+        if isinstance(self.compute_backend, Unset):
+            compute_backend = UNSET
+        elif isinstance(self.compute_backend, ComputeBackend):
+            compute_backend = self.compute_backend.value
+        else:
+            compute_backend = self.compute_backend
+
         extra_pip_deps: Union[None, Unset, list[str]]
         if isinstance(self.extra_pip_deps, Unset):
             extra_pip_deps = UNSET
@@ -60,17 +71,17 @@ class ComposeDocumentSubmission:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "document": document,
-            }
-        )
+        field_dict.update({
+            "document": document,
+        })
         if interval_time is not UNSET:
             field_dict["interval_time"] = interval_time
         if batch_submission is not UNSET:
             field_dict["batch_submission"] = batch_submission
         if simulator_id is not UNSET:
             field_dict["simulator_id"] = simulator_id
+        if compute_backend is not UNSET:
+            field_dict["compute_backend"] = compute_backend
         if extra_pip_deps is not UNSET:
             field_dict["extra_pip_deps"] = extra_pip_deps
 
@@ -96,6 +107,23 @@ class ComposeDocumentSubmission:
 
         simulator_id = _parse_simulator_id(d.pop("simulator_id", UNSET))
 
+        def _parse_compute_backend(data: object) -> Union[ComputeBackend, None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                compute_backend_type_0 = ComputeBackend(data)
+
+                return compute_backend_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[ComputeBackend, None, Unset], data)
+
+        compute_backend = _parse_compute_backend(d.pop("compute_backend", UNSET))
+
         def _parse_extra_pip_deps(data: object) -> Union[None, Unset, list[str]]:
             if data is None:
                 return data
@@ -118,6 +146,7 @@ class ComposeDocumentSubmission:
             interval_time=interval_time,
             batch_submission=batch_submission,
             simulator_id=simulator_id,
+            compute_backend=compute_backend,
             extra_pip_deps=extra_pip_deps,
         )
 
