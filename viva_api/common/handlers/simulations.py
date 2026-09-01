@@ -456,6 +456,22 @@ async def run_simulation_workflow(  # noqa: C901
         logger.warning("Forcing run_parca=True: --no-run-parca is not supported on the Batch backend")
         run_parca = True
 
+    # The RAY backend (v2ecoli/sms-ecoli) submits ParCa unconditionally
+    # (SimulationServiceRay always issues a ParCa job before the sim), so
+    # run_parca=False cannot be honored there. It used to be silently ignored —
+    # an API contract that lied (CD2 audit §2.14 / P0-14). Fail loud instead of
+    # pretending the cached-cache path was taken. (Honoring it would require
+    # threading a cache-reuse path through the Ray submit stack — out of scope
+    # for this fix; raising is the smaller correct change.)
+    if not run_parca and backend == ComputeBackend.RAY:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "run_parca=false is not supported on the Ray backend: the v2ecoli Ray "
+                "dispatch always runs ParCa before the simulation. Omit --no-run-parca."
+            ),
+        )
+
     # Verify simulator build is complete before submitting simulation
     await _verify_build_complete(database_service, simulator_id)
 
@@ -472,12 +488,16 @@ async def run_simulation_workflow(  # noqa: C901
             logger.warning("Could not validate analysis_options against repo (discovery failed), proceeding anyway")
 
     # 2. Read the config template via the resolved service (SSH for SLURM, GitHub API for K8s/Ray).
-    # v2ecoli (RAY) has no configs/ dir and runs from CLI args, so fall back to the embedded
-    # default template instead of 404-ing when the requested config file isn't in the repo.
+    # allow_default_fallback=False for EVERY backend: a config filename that is not present in
+    # the simulator's commit must raise, not silently become the embedded basal wild-type
+    # template. RAY is the CD2 arm and sms-ecoli DOES ship a configs/ dir (Run-4 configs live
+    # there), so the old "v2ecoli has no configs/ dir" justification for a RAY fallback was
+    # false and let a missing/renamed config filename produce a successful-looking wild-type
+    # run (CD2 audit §2.3 / P0-4).
     config_str = await service.read_config_template(
         simulator_version=simulator,
         config_filename=simulation_config_filename,
-        allow_default_fallback=(backend == ComputeBackend.RAY),
+        allow_default_fallback=False,
     )
 
     # 3. Replace placeholders in the config template

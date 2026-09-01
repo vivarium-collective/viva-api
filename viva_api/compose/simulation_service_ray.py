@@ -95,7 +95,9 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         # Name the workspace's own core builder when the deploy configures one, so a
         # document referencing workspace-registered TYPES (not just addresses) resolves.
         core_builder = get_settings().compose_pbg_core_builder
-        env = f"PBG_RESULTS_DIR={COMPOSE_OUT_DIR}"
+        # PBG_REQUIRE_OUTPUT=1: a compose run that produced no emitted store is a
+        # failure, not a success on the final_state.json fallback (audit §2.4 / P0-3).
+        env = f"PBG_RESULTS_DIR={COMPOSE_OUT_DIR} PBG_REQUIRE_OUTPUT=1"
         if core_builder:
             env += f" PBG_CORE_BUILDER={core_builder}"
         return (

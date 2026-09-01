@@ -265,6 +265,67 @@ def _persist_emitter_history(composite: Any, results_dir: Path) -> Path | None:
     return out
 
 
+def _env_truthy(value: str | None) -> bool:
+    """A permissive truthiness test for an env-var string: any value other than
+    the usual falsy spellings counts as set."""
+    if not value:
+        return False
+    return value.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+def _has_emitted_output(results_dir: Path) -> bool:
+    """True when *results_dir* holds REAL emitted output — a non-empty parquet or
+    zarr store, or a non-empty in-memory ``emitter_history.json`` — as opposed to
+    only the always-written ``final_state.json`` fallback (which is deliberately
+    NOT counted here).
+    """
+    for pattern in ("*.pq", "*.parquet"):
+        for p in results_dir.rglob(pattern):
+            if p.is_file() and p.stat().st_size > 0:
+                return True
+    # A zarr store is a directory tree; any of these marker files means a real store.
+    for marker in (".zgroup", ".zarray", "zarr.json", ".zattrs"):
+        for p in results_dir.rglob(marker):
+            if p.is_file():
+                return True
+    history = results_dir / "emitter_history.json"
+    if history.is_file() and history.stat().st_size > 0:
+        try:
+            if history.read_text().strip() not in ("", "{}"):
+                return True
+        except OSError:
+            return True  # exists and non-empty but unreadable here — treat as present
+    return False
+
+
+def _assert_emitted_output(results_dir: Path) -> None:
+    """Fail the run (``SystemExit(1)``) when it produced no emitted output.
+
+    Gated by ``PBG_REQUIRE_OUTPUT`` (set by sms-api's Ray/compose dispatch, where
+    a zero-output run is always a failure), so the generic runner's other users —
+    a bare document whose only artifact is ``final_state.json`` — are unaffected
+    by default.
+
+    Closes the CD2 false-success chain (audit §2.4/§2.10 / P0-3): a composite
+    emits nothing (a missing ``[parquet]`` extra silently degrading to an
+    in-memory RAMEmitter, a declared emit path that resolved to nothing, a
+    zero-step run) → run_pbg writes ``final_state.json`` → exit 0 → Batch
+    SUCCEEDED → the run lands ``completed`` with no science in it. The SLURM
+    compose path already guards this (``compose/simulation_service.py:94-95``);
+    this is the stronger Ray/compose equivalent — ``final_state.json`` ALWAYS
+    exists here, so it asserts on the emitted store, not on that fallback.
+    """
+    if not _env_truthy(os.environ.get("PBG_REQUIRE_OUTPUT")):
+        return
+    if _has_emitted_output(results_dir):
+        return
+    raise SystemExit(
+        f"run_pbg: PBG_REQUIRE_OUTPUT is set but the run produced no emitted output under "
+        f"{results_dir} (no non-empty parquet/zarr store and no emitter history; only the "
+        f"final_state.json fallback would remain). Refusing to report success."
+    )
+
+
 def _redirect_emitters(node: Any, results_dir: Path) -> int:
     """Point every emitter step's output location at *results_dir*, recursively.
 
@@ -432,6 +493,11 @@ def run(
         _persist_emitter_history(composite, results_dir)
     out = results_dir / "final_state.json"
     out.write_text(json.dumps(composite.serialize_state(), default=str))
+    # P0-3: nothing downstream asserts the run produced the science it was asked
+    # for. Under PBG_REQUIRE_OUTPUT (set by sms-api's Ray/compose dispatch), refuse
+    # to exit 0 when only final_state.json was produced. Runs AFTER final_state is
+    # written so it survives as a postmortem artifact even on this failure.
+    _assert_emitted_output(results_dir)
     return out
 
 

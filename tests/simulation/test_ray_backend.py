@@ -1203,6 +1203,61 @@ class TestAnalysisDagNode:
         assert await database_service.list_analyses(simulation_id=simulation.database_id) == []
 
 
+class TestParcaCommandNewGenes:
+    """P0-2: a config that requests a real strain (parca_options.new_genes) must
+    produce a ParCa command that actually carries the --new-genes flag."""
+
+    def test_new_genes_flows_into_the_parca_command(self) -> None:
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._parca_command(new_genes="violacein")
+        assert f"--new-genes {shlex.quote('violacein')}" in cmd
+
+    @pytest.mark.parametrize("new_genes", [None, "off"])
+    def test_new_genes_off_or_absent_omits_the_flag(self, new_genes: str | None) -> None:
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._parca_command(new_genes=new_genes)
+        assert "--new-genes" not in cmd
+
+    def test_new_genes_with_a_space_is_shell_quoted(self) -> None:
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._parca_command(new_genes="two genes")
+        assert f"--new-genes {shlex.quote('two genes')}" in cmd
+
+
+@pytest.mark.asyncio
+class TestBatchExitCode:
+    """P1-13: get_job_status must surface the Batch container exit code, not None."""
+
+    async def test_exit_code_is_populated_from_container_exit_code(self) -> None:
+        mock_batch = MagicMock()
+        mock_batch.describe_jobs.return_value = {
+            "jobs": [{"jobId": "sim-1", "status": "FAILED", "container": {"exitCode": 137}}]
+        }
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            info = await service.get_job_status(JobId.ray("sim-1"))
+        assert info is not None
+        assert info.exit_code == "137"
+
+    async def test_exit_code_is_none_when_batch_reports_none(self) -> None:
+        mock_batch = MagicMock()
+        mock_batch.describe_jobs.return_value = {"jobs": [{"jobId": "sim-2", "status": "RUNNING"}]}
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            info = await service.get_job_status(JobId.ray("sim-2"))
+        assert info is not None
+        assert info.exit_code is None
+
+
 @pytest.mark.asyncio
 class TestSimulationServiceRayStatusCancel:
     async def test_get_job_status_running(self) -> None:

@@ -650,6 +650,48 @@ class TestAdvanceChainCampaign:
         assert refetched.chain_current_job_ids == [None, None]
 
     @pytest.mark.asyncio
+    async def test_partial_success_does_not_mark_the_campaign_completed_and_submits_no_analysis(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        """P0-7: with fewer succeeded seed chains than expected, the campaign must
+        NOT be COMPLETED (that let one surviving lineage out of thousands report a
+        whole sweep done, and the multivariant analysis then ran over a store full
+        of undetectable holes). It ends terminal-but-not-success, names the
+        missing/failed ids, and submits no analysis."""
+        _simulation, hpcrun = await insert_chain_campaign_job(
+            database_service,
+            job_id_ext="parca-1",
+            chain_n_generations=2,
+            n_seeds=3,  # three seeds expected...
+            chain_parca_done=True,
+            chain_current_job_ids=["s0g1", None, None],
+            chain_current_generation=[1, None, None],
+            chain_final_job_ids=["s1g1", "s2g0"],  # seeds 1 & 2 already resolved on prior ticks
+        )
+        mock_ray = _mock_ray_service()
+        mock_ray.get_batch_job_statuses = MagicMock(return_value={"s0g1": JobStatus.COMPLETED})
+        # ...but only 2 of 3 seed chains actually succeeded (s2g0 FAILED).
+        mock_ray.get_chain_campaign_result = MagicMock(
+            return_value=ChainCampaignPollResult(
+                terminal=True, succeeded_job_ids=["s0g1", "s1g1"], failed_job_ids=["s2g0"]
+            )
+        )
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_chain_campaign(hpcrun, mock_ray)
+
+        mock_ray.submit_campaign_analysis.assert_not_awaited()
+        refetched = await database_service.get_hpcrun(hpcrun.database_id)
+        assert refetched is not None
+        assert refetched.status != JobStatus.COMPLETED
+        assert refetched.status == JobStatus.FAILED
+        assert refetched.error_message is not None
+        assert "2/3" in refetched.error_message
+        assert "s2g0" in refetched.error_message  # the missing/failed final job id is named
+
+    @pytest.mark.asyncio
     async def test_all_seeds_resolved_zero_succeeded_marks_failed_no_analysis(
         self, database_service: DatabaseServiceSQL
     ) -> None:

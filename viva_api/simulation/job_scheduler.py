@@ -467,21 +467,44 @@ class JobScheduler:
         """
         result = simulation_service_ray.get_chain_campaign_result(final_job_ids)
         succeeded = result.succeeded_job_ids
+        failed = result.failed_job_ids
+        # COMPLETED only when EVERY expected seed chain succeeded. Previously the
+        # campaign was marked COMPLETED whenever the succeeded list was merely
+        # non-empty, so a single surviving lineage out of thousands reported the
+        # whole sweep complete and the multivariant analysis then ran over a store
+        # full of undetectable holes (CD2 audit §2.11 / P0-7). A partial result is
+        # terminal but NOT a success: mark it FAILED (there is no PARTIAL job
+        # status without a DB enum migration; see the PR note) and name the
+        # missing/failed seed chains, and do not submit an analysis over an
+        # incomplete store.
+        all_succeeded = len(succeeded) == n_seeds
+        if all_succeeded:
+            error_message: str | None = None
+        elif not succeeded:
+            error_message = "chain dispatch: zero seed chains succeeded"
+        else:
+            missing = failed or ["(seeds that never submitted generation 0)"]
+            error_message = (
+                f"chain dispatch: partial completion — {len(succeeded)}/{n_seeds} seed chains "
+                f"succeeded; missing/failed final job ids: {missing}"
+            )
         update = ChainCampaignUpdate(
             chain_current_job_ids=current_job_ids,
             chain_current_generation=current_generation,
             chain_parca_done=True,
             chain_final_job_ids=final_job_ids,
-            terminal_status=JobStatus.COMPLETED if succeeded else JobStatus.FAILED,
-            error_message=None if succeeded else "chain dispatch: zero seed chains succeeded",
+            terminal_status=JobStatus.COMPLETED if all_succeeded else JobStatus.FAILED,
+            error_message=error_message,
         )
-        if not succeeded:
+        if not all_succeeded:
             logger.warning(
-                "Chain dispatch %s: HpcRun %s had zero succeeded seed chains "
-                "(%d tracked); campaign ends here, no analysis submitted.",
+                "Chain dispatch %s: HpcRun %s NOT all seed chains succeeded "
+                "(%d/%d succeeded); campaign ends here, no analysis submitted. %s",
                 experiment_id,
                 fresh.database_id,
+                len(succeeded),
                 n_seeds,
+                error_message,
             )
             return update
 

@@ -481,6 +481,68 @@ def test_run_skips_persisting_emitter_history_when_a_file_backed_emitter_already
     assert not (tmp_path / "output" / "emitter_history.json").exists()
 
 
+# --- _assert_emitted_output: P0-3, a zero-output run must not report success ---
+
+
+def test_has_emitted_output_true_for_nonempty_parquet(tmp_path: Path) -> None:
+    (tmp_path / "history").mkdir()
+    (tmp_path / "history" / "part.pq").write_bytes(b"PAR1-not-really-but-nonempty")
+    assert run_pbg._has_emitted_output(tmp_path) is True
+
+
+def test_has_emitted_output_true_for_nonempty_emitter_history(tmp_path: Path) -> None:
+    (tmp_path / "emitter_history.json").write_text(json.dumps({"emitter": [[0.0, {"x": 1}]]}))
+    assert run_pbg._has_emitted_output(tmp_path) is True
+
+
+def test_has_emitted_output_false_for_empty_dir_or_only_final_state(tmp_path: Path) -> None:
+    assert run_pbg._has_emitted_output(tmp_path) is False
+    (tmp_path / "final_state.json").write_text("{}")  # the always-present fallback does NOT count
+    (tmp_path / "emitter_history.json").write_text("{}")  # empty history does NOT count
+    (tmp_path / "empty.pq").write_bytes(b"")  # zero-byte parquet does NOT count
+    assert run_pbg._has_emitted_output(tmp_path) is False
+
+
+def test_run_raises_when_require_output_set_and_nothing_emitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The core P0-3 guard: a run that produced only final_state.json must exit
+    non-zero under PBG_REQUIRE_OUTPUT instead of reporting success."""
+    monkeypatch.setenv("PBG_REQUIRE_OUTPUT", "1")
+    _install_fake_pbg_for_run(monkeypatch, gather_emitter_results=lambda composite: {})
+
+    pbg = tmp_path / "m.pbg"
+    pbg.write_text(json.dumps({"state": {}, "composition": {}}))
+    with pytest.raises(SystemExit):
+        run_pbg.run(str(pbg), steps=1, results_dir=tmp_path / "output")
+
+
+def test_run_succeeds_when_require_output_set_and_history_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real in-memory-emitter run (history persisted) satisfies the guard."""
+    monkeypatch.setenv("PBG_REQUIRE_OUTPUT", "1")
+    _install_fake_pbg_for_run(monkeypatch, gather_emitter_results=lambda composite: {("emitter",): [(0.0, {"x": 1})]})
+
+    pbg = tmp_path / "m.pbg"
+    pbg.write_text(json.dumps({"composition": {"emitter": {"address": "local:RAMEmitter", "config": {}}}}))
+    out = run_pbg.run(str(pbg), steps=1, results_dir=tmp_path / "output")
+    assert out.name == "final_state.json"
+    assert (tmp_path / "output" / "emitter_history.json").exists()
+
+
+def test_run_does_not_guard_output_when_require_output_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default (unset): the generic runner is unchanged — a bare document whose
+    only artifact is final_state.json still succeeds."""
+    monkeypatch.delenv("PBG_REQUIRE_OUTPUT", raising=False)
+    _install_fake_pbg_for_run(monkeypatch, gather_emitter_results=lambda composite: {})
+
+    pbg = tmp_path / "m.pbg"
+    pbg.write_text(json.dumps({"state": {}, "composition": {}}))
+    out = run_pbg.run(str(pbg), steps=1, results_dir=tmp_path / "output")  # must not raise
+    assert out.name == "final_state.json"
+
+
 # --- _workspace_core: the workspace registers types the generic core can't know ---
 
 

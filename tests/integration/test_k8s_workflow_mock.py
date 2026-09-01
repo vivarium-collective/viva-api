@@ -660,3 +660,42 @@ async def test_ray_canonical_batch_baseline_routes_through_real_entrypoint_to_ch
     finally:
         deps.set_simulation_service_registry(saved_registry)
         deps.set_simulation_service(saved_default)
+
+
+@pytest.mark.asyncio
+async def test_ray_run_parca_false_raises_instead_of_silently_ignoring(
+    database_service: DatabaseServiceSQL,
+) -> None:
+    """P0-14: run_parca=false on the Ray backend used to be silently ignored (the
+    RAY branch never read it while SimulationServiceRay submits ParCa
+    unconditionally) — an API contract that lied. It must now raise a clear 400
+    instead, and never reach submission."""
+    saved_registry = dict(deps.global_simulation_services)
+    saved_default = deps.get_simulation_service()
+    try:
+        ray_service = SimulationServiceRay()
+        ray_service.read_config_template = AsyncMock(return_value=CONFIG_TEMPLATE)  # type: ignore[method-assign]
+        ray_service.submit_ecoli_simulation_job = AsyncMock()  # type: ignore[method-assign]
+        deps.set_simulation_service_registry({ComputeBackend.RAY: ray_service})
+
+        simulator = await database_service.insert_simulator(
+            git_commit_hash="noparca123",
+            git_repo_url=RepoUrl.SMS_ECOLI_REPO_URL,
+            git_branch="main",
+        )
+
+        with pytest.raises(HTTPException) as excinfo:
+            await sim_handlers.run_simulation_workflow(
+                database_service=database_service,
+                simulation_service=ray_service,
+                simulator_id=simulator.database_id,
+                experiment_id="ray-no-parca",
+                simulation_config_filename="api_simulation_default.json",
+                run_parca=False,
+            )
+        assert excinfo.value.status_code == 400
+        assert "run_parca=false is not supported on the Ray backend" in str(excinfo.value.detail)
+        ray_service.submit_ecoli_simulation_job.assert_not_awaited()
+    finally:
+        deps.set_simulation_service_registry(saved_registry)
+        deps.set_simulation_service(saved_default)
