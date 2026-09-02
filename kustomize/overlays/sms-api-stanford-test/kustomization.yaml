@@ -33,8 +33,16 @@ images:
   # plots 500'd unconditionally for every Ray/K8s analysis (no S3-backed
   # implementation existed at all). Also clarifies the #283 409's message
   # (the analysis id is a separate id space from the simulation id).
+  # 0.9.81 (PR #361, item 98): adds simulator_id/document/compute_backend to
+  # the /compose/v1 endpoints. simulator_id resolves through the existing
+  # SimulatorVersion.git_commit_hash registry and threads into image/cache
+  # selection (reuses SimulationServiceRay._image_uri verbatim); a new
+  # POST /compose/v1/simulation/run-document accepts an inline JSON document
+  # instead of a multipart upload; compute_backend picks a registered backend
+  # explicitly (400s loud if unregistered, no silent fallback). All 3 params
+  # are optional -- unset, behavior is byte-for-byte what 0.9.80 already did.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.80
+    newTag: 0.9.82
   # ptools 0.5.9 -> 0.9.53 (DEV ONLY — prod sms-api-stanford stays on 0.5.9 while
   # this soaks). The long-standing 0.5.9 pin existed because CI builds only
   # sms-api (scripts/build_action.sh), so no newer sms-ptools existed on ghcr.io
