@@ -247,6 +247,13 @@ class ComposeSimulationRequest(BaseModel):
     # default (the class of bug viva-api#353 flagged as costing real debugging
     # time on this exact deployment).
     compute_backend: ComputeBackend | None = None
+    # Per-request AWS Batch MNP node count for the Ray backend (item 102). None
+    # preserves today's exact behavior: the deploy-wide Settings.ray_num_nodes
+    # default. Read directly off this object by ComposeSimulationServiceRay --
+    # never persisted (insert_simulation stores only experiment_id/simulator_id/
+    # document; ComposeSimulation.sim_request is the same in-memory object the
+    # whole way through the background dispatch), so no DB migration needed.
+    num_nodes: int | None = None
 
 
 class ComposeDocumentSubmission(BaseModel):
@@ -263,6 +270,12 @@ class ComposeDocumentSubmission(BaseModel):
     simulator_id: int | None = None
     compute_backend: ComputeBackend | None = None
     extra_pip_deps: list[str] | None = None
+    # Per-request AWS Batch MNP node count for the Ray backend (item 102). None
+    # preserves today's exact behavior: the deploy-wide Settings.ray_num_nodes
+    # default. Only the Ray backend's submit_simulation_job consumes it; other
+    # backends (e.g. SLURM/HPC) accept and ignore it, mirroring how
+    # compute_backend itself is handled above.
+    num_nodes: int | None = None
 
 
 class ComposeSimulationResults(BaseModel):

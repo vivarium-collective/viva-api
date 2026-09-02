@@ -661,4 +661,4 @@
 #          separate /compose/v1/* full-emit path (a different, unverified
 #          code shape not used by item 93/96's own dispatch route) is
 #          deliberately out of scope here.
-__version__ = "0.9.81"
+__version__ = "0.9.82"

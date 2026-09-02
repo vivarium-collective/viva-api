@@ -204,6 +204,7 @@ async def submit_simulation_document(
     simulation_request.end_time_point = body.interval_time
     simulation_request.simulator_id = body.simulator_id
     simulation_request.compute_backend = body.compute_backend
+    simulation_request.num_nodes = body.num_nodes
     return await _dispatch_submission(simulation_request, background_tasks, body.extra_pip_deps)
 
 

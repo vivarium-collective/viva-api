@@ -329,3 +329,96 @@ async def test_submit_simulation_job_with_simulator_id_uses_the_resolved_per_com
     stage_s3 = captured_submit["stage_s3"]
     assert isinstance(stage_s3, str)
     assert stage_s3.endswith("ray-parca-cache/resolved-commit-42/")
+
+
+# --- item 102: per-request num_nodes override on ComposeSimulationRequest ---
+
+
+@pytest.mark.asyncio
+async def test_submit_simulation_job_with_explicit_num_nodes_overrides_the_deploy_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A request carrying num_nodes must override the deploy-wide ray_num_nodes
+    setting -- the whole point of item 102 (previously fixed, not per-request)."""
+    monkeypatch.setattr(mod, "get_settings", lambda: _settings(ray_num_nodes=4, compose_parca_cache_dir=""))
+
+    doc_path = tmp_path / "input.pbg"
+    doc_path.write_text("{}")
+    simulation = ComposeSimulation(
+        database_id=1,
+        sim_request=ComposeSimulationRequest(
+            request_file_path=doc_path,
+            simulation_file_type=SimulationFileType.PBG,
+            is_batch=False,
+            num_nodes=16,
+        ),
+        simulator_version=ComposeSimulatorVersion(
+            database_id=1,
+            singularity_def=ContainerizationFileRepr(representation="Bootstrap: docker\n"),
+            singularity_def_hash="x",
+            packages=None,
+        ),
+    )
+
+    svc = ComposeSimulationServiceRay()
+    monkeypatch.setattr(svc._ray, "_ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
+
+    captured: dict[str, object] = {}
+
+    def _capture_submit_mnp(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return "batch-job-id"
+
+    monkeypatch.setattr(svc._ray, "_submit_mnp", _capture_submit_mnp)
+
+    fake_file_service = AsyncMock()
+    fake_file_service.upload_file = AsyncMock()
+
+    with patch("viva_api.dependencies.get_file_service", return_value=fake_file_service):
+        await svc.submit_simulation_job(simulation, experiment_id="exp-1")
+
+    assert captured["num_nodes"] == 16
+
+
+@pytest.mark.asyncio
+async def test_submit_simulation_job_omits_num_nodes_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No num_nodes on the request -> the deploy-wide default, byte-for-byte
+    today's exact behavior for every caller that doesn't know this field exists
+    yet (mirrors the compute_backend/simulator_id fields' own default contract)."""
+    monkeypatch.setattr(mod, "get_settings", lambda: _settings(ray_num_nodes=4, compose_parca_cache_dir=""))
+
+    doc_path = tmp_path / "input.pbg"
+    doc_path.write_text("{}")
+    simulation = ComposeSimulation(
+        database_id=1,
+        sim_request=ComposeSimulationRequest(
+            request_file_path=doc_path, simulation_file_type=SimulationFileType.PBG, is_batch=False
+        ),
+        simulator_version=ComposeSimulatorVersion(
+            database_id=1,
+            singularity_def=ContainerizationFileRepr(representation="Bootstrap: docker\n"),
+            singularity_def_hash="x",
+            packages=None,
+        ),
+    )
+
+    svc = ComposeSimulationServiceRay()
+    monkeypatch.setattr(svc._ray, "_ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
+
+    captured: dict[str, object] = {}
+
+    def _capture_submit_mnp(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return "batch-job-id"
+
+    monkeypatch.setattr(svc._ray, "_submit_mnp", _capture_submit_mnp)
+
+    fake_file_service = AsyncMock()
+    fake_file_service.upload_file = AsyncMock()
+
+    with patch("viva_api.dependencies.get_file_service", return_value=fake_file_service):
+        await svc.submit_simulation_job(simulation, experiment_id="exp-1")
+
+    assert captured["num_nodes"] == 4
