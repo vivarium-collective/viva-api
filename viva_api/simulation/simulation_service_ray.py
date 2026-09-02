@@ -889,6 +889,29 @@ class SimulationServiceRay(SimulationService):
         any caller not passing them builds the exact same command as before
         these params existed.
 
+        ``stop_at_division: True`` (backlog item 103) is unconditional, always
+        set: with ``n_seeds=1, n_generations=1`` (this method's own fixed
+        values) and no ``stop_at_division``, ``ecoli_baseline.baseline()``'s own
+        dispatch gate (``n_seeds>1 or n_generations>1 or stop_at_division``)
+        evaluates False, routing every generation through the PLAIN single-cell
+        build the composite's own docs call "NO division-stop" -- each job ran
+        for exactly 1 simulated second (``-n 1`` below) regardless of whether
+        the cell divided, and ``initial_carry_state_path``/
+        ``daughter_state_out_path`` (this method's own checkpoint/resume
+        mechanism, set above) were silently never consumed, since they only
+        apply inside the gated branch. ``stop_at_division=True`` routes through
+        the SAME batch/lineage path via ``LineageProcess`` (``generations=1``
+        stops the lineage after the first real division, Option A / issue #495)
+        -- that path's own checkpoint/resume handling is real and unconditional
+        on the daughter-state write (``lineage.py``'s own comment: "a
+        one-wave-per-invocation caller (generations=1) always takes the
+        'complete' branch below, but still needs THIS generation's daughter
+        written out"), so no other change here is needed for the hand-off to
+        start working correctly. Confirmed empirically: campaign 171's own real
+        production output showed generation 0/5/9 of the same lineage as
+        MD5-identical files and ``global_time: 1.0`` after 10 chained
+        "generations" -- this fixes that.
+
         CROSS-REPO CONTRACT: overrides threading these 3 keys through to
         ``v2ecoli/composites/ecoli_baseline.py``'s ``baseline()`` signature (the
         composite this command dispatches through, via
@@ -921,6 +944,12 @@ class SimulationServiceRay(SimulationService):
         overrides = {
             "n_seeds": 1,
             "n_generations": 1,
+            # Backlog item 103: unconditional, always on -- see this method's
+            # own docstring. Without it every generation silently ran a plain,
+            # non-division-gated 1-simulated-second build regardless of
+            # generation_index, and the checkpoint/resume fields below were
+            # never actually consumed.
+            "stop_at_division": True,
             "cache_dir": PARCA_CACHE_DIR,
             "out_dir": seed_out_dir,
             "experiment_id": experiment_id,
