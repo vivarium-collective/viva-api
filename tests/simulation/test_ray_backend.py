@@ -1615,6 +1615,31 @@ class TestSeedGenerationCommand:
         assert overrides["injected_processes"] == injected
         assert overrides["variants"] == variants
 
+    def test_stop_at_division_is_always_set(self) -> None:
+        """Backlog item 103: without this, n_seeds=1/n_generations=1/no
+        stop_at_division makes ecoli_baseline.baseline()'s own dispatch gate
+        (n_seeds>1 or n_generations>1 or stop_at_division) evaluate False on
+        EVERY chain-dispatch generation, routing through the plain,
+        non-division-gated single-cell build (the composite's own docs call it
+        "NO division-stop") -- confirmed empirically in real campaign 171
+        production output: generation 0/5/9 of the same lineage were
+        MD5-identical files, global_time never exceeded 1.0 across 10 chained
+        "generations". Unconditional, not caller-controlled -- there is no
+        legitimate chain-dispatch generation that should NOT stop at division."""
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+        ):
+            cmd = service._seed_generation_command(
+                seed=0,
+                generation_index=0,
+                experiment_id="exp-division-gate",
+                runner_s3_uri="s3://mybucket/vecoli-output/exp-division-gate/run_pbg.py",
+            )
+        overrides = self._overrides(cmd)
+        assert overrides["stop_at_division"] is True
+
 
 class TestInjectedProcessesFromConfig:
     """injected_processes_from_config (backlog item 93): the shared helper

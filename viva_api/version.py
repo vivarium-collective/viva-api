@@ -675,4 +675,32 @@
 #          and the composite-comparison ensemble path -- independently
 #          re-verified at this commit to correctly thread new_genes through).
 #          Byte-for-byte unaffected when a config doesn't set bundle_overrides.
-__version__ = "0.9.83"
+# 0.9.84 — fix: _seed_generation_command() now sets stop_at_division=True,
+#          unconditionally, on every chain-dispatch generation job (backlog
+#          item 103). Without it, n_seeds=1/n_generations=1/no stop_at_division
+#          made ecoli_baseline.baseline()'s own dispatch gate (n_seeds>1 or
+#          n_generations>1 or stop_at_division) evaluate False on every single
+#          chain-dispatch generation, routing through the plain, non-division-
+#          gated single-cell build the composite's own docs call "NO
+#          division-stop" -- each job ran for exactly 1 simulated second
+#          (the hardcoded -n 1) regardless of generation_index, and
+#          initial_carry_state_path/daughter_state_out_path (this method's own
+#          checkpoint/resume fields) were silently never consumed, since they
+#          only apply inside the gated branch. Confirmed empirically in real
+#          campaign 171 production output (item 71's own flagship "1000x10 in
+#          48 minutes" dispatch): generation 0, 5, and 9 of the same lineage
+#          were MD5-identical files, global_time never exceeded 1.0 across 10
+#          chained "generations" -- every chain-dispatch campaign since the
+#          v2ecoli composite-id unification (v2ecoli#373, 2026-07-25) almost
+#          certainly produced the same degenerate repeated-snapshot data, not
+#          real multi-generational lineages. stop_at_division=True routes
+#          through the SAME LineageProcess machinery item 101's own
+#          lineage_ray_batch composite uses, via ecoli_baseline.baseline()'s
+#          existing batch/lineage branch (Option A, issue #495) -- that
+#          branch's own checkpoint/resume handling (lineage.py) is real,
+#          already correctly built for exactly this "one generation per
+#          process invocation" caller shape, and was simply never wired up;
+#          no other change was needed. Unconditional, not caller-controlled --
+#          there is no legitimate chain-dispatch generation that should not
+#          stop at division.
+__version__ = "0.9.84"
