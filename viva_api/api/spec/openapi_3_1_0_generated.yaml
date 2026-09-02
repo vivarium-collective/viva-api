@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.81
+  version: 0.9.82
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -1191,7 +1191,7 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-09-01T10:46:18.496415'
+                  created_at: '2026-09-01T19:20:59.080204'
                 parca_config:
                   outdir: /projects/SMS/sms_api/prod/sims
       responses:
@@ -3302,6 +3302,11 @@ components:
             type: array
           - type: 'null'
           title: Extra Pip Deps
+        num_nodes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Num Nodes
       type: object
       required:
       - document
@@ -4407,7 +4412,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-09-01 10:46:18.434765'
+          default: '2026-09-01 19:20:59.015224'
         job_id:
           anyOf:
           - type: string

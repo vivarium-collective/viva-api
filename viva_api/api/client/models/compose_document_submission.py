@@ -29,6 +29,7 @@ class ComposeDocumentSubmission:
             simulator_id (Union[None, Unset, int]):
             compute_backend (Union[ComputeBackend, None, Unset]):
             extra_pip_deps (Union[None, Unset, list[str]]):
+            num_nodes (Union[None, Unset, int]):
     """
 
     document: "ComposeDocumentSubmissionDocument"
@@ -37,6 +38,7 @@ class ComposeDocumentSubmission:
     simulator_id: Union[None, Unset, int] = UNSET
     compute_backend: Union[ComputeBackend, None, Unset] = UNSET
     extra_pip_deps: Union[None, Unset, list[str]] = UNSET
+    num_nodes: Union[None, Unset, int] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -69,6 +71,12 @@ class ComposeDocumentSubmission:
         else:
             extra_pip_deps = self.extra_pip_deps
 
+        num_nodes: Union[None, Unset, int]
+        if isinstance(self.num_nodes, Unset):
+            num_nodes = UNSET
+        else:
+            num_nodes = self.num_nodes
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({
@@ -84,6 +92,8 @@ class ComposeDocumentSubmission:
             field_dict["compute_backend"] = compute_backend
         if extra_pip_deps is not UNSET:
             field_dict["extra_pip_deps"] = extra_pip_deps
+        if num_nodes is not UNSET:
+            field_dict["num_nodes"] = num_nodes
 
         return field_dict
 
@@ -141,6 +151,15 @@ class ComposeDocumentSubmission:
 
         extra_pip_deps = _parse_extra_pip_deps(d.pop("extra_pip_deps", UNSET))
 
+        def _parse_num_nodes(data: object) -> Union[None, Unset, int]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, int], data)
+
+        num_nodes = _parse_num_nodes(d.pop("num_nodes", UNSET))
+
         compose_document_submission = cls(
             document=document,
             interval_time=interval_time,
@@ -148,6 +167,7 @@ class ComposeDocumentSubmission:
             simulator_id=simulator_id,
             compute_backend=compute_backend,
             extra_pip_deps=extra_pip_deps,
+            num_nodes=num_nodes,
         )
 
         compose_document_submission.additional_properties = d

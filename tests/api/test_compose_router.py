@@ -287,3 +287,64 @@ async def test_submit_simulation_omits_compute_backend_by_default(fastapi_app: o
 
     assert response.status_code == 200
     fake_require_sim.assert_called_once_with(None)
+
+
+# --- item 102: num_nodes threads onto the ComposeSimulationRequest ---
+
+
+@pytest.mark.asyncio
+async def test_submit_simulation_document_threads_num_nodes(fastapi_app: object) -> None:
+    from unittest.mock import AsyncMock, patch
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_run(**kwargs: Any) -> ComposeSimulationExperiment:
+        captured.update(kwargs)
+        return ComposeSimulationExperiment(simulation_database_id=1, simulator_database_id=1)
+
+    fake_db = MagicMock()
+    fake_db.get_allow_list_db.return_value.list_allow_list = AsyncMock(return_value=["pypi::cobra"])
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("viva_api.api.routers.compose.run_compose_simulation", _fake_run))
+        stack.enter_context(patch("viva_api.api.routers.compose._require_db", return_value=fake_db))
+        stack.enter_context(patch("viva_api.api.routers.compose._require_sim", return_value=MagicMock()))
+        stack.enter_context(patch("viva_api.api.routers.compose._require_monitor", return_value=MagicMock()))
+        async with AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://testserver") as client:  # type: ignore[arg-type]
+            response = await client.post(
+                "/compose/v1/simulation/run-document",
+                json={"document": {"state": {}}, "num_nodes": 8},
+            )
+
+    assert response.status_code == 200
+    assert captured["simulation_request"].num_nodes == 8
+
+
+@pytest.mark.asyncio
+async def test_submit_simulation_document_omits_num_nodes_by_default(fastapi_app: object) -> None:
+    """No num_nodes sent -> None on the request, byte-for-byte today's exact
+    behavior for every caller that doesn't know this field exists yet."""
+    from unittest.mock import AsyncMock, patch
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_run(**kwargs: Any) -> ComposeSimulationExperiment:
+        captured.update(kwargs)
+        return ComposeSimulationExperiment(simulation_database_id=1, simulator_database_id=1)
+
+    fake_db = MagicMock()
+    fake_db.get_allow_list_db.return_value.list_allow_list = AsyncMock(return_value=["pypi::cobra"])
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("viva_api.api.routers.compose.run_compose_simulation", _fake_run))
+        stack.enter_context(patch("viva_api.api.routers.compose._require_db", return_value=fake_db))
+        stack.enter_context(patch("viva_api.api.routers.compose._require_sim", return_value=MagicMock()))
+        stack.enter_context(patch("viva_api.api.routers.compose._require_monitor", return_value=MagicMock()))
+        async with AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://testserver") as client:  # type: ignore[arg-type]
+            response = await client.post(
+                "/compose/v1/simulation/run-document",
+                json={"document": {"state": {}}},
+            )
+
+    assert response.status_code == 200
+    assert captured["simulation_request"].num_nodes is None

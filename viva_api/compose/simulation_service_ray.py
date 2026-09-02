@@ -189,10 +189,15 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         # resubmits against the same image reuse the revision.
         job_def = self._ray._ensure_mnp_job_def(image, commit or get_settings().compose_ray_image_tag)
         stage_s3, stage_dir = self._parca_staging(commit)
+        # Per-request override (item 102) -- None preserves today's exact
+        # behavior (the deploy-wide default). See ComposeSimulationRequest's
+        # own num_nodes field docstring for why this is safe to read directly
+        # off simulation.sim_request with no DB/call-chain threading needed.
+        num_nodes = simulation.sim_request.num_nodes or get_settings().ray_num_nodes
         batch_job_id = self._ray._submit_mnp(
             job_name=f"compose-{experiment_id}"[:128],
             job_definition=job_def,
-            num_nodes=get_settings().ray_num_nodes,
+            num_nodes=num_nodes,
             ray_job_cmd=self._compose_command(doc_s3_uri, runner_s3_uri, steps),
             out_s3=data_layout.RayLayout.results_uri(experiment_id),
             out_dir=COMPOSE_OUT_DIR,
