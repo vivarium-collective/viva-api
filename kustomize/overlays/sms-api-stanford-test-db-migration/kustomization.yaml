@@ -19,7 +19,10 @@ images:
     # multi_node_composite_id migration, 9c2e6b1f4a73) -- the app was deployed
     # slightly ahead of this Job (real, caught live via UndefinedColumnError
     # spam in the api pod's own logs, fixed the same few minutes).
-    newTag: 0.9.84
+    newTag: 0.9.85
+    # 2026-09-02: 0.9.84 -> 0.9.85, matching the app overlay bump (item 101's
+    # _mnp_node_vcpus retry-with-backoff fix -- no new Alembic migration this
+    # release either, PR#372 only touched simulation_service_ray.py + tests).
     # 2026-09-02: 0.9.83 -> 0.9.84, matching the app overlay bump (item 103's
     # stop_at_division chain-dispatch fix -- no new Alembic migration this
     # release, kept in sync per the version-sync checklist).
