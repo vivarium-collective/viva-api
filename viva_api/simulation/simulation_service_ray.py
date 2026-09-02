@@ -661,7 +661,7 @@ class SimulationServiceRay(SimulationService):
         logger.info("Submitted container job %s (id=%s) to %s", job_name, batch_job_id, settings.ray_container_queue)
         return batch_job_id
 
-    def _parca_command(self, *, new_genes: str | None = None) -> str:
+    def _parca_command(self, *, new_genes: str | None = None, bundle_overrides: str | None = None) -> str:
         """Run ParCa, then hydrate the sim-input bundle into PARCA_CACHE_DIR (out/cache).
 
         v2ecoli's sim loads ``out/cache/{initial_state.json, sim_data_cache.dill, ...}`` via
@@ -676,13 +676,23 @@ class SimulationServiceRay(SimulationService):
         ``v2ecoli-parca``'s own ``--new-genes SUBDIR`` flag (default ``"off"``, so omitting
         or passing ``"off"`` builds byte-for-byte the same command as before this param
         existed). No caller-side change required for any dispatch that doesn't set it.
+
+        ``bundle_overrides`` (backlog item 104): a legacy config's own
+        ``parca_options.bundle_overrides`` (a bundle-overrides manifest path, e.g. a composed
+        new-gene overlay) -- generic passthrough to ``v2ecoli-parca``'s own
+        ``--bundle-overrides PATH`` flag (``cli/parca.py``, ``action="append"``). Same
+        "missed in the new_genes pass" class of gap this mirrors exactly (sms-ecoli#184 /
+        viva-api#365): the value survived on the stored request but was never read here, so
+        ParCa silently built from defaults and any keys the overrides supply were absent.
+        Default ``None`` builds byte-for-byte the same command as before this param existed.
         """
         settings = get_settings()
         new_genes_flag = f" --new-genes {shlex.quote(new_genes)}" if new_genes and new_genes != "off" else ""
+        bundle_overrides_flag = f" --bundle-overrides {shlex.quote(bundle_overrides)}" if bundle_overrides else ""
         return (
             f"cd {V2ECOLI_DIR}"
             f" && v2ecoli-parca --mode {settings.ray_parca_mode} --cpus {settings.ray_parca_cpus}"
-            f" -o {PARCA_SIMDATA_DIR} --cache-dir {PARCA_CACHE_DIR}{new_genes_flag}"
+            f" -o {PARCA_SIMDATA_DIR} --cache-dir {PARCA_CACHE_DIR}{new_genes_flag}{bundle_overrides_flag}"
             f" && gzip -f -k {PARCA_SIMDATA_DIR}/parca_state.pkl"
             f" && python scripts/build_cache.py"
             f" --fixture {PARCA_SIMDATA_DIR}/parca_state.pkl.gz --cache {PARCA_CACHE_DIR}"
@@ -1316,7 +1326,14 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         # submit_chain_dispatch_job -- irrelevant to the upstream-vEcoli
         # engine (its own config_path-driven mechanism, item 87, is separate).
         new_genes = None if is_upstream else getattr(config.parca_options, "new_genes", None)
-        parca_command = self._upstream_parca_command() if is_upstream else self._parca_command(new_genes=new_genes)
+        # Backlog item 104: same generic bundle_overrides passthrough, same
+        # upstream-vEcoli exemption as new_genes above.
+        bundle_overrides = None if is_upstream else getattr(config.parca_options, "bundle_overrides", None)
+        parca_command = (
+            self._upstream_parca_command()
+            if is_upstream
+            else self._parca_command(new_genes=new_genes, bundle_overrides=bundle_overrides)
+        )
 
         # Only the composite-driven comparison-ensemble path can still reach here
         # with n_generations > 1 (the non-composite canonical shape is routed to
@@ -1908,10 +1925,15 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         # field, not an extra -- read directly, matching config.generations
         # above (extra="allow" only applies to genuinely undeclared keys).
         new_genes = getattr(config.parca_options, "new_genes", None)
+        # Backlog item 104 (sms-ecoli#184 / viva-api#365): same generic
+        # passthrough, missed in the item-93 pass -- parca_options.bundle_overrides
+        # survived on the stored request but was never forwarded, so ParCa built
+        # from defaults only and any keys the overrides supply were absent.
+        bundle_overrides = getattr(config.parca_options, "bundle_overrides", None)
         parca_job_id = self._submit_container(
             job_name=f"ray-parca-{commit}-{_rand_suffix()}",
             job_definition=container_job_def,
-            job_cmd=self._parca_command(new_genes=new_genes),
+            job_cmd=self._parca_command(new_genes=new_genes, bundle_overrides=bundle_overrides),
             out_s3=cache_s3,
             out_dir=PARCA_CACHE_DIR,
             tags={**base_tags, "Phase": "parca"},
