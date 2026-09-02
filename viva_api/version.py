@@ -661,4 +661,18 @@
 #          separate /compose/v1/* full-emit path (a different, unverified
 #          code shape not used by item 93/96's own dispatch route) is
 #          deliberately out of scope here.
-__version__ = "0.9.82"
+# 0.9.83 — fix: _parca_command() now forwards parca_options.bundle_overrides to
+#          v2ecoli-parca's own --bundle-overrides flag, same class of gap as
+#          0.9.79's new_genes passthrough, missed in that pass. Found live by
+#          cplong90 (sms-ecoli#184 / viva-api#365): the stored request carried
+#          bundle_overrides correctly, but ParCa built from defaults only and
+#          the overrides manifest's keys were absent -- job 252/dataset 150
+#          failed outright ("This new_genes_data subdirectory is invalid"),
+#          and a second finding (dataset 145, jobs 242-245) showed new_genes
+#          itself can silently drop with the job still reporting SUCCEEDED --
+#          working hypothesis is that dataset predates 0.9.79's fix, not a
+#          live regression (both real call sites -- submit_chain_dispatch_job
+#          and the composite-comparison ensemble path -- independently
+#          re-verified at this commit to correctly thread new_genes through).
+#          Byte-for-byte unaffected when a config doesn't set bundle_overrides.
+__version__ = "0.9.83"

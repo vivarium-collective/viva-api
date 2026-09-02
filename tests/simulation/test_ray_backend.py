@@ -16,6 +16,7 @@ from viva_api.config import ComputeBackend
 from viva_api.simulation.models import HpcRun, JobType
 from viva_api.simulation.simulation_service_ray import (
     PARCA_CACHE_DIR,
+    PARCA_SIMDATA_DIR,
     SIM_OUT_DIR,
     V2ECOLI_DIR,
     SimulationServiceRay,
@@ -1709,6 +1710,52 @@ class TestUpstreamParcaCommand:
         assert variant == "s3://mybucket/ray-upstream-parca-cache/abc123/custom-strain/"
 
 
+class TestParcaCommand:
+    """_parca_command's own flag-assembly, in isolation -- no DB/AWS needed.
+
+    Backlog item 104 (sms-ecoli#184 / viva-api#365, cplong90): bundle_overrides
+    survived on the stored request but was never forwarded here, so ParCa built
+    from defaults only. Mirrors item 93's own new_genes regression-guard shape
+    (byte-identical when unset; the real flag when set)."""
+
+    def test_no_options_is_byte_identical_to_before(self) -> None:
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._parca_command()
+        assert "--new-genes" not in cmd
+        assert "--bundle-overrides" not in cmd
+        assert cmd == (
+            f"cd {V2ECOLI_DIR}"
+            f" && v2ecoli-parca --mode fast --cpus 8"
+            f" -o {PARCA_SIMDATA_DIR} --cache-dir {PARCA_CACHE_DIR}"
+            f" && gzip -f -k {PARCA_SIMDATA_DIR}/parca_state.pkl"
+            f" && python scripts/build_cache.py"
+            f" --fixture {PARCA_SIMDATA_DIR}/parca_state.pkl.gz --cache {PARCA_CACHE_DIR}"
+        )
+
+    def test_off_new_genes_is_byte_identical_to_unset(self) -> None:
+        """ "off" is v2ecoli-parca's own --new-genes default -- passing it explicitly
+        must not append a redundant flag."""
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            assert service._parca_command(new_genes="off") == service._parca_command()
+
+    def test_bundle_overrides_appends_the_flag(self) -> None:
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._parca_command(bundle_overrides="models/parca/composed_overlay.tsv")
+        assert "--bundle-overrides models/parca/composed_overlay.tsv" in cmd
+        assert "--new-genes" not in cmd
+
+    def test_new_genes_and_bundle_overrides_both_append(self) -> None:
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._parca_command(
+                new_genes="violacein_MG1655_M5", bundle_overrides="models/parca/composed_overlay.tsv"
+            )
+        assert "--new-genes violacein_MG1655_M5 --bundle-overrides models/parca/composed_overlay.tsv" in cmd
+
+
 class TestSimulationServiceRayBuildSubmit:
     """Build-image submission: DooD Batch job to the amd64 queue, then poll."""
 
@@ -2050,6 +2097,37 @@ class TestChainDispatchSubmission:
         env = _container_env_of(parca_call)
         assert "v2ecoli-parca" in env["CONTAINER_JOB_CMD"]
         assert "--new-genes" not in env["CONTAINER_JOB_CMD"]  # regression: absent when not set
+        assert "--bundle-overrides" not in env["CONTAINER_JOB_CMD"]  # regression: absent when not set
+
+    async def test_forwards_bundle_overrides_to_parca_when_config_sets_it(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """Backlog item 104 (sms-ecoli#184 / viva-api#365, cplong90): parca_options.bundle_overrides
+        survived on the stored request but was never forwarded to the ParCa command chain-dispatch
+        actually submits, so v2ecoli-parca built from defaults only and any keys the overrides
+        manifest supplies were absent -- same class of gap as item 93's new_genes fix, missed in
+        that pass."""
+        setattr(experiment_request.config, "n_init_sims", 2)  # noqa: B010
+        experiment_request.config.generations = 3
+        setattr(  # noqa: B010
+            experiment_request.config.parca_options, "bundle_overrides", "models/parca/composed_overlay.tsv"
+        )
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+        mock_batch = _fake_container_batch(["parca-1"])
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            await service.submit_chain_dispatch_job(ecoli_simulation=simulation, database_service=database_service)
+
+        (parca_call,) = mock_batch.submit_job.call_args_list
+        env = _container_env_of(parca_call)
+        assert "--bundle-overrides models/parca/composed_overlay.tsv" in env["CONTAINER_JOB_CMD"]
 
     async def test_forwards_new_genes_to_parca_when_config_sets_it(
         self,
