@@ -1442,6 +1442,17 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         # unaffected by this rework.
         return JobId.ray(sim_job_id)
 
+    # A freshly-registered job definition (this method is always called right
+    # after `_ensure_mnp_job_def` registers one) can briefly 404/come back
+    # empty from `describe_job_definitions` due to AWS eventual consistency --
+    # confirmed live 2026-08-25 on a commit's first-ever multi-node dispatch
+    # (sim255): the identical job definition, queried again a few minutes
+    # later, returned correctly. A few short retries covers this window
+    # without meaningfully slowing down the common case (already-registered
+    # job def, resolves on the first attempt).
+    _VCPU_LOOKUP_RETRIES = 3
+    _VCPU_LOOKUP_BACKOFF_SECONDS = 1.0
+
     def _mnp_node_vcpus(self, job_definition: str) -> int | None:
         """Real per-node vCPU count declared on an MNP job definition's own
         ``resourceRequirements`` (confirmed live 2026-08-24: ``VCPU: "16"`` on
@@ -1454,23 +1465,38 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         ``None`` on any lookup failure so the caller can safely leave
         ``RAY_SHARDS_DEFAULT`` unset (process-bigraph's own fallback still
         applies) rather than fail the whole submission over a sizing nicety.
+
+        Retries a few times on a transient empty/missing result -- see
+        ``_VCPU_LOOKUP_RETRIES`` above -- before giving up.
         """
-        try:
-            name, _, revision = job_definition.partition(":")
-            batch = self._batch()
-            described = batch.describe_job_definitions(jobDefinitionName=name, revision=int(revision))
-            defs = described.get("jobDefinitions", [])
-            if not defs:
+        name, _, revision = job_definition.partition(":")
+        batch = self._batch()
+        for attempt in range(self._VCPU_LOOKUP_RETRIES):
+            defs: list[dict[str, Any]] = []
+            try:
+                described = batch.describe_job_definitions(jobDefinitionName=name, revision=int(revision))
+                defs = described.get("jobDefinitions", [])
+            except Exception as exc:
+                # Treated the same as an empty result below -- both just mean "not visible yet".
+                logger.debug("describe_job_definitions attempt %d for %s failed: %s", attempt, job_definition, exc)
+
+            if defs:
+                ranges = defs[0].get("nodeProperties", {}).get("nodeRangeProperties", [])
+                for nr in ranges:
+                    for req in nr.get("container", {}).get("resourceRequirements", []):
+                        if req.get("type") == "VCPU":
+                            return int(float(req["value"]))
                 return None
-            ranges = defs[0].get("nodeProperties", {}).get("nodeRangeProperties", [])
-            for nr in ranges:
-                for req in nr.get("container", {}).get("resourceRequirements", []):
-                    if req.get("type") == "VCPU":
-                        return int(float(req["value"]))
-            return None
-        except Exception:
-            logger.warning("Could not determine per-node vCPUs for %s; RAY_SHARDS_DEFAULT left unset", job_definition)
-            return None
+
+            if attempt < self._VCPU_LOOKUP_RETRIES - 1:
+                time.sleep(self._VCPU_LOOKUP_BACKOFF_SECONDS * (attempt + 1))
+
+        logger.warning(
+            "Could not determine per-node vCPUs for %s after %d attempts; RAY_SHARDS_DEFAULT left unset",
+            job_definition,
+            self._VCPU_LOOKUP_RETRIES,
+        )
+        return None
 
     def _multi_node_composite_command(
         self,
