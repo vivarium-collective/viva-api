@@ -703,4 +703,17 @@
 #          no other change was needed. Unconditional, not caller-controlled --
 #          there is no legitimate chain-dispatch generation that should not
 #          stop at division.
-__version__ = "0.9.84"
+# 0.9.85 — fix: _mnp_node_vcpus() now retries (3 attempts, short backoff) on
+#          an empty/missing describe_job_definitions result instead of giving
+#          up on the first call. A freshly-registered MNP job definition (this
+#          method always runs right after _ensure_mnp_job_def registers one)
+#          can briefly come back empty due to AWS eventual consistency --
+#          confirmed live 2026-08-25 on a commit's first-ever multi-node
+#          dispatch (item 101, sim255): the identical job definition, queried
+#          again a few minutes later, returned correctly. Previously this
+#          silently left RAY_SHARDS_DEFAULT unset on exactly that first
+#          dispatch, capping the Ray actor pool at os.cpu_count() (observed:
+#          16 concurrent workers instead of the real 256-vCPU ceiling).
+#          Byte-for-byte unaffected once a job definition is already visible
+#          (the common case, resolves on the first attempt as before).
+__version__ = "0.9.85"

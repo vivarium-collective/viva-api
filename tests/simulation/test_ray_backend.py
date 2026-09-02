@@ -764,6 +764,50 @@ class TestSubmitMultiNodeComposite:
         ):
             assert service._mnp_node_vcpus("totally-different-job-def:1") is None
 
+    def test_mnp_node_vcpus_retries_through_transient_empty_result_then_succeeds(self) -> None:
+        """Backlog item 101: on a commit's FIRST-ever multi-node dispatch,
+        describe_job_definitions can briefly return empty for a job def
+        _ensure_mnp_job_def had JUST registered (AWS eventual consistency --
+        confirmed live 2026-08-25, sim255). Simulates that: the first 2 calls
+        return an empty jobDefinitions list (the real shape AWS returns, not
+        an exception), the 3rd succeeds -- the retry loop must not give up
+        early and must not treat the transient empty as a permanent unknown
+        job def (contrast test_mnp_node_vcpus_returns_none_on_unknown_job_def,
+        which never resolves)."""
+        real_result = _fake_multi_node_batch(["unused"], per_node_vcpus=16).describe_job_definitions(
+            jobDefinitionName="smscdk-ray-mnp-somecommit"
+        )
+        mock_batch = MagicMock()
+        mock_batch.describe_job_definitions.side_effect = [
+            {"jobDefinitions": []},
+            {"jobDefinitions": []},
+            real_result,
+        ]
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch.object(SimulationServiceRay, "_VCPU_LOOKUP_BACKOFF_SECONDS", 0.0),
+        ):
+            vcpus = service._mnp_node_vcpus("smscdk-ray-mnp-somecommit:1")
+        assert vcpus == 16
+        assert mock_batch.describe_job_definitions.call_count == 3
+
+    def test_mnp_node_vcpus_gives_up_after_exhausting_retries(self) -> None:
+        """The other half of the same guard: a GENUINELY unknown/never-
+        materializing job def must still return None eventually, not retry
+        forever."""
+        mock_batch = MagicMock()
+        mock_batch.describe_job_definitions.return_value = {"jobDefinitions": []}
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch.object(SimulationServiceRay, "_VCPU_LOOKUP_BACKOFF_SECONDS", 0.0),
+        ):
+            assert service._mnp_node_vcpus("smscdk-ray-mnp-neverexists:1") is None
+        assert mock_batch.describe_job_definitions.call_count == SimulationServiceRay._VCPU_LOOKUP_RETRIES
+
     @pytest.mark.asyncio
     async def test_existing_comparison_ensemble_path_unaffected_when_multi_node_dispatch_absent(
         self,
