@@ -311,11 +311,18 @@ class JobScheduler:
         full 3-phase state machine this is one third of.
 
         Backlog items 93, 105: ``injected_processes``/``variants``/
-        ``composite_id`` are re-derived from ``simulation.config`` here, every
-        tick, rather than persisted anywhere new — ``simulation`` is already
-        re-read fresh from the DB by ``_tick`` for every campaign, so this is
-        restart-safe for free, matching how every other piece of per-tick
-        state already works here.
+        ``composite_id``/``cache_variant`` are re-derived from
+        ``simulation.config`` here, every tick, rather than persisted anywhere
+        new — ``simulation`` is already re-read fresh from the DB by ``_tick``
+        for every campaign, so this is restart-safe for free, matching how
+        every other piece of per-tick state already works here.
+
+        ``cache_variant`` (item 105): selects a ``variant``-labeled ParCa
+        cache (see ``SimulationServiceRay.cache_s3_uri`` /
+        ``submit_new_gene_cache_job``) instead of the plain commit-only one —
+        e.g. a strain-specific induced-expression cache built on top of a
+        prior ParCa run. ``None`` (every existing caller) preserves today's
+        behavior byte-for-byte.
         """
         parca_info = await simulation_service_ray.get_job_status(fresh.job_id)
         if parca_info is None or parca_info.status not in (JobStatus.COMPLETED, JobStatus.FAILED):
@@ -332,12 +339,13 @@ class JobScheduler:
             )
         # ParCa SUCCEEDED -- fan out generation 0 for every seed at once.
         runner_s3_uri = await simulation_service_ray.stage_runner(experiment_id)
+        cache_variant = getattr(simulation.config, "cache_variant", None) or None
         submitted = await simulation_service_ray.submit_chain_generation_batch(
             seeds=list(range(n_seeds)),
             generation_index=0,
             experiment_id=experiment_id,
             commit=commit,
-            cache_s3=simulation_service_ray.cache_s3_uri(commit),
+            cache_s3=simulation_service_ray.cache_s3_uri(commit, variant=cache_variant),
             runner_s3_uri=runner_s3_uri,
             tags=simulation_service_ray.chain_base_tags(simulation=simulation, commit=commit),
             injected_processes=injected_processes_from_config(simulation.config),
@@ -385,11 +393,12 @@ class JobScheduler:
         ``_tick`` under the project's cyclomatic-complexity limit.
 
         Backlog items 93, 105: ``injected_processes``/``variants``/
-        ``composite_id`` are re-derived from ``simulation.config`` once per
-        tick (same campaign, same config, for every seed advanced this tick)
-        rather than persisted anywhere new — see ``_advance_parca_gate``'s
-        docstring for why re-deriving from the already-fresh ``simulation``
-        row is restart-safe for free.
+        ``composite_id``/``cache_variant`` are re-derived from
+        ``simulation.config`` once per tick (same campaign, same config, for
+        every seed advanced this tick) rather than persisted anywhere new —
+        see ``_advance_parca_gate``'s docstring for why re-deriving from the
+        already-fresh ``simulation`` row is restart-safe for free, and for
+        what ``cache_variant`` selects.
         """
         in_flight = [jid for jid in current_job_ids if jid is not None]
         if not in_flight:
@@ -398,6 +407,7 @@ class JobScheduler:
         injected_processes = injected_processes_from_config(simulation.config)
         variants = getattr(simulation.config, "variants", None) or None
         composite_id = getattr(simulation.config, "composite_id", None) or None
+        cache_variant = getattr(simulation.config, "cache_variant", None) or None
         next_gen_runner_s3_uri: str | None = None
         for seed, job_id in enumerate(current_job_ids):
             if job_id is None:
@@ -420,7 +430,7 @@ class JobScheduler:
                 generation_index=gen + 1,
                 experiment_id=experiment_id,
                 commit=commit,
-                cache_s3=simulation_service_ray.cache_s3_uri(commit),
+                cache_s3=simulation_service_ray.cache_s3_uri(commit, variant=cache_variant),
                 runner_s3_uri=next_gen_runner_s3_uri,
                 tags=simulation_service_ray.chain_base_tags(simulation=simulation, commit=commit),
                 injected_processes=injected_processes,

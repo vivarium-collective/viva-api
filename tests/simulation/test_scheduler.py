@@ -96,6 +96,7 @@ async def insert_chain_campaign_job(
     swap_processes: dict[str, str] | None = None,
     variants: dict[str, object] | None = None,
     composite_id: str | None = None,
+    cache_variant: str | None = None,
 ) -> tuple[Simulation, HpcRun]:
     """Insert a Simulation + a chain-dispatch-campaign-shaped HpcRun row
     (backlog item 71 Phase 4 — app-level per-seed gating), the fixture shape
@@ -116,6 +117,12 @@ async def insert_chain_campaign_job(
     set to give the inserted Simulation's own config a caller-selected
     composite (e.g. ``reactor_bird_coupled``) instead of the implicit
     ``ecoli_baseline`` default.
+
+    ``cache_variant`` (backlog item 105): same default-None, same shape —
+    set to have the campaign stage from a ``variant``-labeled ParCa cache
+    (e.g. a strain-specific induced-expression build, see
+    ``SimulationServiceRay.submit_new_gene_cache_job``) instead of the plain
+    commit-only cache.
     """
     latest_commit_hash = str(uuid.uuid4())
     simulator = await database_service.insert_simulator(
@@ -135,6 +142,8 @@ async def insert_chain_campaign_job(
         setattr(config, "variants", variants)  # noqa: B010
     if composite_id is not None:
         setattr(config, "composite_id", composite_id)  # noqa: B010
+    if cache_variant is not None:
+        setattr(config, "cache_variant", cache_variant)  # noqa: B010
     simulation_request = SimulationRequest(
         simulation_config_filename="config_filename",
         experiment_id=experiment_id,
@@ -489,6 +498,63 @@ class TestAdvanceChainCampaign:
 
         call_kwargs = mock_ray.submit_chain_generation.call_args.kwargs
         assert call_kwargs["composite_id"] == "v2ecoli.composites.reactor_bird_coupled.reactor_bird_coupled"
+
+    @pytest.mark.asyncio
+    async def test_generation_zero_fanout_forwards_cache_variant(self, database_service: DatabaseServiceSQL) -> None:
+        """Backlog item 105: _advance_parca_gate re-derives cache_variant from
+        the campaign's own Simulation.config and resolves cache_s3_uri with it
+        for the generation-0 fan-out -- the mechanism a strain-specific
+        induced-expression cache (submit_new_gene_cache_job) depends on."""
+        _simulation, hpcrun = await insert_chain_campaign_job(
+            database_service,
+            job_id_ext="parca-done-k4",
+            chain_n_generations=3,
+            n_seeds=2,
+            cache_variant="k4-induced",
+        )
+        mock_ray = _mock_ray_service()
+        mock_ray.get_job_status.return_value = JobStatusInfo(
+            job_id=JobId.ray("parca-done-k4"), status=JobStatus.COMPLETED
+        )
+        mock_ray.submit_chain_generation_batch.return_value = {0: "s0g0", 1: "s1g0"}
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_chain_campaign(hpcrun, mock_ray)
+
+        cache_uri_calls = mock_ray.cache_s3_uri.call_args_list
+        assert any(c.kwargs.get("variant") == "k4-induced" for c in cache_uri_calls)
+
+    @pytest.mark.asyncio
+    async def test_seed_advance_forwards_cache_variant(self, database_service: DatabaseServiceSQL) -> None:
+        """Backlog item 105: _advance_seed_generations (phase 2 -- every
+        generation AFTER generation 0) must forward the same config-derived
+        cache_variant on every per-seed advance, not just the generation-0
+        burst -- otherwise a strain-specific campaign would silently regress
+        to the plain commit cache the moment it moves past its first
+        generation."""
+        _simulation, hpcrun = await insert_chain_campaign_job(
+            database_service,
+            job_id_ext="parca-1-k4",
+            chain_n_generations=3,
+            n_seeds=1,
+            chain_parca_done=True,
+            chain_current_job_ids=["s0g0"],
+            chain_current_generation=[0],
+            cache_variant="k4-induced",
+        )
+        mock_ray = _mock_ray_service()
+        mock_ray.get_batch_job_statuses = MagicMock(return_value={"s0g0": JobStatus.COMPLETED})
+        mock_ray.submit_chain_generation = MagicMock(return_value="s0g1")
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_chain_campaign(hpcrun, mock_ray)
+
+        cache_uri_calls = mock_ray.cache_s3_uri.call_args_list
+        assert any(c.kwargs.get("variant") == "k4-induced" for c in cache_uri_calls)
 
     @pytest.mark.asyncio
     async def test_seed_succeeds_on_its_last_generation_resolves_the_seed(

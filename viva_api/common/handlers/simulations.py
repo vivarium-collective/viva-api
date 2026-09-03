@@ -40,6 +40,8 @@ from viva_api.simulation.models import (
     CompositeEngine,
     HpcRun,
     JobType,
+    NewGeneCacheJob,
+    NewGeneCacheRequest,
     ParcaDataset,
     ParcaDatasetRequest,
     ParcaOptions,
@@ -751,6 +753,76 @@ async def get_parca_datasets(
 
     parca_datasets = await database_service.list_parca_datasets()
     return parca_datasets
+
+
+async def run_new_gene_cache(
+    request: NewGeneCacheRequest,
+    simulation_service: SimulationService | None = None,
+    database_service: DatabaseService | None = None,
+) -> NewGeneCacheJob:
+    """Backlog item 105: submit ``build_new_gene_cache.py`` against a
+    COMPLETED ParCa dataset's cache, answering Chris/cplong90's own question
+    (sms-ecoli#166) of whether this script is reachable remotely at all --
+    see ``SimulationServiceRay.submit_new_gene_cache_job`` for the mechanism.
+
+    Ray/Batch only (mirrors ``run_parca``'s own inverse SLURM-only gate).
+    Requires the source ParCa dataset to have already SUCCEEDED -- an
+    in-progress or failed ParCa run has no cache to compose on top of.
+
+    v1, deliberately scoped narrow: no HpcRun/DB tracking (unlike
+    ``run_parca``'s own ``insert_hpcrun`` call) -- adding a new ``JobType``
+    touches a real DB-level enum (``JobTypeDB``, ``tables_orm.py``), which is
+    a migration-shaped decision left for a follow-up rather than bundled in
+    here. Poll the returned ``job_id`` directly against the backend.
+    """
+    if not simulation_service:
+        simulation_service = get_simulation_service()
+    if simulation_service is None:
+        logger.exception("Simulation service is not initialized")
+        raise HTTPException(status_code=404, detail="Simulation service is not initialized")
+    if not isinstance(simulation_service, SimulationServiceRay):
+        raise HTTPException(
+            status_code=501,
+            detail="new-gene-cache jobs require the Ray/Batch simulation service",
+        )
+    if not database_service:
+        database_service = get_database_service()
+    if database_service is None:
+        logger.exception("Simulation database service is not initialized")
+        raise HTTPException(status_code=404, detail="Simulation database service is not initialized")
+
+    parca_dataset = await database_service.get_parca_dataset(request.parca_dataset_id)
+    if parca_dataset is None:
+        raise HTTPException(status_code=404, detail=f"Parca dataset {request.parca_dataset_id} not found.")
+    commit = parca_dataset.parca_dataset_request.simulator_version.git_commit_hash
+
+    parca_run = await database_service.get_hpcrun_by_ref(ref_id=request.parca_dataset_id, job_type=JobType.PARCA)
+    if parca_run is None or parca_run.status != JobStatus.COMPLETED:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Parca dataset {request.parca_dataset_id} has not COMPLETED "
+                f"(status={parca_run.status if parca_run else 'unknown'}) -- nothing to induce yet."
+            ),
+        )
+
+    job_id = await simulation_service.submit_new_gene_cache_job(
+        commit=commit,
+        variant=request.variant,
+        expression=request.expression,
+        translation_efficiency=request.translation_efficiency,
+        rel_exp_adj=request.rel_exp_adj,
+        rel_trl_eff_adj=request.rel_trl_eff_adj,
+        seed=request.seed,
+        media_condition=request.media_condition,
+        fixed_media=request.fixed_media,
+    )
+    return NewGeneCacheJob(
+        job_id=str(job_id),
+        commit=commit,
+        variant=request.variant,
+        cache_s3_uri=simulation_service.cache_s3_uri(commit, variant=request.variant),
+    )
 
 
 async def get_simulation(db_service: DatabaseService, id: int) -> Simulation | None:

@@ -57,6 +57,8 @@ from .inner_composite_ref import InnerCompositeRef
 from .job_status import JobStatus
 from .job_type import JobType
 from .list_simulation_tags_response_list_simulation_tags import ListSimulationTagsResponseListSimulationTags
+from .new_gene_cache_job import NewGeneCacheJob
+from .new_gene_cache_request import NewGeneCacheRequest
 from .observable_info_model import ObservableInfoModel
 from .output_file import OutputFile
 from .output_file_metadata import OutputFileMetadata
@@ -175,6 +177,8 @@ __all__ = (
     "JobStatus",
     "JobType",
     "ListSimulationTagsResponseListSimulationTags",
+    "NewGeneCacheJob",
+    "NewGeneCacheRequest",
     "ObservableInfoModel",
     "OutputFile",
     "OutputFileMetadata",

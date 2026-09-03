@@ -731,4 +731,19 @@
 #          shape (v2ecoli #648) but had no way to ever be selected as a
 #          chain-dispatch target -- this is the reachability half of that
 #          gap; reactor_bird_coupled's own capability half was v2ecoli's.
-__version__ = "0.9.86"
+#
+# 0.9.87 -- scripts/build_new_gene_cache.py (v2ecoli's own new-gene induction-
+#           LEVEL script, the "other half" of ParCa's new_genes presence/
+#           absence flag) is now remotely reachable (backlog item 105).
+#           _parca_command preserves the raw parca_state.pkl.gz in the synced
+#           cache dir (previously discarded); new
+#           _build_new_gene_cache_command / submit_new_gene_cache_job mirror
+#           submit_parca_job, staging in a commit's plain cache and writing a
+#           variant-labeled derived one (cache_s3_uri gains the same variant
+#           kwarg _upstream_cache_s3_uri already had); cache_variant threads
+#           through job_scheduler.py exactly like composite_id (item 105a).
+#           New standalone POST /parca/new-gene-cache endpoint triggers it --
+#           deliberately not auto-wired into JobScheduler's own state
+#           machine (would need a new DB-level JobType member, left for a
+#           follow-up). All additive; every existing caller unaffected.
+__version__ = "0.9.87"
