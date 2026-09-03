@@ -47,8 +47,16 @@ images:
   # injected_processes/variants). Unblocks the reachability half of Run1/K4's
   # own composite (reactor_bird_coupled) -- science + cache-staging remain
   # separate, still-open blockers. Unset is byte-identical to 0.9.85.
+  # 0.9.87 (PR #378, item 105): scripts/build_new_gene_cache.py (the script
+  # that stamps a real induction LEVEL onto an already-ParCa'd cache -- the
+  # "other half" of new_genes presence/absence) is now remotely reachable.
+  # New submit_new_gene_cache_job + POST /parca/new-gene-cache, staging a
+  # commit's plain cache and writing a variant-labeled derived one. Not
+  # auto-wired into JobScheduler's own state machine (would need a new
+  # DB-level JobType member -- deliberate follow-up, not done here). All
+  # additive; every existing caller unaffected.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.86
+    newTag: 0.9.87
   # ptools 0.5.9 -> 0.9.53 (DEV ONLY — prod sms-api-stanford stays on 0.5.9 while
   # this soaks). The long-standing 0.5.9 pin existed because CI builds only
   # sms-api (scripts/build_action.sh), so no newer sms-ptools existed on ghcr.io
