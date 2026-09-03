@@ -9,6 +9,13 @@ diagnosis from code and git history alone, which corroborates it; the fix and it
 regression test (`test_stop_at_division_is_always_set`) are on `main`. What follows is
 the comparison the analysis was for, plus the work that is **still** open.
 
+> **Line-number caveat.** v2ecoli references below were read from a local
+> `origin/main` ref dated 2026-08-25 (`c28fc546`). The tree the image pins is
+> newer — Chris reads the dispatch gate at `ecoli_baseline.py:1730`, not `:1574`,
+> and v2ecoli #610 (`2ecb11ca`) is not in that ref at all. Treat v2ecoli line
+> numbers as approximate; viva-api numbers are against `main` at 0.9.85.
+> Full technical trace for item 103: `vivarium-workbench/.todo/backlog/103.md`.
+
 ## 1. Three ways a multi-generation campaign runs today
 
 | | **Nextflow** (vEcoli-private, `COMPUTE_BACKEND=batch`) | **chain-dispatch** (item 71/103) | **pbg-native** (item 101) |
@@ -96,13 +103,44 @@ Per its own header: the durable `n_workers` fix (v2ecoli #647, viva-api #366) ne
 a simulator built from v2ecoli `8b293abf` or later; `SIMULATOR_ID=97` predates it,
 so a dispatch with `N_WORKERS=""` against 97 re-runs the old default of 2.
 
+### 3d. Open: `swap_processes` collapses every generation to one tick (post-#369)
+
+From Chris's dispatches on `smsvpctest` (PR #375 thread, 2026-09-03). Same simulator
+image, same ParCa dataset, `new_genes: off` on both sides, n=1 per cell:
+
+| | `exclude_processes: ["exchange_data"]` | **empty** |
+|---|---|---|
+| **no swap** | — | **814.7 s / 805.4 s** per gen, 7 shards (`400 … 2528.pq`) |
+| **swap** | sim262: 25–45 s/gen, `global_time 1.0` | **46.0 s / 25.6 s** per gen, `global_time 1.0`, one `1.pq` shard |
+
+⇒ `exclude_processes` is not the trigger; **the swap alone is.** Wild-type chains
+correctly post-#369; a swap config reproduces the exact pre-#369 symptom. Cause not
+isolated. Not established: a real strain run (this was the swap *mechanism* only),
+or a repeat.
+
+`LineageProcess._run_until_division` has three OR'd division signals: (1) exception
+sniff — now type-guarded and warned, and Alex saw zero warnings, so ruled out;
+(2) `agents_after != agents_before` — any structural change to the agents map on
+tick 1 fires it, `_remove` alone included; (3) `survivor.get("divide")` — the fresh
+agent's `divide` flag. A swap that changes the agents map shape, or leaves `divide`
+truthy on the rebuilt document, would trip (2) or (3) after one tick with no warning.
+
+Next cut: log which signal fired at the generation close-out (one `warnings.warn`
+per signal in `_run_until_division`), redispatch Chris's swap cell, read CloudWatch.
+That separates the two remaining candidates in one run.
+
 ## 4. Hazards now live (chain jobs actually run `LineageProcess` since #369)
 
-- **Division detection is a substring match on exception text** (`lineage.py:361-367`:
-  `"divide" in msg or "division" in msg`). sms-ecoli has a measured case of its own
-  process fooling it — `ZeroDivisionError` ("float division by zero") read as a cell
-  division, spawning a daughter every tick until ATP starvation
-  (`sms_modules/processes/gillespie.py:331-341`; guarded per-process, not upstream).
+- **Division-by-exception is now type-guarded upstream** — *correction from Alex on
+  PR #375.* The stale ref this analysis read shows a bare substring match
+  (`"divide" in msg or "division" in msg`, `lineage.py:361-367`), and sms-ecoli has a
+  measured case of `ZeroDivisionError` ("float division by zero") being read as a
+  division (`sms_modules/processes/gillespie.py:331-341`). Since v2ecoli #610
+  (`2ecb11ca`), `is_division_exception()` in `v2ecoli/library/division.py` excludes
+  `ArithmeticError` and 8 other builtin types *by type*, and the caller
+  `warnings.warn`s whenever it does treat an exception as a division. Alex checked
+  CloudWatch for sim262/gen0: zero such warnings. So the exception signal is no longer
+  the suspect for §3d — the other two signals are.
 - **The JSON carry-state round-trip is lossy and untested.** `MetadataArray` metadata
   survives only under `unique`; nested objects degrade to truncated reprs; dict keys
   stringified; tuples not reconstructed (`v2ecoli/cache.py:45-127`). Every checkpoint
