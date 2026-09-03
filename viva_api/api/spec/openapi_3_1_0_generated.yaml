@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.84
+  version: 0.9.87
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -577,6 +577,32 @@ paths:
                 type: object
                 additionalProperties: true
                 title: Response Run-Ecoli-Simulation-Analysis
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/parca/new-gene-cache:
+    post:
+      tags:
+      - EcoliSim
+      summary: Stamp an induction level onto a completed ParCa dataset's cache (backlog
+        item 105)
+      operationId: run-new-gene-cache
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewGeneCacheRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NewGeneCacheJob'
         '422':
           description: Validation Error
           content:
@@ -1191,7 +1217,7 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-09-02T08:10:50.053353'
+                  created_at: '2026-09-03T09:56:47.824844'
                 parca_config:
                   outdir: /projects/SMS/sms_api/prod/sims
       responses:
@@ -3961,6 +3987,97 @@ components:
       - parca
       - build_image
       title: JobType
+    NewGeneCacheJob:
+      properties:
+        job_id:
+          type: string
+          title: Job Id
+        commit:
+          type: string
+          title: Commit
+        variant:
+          type: string
+          title: Variant
+        cache_s3_uri:
+          type: string
+          title: Cache S3 Uri
+      additionalProperties: true
+      type: object
+      required:
+      - job_id
+      - commit
+      - variant
+      - cache_s3_uri
+      title: NewGeneCacheJob
+      description: 'Response for a submitted new-gene-cache job. No HpcRun/DB tracking
+        yet
+
+        (backlog item 105 v1, scoped deliberately narrow) -- poll the returned
+
+        ``job_id`` directly against the compute backend (e.g. ``aws batch
+
+        describe-jobs``) rather than through the usual ``/simulations/{id}/status``
+
+        family, which this job does not register with.'
+    NewGeneCacheRequest:
+      properties:
+        parca_dataset_id:
+          type: integer
+          title: Parca Dataset Id
+        variant:
+          type: string
+          title: Variant
+        expression:
+          type: number
+          title: Expression
+        translation_efficiency:
+          type: number
+          title: Translation Efficiency
+        rel_exp_adj:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Rel Exp Adj
+        rel_trl_eff_adj:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Rel Trl Eff Adj
+        seed:
+          type: integer
+          title: Seed
+          default: 0
+        media_condition:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Media Condition
+        fixed_media:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Fixed Media
+      additionalProperties: true
+      type: object
+      required:
+      - parca_dataset_id
+      - variant
+      - expression
+      - translation_efficiency
+      title: NewGeneCacheRequest
+      description: 'Backlog item 105: stamp an induction level onto a COMPLETED ParCa
+
+        dataset''s cache (``scripts/build_new_gene_cache.py``, the "other half" of
+
+        ``new_genes`` presence/absence -- see ``SimulationServiceRay.
+
+        submit_new_gene_cache_job``). Ray/Batch backend only; the source dataset''s
+
+        own request must have set ``parca_options.new_genes`` (an all-zero-
+
+        expression source has nothing to induce -- not re-validated here, same
+
+        pure-passthrough philosophy as ``injected_processes``/``variants``).'
     ObservableInfoModel:
       properties:
         name:
@@ -4412,7 +4529,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-09-02 08:10:49.983969'
+          default: '2026-09-03 09:56:47.764130'
         job_id:
           anyOf:
           - type: string
