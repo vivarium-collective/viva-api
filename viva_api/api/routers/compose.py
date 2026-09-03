@@ -45,6 +45,15 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Upper bound on interval_time (== ComposeSimulationRequest.end_time_point), in
+# simulated seconds. A single-cell run needs only a few thousand, but a
+# multi-generation lineage document (v2ecoli lineage_ray_batch: LineageProcess
+# advances TOTAL simulated time, one division per generation) needs
+# n_generations * max_duration_per_gen -- e.g. 8 generations * 3600 s = 28,800 s.
+# 1000 rejected every such document. Still bounded to keep a runaway run from
+# being submitted.
+MAX_INTERVAL_TIME: float = 100_000.0
+
 # ---------------------------------------------------------------------------
 # Dependency helpers (lazy — populated at app startup via dependencies.py)
 # ---------------------------------------------------------------------------
@@ -174,8 +183,8 @@ async def submit_simulation(
     compute_backend: ComputeBackend | None = None,
     extra_pip_deps: list[str] | None = Query(default=None),
 ) -> ComposeSimulationExperiment:
-    if interval_time < 0 or interval_time > 1000:
-        raise HTTPException(400, "interval_time must be between 0 and 1000")
+    if interval_time < 0 or interval_time > MAX_INTERVAL_TIME:
+        raise HTTPException(400, f"interval_time must be between 0 and {MAX_INTERVAL_TIME:g}")
     simulation_request = await _parse_upload(uploaded_file, batch_submission)
     simulation_request.end_time_point = interval_time
     simulation_request.simulator_id = simulator_id
@@ -198,8 +207,8 @@ async def submit_simulation_document(
     multipart file needed. For a programmatic caller (a CLI, a generated
     client, or a future workbench path) that already holds the document as a
     Python/JSON value, this skips the upload-file round-trip entirely."""
-    if body.interval_time < 0 or body.interval_time > 1000:
-        raise HTTPException(400, "interval_time must be between 0 and 1000")
+    if body.interval_time < 0 or body.interval_time > MAX_INTERVAL_TIME:
+        raise HTTPException(400, f"interval_time must be between 0 and {MAX_INTERVAL_TIME:g}")
     simulation_request = _from_document(body.document, body.batch_submission)
     simulation_request.end_time_point = body.interval_time
     simulation_request.simulator_id = body.simulator_id
