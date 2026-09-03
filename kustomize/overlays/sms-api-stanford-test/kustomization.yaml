@@ -55,8 +55,15 @@ images:
   # auto-wired into JobScheduler's own state machine (would need a new
   # DB-level JobType member -- deliberate follow-up, not done here). All
   # additive; every existing caller unaffected.
+  # 0.9.88 (PR #380, item 105): drops run_new_gene_cache's own broken
+  # get_hpcrun_by_ref(job_type=PARCA) precondition -- found live, before any
+  # real dispatch hit it, while verifying 0.9.87. Chain-dispatch's real ParCa
+  # path (run_workflow_legacy) never inserts a JobType.PARCA-tagged HpcRun
+  # row (only the legacy SLURM-only run_parca handler does), so the
+  # precondition 409'd on every real chain-dispatch-originated ParcaDataset.
+  # Removed entirely, matching this codebase's pure-passthrough philosophy.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.87
+    newTag: 0.9.88
   # ptools 0.5.9 -> 0.9.53 (DEV ONLY — prod sms-api-stanford stays on 0.5.9 while
   # this soaks). The long-standing 0.5.9 pin existed because CI builds only
   # sms-api (scripts/build_action.sh), so no newer sms-ptools existed on ghcr.io
