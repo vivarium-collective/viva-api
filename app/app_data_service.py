@@ -168,6 +168,7 @@ class E2EDataService:
         ecoli_sources_repo_url: str | None = None,
         ecoli_sources_ref: str | None = None,
         tags: list[str] | None = None,
+        extra_params: dict[str, object] | None = None,
     ) -> Simulation:
         simulation = self.submit_run_workflow(
             params=params,
@@ -185,6 +186,7 @@ class E2EDataService:
             ecoli_sources_repo_url=ecoli_sources_repo_url,
             ecoli_sources_ref=ecoli_sources_ref,
             tags=tags,
+            extra_params=extra_params,
         )
         return simulation
 
@@ -385,6 +387,7 @@ class E2EDataService:
         ecoli_sources_repo_url: str | None = None,
         ecoli_sources_ref: str | None = None,
         tags: list[str] | None = None,
+        extra_params: dict[str, object] | None = None,
     ) -> Simulation:
         if params is not None:
             query_params = params
@@ -413,7 +416,20 @@ class E2EDataService:
                 items.extend(("tags", tag) for tag in tags)
             query_params = httpx.QueryParams(items)
         try:
-            json_body = analysis_options if analysis_options else None
+            # The route declares TWO separate body params (analysis_options,
+            # extra_params) -- FastAPI's real expected shape for multiple
+            # Body(...)-typed params is each nested under its own name:
+            # {"analysis_options": {...}, "extra_params": {...}}, not either
+            # one sent bare. Only include keys that are actually set, so a
+            # caller passing neither still sends `None` (byte-identical to
+            # every existing caller's prior behavior).
+            json_body: dict[str, object] | None = None
+            if analysis_options or extra_params:
+                json_body = {}
+                if analysis_options:
+                    json_body["analysis_options"] = analysis_options
+                if extra_params:
+                    json_body["extra_params"] = extra_params
             simulation_response = self.client.post(
                 url="/api/v1/simulations",
                 params=query_params,
