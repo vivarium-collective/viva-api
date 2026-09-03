@@ -746,4 +746,22 @@
 #           deliberately not auto-wired into JobScheduler's own state
 #           machine (would need a new DB-level JobType member, left for a
 #           follow-up). All additive; every existing caller unaffected.
-__version__ = "0.9.87"
+#
+# 0.9.88 -- fixes a real bug in 0.9.87's own POST /parca/new-gene-cache: its
+#           precondition check (get_hpcrun_by_ref(ref_id=parca_dataset_id,
+#           job_type=PARCA) == COMPLETED) can NEVER resolve for a real
+#           chain-dispatch-originated ParcaDataset -- only the legacy
+#           SLURM-only run_parca handler ever inserts that HpcRun shape;
+#           chain-dispatch (what Runs 1/2/3 actually use) tracks its ParCa
+#           phase on the Simulation's own HpcRun (chain_parca_done), never a
+#           matching ParcaDataset one. Found live, during this session's own
+#           verification pass, before any real dispatch was fired against
+#           it -- would have 409'd on every real input. Removed the broken
+#           check entirely, matching this class's own established pure-
+#           passthrough philosophy (injected_processes/variants/
+#           composite_id: none pre-validated here, a bad reference fails
+#           loudly downstream instead). 4 new handler-level tests
+#           (tests/common/handlers/test_simulations_handler.py) cover the
+#           real gap the original PR's tests missed -- they mocked the
+#           service layer, never this handler's own DB-facing logic.
+__version__ = "0.9.88"

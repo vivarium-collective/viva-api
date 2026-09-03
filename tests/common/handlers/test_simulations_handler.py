@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
+from fastapi import HTTPException
 
 from viva_api.analysis.models import TsvOutputFile
 from viva_api.common.handlers.simulations import (
@@ -728,3 +729,120 @@ async def test_chain_progress_unknown_simulation_raises_value_error() -> None:
 
     with pytest.raises(ValueError, match="not found"):
         await get_simulation_chain_progress(db_service=mock_db_service, id=9999)
+
+
+def _make_parca_dataset(database_id: int = 158, commit: str = "82e1b1e") -> Any:
+    from viva_api.simulation.models import ParcaDataset, ParcaDatasetRequest, ParcaOptions, SimulatorVersion
+
+    return ParcaDataset(
+        database_id=database_id,
+        parca_dataset_request=ParcaDatasetRequest(
+            simulator_version=SimulatorVersion(
+                database_id=104, git_commit_hash=commit, git_branch="main", git_repo_url="https://github.com/x/y"
+            ),
+            parca_config=ParcaOptions(),
+        ),
+    )
+
+
+class TestRunNewGeneCache:
+    """run_new_gene_cache (backlog item 105): the REST-layer handler for
+    ``POST /parca/new-gene-cache``. A real, load-bearing gap slipped through
+    the original PR here -- every prior test for this feature exercised only
+    ``submit_new_gene_cache_job`` (the service layer, boto3-mocked), never
+    THIS function, which is where the actual bug lived: a precondition check
+    keyed on ``get_hpcrun_by_ref(ref_id=parca_dataset_id, job_type=PARCA)``
+    that can never resolve for a real chain-dispatch-originated
+    ParcaDataset (only the legacy SLURM-only ``run_parca`` handler ever
+    inserts that HpcRun shape). These tests specifically cover the handler's
+    own DB-facing logic, not just the mechanism underneath it."""
+
+    @pytest.mark.asyncio
+    async def test_does_not_require_a_parca_job_type_hpcrun(self) -> None:
+        """The precondition this PR originally had would 409 here, since a
+        real chain-dispatch ParcaDataset never has a matching JobType.PARCA
+        HpcRun. Confirms get_hpcrun_by_ref is never even called."""
+        from viva_api.common.handlers.simulations import run_new_gene_cache
+        from viva_api.simulation.models import NewGeneCacheRequest
+
+        mock_ray = AsyncMock(spec=SimulationServiceRay)
+        mock_ray.submit_new_gene_cache_job.return_value = JobId.ray("new-gene-cache-1")
+        mock_ray.cache_s3_uri.return_value = "s3://bucket/ray-parca-cache/82e1b1e/k4-induced/"
+        mock_db = AsyncMock()
+        mock_db.get_parca_dataset.return_value = _make_parca_dataset()
+
+        result = await run_new_gene_cache(
+            request=NewGeneCacheRequest(
+                parca_dataset_id=158, variant="k4-induced", expression=1e6, translation_efficiency=1.0
+            ),
+            simulation_service=mock_ray,
+            database_service=mock_db,
+        )
+
+        mock_db.get_hpcrun_by_ref.assert_not_called()
+        assert result.job_id == "new-gene-cache-1"
+        assert result.commit == "82e1b1e"
+
+    @pytest.mark.asyncio
+    async def test_unknown_parca_dataset_404s(self) -> None:
+        from viva_api.common.handlers.simulations import run_new_gene_cache
+        from viva_api.simulation.models import NewGeneCacheRequest
+
+        mock_ray = AsyncMock(spec=SimulationServiceRay)
+        mock_db = AsyncMock()
+        mock_db.get_parca_dataset.return_value = None
+
+        with pytest.raises(HTTPException) as exc_info:
+            await run_new_gene_cache(
+                request=NewGeneCacheRequest(
+                    parca_dataset_id=99999, variant="x", expression=1.0, translation_efficiency=1.0
+                ),
+                simulation_service=mock_ray,
+                database_service=mock_db,
+            )
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_non_ray_backend_501s(self) -> None:
+        from viva_api.common.handlers.simulations import run_new_gene_cache
+        from viva_api.simulation.models import NewGeneCacheRequest
+
+        with pytest.raises(HTTPException) as exc_info:
+            await run_new_gene_cache(
+                request=NewGeneCacheRequest(
+                    parca_dataset_id=158, variant="k4-induced", expression=1.0, translation_efficiency=1.0
+                ),
+                simulation_service=AsyncMock(spec=SimulationServiceK8s),
+                database_service=AsyncMock(),
+            )
+        assert exc_info.value.status_code == 501
+
+    @pytest.mark.asyncio
+    async def test_forwards_all_request_fields_to_the_service_layer(self) -> None:
+        from viva_api.common.handlers.simulations import run_new_gene_cache
+        from viva_api.simulation.models import NewGeneCacheRequest
+
+        mock_ray = AsyncMock(spec=SimulationServiceRay)
+        mock_ray.submit_new_gene_cache_job.return_value = JobId.ray("j")
+        mock_ray.cache_s3_uri.return_value = "s3://x/"
+        mock_db = AsyncMock()
+        mock_db.get_parca_dataset.return_value = _make_parca_dataset(commit="f64994e")
+
+        await run_new_gene_cache(
+            request=NewGeneCacheRequest(
+                parca_dataset_id=158,
+                variant="k4-induced",
+                expression=1e6,
+                translation_efficiency=1.0,
+                rel_exp_adj="1,2,4",
+                seed=7,
+            ),
+            simulation_service=mock_ray,
+            database_service=mock_db,
+        )
+
+        call_kwargs = mock_ray.submit_new_gene_cache_job.call_args.kwargs
+        assert call_kwargs["commit"] == "f64994e"
+        assert call_kwargs["variant"] == "k4-induced"
+        assert call_kwargs["rel_exp_adj"] == "1,2,4"
+        assert call_kwargs["seed"] == 7
