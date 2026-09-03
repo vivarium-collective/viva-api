@@ -1659,6 +1659,43 @@ class TestSeedGenerationCommand:
         assert overrides["injected_processes"] == injected
         assert overrides["variants"] == variants
 
+    def test_composite_id_defaults_to_baseline_when_absent(self) -> None:
+        """Backlog item 105: a caller that doesn't pass composite_id (every
+        caller before this item) still gets V2ECOLI_BATCH_BASELINE_COMPOSITE_ID
+        -- no behavior change for existing callers."""
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+        ):
+            cmd = service._seed_generation_command(
+                seed=0,
+                generation_index=0,
+                experiment_id="exp-default-composite",
+                runner_s3_uri="s3://mybucket/vecoli-output/exp-default-composite/run_pbg.py",
+            )
+        assert "--composite-id v2ecoli.composites.ecoli_baseline.ecoli_baseline " in cmd
+
+    def test_composite_id_override_replaces_default_when_present(self) -> None:
+        """Backlog item 105: the actual fix -- chain-dispatch was previously
+        hardcoded to ecoli_baseline only. A caller-supplied composite_id (e.g.
+        reactor_bird_coupled, now that v2ecoli #648 gives it the same
+        injected_processes/variants shape) replaces the default entirely."""
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+        ):
+            cmd = service._seed_generation_command(
+                seed=0,
+                generation_index=0,
+                experiment_id="exp-reactor-bird-coupled",
+                runner_s3_uri="s3://mybucket/vecoli-output/exp-reactor-bird-coupled/run_pbg.py",
+                composite_id="v2ecoli.composites.reactor_bird_coupled.reactor_bird_coupled",
+            )
+        assert "--composite-id v2ecoli.composites.reactor_bird_coupled.reactor_bird_coupled " in cmd
+        assert "ecoli_baseline" not in cmd
+
     def test_stop_at_division_is_always_set(self) -> None:
         """Backlog item 103: without this, n_seeds=1/n_generations=1/no
         stop_at_division makes ecoli_baseline.baseline()'s own dispatch gate
@@ -2363,6 +2400,35 @@ class TestSubmitChainGeneration:
         assert overrides["injected_processes"] == injected
         assert overrides["variants"] == variants
 
+    async def test_submit_chain_generation_forwards_composite_id(self) -> None:
+        """Backlog item 105: JobScheduler passes composite_id through on every
+        seed's every generation (re-derived from Simulation.config each tick,
+        same pattern as injected_processes/variants) -- confirms
+        submit_chain_generation threads it into the real --composite-id flag
+        rather than dropping it at this layer."""
+        mock_batch = _fake_container_batch(["s0g0"])
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            service.submit_chain_generation(
+                seed=0,
+                generation_index=0,
+                experiment_id="exp-run1-k4",
+                commit="abc1234",
+                cache_s3="s3://mybucket/cache/abc1234",
+                runner_s3_uri="s3://mybucket/runner/run_pbg.py",
+                tags={"Project": "v2ecoli-comparison"},
+                composite_id="v2ecoli.composites.reactor_bird_coupled.reactor_bird_coupled",
+            )
+        (call,) = mock_batch.submit_job.call_args_list
+        env = _container_env_of(call)
+        assert (
+            "--composite-id v2ecoli.composites.reactor_bird_coupled.reactor_bird_coupled " in env["CONTAINER_JOB_CMD"]
+        )
+
     async def test_batch_forwards_injected_processes_and_variants_to_every_seed(self) -> None:
         """Backlog item 93: submit_chain_generation_batch's own fan-out loop
         (the generation-0 burst) must pass the SAME injected_processes/
@@ -2399,6 +2465,37 @@ class TestSubmitChainGeneration:
             overrides = json.loads(tokens[tokens.index("--overrides") + 1])
             assert overrides["injected_processes"] == injected
             assert "variants" not in overrides  # None -> omitted, matches _seed_generation_command's own contract
+
+    async def test_batch_forwards_composite_id_to_every_seed(self) -> None:
+        """Backlog item 105: submit_chain_generation_batch's own fan-out loop
+        (the generation-0 burst) must pass the SAME composite_id to every seed
+        -- one campaign, one config, matching the injected_processes/variants
+        precedent immediately above."""
+        mock_batch = _fake_container_batch(["s0g0", "s1g0"])
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.simulation_service_ray._SubmitJobPacer.wait", new=AsyncMock()),
+        ):
+            submitted = await service.submit_chain_generation_batch(
+                seeds=[0, 1],
+                generation_index=0,
+                experiment_id="exp-run1-k4",
+                commit="abc1234",
+                cache_s3="s3://mybucket/cache/abc1234",
+                runner_s3_uri="s3://mybucket/runner/run_pbg.py",
+                tags={"Project": "v2ecoli-comparison"},
+                composite_id="v2ecoli.composites.reactor_bird_coupled.reactor_bird_coupled",
+            )
+        assert submitted == {0: "s0g0", 1: "s1g0"}
+        for call in mock_batch.submit_job.call_args_list:
+            env = _container_env_of(call)
+            assert (
+                "--composite-id v2ecoli.composites.reactor_bird_coupled.reactor_bird_coupled "
+                in env["CONTAINER_JOB_CMD"]
+            )
 
     async def test_batch_fans_out_generation_zero_for_every_seed_paced_and_isolates_failures(self) -> None:
         """The one remaining genuine submission burst: every seed's
