@@ -41,8 +41,14 @@ images:
   # instead of a multipart upload; compute_backend picks a registered backend
   # explicitly (400s loud if unregistered, no silent fallback). All 3 params
   # are optional -- unset, behavior is byte-for-byte what 0.9.80 already did.
+  # 0.9.86 (PR #376, item 105): chain-dispatch's --composite-id is now
+  # caller-selectable instead of hardcoded to ecoli_baseline (a new optional
+  # composite_id field, same extra="allow"/restart-safe pattern as
+  # injected_processes/variants). Unblocks the reachability half of Run1/K4's
+  # own composite (reactor_bird_coupled) -- science + cache-staging remain
+  # separate, still-open blockers. Unset is byte-identical to 0.9.85.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.85
+    newTag: 0.9.86
   # ptools 0.5.9 -> 0.9.53 (DEV ONLY — prod sms-api-stanford stays on 0.5.9 while
   # this soaks). The long-standing 0.5.9 pin existed because CI builds only
   # sms-api (scripts/build_action.sh), so no newer sms-ptools existed on ghcr.io
