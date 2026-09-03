@@ -766,14 +766,30 @@ async def run_new_gene_cache(
     see ``SimulationServiceRay.submit_new_gene_cache_job`` for the mechanism.
 
     Ray/Batch only (mirrors ``run_parca``'s own inverse SLURM-only gate).
-    Requires the source ParCa dataset to have already SUCCEEDED -- an
-    in-progress or failed ParCa run has no cache to compose on top of.
 
-    v1, deliberately scoped narrow: no HpcRun/DB tracking (unlike
-    ``run_parca``'s own ``insert_hpcrun`` call) -- adding a new ``JobType``
-    touches a real DB-level enum (``JobTypeDB``, ``tables_orm.py``), which is
-    a migration-shaped decision left for a follow-up rather than bundled in
-    here. Poll the returned ``job_id`` directly against the backend.
+    Requires the source ParCa dataset to have already SUCCEEDED -- an
+    in-progress or failed ParCa run has no cache to compose on top of. NOT
+    enforced here, and deliberately so, not merely deferred: a
+    ``JobType.PARCA``-tagged ``HpcRun`` (what a real precondition check would
+    need) is only ever inserted by the legacy SLURM-only ``run_parca``
+    handler above. ``run_workflow_legacy`` -- the real path every chain-
+    dispatch campaign takes, RAY/Batch included -- creates a real
+    ``ParcaDataset`` row (so ``request.parca_dataset_id`` always resolves)
+    but tracks that campaign's own ParCa phase entirely on the *Simulation's*
+    own HpcRun (``chain_parca_done``), never on a matching ``ParcaDataset``
+    HpcRun. A status check keyed off ``parca_dataset_id`` would 409 on every
+    real chain-dispatch-originated dataset, completed or not -- confirmed by
+    tracing both insertion paths, not assumed. Matches this class's own
+    established pure-passthrough philosophy for everything else here
+    (``injected_processes``/``variants``/``composite_id``): an invalid
+    reference fails loudly downstream (S3/AWS Batch), not here.
+
+    v1, deliberately scoped narrow: no HpcRun/DB tracking for the NEW job
+    either (unlike ``run_parca``'s own ``insert_hpcrun`` call) -- adding a
+    new ``JobType`` touches a real DB-level enum (``JobTypeDB``,
+    ``tables_orm.py``), which is a migration-shaped decision left for a
+    follow-up rather than bundled in here. Poll the returned ``job_id``
+    directly against the backend.
     """
     if not simulation_service:
         simulation_service = get_simulation_service()
@@ -795,16 +811,6 @@ async def run_new_gene_cache(
     if parca_dataset is None:
         raise HTTPException(status_code=404, detail=f"Parca dataset {request.parca_dataset_id} not found.")
     commit = parca_dataset.parca_dataset_request.simulator_version.git_commit_hash
-
-    parca_run = await database_service.get_hpcrun_by_ref(ref_id=request.parca_dataset_id, job_type=JobType.PARCA)
-    if parca_run is None or parca_run.status != JobStatus.COMPLETED:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Parca dataset {request.parca_dataset_id} has not COMPLETED "
-                f"(status={parca_run.status if parca_run else 'unknown'}) -- nothing to induce yet."
-            ),
-        )
 
     job_id = await simulation_service.submit_new_gene_cache_job(
         commit=commit,
