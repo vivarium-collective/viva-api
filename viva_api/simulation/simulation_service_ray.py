@@ -857,6 +857,7 @@ class SimulationServiceRay(SimulationService):
         runner_s3_uri: str,
         injected_processes: dict[str, Any] | None = None,
         variants: dict[str, Any] | None = None,
+        composite_id: str | None = None,
     ) -> str:
         """Build ONE seed's ONE generation's command (backlog item 33 rework —
         per-seed independent job chains, mirroring vEcoli-private's own
@@ -914,13 +915,27 @@ class SimulationServiceRay(SimulationService):
 
         CROSS-REPO CONTRACT: overrides threading these 3 keys through to
         ``v2ecoli/composites/ecoli_baseline.py``'s ``baseline()`` signature (the
-        composite this command dispatches through, via
+        composite this command dispatches through by default, via
         ``V2ECOLI_BATCH_BASELINE_COMPOSITE_ID`` — formerly a dedicated
         ``composites/batch_baseline.py``, folded into ``ecoli_baseline.py`` by
         v2ecoli #373 and finally synced into sms-ecoli by PR #56, backlog item 55)
         is v2ecoli's own responsibility; nothing about that contract is affected by
         this per-seed rework, only WHICH viva-api command builder emits the same
         keys.
+
+        ``composite_id`` (backlog item 105): caller-selectable override for
+        ``--composite-id``, defaulting to ``V2ECOLI_BATCH_BASELINE_COMPOSITE_ID``
+        when omitted — every existing caller keeps building the exact same
+        command as before this param existed. Exists because chain-dispatch
+        was previously hardcoded to ``ecoli_baseline`` only; some real
+        composites (e.g. ``reactor_bird_coupled``) that ALSO support the
+        ``n_seeds``/``n_generations``/``injected_processes``/``variants``
+        overrides shape above (v2ecoli #648) were unreachable through this
+        entrypoint purely because nothing could ever select them. Not
+        validated here — same philosophy as ``injected_processes``/
+        ``variants`` above: pure passthrough, v2ecoli's own
+        ``composite_spec`` resolution (inside ``run_pbg.py``) is what fails
+        loudly on a bad id, not this layer.
 
         ``out_dir`` is ``RayLayout.seed_results_uri`` (an ``s3://`` URI), not a
         local path: every generation's job for this seed shares it, so the
@@ -972,7 +987,7 @@ class SimulationServiceRay(SimulationService):
             f"cd {V2ECOLI_DIR}"
             f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
             f" && {env} python /tmp/run_pbg.py"
-            f" --composite-id {V2ECOLI_BATCH_BASELINE_COMPOSITE_ID}"
+            f" --composite-id {composite_id or V2ECOLI_BATCH_BASELINE_COMPOSITE_ID}"
             f" --overrides {shlex.quote(json.dumps(overrides))} -n 1"
         )
 
@@ -1680,6 +1695,7 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         batch_client: Any = None,
         injected_processes: dict[str, Any] | None = None,
         variants: dict[str, Any] | None = None,
+        composite_id: str | None = None,
     ) -> str:
         """Submit ONE seed's ONE generation as a standalone container-type job
         (backlog item 71 Phase 4) — the app-level-gated replacement for the
@@ -1694,11 +1710,12 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         own per-seed S3 layout exactly (unchanged by this migration — see that
         method's docstring); only the job TYPE and dependency model change.
 
-        ``injected_processes``/``variants`` (backlog item 93): passed straight
-        through to ``_seed_generation_command`` — see that method's own
-        docstring. ``JobScheduler`` is the real caller, re-deriving both from
-        the campaign's own ``Simulation.config`` every tick (restart-safe,
-        same as every other piece of per-tick state here).
+        ``injected_processes``/``variants``/``composite_id`` (backlog items 93,
+        105): passed straight through to ``_seed_generation_command`` — see
+        that method's own docstring. ``JobScheduler`` is the real caller,
+        re-deriving all three from the campaign's own ``Simulation.config``
+        every tick (restart-safe, same as every other piece of per-tick state
+        here).
         """
         job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
         return self._submit_container(
@@ -1711,6 +1728,7 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
                 runner_s3_uri=runner_s3_uri,
                 injected_processes=injected_processes,
                 variants=variants,
+                composite_id=composite_id,
             ),
             out_s3=data_layout.RayLayout.seed_results_uri(experiment_id, seed),
             out_dir=SIM_OUT_DIR,
@@ -1732,6 +1750,7 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         tags: dict[str, str],
         injected_processes: dict[str, Any] | None = None,
         variants: dict[str, Any] | None = None,
+        composite_id: str | None = None,
     ) -> dict[int, str]:
         """Submit the SAME generation index for MULTIPLE seeds at once,
         TPS-paced below the account-wide ``SubmitJob`` rate limit (reuses
@@ -1749,9 +1768,10 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         the superseded design's own "truncate just this seed's chain" failure
         semantics; other seeds are unaffected.
 
-        ``injected_processes``/``variants`` (backlog item 93): the SAME dict
-        for every seed in this batch — one campaign, one config — forwarded to
-        each seed's own ``submit_chain_generation`` call below.
+        ``injected_processes``/``variants``/``composite_id`` (backlog items 93,
+        105): the SAME values for every seed in this batch — one campaign, one
+        config — forwarded to each seed's own ``submit_chain_generation`` call
+        below.
         """
         pacer = _SubmitJobPacer()
         submit_client = boto3.client(
@@ -1774,6 +1794,7 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
                     batch_client=submit_client,
                     injected_processes=injected_processes,
                     variants=variants,
+                    composite_id=composite_id,
                 )
             except Exception:
                 logger.exception(

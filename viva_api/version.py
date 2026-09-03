@@ -716,4 +716,19 @@
 #          16 concurrent workers instead of the real 256-vCPU ceiling).
 #          Byte-for-byte unaffected once a job definition is already visible
 #          (the common case, resolves on the first attempt as before).
-__version__ = "0.9.85"
+# 0.9.86 — feat: chain-dispatch's composite-id is now caller-selectable
+#          (backlog item 105), not hardcoded to
+#          V2ECOLI_BATCH_BASELINE_COMPOSITE_ID. A new optional
+#          ``composite_id`` extra field on SimulationConfig (same
+#          extra="allow" shape as injected_processes/variants) threads
+#          through _seed_generation_command / submit_chain_generation /
+#          submit_chain_generation_batch, re-derived fresh from
+#          Simulation.config on every JobScheduler tick (same restart-safe
+#          pattern as injected_processes/variants, item 93). Omitted or
+#          None preserves the exact previous behavior for every existing
+#          caller. Exists because CD2 Run 1 (K4)'s real composite,
+#          reactor_bird_coupled, gained the same injected_processes/variants
+#          shape (v2ecoli #648) but had no way to ever be selected as a
+#          chain-dispatch target -- this is the reachability half of that
+#          gap; reactor_bird_coupled's own capability half was v2ecoli's.
+__version__ = "0.9.86"

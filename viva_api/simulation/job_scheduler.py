@@ -310,11 +310,12 @@ class JobScheduler:
         cyclomatic-complexity limit — see that method's own docstring for the
         full 3-phase state machine this is one third of.
 
-        Backlog item 93: ``injected_processes``/``variants`` are re-derived
-        from ``simulation.config`` here, every tick, rather than persisted
-        anywhere new — ``simulation`` is already re-read fresh from the DB
-        by ``_tick`` for every campaign, so this is restart-safe for free,
-        matching how every other piece of per-tick state already works here.
+        Backlog items 93, 105: ``injected_processes``/``variants``/
+        ``composite_id`` are re-derived from ``simulation.config`` here, every
+        tick, rather than persisted anywhere new — ``simulation`` is already
+        re-read fresh from the DB by ``_tick`` for every campaign, so this is
+        restart-safe for free, matching how every other piece of per-tick
+        state already works here.
         """
         parca_info = await simulation_service_ray.get_job_status(fresh.job_id)
         if parca_info is None or parca_info.status not in (JobStatus.COMPLETED, JobStatus.FAILED):
@@ -341,6 +342,7 @@ class JobScheduler:
             tags=simulation_service_ray.chain_base_tags(simulation=simulation, commit=commit),
             injected_processes=injected_processes_from_config(simulation.config),
             variants=getattr(simulation.config, "variants", None) or None,
+            composite_id=getattr(simulation.config, "composite_id", None) or None,
         )
         for seed in range(n_seeds):
             if seed in submitted:
@@ -382,11 +384,12 @@ class JobScheduler:
         shared, so in-place mutation is safe). Extracted purely to keep
         ``_tick`` under the project's cyclomatic-complexity limit.
 
-        Backlog item 93: ``injected_processes``/``variants`` are re-derived
-        from ``simulation.config`` once per tick (same campaign, same config,
-        for every seed advanced this tick) rather than persisted anywhere new
-        — see ``_advance_parca_gate``'s docstring for why re-deriving from the
-        already-fresh ``simulation`` row is restart-safe for free.
+        Backlog items 93, 105: ``injected_processes``/``variants``/
+        ``composite_id`` are re-derived from ``simulation.config`` once per
+        tick (same campaign, same config, for every seed advanced this tick)
+        rather than persisted anywhere new — see ``_advance_parca_gate``'s
+        docstring for why re-deriving from the already-fresh ``simulation``
+        row is restart-safe for free.
         """
         in_flight = [jid for jid in current_job_ids if jid is not None]
         if not in_flight:
@@ -394,6 +397,7 @@ class JobScheduler:
         statuses = simulation_service_ray.get_batch_job_statuses(in_flight)
         injected_processes = injected_processes_from_config(simulation.config)
         variants = getattr(simulation.config, "variants", None) or None
+        composite_id = getattr(simulation.config, "composite_id", None) or None
         next_gen_runner_s3_uri: str | None = None
         for seed, job_id in enumerate(current_job_ids):
             if job_id is None:
@@ -421,6 +425,7 @@ class JobScheduler:
                 tags=simulation_service_ray.chain_base_tags(simulation=simulation, commit=commit),
                 injected_processes=injected_processes,
                 variants=variants,
+                composite_id=composite_id,
             )
             current_generation[seed] = gen + 1
 

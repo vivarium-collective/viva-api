@@ -95,6 +95,7 @@ async def insert_chain_campaign_job(
     chain_final_job_ids: list[str] | None = None,
     swap_processes: dict[str, str] | None = None,
     variants: dict[str, object] | None = None,
+    composite_id: str | None = None,
 ) -> tuple[Simulation, HpcRun]:
     """Insert a Simulation + a chain-dispatch-campaign-shaped HpcRun row
     (backlog item 71 Phase 4 — app-level per-seed gating), the fixture shape
@@ -110,6 +111,11 @@ async def insert_chain_campaign_job(
     config real injection intent, exercising
     ``injected_processes_from_config``'s live consumer,
     ``JobScheduler._advance_parca_gate``/``_advance_seed_generations``.
+
+    ``composite_id`` (backlog item 105): same default-None, same shape —
+    set to give the inserted Simulation's own config a caller-selected
+    composite (e.g. ``reactor_bird_coupled``) instead of the implicit
+    ``ecoli_baseline`` default.
     """
     latest_commit_hash = str(uuid.uuid4())
     simulator = await database_service.insert_simulator(
@@ -127,6 +133,8 @@ async def insert_chain_campaign_job(
         setattr(config, "swap_processes", swap_processes)  # noqa: B010
     if variants is not None:
         setattr(config, "variants", variants)  # noqa: B010
+    if composite_id is not None:
+        setattr(config, "composite_id", composite_id)  # noqa: B010
     simulation_request = SimulationRequest(
         simulation_config_filename="config_filename",
         experiment_id=experiment_id,
@@ -384,6 +392,35 @@ class TestAdvanceChainCampaign:
         call_kwargs = mock_ray.submit_chain_generation_batch.call_args.kwargs
         assert call_kwargs["injected_processes"] is None
         assert call_kwargs["variants"] is None
+        assert call_kwargs["composite_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_generation_zero_fanout_forwards_composite_id(self, database_service: DatabaseServiceSQL) -> None:
+        """Backlog item 105: _advance_parca_gate re-derives composite_id from
+        the campaign's own Simulation.config (same restart-safe pattern as
+        injected_processes/variants) and forwards it to
+        submit_chain_generation_batch's generation-0 fan-out -- the real
+        mechanism Run 1/K4's reactor_bird_coupled dispatch depends on."""
+        _simulation, hpcrun = await insert_chain_campaign_job(
+            database_service,
+            job_id_ext="parca-done-run1",
+            chain_n_generations=3,
+            n_seeds=2,
+            composite_id="v2ecoli.composites.reactor_bird_coupled.reactor_bird_coupled",
+        )
+        mock_ray = _mock_ray_service()
+        mock_ray.get_job_status.return_value = JobStatusInfo(
+            job_id=JobId.ray("parca-done-run1"), status=JobStatus.COMPLETED
+        )
+        mock_ray.submit_chain_generation_batch.return_value = {0: "s0g0", 1: "s1g0"}
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_chain_campaign(hpcrun, mock_ray)
+
+        call_kwargs = mock_ray.submit_chain_generation_batch.call_args.kwargs
+        assert call_kwargs["composite_id"] == "v2ecoli.composites.reactor_bird_coupled.reactor_bird_coupled"
 
     @pytest.mark.asyncio
     async def test_seed_advance_forwards_injected_processes_and_variants(
@@ -422,6 +459,36 @@ class TestAdvanceChainCampaign:
             "fork_repo": "",
         }
         assert call_kwargs["variants"] is None
+
+    @pytest.mark.asyncio
+    async def test_seed_advance_forwards_composite_id(self, database_service: DatabaseServiceSQL) -> None:
+        """Backlog item 105: _advance_seed_generations (phase 2 -- every
+        generation AFTER generation 0) must forward the same config-derived
+        composite_id on every per-seed advance, not just the generation-0
+        burst -- otherwise a reactor_bird_coupled campaign would silently
+        regress to ecoli_baseline the moment it moves past its first
+        generation."""
+        _simulation, hpcrun = await insert_chain_campaign_job(
+            database_service,
+            job_id_ext="parca-1-run1",
+            chain_n_generations=3,
+            n_seeds=1,
+            chain_parca_done=True,
+            chain_current_job_ids=["s0g0"],
+            chain_current_generation=[0],
+            composite_id="v2ecoli.composites.reactor_bird_coupled.reactor_bird_coupled",
+        )
+        mock_ray = _mock_ray_service()
+        mock_ray.get_batch_job_statuses = MagicMock(return_value={"s0g0": JobStatus.COMPLETED})
+        mock_ray.submit_chain_generation = MagicMock(return_value="s0g1")
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_chain_campaign(hpcrun, mock_ray)
+
+        call_kwargs = mock_ray.submit_chain_generation.call_args.kwargs
+        assert call_kwargs["composite_id"] == "v2ecoli.composites.reactor_bird_coupled.reactor_bird_coupled"
 
     @pytest.mark.asyncio
     async def test_seed_succeeds_on_its_last_generation_resolves_the_seed(
