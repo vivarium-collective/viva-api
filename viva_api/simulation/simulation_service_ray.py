@@ -126,6 +126,9 @@ V2ECOLI_CORE_BUILDER = "v2ecoli.core:build_core"
 V2ECOLI_DIR = "/app/v2ecoli"
 PARCA_CACHE_DIR = f"{V2ECOLI_DIR}/out/cache"
 PARCA_SIMDATA_DIR = f"{V2ECOLI_DIR}/out/sim_data"
+# Backlog item 105: scripts/build_new_gene_cache.py's own output dir, mirroring
+# its DEFAULT_CACHE_DIR ("out/cache-new-genes") -- see submit_new_gene_cache_job.
+NEW_GENE_INDUCED_CACHE_DIR = f"{V2ECOLI_DIR}/out/cache-new-genes"
 SIM_OUT_DIR = f"{V2ECOLI_DIR}/.pbg/runs/phase0-xarray"
 # ecoli_baseline.baseline()'s injection branch (taken whenever injected_processes
 # is passed) does `from scripts._compare.inject import (...)` -- a bare absolute
@@ -321,13 +324,19 @@ class SimulationServiceRay(SimulationService):
     def _batch(self) -> Any:
         return boto3.client("batch", region_name=get_settings().batch_region)
 
-    def cache_s3_uri(self, commit: str) -> str:
+    def cache_s3_uri(self, commit: str, *, variant: str | None = None) -> str:
         """Deterministic S3 URI for a commit's v2ecoli ParCa cache.
 
         Both the ParCa job (writes here) and the simulation job (stages from
         here) derive the same URI, so the cache hand-off needs no runtime wiring.
+
+        ``variant`` (backlog item 105): None for every existing caller --
+        unchanged commit-only key. See ``RayLayout.parca_cache_uri``'s own
+        docstring for why a derived cache (e.g. ``submit_new_gene_cache_job``'s
+        induced-expression build) MUST pass a real label here rather than ever
+        writing to the shared bare-commit path.
         """
-        return data_layout.RayLayout.parca_cache_uri(commit)
+        return data_layout.RayLayout.parca_cache_uri(commit, variant=variant)
 
     def _upstream_cache_s3_uri(self, commit: str, *, variant: str | None = None) -> str:
         """S3 URI for the PRISTINE upstream-vEcoli ParCa cache (``--composite vecoli``).
@@ -685,6 +694,17 @@ class SimulationServiceRay(SimulationService):
         viva-api#365): the value survived on the stored request but was never read here, so
         ParCa silently built from defaults and any keys the overrides supply were absent.
         Default ``None`` builds byte-for-byte the same command as before this param existed.
+
+        Also copies the gzipped RAW fitted state (``parca_state.pkl.gz``) into
+        ``PARCA_CACHE_DIR`` itself (backlog item 105), so it rides along in the
+        existing ``out_dir``/``out_s3`` sync instead of being discarded with the
+        rest of ``PARCA_SIMDATA_DIR`` when the job's container exits.
+        ``build_new_gene_cache.py`` needs exactly this raw file, not the
+        hydrated ``out/cache`` bundle ``build_cache.py`` produces from it one
+        line below -- see ``submit_new_gene_cache_job``. Unconditional: the file
+        is small next to the rest of the cache, and every existing consumer of
+        this cache dir already tolerates unknown files (nothing here globs or
+        rejects extras).
         """
         settings = get_settings()
         new_genes_flag = f" --new-genes {shlex.quote(new_genes)}" if new_genes and new_genes != "off" else ""
@@ -696,6 +716,56 @@ class SimulationServiceRay(SimulationService):
             f" && gzip -f -k {PARCA_SIMDATA_DIR}/parca_state.pkl"
             f" && python scripts/build_cache.py"
             f" --fixture {PARCA_SIMDATA_DIR}/parca_state.pkl.gz --cache {PARCA_CACHE_DIR}"
+            f" && cp {PARCA_SIMDATA_DIR}/parca_state.pkl.gz {PARCA_CACHE_DIR}/parca_state.pkl.gz"
+        )
+
+    def _build_new_gene_cache_command(
+        self,
+        *,
+        expression: float,
+        translation_efficiency: float,
+        rel_exp_adj: str | None = None,
+        rel_trl_eff_adj: str | None = None,
+        seed: int = 0,
+        media_condition: str | None = None,
+        fixed_media: str | None = None,
+    ) -> str:
+        """Run ``scripts/build_new_gene_cache.py`` against an ALREADY-STAGED
+        commit cache (backlog item 105 -- the ``build_new_gene_cache.py``
+        remote-reachability gap Chris/cplong90 flagged: "we have no idea
+        whether step two is reachable remotely at all").
+
+        ParCa inserts a new gene SILENT (``new_genes`` is presence/absence
+        only, item 93). This is the OTHER half: it hydrates the raw
+        ``parca_state.pkl.gz`` a prior ``_parca_command`` run left in
+        ``PARCA_CACHE_DIR`` (staged into this job via ``stage_s3``/
+        ``stage_dir`` -- see ``submit_new_gene_cache_job``) and writes a NEW,
+        derived cache bundle to ``NEW_GENE_INDUCED_CACHE_DIR`` with the given
+        gene(s) actually expressed at a caller-chosen level. The strain
+        identity itself lives in THIS cache, not in any per-dispatch
+        injection (Chris's own framing, sms-ecoli#166) -- ``expression``/
+        ``translation_efficiency`` are the two required knobs the script
+        itself requires; the rest are its own optional per-gene/media knobs,
+        passed straight through.
+
+        Caller (``submit_new_gene_cache_job``) is responsible for staging the
+        SOURCE commit's cache (which must itself have been built with
+        ``new_genes`` set -- an all-zero-expression source has nothing to
+        induce) and for writing the output to a ``variant``-labeled S3 key,
+        never the bare commit-only path a plain baseline stage would read.
+        """
+        rel_exp_flag = f" --rel-exp-adj {shlex.quote(rel_exp_adj)}" if rel_exp_adj else ""
+        rel_trl_flag = f" --rel-trl-eff-adj {shlex.quote(rel_trl_eff_adj)}" if rel_trl_eff_adj else ""
+        media_flag = f" --media-condition {shlex.quote(media_condition)}" if media_condition else ""
+        fixed_media_flag = f" --fixed-media {shlex.quote(fixed_media)}" if fixed_media else ""
+        return (
+            f"cd {V2ECOLI_DIR}"
+            f" && python scripts/build_new_gene_cache.py"
+            f" --state {PARCA_CACHE_DIR}/parca_state.pkl.gz"
+            f" --cache {NEW_GENE_INDUCED_CACHE_DIR}"
+            f" --expression {expression} --translation-efficiency {translation_efficiency}"
+            f" --seed {seed}"
+            f"{rel_exp_flag}{rel_trl_flag}{media_flag}{fixed_media_flag}"
         )
 
     def _upstream_parca_command(self, *, config_path: str | None = None) -> str:
@@ -1266,6 +1336,63 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             job_cmd=self._parca_command(),
             out_s3=self.cache_s3_uri(commit),
             out_dir=PARCA_CACHE_DIR,
+        )
+        return JobId.ray(job_id)
+
+    async def submit_new_gene_cache_job(
+        self,
+        *,
+        commit: str,
+        variant: str,
+        expression: float,
+        translation_efficiency: float,
+        rel_exp_adj: str | None = None,
+        rel_trl_eff_adj: str | None = None,
+        seed: int = 0,
+        media_condition: str | None = None,
+        fixed_media: str | None = None,
+    ) -> JobId:
+        """Submit ``build_new_gene_cache.py`` as a standalone container job
+        (backlog item 105), stamping a new-gene INDUCTION LEVEL onto a
+        commit's already-built ParCa cache and capturing the result to a
+        ``variant``-labeled S3 key. Sibling of ``submit_parca_job`` -- same
+        1-node container shape, same job-def, same image; the only structural
+        difference is this job STAGES IN a prior cache (``stage_s3``/
+        ``stage_dir``) before running, since it composes on top of ParCa's
+        output rather than producing it from scratch.
+
+        ``variant`` is REQUIRED (not optional, unlike ``_upstream_parca_command``'s
+        own ``config_path``): every caller of this method is, by construction,
+        building a derived cache, so there is no "default" call that should
+        ever land on the bare commit-only key -- see ``RayLayout.parca_cache_uri``'s
+        own docstring for why writing there would silently corrupt every other
+        concurrent dispatch on this commit.
+
+        The source commit's cache MUST already have been built with
+        ``new_genes`` set (``_parca_command``'s own param, item 93) -- an
+        all-zero-expression source has nothing for this job to induce; that
+        precondition is the CALLER's responsibility (e.g. a completed
+        ``ParcaDataset`` whose own request set ``parca_options.new_genes``),
+        not re-validated here, matching this class's existing pure-passthrough
+        philosophy for ``injected_processes``/``variants``/``composite_id``.
+        """
+        job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
+        job_id = self._submit_container(
+            job_name=f"new-gene-cache-{commit}-{_rand_suffix()}",
+            job_definition=job_def,
+            job_cmd=self._build_new_gene_cache_command(
+                expression=expression,
+                translation_efficiency=translation_efficiency,
+                rel_exp_adj=rel_exp_adj,
+                rel_trl_eff_adj=rel_trl_eff_adj,
+                seed=seed,
+                media_condition=media_condition,
+                fixed_media=fixed_media,
+            ),
+            stage_s3=self.cache_s3_uri(commit),
+            stage_dir=PARCA_CACHE_DIR,
+            out_s3=self.cache_s3_uri(commit, variant=variant),
+            out_dir=NEW_GENE_INDUCED_CACHE_DIR,
         )
         return JobId.ray(job_id)
 

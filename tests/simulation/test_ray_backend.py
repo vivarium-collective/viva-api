@@ -15,6 +15,7 @@ from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.config import ComputeBackend
 from viva_api.simulation.models import HpcRun, JobType
 from viva_api.simulation.simulation_service_ray import (
+    NEW_GENE_INDUCED_CACHE_DIR,
     PARCA_CACHE_DIR,
     PARCA_SIMDATA_DIR,
     SIM_OUT_DIR,
@@ -1837,7 +1838,20 @@ class TestParcaCommand:
             f" && gzip -f -k {PARCA_SIMDATA_DIR}/parca_state.pkl"
             f" && python scripts/build_cache.py"
             f" --fixture {PARCA_SIMDATA_DIR}/parca_state.pkl.gz --cache {PARCA_CACHE_DIR}"
+            f" && cp {PARCA_SIMDATA_DIR}/parca_state.pkl.gz {PARCA_CACHE_DIR}/parca_state.pkl.gz"
         )
+
+    def test_preserves_raw_fitted_state_for_new_gene_cache_consumption(self) -> None:
+        """Backlog item 105: the raw parca_state.pkl.gz must ride along in the
+        synced PARCA_CACHE_DIR -- build_new_gene_cache.py needs exactly this
+        file, and PARCA_SIMDATA_DIR (where it's first produced) is never
+        synced anywhere and is discarded with the job's container."""
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._parca_command()
+        assert f"cp {PARCA_SIMDATA_DIR}/parca_state.pkl.gz {PARCA_CACHE_DIR}/parca_state.pkl.gz" in cmd
+        # comes after the hydration step, not before -- gzip must exist first
+        assert cmd.index("build_cache.py") < cmd.index(f"cp {PARCA_SIMDATA_DIR}")
 
     def test_off_new_genes_is_byte_identical_to_unset(self) -> None:
         """ "off" is v2ecoli-parca's own --new-genes default -- passing it explicitly
@@ -1860,6 +1874,109 @@ class TestParcaCommand:
                 new_genes="violacein_MG1655_M5", bundle_overrides="models/parca/composed_overlay.tsv"
             )
         assert "--new-genes violacein_MG1655_M5 --bundle-overrides models/parca/composed_overlay.tsv" in cmd
+
+
+class TestCacheS3UriVariant:
+    """cache_s3_uri's new `variant` kwarg (backlog item 105) -- mirrors
+    _upstream_cache_s3_uri's already-shipped item-87 pattern exactly."""
+
+    def test_omitted_variant_is_byte_identical_to_before(self) -> None:
+        service = SimulationServiceRay()
+        with patch("viva_api.common.storage.data_layout.get_settings", _ray_settings):
+            assert service.cache_s3_uri("abc1234") == service.cache_s3_uri("abc1234", variant=None)
+        assert "abc1234" in service.cache_s3_uri("abc1234")
+
+    def test_variant_nests_under_a_non_colliding_key(self) -> None:
+        service = SimulationServiceRay()
+        with patch("viva_api.common.storage.data_layout.get_settings", _ray_settings):
+            plain = service.cache_s3_uri("abc1234")
+            variant = service.cache_s3_uri("abc1234", variant="k4-induced")
+        assert variant != plain
+        assert variant.startswith(plain)
+        assert "k4-induced" in variant
+
+
+class TestBuildNewGeneCacheCommand:
+    """_build_new_gene_cache_command's own flag-assembly (backlog item 105) --
+    answers Chris/cplong90's own reachability question (sms-ecoli#166) for
+    scripts/build_new_gene_cache.py, the induction-level "other half" of
+    ParCa's own new_genes presence/absence flag."""
+
+    def test_required_flags_only(self) -> None:
+        service = SimulationServiceRay()
+        cmd = service._build_new_gene_cache_command(expression=1e6, translation_efficiency=1.0)
+        assert cmd == (
+            f"cd {V2ECOLI_DIR}"
+            f" && python scripts/build_new_gene_cache.py"
+            f" --state {PARCA_CACHE_DIR}/parca_state.pkl.gz"
+            f" --cache {NEW_GENE_INDUCED_CACHE_DIR}"
+            f" --expression 1000000.0 --translation-efficiency 1.0"
+            f" --seed 0"
+        )
+
+    def test_optional_flags_all_append(self) -> None:
+        service = SimulationServiceRay()
+        cmd = service._build_new_gene_cache_command(
+            expression=1e6,
+            translation_efficiency=1.0,
+            rel_exp_adj="1,2,4",
+            rel_trl_eff_adj="1,1,1",
+            seed=7,
+            media_condition="basal",
+            fixed_media="minimal_plus_amino_acids",
+        )
+        assert "--rel-exp-adj 1,2,4" in cmd
+        assert "--rel-trl-eff-adj 1,1,1" in cmd
+        assert "--seed 7" in cmd
+        assert "--media-condition basal" in cmd
+        assert "--fixed-media minimal_plus_amino_acids" in cmd
+
+    def test_reads_the_raw_state_parca_command_preserves(self) -> None:
+        """The --state path this command reads must be exactly the path
+        _parca_command's own new cp step writes to -- the two are a matched
+        pair across two separate job submissions with no other hand-off."""
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            parca_cmd = service._parca_command()
+        cache_cmd = service._build_new_gene_cache_command(expression=1.0, translation_efficiency=1.0)
+        written_path = f"{PARCA_CACHE_DIR}/parca_state.pkl.gz"
+        assert written_path in parca_cmd
+        assert f"--state {written_path}" in cache_cmd
+
+
+@pytest.mark.asyncio
+class TestSubmitNewGeneCacheJob:
+    """submit_new_gene_cache_job (backlog item 105): sibling of
+    submit_parca_job, composing a caller-chosen induction level on top of an
+    already-built commit cache instead of producing one from scratch --
+    hence the extra stage_s3/stage_dir (submit_parca_job has none)."""
+
+    async def test_submits_via_the_container_path_with_stage_in(self) -> None:
+        mock_batch = _fake_container_batch(["new-gene-cache-999"])
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            job_id = await service.submit_new_gene_cache_job(
+                commit="abc1234",
+                variant="k4-induced",
+                expression=1e6,
+                translation_efficiency=1.0,
+            )
+        assert job_id == JobId.ray("new-gene-cache-999")
+        call = mock_batch.submit_job.call_args
+        assert "containerOverrides" in call.kwargs
+        env = _container_env_of(call)
+        assert "build_new_gene_cache.py" in env["CONTAINER_JOB_CMD"]
+        # stages FROM the plain commit cache (source), writes TO the variant
+        # cache (derived) -- must never be the same key (RayLayout.parca_cache_uri's
+        # own docstring: writing the bare commit-only path would silently
+        # corrupt every other concurrent dispatch on that commit).
+        assert env["CONTAINER_STAGE_S3"] != env["CONTAINER_OUT_S3"]
+        assert "k4-induced" in env["CONTAINER_OUT_S3"]
+        assert "k4-induced" not in env["CONTAINER_STAGE_S3"]
 
 
 class TestSimulationServiceRayBuildSubmit:

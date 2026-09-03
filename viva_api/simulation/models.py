@@ -208,6 +208,41 @@ class ParcaDataset(BaseModel):
     remote_archive_path: str | None = None  # Path to the dataset archive in remote storage
 
 
+class NewGeneCacheRequest(BaseModel):
+    """Backlog item 105: stamp an induction level onto a COMPLETED ParCa
+    dataset's cache (``scripts/build_new_gene_cache.py``, the "other half" of
+    ``new_genes`` presence/absence -- see ``SimulationServiceRay.
+    submit_new_gene_cache_job``). Ray/Batch backend only; the source dataset's
+    own request must have set ``parca_options.new_genes`` (an all-zero-
+    expression source has nothing to induce -- not re-validated here, same
+    pure-passthrough philosophy as ``injected_processes``/``variants``).
+    """
+
+    parca_dataset_id: int
+    variant: str  # non-collision label for the derived cache's S3 key -- see RayLayout.parca_cache_uri
+    expression: float
+    translation_efficiency: float
+    rel_exp_adj: str | None = None  # comma-separated per-RNA relative weights
+    rel_trl_eff_adj: str | None = None  # comma-separated per-monomer relative weights
+    seed: int = 0
+    media_condition: str | None = None
+    fixed_media: str | None = None
+
+
+class NewGeneCacheJob(BaseModel):
+    """Response for a submitted new-gene-cache job. No HpcRun/DB tracking yet
+    (backlog item 105 v1, scoped deliberately narrow) -- poll the returned
+    ``job_id`` directly against the compute backend (e.g. ``aws batch
+    describe-jobs``) rather than through the usual ``/simulations/{id}/status``
+    family, which this job does not register with.
+    """
+
+    job_id: str
+    commit: str
+    variant: str
+    cache_s3_uri: str  # where the derived cache lands once the job succeeds
+
+
 class WorkerEvent(BaseModel):
     database_id: int | None = None  # Unique identifier for the worker event (created by the database)
     created_at: str | None = None  # ISO format datetime string (created by the database)

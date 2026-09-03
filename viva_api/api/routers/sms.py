@@ -40,6 +40,8 @@ from viva_api.simulation.models import (
     ChainProgress,
     CompositeEngine,
     JobType,
+    NewGeneCacheJob,
+    NewGeneCacheRequest,
     ObservableInfoModel,
     RepoDiscovery,
     Simulation,
@@ -516,6 +518,23 @@ async def run_simulation_analysis(
         )
     except Exception as e:
         logger.exception("Error running standalone analysis")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@config.router.post(
+    path="/parca/new-gene-cache",
+    response_model=NewGeneCacheJob,
+    operation_id="run-new-gene-cache",
+    tags=["EcoliSim"],
+    summary="Stamp an induction level onto a completed ParCa dataset's cache (backlog item 105)",
+)
+async def run_new_gene_cache(request: NewGeneCacheRequest = Body(...)) -> NewGeneCacheJob:
+    try:
+        return await handlers.simulations.run_new_gene_cache(request=request)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error running new-gene-cache job")
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
