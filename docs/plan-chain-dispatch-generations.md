@@ -113,21 +113,52 @@ image, same ParCa dataset, `new_genes: off` on both sides, n=1 per cell:
 | **no swap** | — | **814.7 s / 805.4 s** per gen, 7 shards (`400 … 2528.pq`) |
 | **swap** | sim262: 25–45 s/gen, `global_time 1.0` | **46.0 s / 25.6 s** per gen, `global_time 1.0`, one `1.pq` shard |
 
-⇒ `exclude_processes` is not the trigger; **the swap alone is.** Wild-type chains
-correctly post-#369; a swap config reproduces the exact pre-#369 symptom. Cause not
-isolated. Not established: a real strain run (this was the swap *mechanism* only),
-or a repeat.
+⇒ `exclude_processes` is not the trigger. **Chris's own correction (03:46Z):** the
+swap alone triggers the one-tick completion *under chain-dispatch*. The same swap
+runs fine locally — a hand-assembled 3-generation lineage produced real product
+within ~6% of a cell-only lineage. So this is **not** "the swap is broken"; the
+difference is in the dispatch path. Cause not isolated. Not established: a real
+strain run (swap *mechanism* only, `new_genes: off`), a repeat, or *which local path*
+the working run used (see below).
 
-`LineageProcess._run_until_division` has three OR'd division signals: (1) exception
-sniff — now type-guarded and warned, and Alex saw zero warnings, so ruled out;
-(2) `agents_after != agents_before` — any structural change to the agents map on
-tick 1 fires it, `_remove` alone included; (3) `survivor.get("divide")` — the fresh
-agent's `divide` flag. A swap that changes the agents map shape, or leaves `divide`
-truthy on the rebuilt document, would trip (2) or (3) after one tick with no warning.
+**What differs between local and chain-dispatch for the same swap.** Post-#369 every
+chain job takes `baseline()`'s batch branch. The lineage layer does carry the swap:
+`meta_composite.py:53` threads `config["injected_processes"]` into `LineageProcess`,
+which passes it to the inner per-generation `baseline()` rebuild (`lineage.py:229,
+240`). But the batch-dispatch call site *inside* `baseline()`
+(`ecoli_baseline.py:1584-1594` on the 08-25 ref) forwards `knockouts`,
+`config_overrides`, `media`, `variants` and the three checkpoint keys — **not
+`injected_processes`** — and `_build_batch_document` has no such parameter;
+`batch_baseline_runner.py` has zero references. So on that ref the *workflow-config*
+path (a local `run_workflow`) carries the swap into every generation, while the
+*generator-kwarg* path (`baseline(injected_processes=…)`, which is what #357 sends
+and what `stop_at_division` now routes into the batch branch) drops it at that one
+call. Whether the pinned tree has since added the forwarding is a one-line check.
 
-Next cut: log which signal fired at the generation close-out (one `warnings.warn`
-per signal in `_run_until_division`), redispatch Chris's swap cell, read CloudWatch.
-That separates the two remaining candidates in one run.
+Either outcome is a bug: dropped ⇒ a swap campaign silently runs wild-type;
+forwarded ⇒ the swap runs inside `LineageProcess`, the combination
+`run_native_chain.py:3-13` is deprecated for ("run_workflow's composite round-trip
+DROPS the injected config … empty `met_map` → `KeyError` on the first exchange
+molecule"), and *that* is a tick-1 failure.
+
+**Three reads from data Chris already has** that separate the cases without a new
+dispatch:
+
+1. `final_state.json` top-level keys — `batch` / `batch_runner` means the batch
+   branch ran; `agents` means the plain single-cell path did.
+2. `1.pq` columns — the swapped process's listener columns present means the swap
+   was applied inside the run; absent means it was dropped at the gate.
+3. Which local runner produced the working 3-gen lineage — `run_workflow` /
+   `LineageProcess`, or a hand-rolled loop (`run_condition_multigen_parquet.py`
+   deliberately does *not* use `LineageProcess`). Only the former exonerates
+   `LineageProcess`+swap.
+
+If (1) is batch and (2) is applied, the remaining question is which of
+`_run_until_division`'s signals closed the generation on tick 1: exception (now
+type-guarded and warned — Alex saw zero warnings on sim262/gen0, so unlikely),
+`agents_after != agents_before`, or `survivor.get("divide")`. One `warnings.warn`
+per signal at the close-out, one redispatch of Chris's swap cell, one CloudWatch
+read.
 
 ## 4. Hazards now live (chain jobs actually run `LineageProcess` since #369)
 
