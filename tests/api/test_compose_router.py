@@ -142,6 +142,26 @@ async def test_submit_simulation_document_rejects_bad_interval(fastapi_app: obje
     assert response.status_code == 400
 
 
+def test_max_interval_time_accommodates_a_real_lineage_run() -> None:
+    """The old literal 1000s bound (00d0d2c6, this endpoint's original OMEX/SBML/
+    PBG-demo-upload use case) predates pbg-native lineage runs (item 101/109),
+    which need up to n_generations * max_duration_per_gen simulated seconds in
+    ONE Composite.run() call -- e.g. 8 generations * 3600s/gen = 28800s, already
+    past the old cap. Regression: the real ceiling must fit a real campaign."""
+    assert compose_router.MAX_INTERVAL_TIME_S >= 8 * 3600.0
+
+
+@pytest.mark.asyncio
+async def test_submit_simulation_document_rejects_interval_past_the_new_cap(fastapi_app: object) -> None:
+    async with AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://testserver") as client:  # type: ignore[arg-type]
+        response = await client.post(
+            "/compose/v1/simulation/run-document",
+            json={"document": {"state": {}}, "interval_time": compose_router.MAX_INTERVAL_TIME_S + 1.0},
+        )
+    assert response.status_code == 400
+    assert "interval_time must be between" in response.json()["detail"]
+
+
 # --- item 98: compute_backend -- per-request selection among the registered
 # ComposeSimulationService backends (_require_sim's own resolution logic) ---
 

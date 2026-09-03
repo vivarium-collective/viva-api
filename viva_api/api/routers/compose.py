@@ -43,6 +43,18 @@ from viva_api.config import ComputeBackend
 
 logger = logging.getLogger(__name__)
 
+# This endpoint accepts ANY process-bigraph document, not just short OMEX/SBML/PBG
+# demo uploads (this router's original 2026-05-06 use case, when 1000 was a
+# reasonable-looking round number and no larger workload existed to test it
+# against). A real pbg-native multigeneration lineage (item 101/109) needs up to
+# n_generations * max_duration_per_gen simulated seconds in ONE Composite.run()
+# call -- e.g. 8 generations * 3600s/gen = 28800s, already larger than the old
+# cap. There was never a technical reason for exactly 1000; it was an arbitrary
+# sanity bound picked before this larger workload existed, not a derived limit.
+# Widened generously (1 week) rather than removed outright -- still catches a
+# genuinely malformed/typo'd value without constraining any real run.
+MAX_INTERVAL_TIME_S = 604800.0  # 7 days
+
 router = APIRouter()
 
 # ---------------------------------------------------------------------------
@@ -174,8 +186,8 @@ async def submit_simulation(
     compute_backend: ComputeBackend | None = None,
     extra_pip_deps: list[str] | None = Query(default=None),
 ) -> ComposeSimulationExperiment:
-    if interval_time < 0 or interval_time > 1000:
-        raise HTTPException(400, "interval_time must be between 0 and 1000")
+    if interval_time < 0 or interval_time > MAX_INTERVAL_TIME_S:
+        raise HTTPException(400, f"interval_time must be between 0 and {MAX_INTERVAL_TIME_S}")
     simulation_request = await _parse_upload(uploaded_file, batch_submission)
     simulation_request.end_time_point = interval_time
     simulation_request.simulator_id = simulator_id
@@ -198,8 +210,8 @@ async def submit_simulation_document(
     multipart file needed. For a programmatic caller (a CLI, a generated
     client, or a future workbench path) that already holds the document as a
     Python/JSON value, this skips the upload-file round-trip entirely."""
-    if body.interval_time < 0 or body.interval_time > 1000:
-        raise HTTPException(400, "interval_time must be between 0 and 1000")
+    if body.interval_time < 0 or body.interval_time > MAX_INTERVAL_TIME_S:
+        raise HTTPException(400, f"interval_time must be between 0 and {MAX_INTERVAL_TIME_S}")
     simulation_request = _from_document(body.document, body.batch_submission)
     simulation_request.end_time_point = body.interval_time
     simulation_request.simulator_id = body.simulator_id
