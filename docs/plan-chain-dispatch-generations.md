@@ -1,6 +1,7 @@
 # Multi-generation dispatch: chain-dispatch vs. pbg-native vs. Nextflow, and what's left
 
-**Status (2026-09-02):** the headline defect this analysis found — chain-dispatch
+**Status (2026-09-04, rebased onto `main` @ `ee6f5775`, 0.9.90):** the headline
+defect this analysis found — chain-dispatch
 generation jobs never engaging `LineageProcess` — was found and fixed independently
 the same day by Alex as **item 103, viva-api PR #369 (v0.9.84)**, and verified by
 MD5-comparing the daughter-state checkpoint across 3 real generations (sim 257:
@@ -13,7 +14,8 @@ the comparison the analysis was for, plus the work that is **still** open.
 > `origin/main` ref dated 2026-08-25 (`c28fc546`). The tree the image pins is
 > newer — Chris reads the dispatch gate at `ecoli_baseline.py:1730`, not `:1574`,
 > and v2ecoli #610 (`2ecb11ca`) is not in that ref at all. Treat v2ecoli line
-> numbers as approximate; viva-api numbers are against `main` at 0.9.85.
+> numbers as approximate; viva-api numbers are against `main` at **0.9.90**.
+> **§3d's fork is now resolved against the pinned tree — see §3d and §3e.**
 > Full technical trace for item 103: `vivarium-workbench/.todo/backlog/103.md`.
 
 ## 1. Three ways a multi-generation campaign runs today
@@ -64,7 +66,7 @@ The one-command detector, for any campaign:
 `aws s3 ls s3://…/<experiment_id>/daughter-state/seed0/` — zero objects means
 the chain didn't chain. Worth adding as a post-run assertion to `chain-dispatch.sh`.
 
-## 3. Still open on `main` (0.9.85)
+## 3. Still open on `main` (0.9.90)
 
 ### 3a. Timed-out generation writes no checkpoint
 
@@ -129,29 +131,42 @@ which passes it to the inner per-generation `baseline()` rebuild (`lineage.py:22
 (`ecoli_baseline.py:1584-1594` on the 08-25 ref) forwards `knockouts`,
 `config_overrides`, `media`, `variants` and the three checkpoint keys — **not
 `injected_processes`** — and `_build_batch_document` has no such parameter;
-`batch_baseline_runner.py` has zero references. So on that ref the *workflow-config*
-path (a local `run_workflow`) carries the swap into every generation, while the
-*generator-kwarg* path (`baseline(injected_processes=…)`, which is what #357 sends
-and what `stop_at_division` now routes into the batch branch) drops it at that one
-call. Whether the pinned tree has since added the forwarding is a one-line check.
+`batch_baseline_runner.py` has zero references.
 
-Either outcome is a bug: dropped ⇒ a swap campaign silently runs wild-type;
-forwarded ⇒ the swap runs inside `LineageProcess`, the combination
-`run_native_chain.py:3-13` is deprecated for ("run_workflow's composite round-trip
-DROPS the injected config … empty `met_map` → `KeyError` on the first exchange
-molecule"), and *that* is a tick-1 failure.
+**Resolved: it is forwarded.** Chris checked the tree the image actually pins
+(`268515f0`, PR #375 thread 04:23Z): `_build_batch_document` takes
+`injected_processes: dict | None = None` at `:972`, the call site at `:1747` forwards
+it alongside `knockouts`/`config_overrides`/`media`, and `batch_baseline_runner.py`
+carries eight references (`:251-252` writing it into config, `:492` a schema default,
+`:538` reading it, `:617` forwarding). That is **v2ecoli #648**, merged 2026-09-02 —
+eight days after the 08-25 ref this document was written from.
 
-**Three reads from data Chris already has** that separate the cases without a new
-dispatch:
+So the fork below collapses onto its second branch, which is the worse one:
+
+> ~~dropped ⇒ a swap campaign silently runs wild-type~~ — not what happens here;
+> **forwarded ⇒ the swap runs inside `LineageProcess`**, which is the combination
+> `run_native_chain.py:3-13` is deprecated for ("run_workflow's composite round-trip
+> DROPS the injected config … empty `met_map` → `KeyError` on the first exchange
+> molecule"), and *that* is a tick-1 failure.
+
+⇒ **The tick-1 completion in the table above is the live failure mode**, and it is
+still not root-caused. The swap reaches the run; something in the generation-boundary
+machinery closes the generation after one tick.
+
+**Reads from data Chris already has.** #648 answers what (2) was for — the swap is
+forwarded — so these now serve to confirm rather than to separate:
 
 1. `final_state.json` top-level keys — `batch` / `batch_runner` means the batch
    branch ran; `agents` means the plain single-cell path did.
-2. `1.pq` columns — the swapped process's listener columns present means the swap
-   was applied inside the run; absent means it was dropped at the gate.
+2. `1.pq` columns — the swapped process's listener columns present confirms the swap
+   was applied inside the run. Expected present post-#648; **absent would mean a
+   second, separate drop downstream of the forwarding.**
 3. Which local runner produced the working 3-gen lineage — `run_workflow` /
    `LineageProcess`, or a hand-rolled loop (`run_condition_multigen_parquet.py`
    deliberately does *not* use `LineageProcess`). Only the former exonerates
-   `LineageProcess`+swap.
+   `LineageProcess`+swap. **Still open, and now the most valuable of the three:** it
+   is what separates "`LineageProcess`+swap is broken" from "the dispatch path breaks
+   it".
 
 If (1) is batch and (2) is applied, the remaining question is which of
 `_run_until_division`'s signals closed the generation on tick 1: exception (now
@@ -159,6 +174,51 @@ type-guarded and warned — Alex saw zero warnings on sim262/gen0, so unlikely),
 `agents_after != agents_before`, or `survivor.get("divide")`. One `warnings.warn`
 per signal at the close-out, one redispatch of Chris's swap cell, one CloudWatch
 read.
+
+### 3e. Two distinct failure modes, not one — and #387 may trade between them
+
+*Added 2026-09-04, after #387 merged (`db47201f`).*
+
+The silent-wild-type report (#385) and the tick-1 completion (§3d) have been
+discussed as one bug. They are two, with **opposite** symptoms, and the discriminator
+is the **submit shape**:
+
+| | submit shape | swap reaches the run? | observed |
+|---|---|---|---|
+| **#385** | **nested** — `extra_params={"injected_processes": {...}}` | **no** — dropped in viva-api | **full-length** wild-type: 206 columns, 4 daughter checkpoints, identical to a no-swap control |
+| **§3d (Chris)** | swap present at the runner | **yes** | **25–46 s/gen**, `global_time 1.0`, one `1.pq` shard |
+
+A *dropped* swap produces a normal-length wild-type run — which is exactly what #385
+measured. It cannot produce a 25-second generation. So:
+
+**#387 fixes #385, and does not explain §3d.** Its root cause is real and narrow:
+`injected_processes_from_config` (`simulation_service_ray.py:265`) read only the FLAT
+top-level `swap_processes`/`add_processes`/`exclude_processes` extras, so a nested
+block returned `None` and the swap was dropped at every hop after. The helper now
+accepts both shapes. Nothing about that touches the generation-boundary machinery.
+
+**The risk this creates.** Before #387, a nested submit dropped the swap and ran
+wild-type to full length. After #387, that same submit **carries the swap** — which is
+precisely the configuration §3d measured collapsing to one tick. So #387 may convert a
+silent-wild-type failure into a tick-1 failure rather than into a correct run. That is
+still a strict improvement (loud-ish beats silent), but it is **not** the same thing as
+Run 2's W3 being unblocked.
+
+**Why the proposed acceptance test would not catch it.** #385 recommends checking
+`injected_processes` is non-null on the returned artifact. Post-#387 that is true in
+*both* outcomes — it asserts **presence, not effect**. #362's `_assert_emitted_output()`
+does not close the gap either: it requires a *non-empty* emitted store, and a tick-1 run
+writes `1.pq`, which is non-empty.
+
+⇒ **Pair the presence check with an effect check** before calling W3 green. Either is
+cheap and both come from data the run already produces:
+
+- **wall-clock per generation** — ~800 s is a real cell; 25–46 s is not;
+- **shard count / max shard index** — 7 shards through `2528.pq` vs a single `1.pq`;
+- **`global_time` on the final state** — `1.0` is the tell.
+
+The shard/`global_time` check is the more robust of the two, since wall-clock varies
+with instance type.
 
 ## 4. Hazards now live (chain jobs actually run `LineageProcess` since #369)
 
@@ -198,6 +258,11 @@ read.
 - Smoke, on `smsvpctest` via the tunnel: `chain-dispatch.sh` (defaults = sim 257's
   1×3), then assert `daughter-state/seed0/gen{0,1,2}.pkl` all exist with distinct
   MD5s, three `generation=` parquet partitions, per-job runtime in minutes.
+- **Swap effect, not just presence (§3e).** For any dispatch declaring a swap, assert
+  the run actually ran: **>1 parquet shard** (or a max shard index well past `1.pq`)
+  and **`global_time` ≫ 1.0** on the final state. `injected_processes` being non-null
+  on the artifact is necessary but not sufficient — post-#387 it is true whether the
+  run executed or collapsed on tick 1.
 - Fidelity (follow-up): same seed, 3 generations chained vs. one pbg-native run;
   compare dry-mass-at-division per generation. Some divergence is by construction
   (listeners reset, RNG re-seeded per generation). A generation that never
