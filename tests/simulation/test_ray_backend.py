@@ -936,7 +936,7 @@ class TestSubmitMultiNodeAnalysisExtraction:
 
         with (
             patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch.object(service, "_submit_container", side_effect=fake_submit_container),
+            patch.object(service, "_submit_container", new=AsyncMock(side_effect=fake_submit_container)),
             patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
             patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
         ):
@@ -981,7 +981,7 @@ class TestSubmitMultiNodeAnalysisExtraction:
 
         with (
             patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch.object(service, "_submit_container", side_effect=fake_submit_container),
+            patch.object(service, "_submit_container", new=AsyncMock(side_effect=fake_submit_container)),
             patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
             patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
         ):
