@@ -19,7 +19,10 @@ images:
     # multi_node_composite_id migration, 9c2e6b1f4a73) -- the app was deployed
     # slightly ahead of this Job (real, caught live via UndefinedColumnError
     # spam in the api pod's own logs, fixed the same few minutes).
-    newTag: 0.9.94
+    newTag: 0.9.95
+    # 2026-09-04: 0.9.94 -> 0.9.95, matching the app overlay bump (PR#410's
+    # build_cache.py flag-leak fix -- no new Alembic migration this release,
+    # a command-string-construction-only change).
     # 2026-09-04: 0.9.92 -> 0.9.93, matching the app overlay bump (item 105/#401's
     # injected_processes per-field merge fix, PR#406 -- no new Alembic migration
     # this release, a handler-logic-only change).
