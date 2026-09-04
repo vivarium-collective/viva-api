@@ -15,49 +15,84 @@ vEcoli's `runscripts/nextflow/`. Claims marked ⚠UNVERIFIED were not checked.
 
 ## 1. The problem
 
-The general campaign is **not** a single chain. It is a two-level scatter with a gather:
+The general campaign is **not** a single chain. It is a two-level scatter with a gather —
+but *which* level is expensive depends on where the variant lives.
+
+**Variants come in three tiers** (@cplong90, 2026-09-04). The middle one is CD2's common
+case, and it is the cheap one:
+
+| tier | what varies | cost |
+|---|---|---|
+| **ParCa-level** | bundle overrides, expression adjustments — anything reaching **reconstruction** | **N ParCas.** The cache *is* the variant |
+| **Cache-level** ← *the common case* | new-gene expression **vectors** — what distinguishes one producer strain from another | **one ParCa + N short derived builds** |
+| **Run-time** | process config, media, injected processes | **one cache serves all N** |
+
+So for a set of strains the shape is **N independent jobs off ONE ParCa**, not an N×M
+matrix of ParCas. Only the top tier forces N ParCas.
 
 ```
-for each of N variants v:
-      ParCa(v)                 ← variant-SPECIFIC: its own strain/expression cache
-         └─► for each of M seeds m:  lineage(v, m)     ← hours each
-                                        │
-              all N×M lineages ─────────┴─► analysis tasks over ALL the data
+ParCa (ONE)  ──►  parca_state.pkl
+                     └─► for each variant v:  derived build (short)
+                             └─► for each seed m:  lineage(v, m)      ← hours each
+                                       │
+                     all N×M lineages ─┴─►  analyses over ALL the data
 ```
 
-At **Run 4** that is N=84 variants × M=4 seeds: **84 ParCa runs, 336 lineages** (×8
-generations each), then analyses that span every variant.
+At **Run 4**: 1 ParCa + 84 derived builds + **336 lineages** (×8 generations), then
+analyses spanning every variant.
 
-Two facts about ParCa make it a per-variant node rather than a shared prologue.
-`cache_version.py` folds `new_genes`, `bundle_overrides` and `perturbations` into the
-cache's `inputs_hash`, explicitly because *"Two strains that differed only [in those] …
-wrong-strain cache verified clean"* — so a variant that changes strain or expression
-**needs its own cache**. Today v2ecoli does not express that: `variants` is folded into
-`config_overrides` at the *lineage* level (`workflow/batch_lineage_ray.py:145-150`), whose
-own comment concedes *"A real variant sweep across `ray:` lineages is real, separate,
-not-yet-scoped."*
+The two-step producer is real and already exists: `v2ecoli-parca` writes
+`parca_state.pkl`, then `scripts/build_cache.py` hydrates it into the loadable bundle
+(`sim_data_cache.dill`, `initial_state.json`, `cache_version.json`) via `save_sim_input`,
+and `scripts/build_new_gene_cache.py --state <parca_state.pkl>` is the derived build that
+stamps an induction level. **`v2ecoli-parca` deliberately does not write a
+`load_cache_bundle`-readable directory** — that is the hydrate step's job, and mistaking
+this for a defect cost one wrongly-filed issue (v2ecoli#681, withdrawn).
 
 v2ecoli/sms-ecoli reach AWS Batch two ways today, and neither expresses this DAG well:
 
 | | shape | cost at Run 4 |
 |---|---|---|
-| **chain-dispatch** | one Batch job per *(seed, generation)* | 84 ParCa jobs + **2,688 generation jobs**, each paying container start + cache stage + cell rebuild |
+| **chain-dispatch** | one Batch job per *(seed, generation)* | 1 ParCa + 84 derived builds + **2,688 generation jobs**, each paying container start + cache stage + cell rebuild |
 | **pbg-native / Ray** (item 101) | one MNP job holding N `ray:LineageProcess` actors | **1 job**, but one *homogeneous* allocation for the whole campaign |
 
 The Ray shape is the better of the two and is proven on real infrastructure. Its structural
-limit is exactly what the shape above exposes: **84 ParCas want ~14 cores for ~10 minutes
-each; 336 lineages want ~12 GB for hours each; the analyses are small** — three wildly
-different resource profiles inside one campaign, all served by a single allocation held for
-the whole run. A single lineage OOM (Eran's risk 3a: 7–9 GB by generation 3–4) takes the
-allocation with it, and there is no per-unit retry.
+limit is what the tiers above expose — **four** distinct resource profiles in one campaign:
+
+| unit | count at Run 4 | wants |
+|---|---|---|
+| ParCa | 1 | ~14 cores, ~12 min (measured: 12m 6s at `--mode fast`, 8 cpus) |
+| derived cache build | 84 | short, cheap |
+| lineage | 336 | ~12 GB, **hours** each |
+| analysis | a few | small, and only after everything |
+
+One allocation, held for the whole run, serves all four. A single lineage OOM (Eran's risk
+3a: 7–9 GB by generation 3–4) takes the allocation with it, and there is no per-unit retry.
 
 A two-level scatter over heterogeneous, independent units with a final gather is the
 canonical case for a DAG engine. That — not "one more way to run a job" — is the argument.
 
-**A free consequence of content-addressing:** because a cache is identified by
-`inputs_hash` over exactly the variant-defining inputs, two variants that differ only in
-sim-time config resolve to the *same* ParCa. A DAG engine dedupes that automatically
-(and `-resume` reuses it across campaigns); hand-rolled dispatch has to be told.
+**A partial consequence of content-addressing:** a cache is identified by `inputs_hash`
+over the variant-defining inputs, so variants differing only in run-time config resolve to
+the same ParCa and a DAG engine dedupes that for free. **But `inputs_hash` does not include
+ParCa *mode*** — a `--mode fast` and a `--mode full` cache hash **identically**
+(@cplong90). It is detectable only at retrieval, by the debug TF-condition count (1 vs 23);
+nothing in the fingerprint will tell you. Any campaign that mixes modes can therefore reuse
+the wrong cache silently, which is the same failure family as viva-api #401/#402/#403.
+
+**And a second silent one, about the M seeds** (@cplong90). Whether M seeds share a founder
+is **path-dependent**: a path that reads a baked `initial_state.json` out of a cache gives
+**all M seeds the same generation 1** (2+ diverge); a path that regenerates a
+per-(condition, seed) sub-cache does not. The machinery is seed-parameterised either way —
+what decides it is whether you read a cache or rebuild one.
+
+> It **passes every structural check**: M seeds write M distinct partitions, with genuinely
+> differing contents and distinct hashes, and a validator reports success either way. For
+> *"sample the stochastic trajectory"* a shared founder is fine and invisible. For
+> *"independent cells to average over"* it is wrong — and nothing detects it.
+
+⇒ This must be an **acceptance check on the science, not a structural check**, and §8
+carries it. It is the same presence-vs-effect shape as everything else on this page.
 
 Nextflow at **lineage granularity — never at Step granularity** — buys three things the MNP
 shape structurally cannot: per-task retry, per-task resources, and `-resume`.
@@ -104,6 +139,8 @@ Verified 2026-09-04. The point of this table is that most of the machinery is al
 | `lineage_ray_batch` generator; N per-seed `ray:LineageProcess` nodes | `v2ecoli/composites/lineage_ray_batch.py:21`, `workflow/batch_lineage_ray.py:128-166` |
 | **`parca` is already a registered generator** | `v2ecoli/composites/parca.py:94` — *no registration shim needed* |
 | `v2ecoli-parca` / `v2ecoli-analyze` console scripts, both `s3://`-capable | `v2ecoli/pyproject.toml:162,166` |
+| `scripts/build_cache.py` (hydrate `parca_state.pkl.gz` → loadable bundle) and `scripts/build_new_gene_cache.py --state` (the derived build) | v2ecoli `scripts/` — the two-step producer the tiers rely on |
+| **`POST /parca/new-gene-cache`** — the derived build made remotely reachable, so N builds run off one ParCa without staging from a laptop | viva-api#378, **merged 2026-09-03**, live at `api/routers/sms.py:525`. ⚠ **never exercised end-to-end** (its own PR body says so) — verify early |
 | A **proven GovCloud Nextflow profile** | `vEcoli/runscripts/nextflow/config.template:98-120` |
 | K8s head-Job submit shape; `.nextflow.log` → S3 | `viva_api/simulation/simulation_service_k8s.py:213-331` |
 | Weblog receiver + NDJSON event parsing, tested against a real fixture | `viva_api/common/hpc/nextflow_weblog.py`, `common/hpc/models.py:435-467` |
@@ -399,11 +436,19 @@ exists to prevent.
 
 ## 8. Go/no-go before Phase 4
 
-1. Local **2 variants × 2 seeds** (2 ParCas → 4 lineages → analysis) produces
-   hive-partitioned parquet with a real `global_time`, and **each lineage used its own
-   variant's cache** — assert the `inputs_hash` in each lineage's `cache_version.json`
-   differs by variant. A single shared cache silently passing here would hide the whole
-   per-variant question.
+1. Local **1 ParCa → 2 derived builds → 4 lineages → analysis** produces hive-partitioned
+   parquet with a real `global_time`, and **each lineage used its own variant's derived
+   cache** — assert the `inputs_hash` in each lineage's `cache_version.json` differs by
+   variant. A single shared cache silently passing here would hide the whole per-variant
+   question.
+   **1b. Founders must differ across seeds.** Assert generation 1 of seed *m* differs from
+   generation 1 of seed *m'* for the same variant. Structural checks pass either way (M
+   distinct partitions, distinct hashes), so this has to compare *content*, not shape — see
+   §1. If the campaign is "independent cells to average over" and founders are shared, the
+   science is wrong and every green light stays green.
+   **1c. Record the ParCa mode alongside the cache.** `inputs_hash` does not include it, so
+   assert the mode out-of-band (the debug TF-condition count, 1 vs 23) rather than trusting
+   the fingerprint.
 2. **The handoff travels as a staged `path`**, not as `--state-out` JSON. *(Mechanism
    proven locally in Phase 0; this re-tests it with the real cache.)*
 3. `-resume` after a mid-lineage kill re-runs only that lineage — not its ParCa, and not
