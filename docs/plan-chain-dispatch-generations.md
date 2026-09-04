@@ -1,5 +1,11 @@
 # Multi-generation dispatch: chain-dispatch vs. pbg-native vs. Nextflow, and what's left
 
+> **⚠ Retraction (2026-09-04).** This document cited `global_time == 1.0` as evidence of a
+> one-tick collapse. That was wrong — it reads ≈1.0 on **every** chain-dispatch generation,
+> pass or fail. And "the swap causes tick-1" is wrong as stated: a real swap has since been
+> observed dividing normally. See the boxed correction in §3d. Wall-clock and shard count
+> survive as signals; nothing drawn from `global_time` does.
+
 **Status (2026-09-04, rebased onto `main` @ `ee6f5775`, 0.9.90):** the headline
 defect this analysis found — chain-dispatch
 generation jobs never engaging `LineageProcess` — was found and fixed independently
@@ -113,7 +119,7 @@ image, same ParCa dataset, `new_genes: off` on both sides, n=1 per cell:
 | | `exclude_processes: ["exchange_data"]` | **empty** |
 |---|---|---|
 | **no swap** | — | **814.7 s / 805.4 s** per gen, 7 shards (`400 … 2528.pq`) |
-| **swap** | sim262: 25–45 s/gen, `global_time 1.0` | **46.0 s / 25.6 s** per gen, `global_time 1.0`, one `1.pq` shard |
+| **swap** | sim262: 25–45 s/gen | **46.0 s / 25.6 s** per gen, one `1.pq` shard |
 
 ⇒ `exclude_processes` is not the trigger. **Chris's own correction (03:46Z):** the
 swap alone triggers the one-tick completion *under chain-dispatch*. The same swap
@@ -186,7 +192,7 @@ is the **submit shape**:
 | | submit shape | swap reaches the run? | observed |
 |---|---|---|---|
 | **#385** | **nested** — `extra_params={"injected_processes": {...}}` | **no** — dropped in viva-api | **full-length** wild-type: 206 columns, 4 daughter checkpoints, identical to a no-swap control |
-| **§3d (Chris)** | swap present at the runner | **yes** | **25–46 s/gen**, `global_time 1.0`, one `1.pq` shard |
+| **§3d (Chris)** | swap present at the runner | **yes** | **25–46 s/gen**, one `1.pq` shard |
 
 A *dropped* swap produces a normal-length wild-type run — which is exactly what #385
 measured. It cannot produce a 25-second generation. So:
@@ -215,10 +221,41 @@ cheap and both come from data the run already produces:
 
 - **wall-clock per generation** — ~800 s is a real cell; 25–46 s is not;
 - **shard count / max shard index** — 7 shards through `2528.pq` vs a single `1.pq`;
-- **`global_time` on the final state** — `1.0` is the tell.
+- ~~**`global_time` on the final state** — `1.0` is the tell.~~ **WRONG — see the
+  correction below.**
 
-The shard/`global_time` check is the more robust of the two, since wall-clock varies
-with instance type.
+The shard-count check is the more robust of these, since wall-clock varies with instance
+type.
+
+> #### Correction (2026-09-04): `global_time` was never evidence
+>
+> This document cited `global_time == 1.0` as a symptom of the one-tick collapse. **It is
+> not.** `global_time` on `final_state.json` is the **outer** composite's clock, advanced
+> by exactly the interval the caller's `Composite.run(interval)` requested — and
+> chain-dispatch always dispatches `run_pbg.py … -n 1`. `LineageProcess`'s own docstring is
+> explicit that *"the inner composite's global_time RESTARTS at 0 each generation."*
+>
+> So **every** chain-dispatch generation reads back `global_time ≈ 1.0`, passing or
+> failing — indistinguishable from the collapse it was being used to detect.
+>
+> Established independently two ways on 2026-09-04: @AlexPatrie's **viva-api#408** (from a
+> live false-positive — dispatch 297, a real metabolism-redux swap that genuinely divided
+> at t=2527 s while the job exited 1), and by reading the dispatch chain — `-n 1` looks
+> truncating, but `stop_at_division=True` routes into `_build_batch_document`, which wires
+> `BatchBaselineRunner` as a **step**, and a Step runs to completion regardless of the run
+> interval. `-n 1` therefore sets only the outer clock and truncates nothing.
+>
+> **#408's replacement signal:** the sum of `duration` across `summary.generations`
+> entries — the real per-generation figure `LineageProcess.update()` already returns —
+> using the larger of that and `global_time`.
+>
+> **What survives** from the observations below: **wall-clock per generation** (25–46 s vs
+> ~814 s) and **shard count** (one `1.pq` vs seven through `2528.pq`). Those are unexplained
+> and still real. What does not survive is any inference drawn from `global_time`.
+>
+> **And "the swap causes tick-1" is now known to be wrong as stated** — dispatch 297 shows
+> a real swap dividing normally. Whatever distinguished @cplong90's fast runs, it was not
+> the presence of a swap per se.
 
 #### Measured: the pre-#387 control (sim 294, `smsvpctest`, 2026-09-04)
 
@@ -357,7 +394,9 @@ presence; neither asserts effect. This is the concrete case for the §5 effect c
   MD5s, three `generation=` parquet partitions, per-job runtime in minutes.
 - **Swap effect, not just presence (§3e).** For any dispatch declaring a swap, assert
   the run actually ran: **>1 parquet shard** (or a max shard index well past `1.pq`)
-  and **`global_time` ≫ 1.0** on the final state. `injected_processes` being non-null
+  and a **real per-generation `duration`** (the sum across `summary.generations`, per
+  viva-api#408 — **not** `global_time`, which reads ≈1.0 on every chain-dispatch
+  generation regardless of outcome). `injected_processes` being non-null
   on the artifact is necessary but not sufficient — post-#387 it is true whether the
   run executed or collapsed on tick 1.
 - Fidelity (follow-up): same seed, 3 generations chained vs. one pbg-native run;
