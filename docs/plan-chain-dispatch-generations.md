@@ -80,7 +80,7 @@ The one-command detector, for any campaign:
 `aws s3 ls s3://…/<experiment_id>/daughter-state/seed0/` — zero objects means
 the chain didn't chain. Worth adding as a post-run assertion to `chain-dispatch.sh`.
 
-## 3. Still open on `main` (0.9.95)
+## 3. Still open on `main` (0.9.99)
 
 > *Re-checked against `origin/main` and live `smsvpctest` on 2026-09-04, after this doc was
 > first written at 0.9.90. 3a–3c are still open; 3f and 3g are new.*
@@ -361,15 +361,17 @@ that filters on it**.
 The fix finalizes in the object that owns the key — `LineageProcess` calls
 `finalize_emitter_for_agent(self._agent_id)` alongside `flush_parquet`; the two cover
 disjoint cases (timed out vs divided) and both are idempotent. Ships with
-`tests/test_lineage_emitter_finalize.py` (6 passed). **Open as v2ecoli#688 — merge it before
-anything depends on generation ≥ 1 data.**
+`tests/test_lineage_emitter_finalize.py` (6 passed). **MERGED as v2ecoli#688** (`76def1f8`,
+2026-09-04) and **now deployed**: sms-ecoli pins `ee85b95f`, and simulator **128** is the first
+image carrying it. Confirmed on real infra twice — the throwaway v2ecoli-only build (simulation
+316) and the production stack (simulation 326).
 
 Two consequences for this document:
 
 - **§4's "the zarr store enforces the chain"** — generation *N* refuses to open unless
   *N−1* carries the success attr from a clean `close(success=True)`. That sentinel was
-  **never written for any generation ≥ 1**, so the hazard was firing, not hypothetical —
-  and still is, until v2ecoli#688 merges.
+  **never written for any generation ≥ 1**, so the hazard was firing, not hypothetical.
+  Closed by v2ecoli#688; anything written *before* simulator 128 still carries the gap.
 - **§5's "assert >1 parquet shard"** — a truncated trailing batch still leaves multiple
   shards, so the check passed while the data was short. Assert the **success sentinel**
   per generation as well as the shard count.
@@ -414,8 +416,13 @@ Two consequences for this document:
   absolute-imported `v2ecoli/library/inject.py` as step 1 of 3; until steps 2–3 land, which
   resolver runs is a property of the launch environment. Pairs with the pin bullet below:
   the pin names a commit, and does not determine which `inject.py` executes.
-- **The v2ecoli pin is a branch pin** (`sms-ecoli/pyproject.toml` `branch="main"`,
-  locked to `268515f0`). `uv lock` moves `LineageProcess` under the deployment.
+- ~~**The v2ecoli pin is a branch pin**~~ — **RESOLVED 2026-09-04.** It read `branch="main"`
+  (locked to `268515f0`), so `uv lock` could move `LineageProcess` under the deployment without
+  anyone deciding to. sms-ecoli#221 replaced it with an explicit rev
+  (`rev = "ee85b95f…"`), and process-bigraph with a release tag (`tag = "v1.8.4"`), so both
+  now move only by an edit visible in a diff. Left in place rather than deleted: the failure
+  mode is worth remembering, and **v2ecoli itself still has zero tags**, so its consumers name
+  it by a 40-character hash with no version — the same ambiguity one layer down.
 
 ## 5. Verification
 
