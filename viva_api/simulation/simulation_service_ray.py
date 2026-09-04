@@ -274,6 +274,27 @@ def _is_upstream_vecoli(composite: CompositeEngine | None) -> bool:
     return composite == "vecoli"
 
 
+def strain_from_config(config: Any) -> tuple[str | None, str | None]:
+    """Return ``(new_genes, bundle_overrides)`` — the strain a run requested — from
+    a config's ``parca_options``, or ``(None, None)`` for a wild-type/unset build.
+
+    Same read the ParCa command uses (``getattr(config.parca_options, ...)``);
+    threaded to the entrypoint as ``*_EXPECT_NEW_GENES`` / ``*_EXPECT_BUNDLE_OVERRIDES``
+    so a wrong-strain staged cache is rejected (sms-ecoli#210 / #215). ``off``/empty
+    is wild-type -> ``None`` (matches build_cache.py's own normalization).
+    """
+    parca_options = getattr(config, "parca_options", None)
+
+    def _norm(value: Any) -> str | None:
+        s = value.strip() if isinstance(value, str) else None
+        return None if not s or s == "off" else s
+
+    return (
+        _norm(getattr(parca_options, "new_genes", None)),
+        _norm(getattr(parca_options, "bundle_overrides", None)),
+    )
+
+
 def injected_processes_from_config(config: Any) -> dict[str, Any] | None:
     """Build ``ecoli_baseline.baseline()``'s own ``injected_processes`` kwarg
     (backlog item 93) from a legacy config's ``swap_processes``/
@@ -748,6 +769,8 @@ class SimulationServiceRay(SimulationService):
         tags: dict[str, str] | None = None,
         retry_strategy: dict[str, Any] | None = None,
         batch_client: Any = None,
+        expect_new_genes: str | None = None,
+        expect_bundle_overrides: str | None = None,
     ) -> str:
         """Submit a plain, standalone AWS Batch container-type job (backlog item 71).
 
@@ -779,6 +802,8 @@ class SimulationServiceRay(SimulationService):
                 stage_s3=stage_s3,
                 stage_dir=stage_dir,
                 log_s3_prefix=settings.ray_log_s3_prefix,
+                expect_new_genes=expect_new_genes,
+                expect_bundle_overrides=expect_bundle_overrides,
             ),
         ]
 
@@ -2020,6 +2045,8 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         injected_processes: dict[str, Any] | None = None,
         variants: dict[str, Any] | None = None,
         composite_id: str | None = None,
+        expect_new_genes: str | None = None,
+        expect_bundle_overrides: str | None = None,
     ) -> str:
         """Submit ONE seed's ONE generation as a standalone container-type job
         (backlog item 71 Phase 4) — the app-level-gated replacement for the
@@ -2060,6 +2087,8 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             stage_dir=PARCA_CACHE_DIR,
             tags={**tags, "Seed": str(seed), "Generation": str(generation_index)},
             batch_client=batch_client,
+            expect_new_genes=expect_new_genes,
+            expect_bundle_overrides=expect_bundle_overrides,
         )
 
     async def submit_chain_generation_batch(
@@ -2075,6 +2104,8 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         injected_processes: dict[str, Any] | None = None,
         variants: dict[str, Any] | None = None,
         composite_id: str | None = None,
+        expect_new_genes: str | None = None,
+        expect_bundle_overrides: str | None = None,
     ) -> dict[int, str]:
         """Submit the SAME generation index for MULTIPLE seeds at once,
         TPS-paced below the account-wide ``SubmitJob`` rate limit (reuses
@@ -2119,6 +2150,8 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
                     injected_processes=injected_processes,
                     variants=variants,
                     composite_id=composite_id,
+                    expect_new_genes=expect_new_genes,
+                    expect_bundle_overrides=expect_bundle_overrides,
                 )
             except Exception:
                 logger.exception(

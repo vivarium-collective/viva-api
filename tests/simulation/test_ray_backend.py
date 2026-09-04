@@ -23,6 +23,7 @@ from viva_api.simulation.simulation_service_ray import (
     SimulationServiceRay,
     analysis_modules_for,
     injected_processes_from_config,
+    strain_from_config,
 )
 
 if TYPE_CHECKING:
@@ -2093,6 +2094,32 @@ class TestSeedGenerationCommand:
             )
         overrides = self._overrides(cmd)
         assert overrides["stop_at_division"] is True
+
+
+class TestStrainFromConfig:
+    """strain_from_config (sms-ecoli#210 / #215): the shared helper JobScheduler
+    and the sim submit use to read (new_genes, bundle_overrides) off a config's
+    parca_options and thread them to the entrypoint as *_EXPECT_* so a wrong-strain
+    staged cache is rejected."""
+
+    def test_none_when_no_parca_options(self) -> None:
+        assert strain_from_config(SimpleNamespace()) == (None, None)
+
+    def test_reads_a_real_strain(self) -> None:
+        cfg = SimpleNamespace(
+            parca_options=SimpleNamespace(new_genes="violacein_MG1655_M5", bundle_overrides="models/parca/o.tsv")
+        )
+        assert strain_from_config(cfg) == ("violacein_MG1655_M5", "models/parca/o.tsv")
+
+    @pytest.mark.parametrize("wild", [None, "", "off", "  off  "])
+    def test_wild_type_sentinels_are_none(self, wild: str | None) -> None:
+        cfg = SimpleNamespace(parca_options=SimpleNamespace(new_genes=wild, bundle_overrides=wild))
+        assert strain_from_config(cfg) == (None, None)
+
+    def test_partial_strain(self) -> None:
+        """new_genes set, bundle_overrides absent -> only the former."""
+        cfg = SimpleNamespace(parca_options=SimpleNamespace(new_genes="violacein"))
+        assert strain_from_config(cfg) == ("violacein", None)
 
 
 class TestInjectedProcessesFromConfig:
