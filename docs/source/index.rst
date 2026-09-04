@@ -40,6 +40,7 @@ download results) in a different format:
 
    guides/end-to-end-workflow
    guides/running-a-campaign
+   guides/composite-dispatch
    guides/choosing-a-client
    guides/cli-reference
    guides/compose
@@ -65,6 +66,7 @@ download results) in a different format:
    architecture/aws-batch
    architecture/build-pipeline
    architecture/analysis-results-design
+   architecture/pbg-native-composite-dispatch
 
 .. toctree::
    :maxdepth: 2
