@@ -703,6 +703,84 @@ class TestSubmitMultiNodeComposite:
 
         assert composite_call.kwargs["tags"]["CompositeId"] == "some_workspace.composites.some_multi_node_composite"
 
+    @pytest.mark.asyncio
+    async def test_cache_variant_reaches_the_staged_cache_uri(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """Real gap, found live 2026-09-04 firing the first-ever real
+        strain-specific pbg-native dispatch: this composite path never had
+        cache_variant support at all -- only chain-dispatch did (job_
+        scheduler.py's own already-proven getattr(simulation.config,
+        "cache_variant", ...) pattern). Without it, a caller pointed at a
+        real derived strain cache (POST /parca/new-gene-cache, viva-api#378)
+        would silently stage the generic per-commit default instead."""
+        setattr(  # noqa: B010
+            experiment_request.config,
+            "multi_node_dispatch",
+            {
+                "composite_id": "v2ecoli.composites.lineage_ray_batch",
+                "num_nodes": 2,
+                "params": {},
+                "cache_variant": "cd2-run2-j3",
+            },
+        )
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        mock_batch = _fake_multi_node_batch(["parca-7", "composite-7"])
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+            patch.object(service, "cache_s3_uri", wraps=service.cache_s3_uri) as mock_cache_s3_uri,
+        ):
+            await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-mnp-variant"
+            )
+
+        mock_cache_s3_uri.assert_called_once()
+        assert mock_cache_s3_uri.call_args.kwargs.get("variant") == "cd2-run2-j3"
+
+    @pytest.mark.asyncio
+    async def test_omitted_cache_variant_is_byte_identical_to_before(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """cache_variant omitted must resolve to the plain per-commit cache,
+        unchanged from every existing caller's own behavior."""
+        setattr(  # noqa: B010
+            experiment_request.config,
+            "multi_node_dispatch",
+            {"composite_id": "v2ecoli.composites.lineage_ray_batch", "num_nodes": 2, "params": {}},
+        )
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        mock_batch = _fake_multi_node_batch(["parca-8", "composite-8"])
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+            patch.object(service, "cache_s3_uri", wraps=service.cache_s3_uri) as mock_cache_s3_uri,
+        ):
+            await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-mnp-no-variant"
+            )
+
+        mock_cache_s3_uri.assert_called_once()
+        assert mock_cache_s3_uri.call_args.kwargs.get("variant") is None
+
     def test_multi_node_composite_command_sets_pythonpath_for_injection_imports(self) -> None:
         """Direct unit test of _multi_node_composite_command's own command string
         (backlog item 93): a colony/multi-node composite can carry

@@ -822,6 +822,16 @@
 #           one change. Non-lineage composites are byte-for-byte unaffected
 #           (no summary.generations shape found -> falls back to global_time
 #           exactly as before).
+__version__ = "0.9.98"
+#           0.9.98 -- _submit_multi_node_composite (the pbg-native/lineage_
+#           ray_batch dispatch path) never had cache_variant support at all --
+#           only chain-dispatch did. Found firing the first-ever real
+#           strain-specific pbg-native dispatch, 2026-09-04: without it, a
+#           multi_node_dispatch pointed at a real derived cache (POST
+#           /parca/new-gene-cache) would silently stage the generic
+#           per-commit default instead. Mirrors chain-dispatch's own already-
+#           proven job_scheduler.py pattern. Omitted preserves today's
+#           behavior byte-for-byte.
 #           0.9.97 -- orphaned job polling (viva-api#414): a LOCAL-backend HpcRun
 #           row (an in-process asyncio task polling a DooD image build on AWS
 #           Batch, or the chain-dispatch placeholder) stayed `running` forever
@@ -846,7 +856,6 @@
 #           10-min grace window is failed and says to re-submit. Stateless by
 #           construction -- nothing is re-attached, so it does not matter how
 #           many polling events were missed.
-__version__ = "0.9.97"
 #           0.9.96 -- run_new_gene_cache resolved its service via
 #           get_simulation_service() (the deployment's own COMPUTE_BACKEND
 #           default -- "batch"/Nextflow on sms-api-stanford-test), not Ray --
