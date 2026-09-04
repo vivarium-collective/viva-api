@@ -799,7 +799,8 @@ class SimulationServiceRay(SimulationService):
             f" -o {PARCA_SIMDATA_DIR} --cache-dir {PARCA_CACHE_DIR}{new_genes_flag}{bundle_overrides_flag}"
             f" && gzip -f -k {PARCA_SIMDATA_DIR}/parca_state.pkl"
             f" && python scripts/build_cache.py"
-            f" --fixture {PARCA_SIMDATA_DIR}/parca_state.pkl.gz --cache {PARCA_CACHE_DIR}"
+            f" --fixture {PARCA_SIMDATA_DIR}/parca_state.pkl.gz"
+            f" --cache {PARCA_CACHE_DIR}{new_genes_flag}{bundle_overrides_flag}"
             f" && cp {PARCA_SIMDATA_DIR}/parca_state.pkl.gz {PARCA_CACHE_DIR}/parca_state.pkl.gz"
         )
         # A config that requests a real strain (new_genes != "off") MUST produce a
