@@ -72,8 +72,14 @@ images:
   # same night as a 44.5s collapse). Nested wins on a real per-field
   # conflict, logged rather than silent. Same root cause as #392/0.9.92 --
   # reconstructing the block instead of merging into it.
+  # 0.9.98 (PR#414/#418, item 105): reconciles orphaned LOCAL job rows after
+  # an api restart; adds cache_variant support to the pbg-native multi-node
+  # composite dispatch path (_submit_multi_node_composite), mirroring what
+  # chain-dispatch's own job_scheduler.py already had. Carries a real new
+  # Alembic migration (external_job_ids on HpcRun) -- the db-migration
+  # overlay below moves in lockstep and the migration job is re-run below.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.96
+    newTag: 0.9.98
   # ptools 0.5.9 -> 0.9.53 (DEV ONLY — prod sms-api-stanford stays on 0.5.9 while
   # this soaks). The long-standing 0.5.9 pin existed because CI builds only
   # sms-api (scripts/build_action.sh), so no newer sms-ptools existed on ghcr.io
