@@ -792,4 +792,17 @@
 #           thread, independently confirmed live by jcschaff. The four
 #           canonical keys are still normalized defaults layered on top, not
 #           replaced -- flat/legacy-shape output is byte-identical.
-__version__ = "0.9.92"
+# 0.9.93 -- injected_processes_from_config resolves swap_processes/
+#           add_processes/exclude_processes PER FIELD instead of choosing the
+#           whole nested-vs-flat shape once (viva-api#401, found by cplong90
+#           while measuring #387's own effect). The either/or choice meant a
+#           nested submit setting only swap_processes silently dropped a
+#           config's own flat add_processes/exclude_processes -- observed live
+#           (sim 296, mecillinam_wellmixed.json): a nested metabolism swap
+#           dropped all 4 of the config's own add_processes, unreported. Each
+#           field now resolves independently, nested winning on a real
+#           conflict; a real conflict is logged (a caller's override, not a
+#           silent one). Same root cause as #392 above -- both are
+#           consequences of RECONSTRUCTING the block instead of merging into
+#           it, cplong90's own framing on #401.
+__version__ = "0.9.93"
