@@ -225,7 +225,44 @@ copy in its own scratch, needing **no shared filesystem and no S3 support in
 executor default.
 
 **Still unproven:** real S3 transfer (needs `awsbatch`); the real 90 MB + 165 MB cache
-(the stand-in was 23 bytes); and scatter — this was one lineage, one variant.
+(the stand-in was 23 bytes).
+
+### Go/no-go 4 tried early (2026-09-04): **FAILS — three independent blockers**
+
+Because §1's shape made this the decisive question, it was tested ahead of schedule by
+rendering 84 variants × 4 seeds. The result is worse than "renders 420 blocks", and it is
+the reason Phase 1f is not a small job:
+
+1. **Scatter cannot be expressed.** A scalar port fed by a list store makes the composite
+   **fail to construct** — `bigraph_schema` raises *"cannot resolve subtypes for key
+   'seed': List(_element=Integer) vs Integer"* inside `Composite.__init__` → `core.realize`
+   → `resolve`, before the renderer runs at all. There is no "this port consumes one
+   element of that store" concept, which is exactly what a scatter is.
+2. **Widening the ports to list types renders 3 blocks — and 3 tasks.** The block count
+   "passes" while the semantics are wrong: `parca(params.variant)` is **one** ParCa handed
+   all 84 variants, not 84 ParCas. None of `flatten`, `combine`, `collect`, `cross`,
+   `groupTuple`, `Channel.from`, `channel.of` appears anywhere in the output.
+3. **It does not even run.** Composite state never reaches the `params {}` block, so the
+   emitted `params.variant` is undefined:
+   `WARN: Access to undefined parameter 'variant'` →
+   `ERROR ~ A process input channel evaluates to null -- Invalid declaration 'val variant'`.
+   Zero task work-dirs created. `_channel_expr_for_input`'s fallback (`:349`) emits
+   `params.<joined_path>`, but `generate_nextflow_config` only emits params the *caller*
+   passed to `deploy(params=…)` — nothing bridges a store's value into them.
+
+`_cardinality: 'many'` was present on every port in both attempts and changed nothing —
+**dead, confirmed empirically** rather than by reading.
+
+⇒ **Phase 1f is not "~15 lines to add `.flatten()`".** It needs: a channel-source construct
+(a list-valued store/param → `Channel.from(...)`); cardinality actually consulted; a
+cross/join for variant×seed keyed by variant rather than a broadcast; the plumbing
+operators wired in and tested; and a bridge from composite state into `params`. Treat it as
+the **critical path of Phase 1**, not a footnote.
+
+**Bonus `deploy()` bug for Phase 1g:** a *relative* `outdir` makes Nextflow treat
+`<outdir>/main.nf` as a remote project name — it tried to pull
+`https://api.github.com/repos/nextflow-io/scale_out/contents/main.nf`. `deploy()` should
+pass absolute paths.
 
 **Risk 6 arrived early.** Neither venv can run Phase 0 with real commands: v2ecoli has the
 composites but PBG **1.5.0** (no `run_composite`, no `workflow/recipe`), while sms-ecoli has
@@ -260,8 +297,13 @@ On top of `pr197`, all in `nextflow.py` / `nextflow_deploy.py`:
   `Combine` → `combine`, `GroupBy` → `groupTuple`, `Collect` → `collect`, `Join` → `join`,
   `Mix` → `mix`, emitted by `_emit_plumbing_call` (`nextflow.py:357`). ⚠ **No test in the
   PR exercises plumbing emission at all**, so treat these as unproven-but-present and cover
-  them first. Getting this right is what makes 84 ParCas + 336 lineages render as **~3
-  process blocks** rather than 420.
+  them first.
+
+  **Measured, not estimated** — see the go/no-go-4 result under Phase 0. This is the
+  critical path of Phase 1, and it is four things, not one: a **channel-source** construct
+  (list-valued store → `Channel.from`), cardinality actually **consulted**, a **cross/join**
+  keyed by variant, and a **state → `params`** bridge without which the rendered workflow
+  does not even launch.
 - **`deploy()` fixes** — `render_options.setdefault('python', sys.executable)` (`:105`) is a
   latent Batch bug: the head's interpreter will not exist inside a task container. Default to
   `sys.executable` only for `executor='local'`. Add `resume`, `report`, `trace`,
