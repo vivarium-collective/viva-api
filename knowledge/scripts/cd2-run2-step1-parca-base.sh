@@ -4,11 +4,21 @@
 # strain-cache pipeline. Fires a real ParCa build of the shared "composed
 # vio+GFP" background (v2ecoli#637 multi-insertion loader) that every strain
 # variant (J3, K4, M5-default) is derived from -- new_genes=violacein_gfp,
-# bundle_overrides=models/parca/composed_overlay.tsv, include_violacein_
-# reactions=true, exactly as Chris's own reference config
-# (configs/meteng_vio_gfp_composed_constitutive.json) declares. Prints the
-# real parca_dataset_id on success -- feed that into
-# cd2-run2-step2-strain-cache.sh.
+# bundle_overrides=models/parca/composed_overlay.tsv. Prints the real
+# parca_dataset_id on success -- feed that into cd2-run2-step2-strain-cache.sh.
+#
+# ⚠ Chris's own reference config, configs/meteng_vio_gfp_composed_
+# constitutive.json, ALSO sets parca_options.include_violacein_reactions --
+# viva-api's real, live ParcaOptions model (extra="forbid") has no such field
+# and 400s on it (confirmed empirically 2026-09-04). That field is not read
+# anywhere in v2ecoli's own source either (repo-wide grep, zero hits), so it
+# is safe to omit -- it changes nothing about the actual ParCa background.
+# The default below points at a scratch, dispatch-safe copy with only that
+# one field removed (configs/meteng_vio_gfp_composed_constitutive_dispatch.
+# json, sms-ecoli branch scratch/cd2-run2-parca-base-dispatch, off Chris's own
+# study/cd2-pnnl-02-strain-sims, otherwise byte-identical) -- verified working
+# end-to-end (database_id=314, parca_dataset_id=176). If viva-api's model ever
+# gains this field, point SIMULATION_CONFIG_FILENAME back at the original.
 #
 # Sibling scripts: cd2-run2-step2-strain-cache.sh (STEP 2, derived per-strain
 # cache), cd2-run2-step3-dispatch.sh (STEP 3, the real simulation).
@@ -25,11 +35,13 @@ set -euo pipefail
 
 VIVA_API_BASE="${VIVA_API_BASE:-http://localhost:8080}"
 # A real sms-ecoli simulator built from a branch/commit that has both
-# configs/meteng_vio_gfp_composed_constitutive.json and
-# models/parca/composed_overlay.tsv -- e.g. the study/cd2-pnnl-02-strain-sims
-# branch.
+# configs/meteng_vio_gfp_composed_constitutive_dispatch.json and
+# models/parca/composed_overlay.tsv -- e.g. scratch/cd2-run2-parca-base-
+# dispatch (verified) or study/cd2-pnnl-02-strain-sims (Chris's own, needs
+# the dispatch-safe config filename override below since it only has the
+# original).
 SIMULATOR_ID="${SIMULATOR_ID:?set SIMULATOR_ID, see comment above}"
-SIMULATION_CONFIG_FILENAME="${SIMULATION_CONFIG_FILENAME:-meteng_vio_gfp_composed_constitutive.json}"
+SIMULATION_CONFIG_FILENAME="${SIMULATION_CONFIG_FILENAME:-meteng_vio_gfp_composed_constitutive_dispatch.json}"
 EXPERIMENT_ID="${EXPERIMENT_ID:-cd2-run2-parca-base}"
 # Simulation-phase params are irrelevant to this step's own real purpose (we
 # only need ParCa to complete) -- kept minimal/cheap on purpose.
