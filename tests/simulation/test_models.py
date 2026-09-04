@@ -2,12 +2,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pydantic
 import pytest
 
 from viva_api.common.models import JobBackend
 from viva_api.simulation.models import (
     BaseModel,
     HpcRun,
+    ParcaOptions,
     Simulation,
     SimulationConfig,
     trim_attributes,
@@ -26,6 +28,52 @@ async def test_serialize_sim_config() -> None:
     # Verify round-trip preserves key fields
     deserialized = json.loads(serialized)
     assert deserialized["experiment_id"] == simulation_config_raw["experiment_id"]
+
+
+class TestParcaOptionsNewGenes:
+    """P0-2: new_genes must be a REAL field that survives model construction
+    (previously commented out → pydantic default extra="ignore" stripped it, so a
+    custom strain silently reached ParCa as wild-type), and an unknown parca field
+    must fail loud (extra="forbid") instead of being silently dropped."""
+
+    def test_new_genes_survives_construction(self) -> None:
+        opts = ParcaOptions(new_genes="violacein")
+        assert opts.new_genes == "violacein"
+        assert opts.model_dump()["new_genes"] == "violacein"
+
+    def test_new_genes_survives_through_a_full_simulation_config(self) -> None:
+        config = SimulationConfig(experiment_id="exp-strain", parca_options={"new_genes": "violacein"})  # type: ignore[arg-type]
+        assert config.parca_options.new_genes == "violacein"
+
+    def test_new_genes_defaults_to_off(self) -> None:
+        assert ParcaOptions().new_genes == "off"
+
+    def test_unknown_parca_field_is_rejected(self) -> None:
+        with pytest.raises(pydantic.ValidationError):
+            ParcaOptions(definitely_not_a_real_parca_option=True)  # type: ignore[call-arg]
+
+    def test_every_field_the_default_template_carries_is_accepted(self) -> None:
+        """The embedded default template + real config fixtures collectively name
+        the full vEcoli ParcaOptions set — forbid must accept all of them."""
+        full = {
+            "cpus": 6,
+            "outdir": "/out",
+            "operons": True,
+            "ribosome_fitting": True,
+            "rnapoly_fitting": True,
+            "remove_rrna_operons": False,
+            "remove_rrff": False,
+            "stable_rrna": False,
+            "new_genes": "off",
+            "debug_parca": False,
+            "load_intermediate": None,
+            "save_intermediates": False,
+            "intermediates_directory": "",
+            "variable_elongation_transcription": True,
+            "variable_elongation_translation": False,
+        }
+        opts = ParcaOptions(**full)  # type: ignore[arg-type]
+        assert opts.new_genes == "off"
 
 
 @pytest.mark.asyncio

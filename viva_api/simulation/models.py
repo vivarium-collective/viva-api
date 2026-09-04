@@ -172,20 +172,40 @@ class RepoDiscovery(BaseModel):
 
 
 class ParcaOptions(BaseModel):
-    # cpus: int | None = None
+    # extra="forbid" (was the pydantic default "ignore"): an unknown parca_options
+    # key must fail loud at construction rather than being silently dropped. The
+    # canonical cause was `new_genes` — declared only as a comment below, so a
+    # config requesting a custom strain had its `new_genes` silently stripped and
+    # ParCa built wild-type (CD2 audit §2.1 / P0-2). Every field the runtime
+    # genuinely consumes is now a real field; anything else is a caller error.
+    model_config = ConfigDict(extra="forbid")
+
+    cpus: int | None = None
     outdir: str = str(get_settings().simulation_outdir)
-    # operons: bool = True
-    # ribosome_fitting: bool = True
-    # remove_rrna_operons: bool = False
-    # remove_rrff: bool = False
-    # stable_rrna: bool = False
-    # new_genes: str = "off"
-    # debug_parca: bool = False
-    # load_intermediate: str | None = None
-    # save_intermediates: bool = False
-    # intermediates_directory: str = ""
-    # variable_elongation_transcription: bool = True
-    # variable_elongation_translation: bool = False
+    operons: bool = True
+    ribosome_fitting: bool = True
+    rnapoly_fitting: bool = True
+    remove_rrna_operons: bool = False
+    remove_rrff: bool = False
+    stable_rrna: bool = False
+    # new_genes: a custom-strain new-gene insertion subdir passed straight through
+    # to v2ecoli-parca's `--new-genes` flag (default "off"). Read back on the Ray
+    # backend via getattr(config.parca_options, "new_genes", ...) in
+    # simulation_service_ray.py — it MUST be a declared field or it never survives
+    # SimulationConfig construction.
+    new_genes: str = "off"
+    # bundle_overrides: a bundle-overrides manifest path (backlog item 104) passed
+    # straight through to v2ecoli-parca's `--bundle-overrides` flag. Read back via
+    # getattr(config.parca_options, "bundle_overrides", None) in
+    # simulation_service_ray.py — same as new_genes, it MUST be a declared field or
+    # it never survives SimulationConfig construction (the item-104 silent drop).
+    bundle_overrides: str | None = None
+    debug_parca: bool = False
+    load_intermediate: str | None = None
+    save_intermediates: bool = False
+    intermediates_directory: str = ""
+    variable_elongation_transcription: bool = True
+    variable_elongation_translation: bool = False
 
     def model_post_init(self, context: Any, /) -> None:
         trim_attributes(self)

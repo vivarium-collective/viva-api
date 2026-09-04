@@ -139,7 +139,13 @@ SIM_OUT_DIR = f"{V2ECOLI_DIR}/.pbg/runs/phase0-xarray"
 # fix this; PYTHONPATH does. Found live 2026-09-01 (backlog item 93): a real
 # chain-dispatch run with a non-empty injected_processes failed
 # ModuleNotFoundError('scripts') despite the cd already being correct.
-PBG_RUNNER_ENV = f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER} PYTHONPATH={V2ECOLI_DIR}"
+# PBG_REQUIRE_OUTPUT=1: on the CD2 Ray/baseline dispatch a run that produced no
+# emitted store is always a failure, so run_pbg.py must exit non-zero instead of
+# reporting success on the final_state.json fallback alone (audit §2.4 / P0-3).
+PBG_RUNNER_ENV = (
+    f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER}"
+    f" PYTHONPATH={V2ECOLI_DIR} PBG_REQUIRE_OUTPUT=1"
+)
 # The analysis DAG node writes its outputs straight to S3 (see _analysis_command),
 # so this local dir normally never exists and the entrypoint's RAY_OUT_DIR sync is a
 # documented no-op ("no <dir>; nothing to upload"). It is still declared so anything
@@ -375,6 +381,22 @@ class ChainCampaignPollResult:
     terminal: bool
     succeeded_job_ids: list[str] = field(default_factory=list)
     failed_job_ids: list[str] = field(default_factory=list)
+
+
+def _batch_exit_code(job: dict[str, Any]) -> str | None:
+    """The container exit code from an AWS Batch ``describe_jobs`` job object,
+    as a string (JobStatusInfo.exit_code is ``str | None``), or None when Batch
+    has not reported one yet.
+
+    Batch surfaces it at ``job["container"]["exitCode"]`` for a single-container
+    job and at ``job["nodeProperties"]...["container"]["exitCode"]`` for a
+    multi-node (MNP) job's main node; the top-level ``container`` key carries the
+    main container for both shapes in ``describe_jobs`` output, so read it there.
+    Previously hardcoded to None, discarding the real exit status (CD2 audit
+    §2.4 / P1-13).
+    """
+    exit_code = (job.get("container") or {}).get("exitCode")
+    return str(exit_code) if exit_code is not None else None
 
 
 class SimulationServiceRay(SimulationService):
@@ -771,7 +793,7 @@ class SimulationServiceRay(SimulationService):
         settings = get_settings()
         new_genes_flag = f" --new-genes {shlex.quote(new_genes)}" if new_genes and new_genes != "off" else ""
         bundle_overrides_flag = f" --bundle-overrides {shlex.quote(bundle_overrides)}" if bundle_overrides else ""
-        return (
+        command = (
             f"cd {V2ECOLI_DIR}"
             f" && v2ecoli-parca --mode {settings.ray_parca_mode} --cpus {settings.ray_parca_cpus}"
             f" -o {PARCA_SIMDATA_DIR} --cache-dir {PARCA_CACHE_DIR}{new_genes_flag}{bundle_overrides_flag}"
@@ -780,6 +802,14 @@ class SimulationServiceRay(SimulationService):
             f" --fixture {PARCA_SIMDATA_DIR}/parca_state.pkl.gz --cache {PARCA_CACHE_DIR}"
             f" && cp {PARCA_SIMDATA_DIR}/parca_state.pkl.gz {PARCA_CACHE_DIR}/parca_state.pkl.gz"
         )
+        # A config that requests a real strain (new_genes != "off") MUST produce a
+        # command that carries the flag — otherwise ParCa silently builds wild-type
+        # and the run "succeeds" with the wrong genotype (CD2 audit §2.1 / P0-2).
+        if new_genes and new_genes != "off":
+            assert new_genes_flag and new_genes_flag in command, (  # noqa: S101  internal invariant, not input validation
+                f"new_genes={new_genes!r} requested but the ParCa command does not carry --new-genes: {command!r}"
+            )
+        return command
 
     def _build_new_gene_cache_command(
         self,
@@ -2519,7 +2549,7 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             status=status,
             start_time=str(started) if started else None,
             end_time=str(stopped) if stopped else None,
-            exit_code=None,
+            exit_code=_batch_exit_code(job),
             error_message=job.get("statusReason") if status == JobStatus.FAILED else None,
         )
 
