@@ -485,6 +485,57 @@ façade.
   also provides, with per-lineage retry and sizing that the actor form structurally cannot.
   Ray remains right for the colony/MNP composite, which is genuinely multi-node.
 
+  **The shape, prototyped and rendered 2026-09-04:**
+
+  ```python
+  class LineageStep(Step):
+      config_schema = {'seed', 'generations', 'max_duration_per_gen', 'cache_dir',
+                       'out_dir', 'experiment_id', 'emitter', 'time_step', 'media',
+                       # per-task biology -- see "separability" below
+                       'injected_processes', 'config_overrides',
+                       'variant_index', 'variant_name'}
+      nextflow_port_decls = {'cache_dir': 'path cache_dir', 'sweep_dir': 'path "sweep"'}
+
+      def inputs(self):  return {'cache_dir': {'_type': 'string', '_is_file': True}}
+      def outputs(self): return {'sweep_dir': {'_type': 'string', '_is_file': True}}
+
+      def update(self, state):
+          # build a one-node composite around LineageProcess and run it for
+          # generations * max_duration_per_gen of SIMULATED time
+  ```
+
+  **Separability: the swap is pushed down into each task's own config.** This is the
+  property that makes N lineages N independent jobs. Each node's config is staged as its
+  own `<node>.config.json` and read by `run_step --config`, so a task reads **its own file
+  and nothing else** — no shared store, no ordering constraint between siblings, no barrier
+  until the gather. A variant that changes biology is simply a different
+  `injected_processes` in a different file; the 2-D sweep is expressed by *which configs
+  exist*, not by any renderer feature. Demonstrated at 2 variants × 2 seeds:
+
+  ```
+  lineage_v0_s0.config.json   seed=0  variant=baseline  swap=none
+  lineage_v0_s1.config.json   seed=1  variant=baseline  swap=none
+  lineage_v1_s0.config.json   seed=0  variant=redux     swap=redux
+  lineage_v1_s1.config.json   seed=1  variant=redux     swap=redux
+  ```
+
+  Contrast today's chain-dispatch, where `injected_processes` travels as a command-line
+  `--overrides` blob → `baseline()` → `_build_batch_document` → `runner_config` →
+  `BatchBaselineRunner` → `build_workflow_config` → `_lineage_node` → each generation's
+  `baseline()`. **Seven hops, each a place to drop it** — and viva-api#385 was exactly a
+  drop at the first one. Per-task config has one hop.
+
+  > **Carry this detail into the implementation:** pass **no key at all** rather than an
+  > empty `injected_processes`/`config_overrides`. "No swap requested" and "swap requested,
+  > empty" are not the same thing downstream, and conflating them is the shape of
+  > viva-api#401 (a nested block *replacing* a config's flat fields).
+
+  **What this design does not fix:** a swapped generation currently emits **no history
+  parquet** (12 MB daughter state, real division at t=2527 s, and zero `history/`
+  partition — see viva-api#408 discussion). That lives inside the biology, so this shape
+  neither causes nor cures it. It does mean the eventual fix lands in one place rather than
+  along the seven-hop path.
+
 - **ParCa — use the CLI, not `--build`.** The generator is registered but explicitly
   *"Structural, not auto-run"*: it carries `raw_data=None` and does not set
   `run_steps_on_init`, so `Composite(doc).run(n)` would jump `global_time` and **run
