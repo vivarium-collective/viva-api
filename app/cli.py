@@ -1171,6 +1171,13 @@ def composite_run(
         'Example: --params \'{"n_seeds": 100, "n_generations": 10}\'.',
     ),
     steps: int = Option(default=36000, help="Total simulated seconds requested for the whole composite run."),
+    simulation_config: str | None = Option(
+        default=None,
+        help="Config filename under the simulator repo's configs/ (e.g. 'mecillinam_wellmixed.json'). "
+        "Omit to use the deployment default (api_simulation_default.json) -- which does NOT exist in "
+        "every repo: sms-ecoli ships named configs only, so a dispatch there 404s without this. "
+        "List what a simulator actually has: GET /api/v1/simulations/discovery?simulator_id=...",
+    ),
     description: str | None = Option(default=None, help="Custom description for this simulation run."),
     tag: list[str] = Option(
         default_factory=list,
@@ -1235,6 +1242,7 @@ def composite_run(
             experiment_id=experiment_id,
             simulator_id=simulator_id,
             description=description or f"sim{simulator_id}-{experiment_id}; composite; {composite_id}",
+            config_filename=simulation_config,
             tags=list(tag) or None,
             extra_params=extra_params,
         )
