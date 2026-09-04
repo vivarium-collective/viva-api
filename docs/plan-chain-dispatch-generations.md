@@ -220,6 +220,52 @@ cheap and both come from data the run already produces:
 The shard/`global_time` check is the more robust of the two, since wall-clock varies
 with instance type.
 
+#### Measured: the pre-#387 control (sim 294, `smsvpctest`, 2026-09-04)
+
+The nested-shape half of the table above is no longer inferred. Submitted #385's exact
+request shape against `sms-api:0.9.90` — verified on the running pod to predate #387
+(`grep -c NESTED` → 0; the helper reads only `getattr(config, "swap_processes")` and
+returns `None`), simulator 109 (`sms-ecoli@4da4e43`), 1 seed × 2 generations,
+`new_genes: off`, `condition basal`.
+
+**The drop is mechanical, and visible before the run finishes:**
+
+| hop | `injected_processes` |
+|---|---|
+| submitted (nested `extra_params`) | sent |
+| POST response's resolved config | **present, intact** |
+| gen0's `CONTAINER_JOB_CMD --overrides` | **absent** |
+
+gen0's dispatched overrides carry twelve keys — `n_seeds`, `n_generations`,
+`stop_at_division`, `cache_dir`, `out_dir`, `experiment_id`, `analyses`, `parallel`,
+`seed`, `initial_generation_index`, `initial_carry_state_path`,
+`daughter_state_out_path` — and **none of them is the swap**. So the block reaches the
+resolved config and dies at the dispatch hop, exactly as #385 traced.
+
+> **Read `CONTAINER_JOB_CMD`, not the Batch job's `command`.** The container command is
+> only `/opt/batch-container-entrypoint.sh`; the real `run_pbg.py` invocation and its
+> `--overrides` live in that env var. Checking argv yields a meaningless "absent" for
+> every key. Job names also key on the **simulator** id, not the `database_id`
+> (`chain-seed0-gen0-sim109-…`), which makes a `sim294` search silently match nothing.
+
+**And it then ran wild-type**, which is the half that matters for §3e's risk claim:
+
+| | Chris's control (no swap) | Chris's swap runs | **sim 294 gen0** |
+|---|---|---|---|
+| duration/gen | 814.7 / 805.4 s | 25–46 s | **796.8 s** (SUCCEEDED, exit 0) |
+
+Within ~2% of the no-swap control and 17–32× the fast-completion mode.
+
+⇒ **This is the pre-#387 baseline, and it is internally consistent**: no swap in the
+command, no swap effect in the runtime. It does **not** test the risk in the paragraph
+above — that needs a build carrying #387 deployed to `smsvpctest` and the identical
+submit re-run. Until then §3e's trade remains a prediction, with a precise baseline to
+compare against.
+
+*(Incidental confirmations from the same run: `stop_at_division: true` is present in the
+dispatched overrides, so #369 is live on this path; and the `[batch-container]` log
+prefix confirms recent per-commit images do ship `batch-container-entrypoint.sh`.)*
+
 ## 4. Hazards now live (chain jobs actually run `LineageProcess` since #369)
 
 - **Division-by-exception is now type-guarded upstream** — *correction from Alex on
