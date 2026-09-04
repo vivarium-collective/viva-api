@@ -531,6 +531,8 @@ class SimulationServiceRay(SimulationService):
         tags: dict[str, str] | None = None,
         retry_strategy: dict[str, Any] | None = None,
         batch_client: Any = None,
+        expect_new_genes: str | None = None,
+        expect_bundle_overrides: str | None = None,
     ) -> str:
         """Submit a Ray MNP job via boto3, mirroring sms-cdk scripts/ray_batch_submit.sh.
 
@@ -570,6 +572,8 @@ class SimulationServiceRay(SimulationService):
             stage_s3=stage_s3,
             stage_dir=stage_dir,
             log_s3_prefix=settings.ray_log_s3_prefix,
+            expect_new_genes=expect_new_genes,
+            expect_bundle_overrides=expect_bundle_overrides,
         )
 
         # The head additionally runs the workload (RAY_JOB_CMD) and writes the report.
@@ -647,12 +651,23 @@ class SimulationServiceRay(SimulationService):
         stage_s3: str | None = None,
         stage_dir: str | None = None,
         log_s3_prefix: str | None = None,
+        expect_new_genes: str | None = None,
+        expect_bundle_overrides: str | None = None,
     ) -> list[dict[str, str]]:
         """Shared stage/output/log env-var construction for both the MNP (``RAY_*``)
         and container (``CONTAINER_*``) submission paths (backlog item 71) -- same
         conditional logic (only emit STAGE_*/LOG_S3_PREFIX when configured), a
         different env-var prefix per job shape, since each entrypoint script only
         reads its own prefix -- the values can't literally share one env list.
+
+        ``expect_new_genes``/``expect_bundle_overrides`` (sms-ecoli#210 / #215): the
+        STRAIN this run requested. The entrypoint's ``stage_inputs`` already runs
+        ``verify_cache_version`` (schema + source-hash) on the staged cache; these
+        let it ALSO reject a WRONG-STRAIN cache (P1-6). Emitted as
+        ``{prefix}_EXPECT_NEW_GENES`` / ``{prefix}_EXPECT_BUNDLE_OVERRIDES`` only for
+        a real strain -- ``off``/empty is wild-type and emits nothing, so a
+        wild-type run is byte-identical to before and the entrypoint check stays
+        inert until a real strain is requested.
         """
         env: list[dict[str, str]] = [
             {"name": f"{prefix}_OUT_DIR", "value": out_dir},
@@ -663,6 +678,14 @@ class SimulationServiceRay(SimulationService):
             env.append({"name": f"{prefix}_STAGE_DIR", "value": stage_dir})
         if log_s3_prefix:
             env.append({"name": f"{prefix}_LOG_S3_PREFIX", "value": log_s3_prefix})
+        # off/empty is wild-type -> no expectation to assert (matches the parca-side
+        # normalization in build_cache.py and _parca_command's own flag guard).
+        ng = (expect_new_genes or "").strip()
+        if ng and ng != "off":
+            env.append({"name": f"{prefix}_EXPECT_NEW_GENES", "value": ng})
+        bo = (expect_bundle_overrides or "").strip()
+        if bo and bo != "off":
+            env.append({"name": f"{prefix}_EXPECT_BUNDLE_OVERRIDES", "value": bo})
         return env
 
     def _ensure_container_job_def(self, image: str, commit: str) -> str:
@@ -1735,6 +1758,11 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             stage_dir=PARCA_CACHE_DIR,
             depends_on=[parca_job_id],
             tags={**base_tags, "Phase": "sim"},
+            # Wrong-strain guard (sms-ecoli#210 / #215): tell the entrypoint which
+            # strain this run staged so it rejects a cache built for a different one.
+            # off/None (wild-type) emits nothing, so this is inert for non-strain runs.
+            expect_new_genes=new_genes,
+            expect_bundle_overrides=bundle_overrides,
         )
         logger.info(
             "Ray simulation %s: parca job %s -> sim job %s (%d nodes)",

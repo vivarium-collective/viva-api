@@ -1769,6 +1769,46 @@ def test_runner_env_carries_both_output_guards() -> None:
     assert PBG_MIN_GLOBAL_TIME > 1.0
 
 
+def _env_names(env: list[dict[str, str]]) -> dict[str, str]:
+    return {e["name"]: e["value"] for e in env}
+
+
+def test_stage_out_env_emits_expect_vars_for_a_real_strain() -> None:
+    """Wrong-strain guard companion (sms-ecoli#210 / #215): the staged-cache env
+    carries the requested strain so the entrypoint can reject a wrong-strain cache."""
+    svc = SimulationServiceRay()
+    env = svc._stage_out_env(
+        prefix="RAY", out_dir="/o", out_s3="s3://o", stage_s3="s3://c", stage_dir="/c",
+        expect_new_genes="violacein_MG1655_M5",
+        expect_bundle_overrides="models/parca/composed_overlay.tsv",
+    )
+    d = _env_names(env)
+    assert d["RAY_EXPECT_NEW_GENES"] == "violacein_MG1655_M5"
+    assert d["RAY_EXPECT_BUNDLE_OVERRIDES"] == "models/parca/composed_overlay.tsv"
+
+
+@pytest.mark.parametrize("wild", [None, "", "off", "  off  "])
+def test_stage_out_env_omits_expect_vars_for_wild_type(wild: str | None) -> None:
+    """off/empty/None is wild-type -> no expectation, byte-identical to before."""
+    svc = SimulationServiceRay()
+    env = svc._stage_out_env(
+        prefix="RAY", out_dir="/o", out_s3="s3://o",
+        expect_new_genes=wild, expect_bundle_overrides=wild,
+    )
+    names = _env_names(env)
+    assert "RAY_EXPECT_NEW_GENES" not in names
+    assert "RAY_EXPECT_BUNDLE_OVERRIDES" not in names
+
+
+def test_stage_out_env_expect_vars_follow_the_prefix() -> None:
+    """CONTAINER path gets CONTAINER_EXPECT_* (future-proofs the chain-dispatch path)."""
+    svc = SimulationServiceRay()
+    env = svc._stage_out_env(
+        prefix="CONTAINER", out_dir="/o", out_s3="s3://o", expect_new_genes="violacein",
+    )
+    assert "CONTAINER_EXPECT_NEW_GENES" in _env_names(env)
+
+
 class TestSeedGenerationCommand:
     """_seed_generation_command builds ONE seed's ONE generation's command —
     replacing the per-generation-array design's own _wave_sim_command. Unlike
