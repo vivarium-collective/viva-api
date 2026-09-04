@@ -930,13 +930,13 @@ class TestSubmitMultiNodeAnalysisExtraction:
         service = SimulationServiceRay()
         captured: dict[str, Any] = {}
 
-        async def fake_submit_container(*, job_cmd: str, **kw: Any) -> str:
+        def fake_submit_container(*, job_cmd: str, **kw: Any) -> str:
             captured["job_cmd"] = job_cmd
             return "mnp-analysis-job-1"
 
         with (
             patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch.object(service, "_submit_container", new=AsyncMock(side_effect=fake_submit_container)),
+            patch.object(service, "_submit_container", side_effect=fake_submit_container),
             patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
             patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
         ):
@@ -975,13 +975,13 @@ class TestSubmitMultiNodeAnalysisExtraction:
         service = SimulationServiceRay()
         captured: dict[str, Any] = {}
 
-        async def fake_submit_container(*, job_cmd: str, **kw: Any) -> str:
+        def fake_submit_container(*, job_cmd: str, **kw: Any) -> str:
             captured["job_cmd"] = job_cmd
             return "mnp-analysis-job-2"
 
         with (
             patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
-            patch.object(service, "_submit_container", new=AsyncMock(side_effect=fake_submit_container)),
+            patch.object(service, "_submit_container", side_effect=fake_submit_container),
             patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
             patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
         ):
