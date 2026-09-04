@@ -278,9 +278,34 @@ def injected_processes_from_config(config: Any) -> dict[str, Any] | None:
     ``injected_processes["fork_repo"]`` directly (not ``.get``), so the key
     must be present even though it is always empty on this path.
     """
-    swap_processes = getattr(config, "swap_processes", None) or {}
-    add_processes = getattr(config, "add_processes", None) or []
-    exclude_processes = getattr(config, "exclude_processes", None) or []
+
+    # Two accepted shapes:
+    #   (1) FLAT: swap_processes / add_processes / exclude_processes as top-level
+    #       config extras (the legacy shape this helper was written for).
+    #   (2) NESTED: a whole ``injected_processes`` block passed through as an extra
+    #       -- e.g. ``extra_params={"injected_processes": {"swap_processes": ...}}``,
+    #       exactly the shape ``run_comparison_ensemble.py --from-vecoli-config``
+    #       emits. This is what viva-api#385 hit: the nested block reached the
+    #       resolved config, but this helper only read the flat fields, found none,
+    #       returned None, and the swap was silently dropped at every downstream hop
+    #       (chain-dispatch ran wild-type, reporting success).
+    # Honor the nested block when it carries intent; otherwise read the flat fields.
+    def _read(src: Any, key: str, default: Any) -> Any:
+        if isinstance(src, dict):
+            return src.get(key) or default
+        return getattr(src, key, None) or default
+
+    nested = getattr(config, "injected_processes", None)
+    nested_has_intent = nested is not None and (
+        _read(nested, "swap_processes", None)
+        or _read(nested, "add_processes", None)
+        or _read(nested, "exclude_processes", None)
+    )
+    src = nested if nested_has_intent else config
+
+    swap_processes = _read(src, "swap_processes", {})
+    add_processes = _read(src, "add_processes", [])
+    exclude_processes = _read(src, "exclude_processes", [])
     if not (swap_processes or add_processes or exclude_processes):
         return None
     return {

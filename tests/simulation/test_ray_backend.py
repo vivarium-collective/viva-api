@@ -1923,6 +1923,38 @@ class TestInjectedProcessesFromConfig:
         assert result is not None
         assert result["fork_repo"] == ""
 
+    def test_reads_nested_injected_processes_block(self) -> None:
+        """viva-api#385 regression: a caller may pass the whole injected_processes
+        block as an extra (extra_params={"injected_processes": {...}}) -- the shape
+        run_comparison_ensemble.py --from-vecoli-config emits. The helper must read
+        the nested block, not only the flat top-level fields; otherwise the swap is
+        silently dropped and chain-dispatch runs wild-type while reporting success."""
+        config = SimpleNamespace(
+            injected_processes={
+                "fork_repo": "",
+                "swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"},
+                "cache_dir": "/app/v2ecoli/out/cache",
+            }
+        )
+        result = injected_processes_from_config(config)
+        assert result == {
+            "swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"},
+            "add_processes": [],
+            "exclude_processes": [],
+            "fork_repo": "",
+        }
+
+    def test_nested_block_without_intent_falls_through_to_flat(self) -> None:
+        """A nested block carrying no swap/add/exclude intent (e.g. only fork_repo)
+        must not shadow flat top-level fields."""
+        config = SimpleNamespace(
+            injected_processes={"fork_repo": ""},
+            swap_processes={"ecoli-metabolism": "ecoli-metabolism-redux"},
+        )
+        result = injected_processes_from_config(config)
+        assert result is not None
+        assert result["swap_processes"] == {"ecoli-metabolism": "ecoli-metabolism-redux"}
+
 
 class TestIsUpstreamVecoli:
     """The single routing predicate shared by submit_ecoli_simulation_job and _sim_command."""
