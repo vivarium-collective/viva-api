@@ -1,10 +1,18 @@
-# Multi-generation dispatch: chain-dispatch vs. pbg-native vs. Nextflow, and what's left
+# Multi-generation dispatch: chain vs pbg-native — mechanisms, open defects, and what we got wrong
 
 > **⚠ Retraction (2026-09-04).** This document cited `global_time == 1.0` as evidence of a
 > one-tick collapse. That was wrong — it reads ≈1.0 on **every** chain-dispatch generation,
 > pass or fail. And "the swap causes tick-1" is wrong as stated: a real swap has since been
 > observed dividing normally. See the boxed correction in §3d. Wall-clock and shard count
 > survive as signals; nothing drawn from `global_time` does.
+
+> **How to read this.** Three things live here, and they are not equally fresh:
+> **§1** compares the two v2 mechanisms (the one part that is a comparison);
+> **§3** is defects still open on `main`; **§6** is the claims this document made and
+> then withdrew, kept because *how* each was wrong is the most reusable thing in the file.
+> The **Nextflow** path appears in §1 for contrast only — it is documented properly in
+> [`plan-nextflow-dispatch.md`](plan-nextflow-dispatch.md) (viva-api#405, on `main`),
+> which is where to go for that path rather than here.
 
 **Status (2026-09-04, rebased onto `main` @ `ee6f5775`, 0.9.90):** the headline
 defect this analysis found — chain-dispatch
@@ -84,6 +92,11 @@ the chain didn't chain. Worth adding as a post-run assertion to `chain-dispatch.
 
 > *Re-checked against `origin/main` and live `smsvpctest` on 2026-09-04, after this doc was
 > first written at 0.9.90. 3a–3c are still open; 3f and 3g are new.*
+>
+> **3d and 3e are deliberately absent from this section** — both were retracted in full and
+> now live in [§6](#6-retracted--what-this-document-got-wrong-and-how), keeping their original
+> numbers so existing references still resolve. The gap in the lettering is the point: what is
+> left here is open, and nothing in §3 is withdrawn.
 
 ### 3a. Timed-out generation writes no checkpoint
 
@@ -143,6 +156,173 @@ seed, gen)` to exist. Absent ⇒ resolve the seed as failed. Test in
 Per its own header: the durable `n_workers` fix (v2ecoli #647, viva-api #366) needs
 a simulator built from v2ecoli `8b293abf` or later; `SIMULATOR_ID=97` predates it,
 so a dispatch with `N_WORKERS=""` against 97 re-runs the old default of 2.
+
+### 3f. Per-commit job definitions carry **no retry and no timeout** — and the code says otherwise
+
+*New 2026-09-04. Found by @cplong90 on the MNP side; verified here across the whole
+population and extended to the container path that chain-dispatch actually uses.*
+
+Live on `smsvpctest`:
+
+```
+smsvpctest-ray-container              rev1   retry={'attempts': 2}   timeout=None   ← base, nothing runs on it
+smsvpctest-ray-container-<sha>        rev1   retry=None              timeout=None   ← every per-commit def
+smsvpctest-ray-array                  rev1   retry={'attempts': 2}   timeout=None
+```
+
+Not a sample — **every** `smsvpctest-ray-container-<sha>` definition returns
+`retryStrategy=None`. The cause is one line in each cloner: `_ensure_container_job_def`
+registers `type="container", containerProperties=…` and `_ensure_mnp_job_def` registers
+`type="multinode", nodeProperties=…`. Neither copies `retryStrategy` or `timeout` from the
+base definition it deep-copies everything else from, so both inherit AWS Batch's defaults:
+**`attempts: 1`, no timeout.**
+
+⇒ A generation lost to an OOM or a node failure is **not retried by anything**, and a hung
+generation runs **forever**. On the on-demand CEs of §1 that is the realistic failure, not
+reclaim.
+
+**The fix is small, and half of it is already written.** `_submit_container` and
+`_submit_mnp` both accept a `retry_strategy` argument and pass it "verbatim as
+`SubmitJob.retryStrategy`" (their own docstring) — and `grep 'retry_strategy='` across the
+module returns **zero callers**. So either pass it at the call sites, or add
+`retryStrategy` + `timeout` to the two `register_job_definition` calls. Prefer the latter:
+it also covers anything submitting against those definitions from outside this module.
+
+> **Contrast worth recording, since it cuts the other way:** on the Nextflow path nf-amazon
+> sets **both** `retryStrategy` and `timeout` on the `SubmitJobRequest` itself, so a
+> per-commit definition's `attempts: 1` never binds there. The gap in this section is
+> specific to the two v2 mechanisms. (See `plan-nextflow-dispatch.md` §11.1b.)
+
+### 3g. Every generation after the first silently lost its trailing parquet **and** its success sentinel
+
+*Root-caused 2026-09-04 — **v2ecoli issue #687**, fixed by **v2ecoli PR #688**
+(`10ebc4c2`, open, 6/6 tests passing). Recorded here because it invalidates a check §5
+recommends and a hazard §4 describes.*
+
+Division finalizes the parent emitter by looking it up in the process-global registry,
+deriving the key from `_PARQUET_EMITTER_OVERRIDE`'s metadata and falling back to
+`self.agent_id`. On the lineage path that override is **guaranteed `None` at division time**
+— `_build_generation` sets it, calls `baseline()`, and clears it in a `finally` *before*
+`Composite(doc)` is constructed — so the lookup is always `"0"`, while emitters are
+registered under the runner's per-generation id (`"0"`, `"00"`, `"000"`). They coincide only
+for generation 0. `flush_parquet` doesn't cover it either: `Division` has already returned
+`{'agents': {'_remove': [...]}}`, so the walk finds no live emitter.
+
+**And `summary.json` still reported `divided: true` with a full duration.** Measured on a
+2-generation lineage, no swap, full `run_pbg` path:
+
+```
+gen0   7 chunks, last 2528.pq, success=1
+gen1   6 chunks, last 2400.pq, success=0     ← ~338 ticks (~20 MB) dropped
+```
+
+**The missing sentinel is the larger loss**, not the truncation: `success_sql` SEMI JOINs
+unsuccessful sims out of the dataset SQL, so the generation **disappears from any analysis
+that filters on it**.
+
+The fix finalizes in the object that owns the key — `LineageProcess` calls
+`finalize_emitter_for_agent(self._agent_id)` alongside `flush_parquet`; the two cover
+disjoint cases (timed out vs divided) and both are idempotent. Ships with
+`tests/test_lineage_emitter_finalize.py` (6 passed). **MERGED as v2ecoli#688** (`76def1f8`,
+2026-09-04) and **now deployed**: sms-ecoli pins `ee85b95f`, and simulator **128** is the first
+image carrying it. Confirmed on real infra twice — the throwaway v2ecoli-only build (simulation
+316) and the production stack (simulation 326).
+
+Two consequences for this document:
+
+- **§4's "the zarr store enforces the chain"** — generation *N* refuses to open unless
+  *N−1* carries the success attr from a clean `close(success=True)`. That sentinel was
+  **never written for any generation ≥ 1**, so the hazard was firing, not hypothetical.
+  Closed by v2ecoli#688; anything written *before* simulator 128 still carries the gap.
+- **§5's "assert >1 parquet shard"** — a truncated trailing batch still leaves multiple
+  shards, so the check passed while the data was short. Assert the **success sentinel**
+  per generation as well as the shard count.
+
+## 4. Hazards now live (chain jobs actually run `LineageProcess` since #369)
+
+- **Division-by-exception is now type-guarded upstream** — *correction from Alex on
+  PR #375.* The stale ref this analysis read shows a bare substring match
+  (`"divide" in msg or "division" in msg`, `lineage.py:361-367`), and sms-ecoli has a
+  measured case of `ZeroDivisionError` ("float division by zero") being read as a
+  division (`sms_modules/processes/gillespie.py:331-341`). Since v2ecoli #610
+  (`2ecb11ca`), `is_division_exception()` in `v2ecoli/library/division.py` excludes
+  `ArithmeticError` and 8 other builtin types *by type*, and the caller
+  `warnings.warn`s whenever it does treat an exception as a division. Alex checked
+  CloudWatch for sim262/gen0: zero such warnings. So the exception signal is no longer
+  the suspect for §3d — the other two signals are.
+- **The JSON carry-state round-trip is lossy and untested.** `MetadataArray` metadata
+  survives only under `unique`; nested objects degrade to truncated reprs; dict keys
+  stringified; tuples not reconstructed (`v2ecoli/cache.py:45-127`). Every checkpoint
+  test monkeypatches the I/O. The sibling *dill* path is known broken — resumed
+  daughters never re-initiate replication
+  (`sms-ecoli/docs/resume_dill_replication_init_bug.md`, open). Borrow its acceptance
+  criterion: `divide_cell(roundtrip(state))` must equal `divide_cell(state)`
+  field-for-field on the unique stores. sim 257's MD5 check proves the checkpoints
+  *differ* across generations; it does not prove they are *faithful*.
+- **`generations` is an absolute bound**, not a count (`lineage.py:460-461`,
+  post-increment). `generations=1` + any `G` runs exactly one — fine. Any chunked-K
+  design must send `G + K`; `run_native_chain.py` documents being burned by this.
+- **Parquet and zarr disagree by one** on generation: parquet `self._generation`
+  (0-based), zarr `len(agent_id)` (1-based).
+- **The zarr store enforces the chain**: generation *N* refuses to open unless
+  *N−1*'s partition exists *and* carries the success attr from that job's clean
+  `close(success=True)`. A killed job breaks its successor.
+- **`baseline()`'s injection resolver is chosen by `sys.path`, not by the pin.** *(New
+  2026-09-04, v2ecoli#684.)* v2ecoli's wheel does not ship `scripts/`, so
+  `ecoli_baseline.baseline()`'s bare `from scripts._compare.inject import …` resolves
+  **whichever repo's `scripts/` is on `sys.path`** — on the GovCloud pod that is
+  **sms-ecoli's vendored copy**, the one carrying the native-redux builder v2ecoli's own
+  copy lacks. Chain-dispatch only works because viva-api#359 injects
+  `PYTHONPATH={V2ECOLI_DIR}` into `PBG_RUNNER_ENV` at all three `run_pbg.py` call sites,
+  after a real dispatch died on `ModuleNotFoundError('scripts')`. #684 wheel-ships one
+  absolute-imported `v2ecoli/library/inject.py` as step 1 of 3; until steps 2–3 land, which
+  resolver runs is a property of the launch environment. Pairs with the pin bullet below:
+  the pin names a commit, and does not determine which `inject.py` executes.
+- ~~**The v2ecoli pin is a branch pin**~~ — **RESOLVED 2026-09-04.** It read `branch="main"`
+  (locked to `268515f0`), so `uv lock` could move `LineageProcess` under the deployment without
+  anyone deciding to. sms-ecoli#221 replaced it with an explicit rev
+  (`rev = "ee85b95f…"`), and process-bigraph with a release tag (`tag = "v1.8.4"`), so both
+  now move only by an edit visible in a diff. Left in place rather than deleted: the failure
+  mode is worth remembering, and **v2ecoli itself still has zero tags**, so its consumers name
+  it by a 40-character hash with no version — the same ambiguity one layer down.
+
+## 5. Verification
+
+- Unit: `uv run pytest tests/simulation/test_ray_backend.py tests/simulation/test_scheduler.py`
+- Smoke, on `smsvpctest` via the tunnel: `chain-dispatch.sh` (defaults = sim 257's
+  1×3), then assert `daughter-state/seed0/gen{0,1,2}.pkl` all exist with distinct
+  MD5s, three `generation=` parquet partitions, per-job runtime in minutes.
+- **Swap effect, not just presence (§3e).** For any dispatch declaring a swap, assert
+  the run actually ran: **>1 parquet shard** (or a max shard index well past `1.pq`)
+  and a **real per-generation `duration`** (the sum across `summary.generations`, per
+  viva-api#408 — **not** `global_time`, which reads ≈1.0 on every chain-dispatch
+  generation regardless of outcome). **Add the per-generation success sentinel** — no
+  generation ≥ 1 writes one today, while `summary.json` says `divided: true` (§3g). `injected_processes` being non-null
+  on the artifact is necessary but not sufficient — post-#387 it is true whether the
+  run executed or collapsed on tick 1.
+- Fidelity (follow-up): same seed, 3 generations chained vs. one pbg-native run;
+  compare dry-mass-at-division per generation. Some divergence is by construction
+  (listeners reset, RNG re-seeded per generation). A generation that never
+  re-initiates replication is the dill bug's signature on the JSON path.
+
+## 6. Retracted — what this document got wrong, and how
+
+*Moved here 2026-09-04. These sat inside "§3 Still open", which was exactly backwards: a
+reader skimming for open work met 149 lines of withdrawn claims first.* **Their original
+§3d / §3e numbering is preserved**, because @cplong90 and @AlexPatrie cite those labels in
+the #375 and #408 threads and renumbering would break live references.
+
+Kept rather than deleted. Three confident diagnoses were published here and all three were
+wrong, each in a different way — evidence withdrawn by its author, a signal that reads the
+same on success and failure, and a defect misattributed to the wrong mechanism. The pattern
+across them is the lesson §2 tries to state in the abstract:
+
+- **`global_time == 1.0`** looked like a one-tick collapse. It reads ≈1.0 on *every*
+  chain-dispatch generation, pass or fail — the outer composite's clock, not the lineage's.
+- **The 25–46 s "fast completions"** were the basis of a whole failure taxonomy. @cplong90
+  withdrew them: those runs *"did not simulate at all"* — no shards, no `daughter-state/`.
+  There was no fast completion to explain.
+- **"§3e's post-#387 run proves a trade"** — it was viva-api#401, a different bug entirely.
 
 ### 3d. ~~Open: `swap_processes` collapses every generation to one tick~~ — **RETRACTED**
 
@@ -294,151 +474,3 @@ explanation.** The 25–46 s numbers were real. `global_time = 1.0` was real. Si
 44.5 s and 500-byte shard were real. Each was attached to a cause nobody had checked —
 including by me, twice. That is the same failure this document catalogues in the code
 (#401/#402/#403), applied to our own reasoning about it.
-
-### 3f. Per-commit job definitions carry **no retry and no timeout** — and the code says otherwise
-
-*New 2026-09-04. Found by @cplong90 on the MNP side; verified here across the whole
-population and extended to the container path that chain-dispatch actually uses.*
-
-Live on `smsvpctest`:
-
-```
-smsvpctest-ray-container              rev1   retry={'attempts': 2}   timeout=None   ← base, nothing runs on it
-smsvpctest-ray-container-<sha>        rev1   retry=None              timeout=None   ← every per-commit def
-smsvpctest-ray-array                  rev1   retry={'attempts': 2}   timeout=None
-```
-
-Not a sample — **every** `smsvpctest-ray-container-<sha>` definition returns
-`retryStrategy=None`. The cause is one line in each cloner: `_ensure_container_job_def`
-registers `type="container", containerProperties=…` and `_ensure_mnp_job_def` registers
-`type="multinode", nodeProperties=…`. Neither copies `retryStrategy` or `timeout` from the
-base definition it deep-copies everything else from, so both inherit AWS Batch's defaults:
-**`attempts: 1`, no timeout.**
-
-⇒ A generation lost to an OOM or a node failure is **not retried by anything**, and a hung
-generation runs **forever**. On the on-demand CEs of §1 that is the realistic failure, not
-reclaim.
-
-**The fix is small, and half of it is already written.** `_submit_container` and
-`_submit_mnp` both accept a `retry_strategy` argument and pass it "verbatim as
-`SubmitJob.retryStrategy`" (their own docstring) — and `grep 'retry_strategy='` across the
-module returns **zero callers**. So either pass it at the call sites, or add
-`retryStrategy` + `timeout` to the two `register_job_definition` calls. Prefer the latter:
-it also covers anything submitting against those definitions from outside this module.
-
-> **Contrast worth recording, since it cuts the other way:** on the Nextflow path nf-amazon
-> sets **both** `retryStrategy` and `timeout` on the `SubmitJobRequest` itself, so a
-> per-commit definition's `attempts: 1` never binds there. The gap in this section is
-> specific to the two v2 mechanisms. (See `plan-nextflow-dispatch.md` §11.1b.)
-
-### 3g. Every generation after the first silently lost its trailing parquet **and** its success sentinel
-
-*Root-caused 2026-09-04 — **v2ecoli issue #687**, fixed by **v2ecoli PR #688**
-(`10ebc4c2`, open, 6/6 tests passing). Recorded here because it invalidates a check §5
-recommends and a hazard §4 describes.*
-
-Division finalizes the parent emitter by looking it up in the process-global registry,
-deriving the key from `_PARQUET_EMITTER_OVERRIDE`'s metadata and falling back to
-`self.agent_id`. On the lineage path that override is **guaranteed `None` at division time**
-— `_build_generation` sets it, calls `baseline()`, and clears it in a `finally` *before*
-`Composite(doc)` is constructed — so the lookup is always `"0"`, while emitters are
-registered under the runner's per-generation id (`"0"`, `"00"`, `"000"`). They coincide only
-for generation 0. `flush_parquet` doesn't cover it either: `Division` has already returned
-`{'agents': {'_remove': [...]}}`, so the walk finds no live emitter.
-
-**And `summary.json` still reported `divided: true` with a full duration.** Measured on a
-2-generation lineage, no swap, full `run_pbg` path:
-
-```
-gen0   7 chunks, last 2528.pq, success=1
-gen1   6 chunks, last 2400.pq, success=0     ← ~338 ticks (~20 MB) dropped
-```
-
-**The missing sentinel is the larger loss**, not the truncation: `success_sql` SEMI JOINs
-unsuccessful sims out of the dataset SQL, so the generation **disappears from any analysis
-that filters on it**.
-
-The fix finalizes in the object that owns the key — `LineageProcess` calls
-`finalize_emitter_for_agent(self._agent_id)` alongside `flush_parquet`; the two cover
-disjoint cases (timed out vs divided) and both are idempotent. Ships with
-`tests/test_lineage_emitter_finalize.py` (6 passed). **MERGED as v2ecoli#688** (`76def1f8`,
-2026-09-04) and **now deployed**: sms-ecoli pins `ee85b95f`, and simulator **128** is the first
-image carrying it. Confirmed on real infra twice — the throwaway v2ecoli-only build (simulation
-316) and the production stack (simulation 326).
-
-Two consequences for this document:
-
-- **§4's "the zarr store enforces the chain"** — generation *N* refuses to open unless
-  *N−1* carries the success attr from a clean `close(success=True)`. That sentinel was
-  **never written for any generation ≥ 1**, so the hazard was firing, not hypothetical.
-  Closed by v2ecoli#688; anything written *before* simulator 128 still carries the gap.
-- **§5's "assert >1 parquet shard"** — a truncated trailing batch still leaves multiple
-  shards, so the check passed while the data was short. Assert the **success sentinel**
-  per generation as well as the shard count.
-
-## 4. Hazards now live (chain jobs actually run `LineageProcess` since #369)
-
-- **Division-by-exception is now type-guarded upstream** — *correction from Alex on
-  PR #375.* The stale ref this analysis read shows a bare substring match
-  (`"divide" in msg or "division" in msg`, `lineage.py:361-367`), and sms-ecoli has a
-  measured case of `ZeroDivisionError` ("float division by zero") being read as a
-  division (`sms_modules/processes/gillespie.py:331-341`). Since v2ecoli #610
-  (`2ecb11ca`), `is_division_exception()` in `v2ecoli/library/division.py` excludes
-  `ArithmeticError` and 8 other builtin types *by type*, and the caller
-  `warnings.warn`s whenever it does treat an exception as a division. Alex checked
-  CloudWatch for sim262/gen0: zero such warnings. So the exception signal is no longer
-  the suspect for §3d — the other two signals are.
-- **The JSON carry-state round-trip is lossy and untested.** `MetadataArray` metadata
-  survives only under `unique`; nested objects degrade to truncated reprs; dict keys
-  stringified; tuples not reconstructed (`v2ecoli/cache.py:45-127`). Every checkpoint
-  test monkeypatches the I/O. The sibling *dill* path is known broken — resumed
-  daughters never re-initiate replication
-  (`sms-ecoli/docs/resume_dill_replication_init_bug.md`, open). Borrow its acceptance
-  criterion: `divide_cell(roundtrip(state))` must equal `divide_cell(state)`
-  field-for-field on the unique stores. sim 257's MD5 check proves the checkpoints
-  *differ* across generations; it does not prove they are *faithful*.
-- **`generations` is an absolute bound**, not a count (`lineage.py:460-461`,
-  post-increment). `generations=1` + any `G` runs exactly one — fine. Any chunked-K
-  design must send `G + K`; `run_native_chain.py` documents being burned by this.
-- **Parquet and zarr disagree by one** on generation: parquet `self._generation`
-  (0-based), zarr `len(agent_id)` (1-based).
-- **The zarr store enforces the chain**: generation *N* refuses to open unless
-  *N−1*'s partition exists *and* carries the success attr from that job's clean
-  `close(success=True)`. A killed job breaks its successor.
-- **`baseline()`'s injection resolver is chosen by `sys.path`, not by the pin.** *(New
-  2026-09-04, v2ecoli#684.)* v2ecoli's wheel does not ship `scripts/`, so
-  `ecoli_baseline.baseline()`'s bare `from scripts._compare.inject import …` resolves
-  **whichever repo's `scripts/` is on `sys.path`** — on the GovCloud pod that is
-  **sms-ecoli's vendored copy**, the one carrying the native-redux builder v2ecoli's own
-  copy lacks. Chain-dispatch only works because viva-api#359 injects
-  `PYTHONPATH={V2ECOLI_DIR}` into `PBG_RUNNER_ENV` at all three `run_pbg.py` call sites,
-  after a real dispatch died on `ModuleNotFoundError('scripts')`. #684 wheel-ships one
-  absolute-imported `v2ecoli/library/inject.py` as step 1 of 3; until steps 2–3 land, which
-  resolver runs is a property of the launch environment. Pairs with the pin bullet below:
-  the pin names a commit, and does not determine which `inject.py` executes.
-- ~~**The v2ecoli pin is a branch pin**~~ — **RESOLVED 2026-09-04.** It read `branch="main"`
-  (locked to `268515f0`), so `uv lock` could move `LineageProcess` under the deployment without
-  anyone deciding to. sms-ecoli#221 replaced it with an explicit rev
-  (`rev = "ee85b95f…"`), and process-bigraph with a release tag (`tag = "v1.8.4"`), so both
-  now move only by an edit visible in a diff. Left in place rather than deleted: the failure
-  mode is worth remembering, and **v2ecoli itself still has zero tags**, so its consumers name
-  it by a 40-character hash with no version — the same ambiguity one layer down.
-
-## 5. Verification
-
-- Unit: `uv run pytest tests/simulation/test_ray_backend.py tests/simulation/test_scheduler.py`
-- Smoke, on `smsvpctest` via the tunnel: `chain-dispatch.sh` (defaults = sim 257's
-  1×3), then assert `daughter-state/seed0/gen{0,1,2}.pkl` all exist with distinct
-  MD5s, three `generation=` parquet partitions, per-job runtime in minutes.
-- **Swap effect, not just presence (§3e).** For any dispatch declaring a swap, assert
-  the run actually ran: **>1 parquet shard** (or a max shard index well past `1.pq`)
-  and a **real per-generation `duration`** (the sum across `summary.generations`, per
-  viva-api#408 — **not** `global_time`, which reads ≈1.0 on every chain-dispatch
-  generation regardless of outcome). **Add the per-generation success sentinel** — no
-  generation ≥ 1 writes one today, while `summary.json` says `divided: true` (§3g). `injected_processes` being non-null
-  on the artifact is necessary but not sufficient — post-#387 it is true whether the
-  run executed or collapsed on tick 1.
-- Fidelity (follow-up): same seed, 3 generations chained vs. one pbg-native run;
-  compare dry-mass-at-division per generation. Some divergence is by construction
-  (listeners reset, RNG re-seeded per generation). A generation that never
-  re-initiates replication is the dill bug's signature on the JSON path.
