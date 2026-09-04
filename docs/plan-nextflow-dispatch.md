@@ -335,9 +335,28 @@ fan-*out* for free (421 blocks, 0.02 s, correct ordering, plain scalar ports), a
 a usable fallback. It is just the wrong shape — it flattens what the document nests, and
 then needs a merge that does not exist.
 
-⇒ **Phase 1f is replaced by one item: sub-workflow emission.** Not "implement
-`_cardinality`", not "fix `Mix` + the overwrite". Preserve the hierarchy the document
-already carries. No bigraph-schema change, no new plumbing operator.
+⇒ **Phase 1f is replaced by sub-workflow emission — nesting *plus* one more thing.**
+Not "implement `_cardinality`", not "fix `Mix` + the overwrite": preserve the hierarchy the
+document already carries. But **nesting alone is not sufficient**, and this is the part
+that only showed up on implementing it: the merge *inside* a sub-workflow is still N-wide,
+and a naive `a.mix(b, c, …)` is a Java method call that dies at the same 255 limit. The
+fix is to **chain binary mixes** (`x = x.mix(y)`, N statements of arity 1). Nesting makes
+the parent's gather one channel; binary chaining makes the child's merge expressible at
+336. Still no bigraph-schema change and no new plumbing operator.
+
+**Prototyped and measured** — process-bigraph#201, stacked on #197. `parca → runs(N) →
+analysis` on the local executor: **N=336, exit 0, the analysis task received 336 of 336**
+(338 tasks, 13 s). Four changes beyond the two above were needed to get there, each a real
+defect in its own right: a **unified topological sort** over Steps *and* nested Composites
+(a Steps-only sort cannot see a dependency running *through* a composite node, so the two
+ends were ordered arbitrarily); **registering a nested Composite's outputs as producers**
+(otherwise a consumer resolves to `params.<path>` and the run dies with "A process input
+channel evaluates to null"); and resolving **`take:` ports as bare identifiers**.
+
+> Still open in that prototype, and flagged on the PR rather than assumed: `emit:` gathers
+> every terminal channel in scope, which is right for a fan-out but ignores a composite's
+> declared `bridge` outputs when it has them; and the silent shared-store overwrite is
+> **not** fixed — it stops being load-bearing but stays reachable and quiet.
 
 > The silent-overwrite behaviour is still worth making loud on its own merits — it is
 > reachable from the documented API and fails quietly — but it stops being load-bearing.
@@ -392,11 +411,12 @@ On top of `pr197`, all in `nextflow.py` / `nextflow_deploy.py`:
 
   **Replaced by sub-workflow emission** (see Phase 0). Neither `_cardinality` nor a
   `Mix`/overwrite repair is the right change: all of those patch symptoms of flattening a
-  document that already says *nest*. The one change is to make `render_composite` **recurse
-  into a nested `Composite` and emit a Nextflow sub-workflow** (`take:`/`emit:` from the
-  composite's own `bridge`) instead of collapsing it to a single `run_composite` task.
-  Scatter, the 255-parameter gather and the `Mix` gap all disappear together, with no
-  bigraph-schema change and no new plumbing operator.
+  document that already says *nest*. Make `render_composite` **recurse into a nested
+  `Composite` and emit a Nextflow sub-workflow** (`take:`/`emit:`) instead of collapsing it
+  to a single `run_composite` task — **and chain binary mixes** in the `emit:`, because
+  nesting alone still leaves an N-wide merge that hits the same 255-parameter limit.
+  Prototyped in process-bigraph#201 and measured at 336 (see Phase 0); no bigraph-schema
+  change and no new plumbing operator.
 - **`deploy()` fixes** — `render_options.setdefault('python', sys.executable)` (`:105`) is a
   latent Batch bug: the head's interpreter will not exist inside a task container. Default to
   `sys.executable` only for `executor='local'`. Add `resume`, `report`, `trace`,
