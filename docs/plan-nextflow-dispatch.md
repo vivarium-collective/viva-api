@@ -1041,6 +1041,33 @@ path (mirroring the k8s one) or give v2ecoli its own submit Dockerfile. It is a 
 but it is a **prerequisite, not a detail** — and it is the place where 11.1's Nextflow
 version gets pinned.
 
+> ### 11.3b — the scope is narrower than the above reads (traced 2026-09-04)
+>
+> "No image with Java + Nextflow" is true, but it does **not** mean the v2ecoli image needs
+> reworking. vEcoli's proven path splits head from task, and only the head needs a JVM:
+>
+> | | image | needs |
+> |---|---|---|
+> | **head** | `vecoli:<sha>-amd64-submit` — a **derived layer**: base + `default-jre-headless` + the `nextflow` binary | runs `nextflow run`, as an EKS K8s Job (`simulation_service_k8s.py:233,308`) with 500m CPU / 1Gi |
+> | **tasks** | `container = params.container_image` — the **plain** science image | no Java, no Nextflow. Only the AWS CLI, to stage the S3 work dir |
+>
+> `config.template`'s `awsbatch` profile sets no `aws.batch.cliPath`, so it relies on `aws`
+> being on `PATH` inside the task container, and injects
+> `containerOptions = "--env AWS_DEFAULT_REGION=…"` for it.
+>
+> **⇒ v2ecoli already satisfies the task side.** Its Dockerfile installs **AWS CLI v2**
+> (`:149-156`, x86_64 and aarch64) and contains **zero** java/jre/nextflow references. So
+> `v2ecoli:<sha>` is already a valid Nextflow *task* container; it simply cannot be the head.
+>
+> What is actually required is **one thin derived head image**, and the recipe exists verbatim
+> as the inline `Dockerfile-submit` heredoc at `simulation_service_k8s.py:127-141`.
+>
+> Two details vEcoli's profile confirms rather than leaves to us:
+> `params.projectRoot = '/vEcoli'` is the same declare-the-root fix that §Phase 0 requires as
+> `PYTHONPATH=/app/v2ecoli`; and `aws.batch.maxSpotAttempts = 10` is precisely the knob
+> §11.1b says the stub omits — set there because that queue is Spot-first, which is precedent
+> rather than speculation.
+
 ### 11.4 Repo recheck (2026-09-04, ~17:00 UTC) — what moved under this plan
 
 The doc is code-grounded at viva-api `1fa6fb14` (0.9.91). Since then:
