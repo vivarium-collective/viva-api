@@ -1393,9 +1393,7 @@ class TestSimulationServiceRayBuild:
         overrides = json.loads(tokens[tokens.index("--overrides") + 1])
         assert overrides["injected_processes"] == injected
         # The swap survived into the native composite's own kwarg shape.
-        assert overrides["injected_processes"]["swap_processes"] == {
-            "ecoli-metabolism": "ecoli-metabolism-redux"
-        }
+        assert overrides["injected_processes"]["swap_processes"] == {"ecoli-metabolism": "ecoli-metabolism-redux"}
 
     def test_sim_command_batch_threads_all_domain_fields(self) -> None:
         """variants/config_overrides/features/exchange_fluxes(+basis) are the
