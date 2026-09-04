@@ -10,21 +10,21 @@
         "lineage_seed": 0,
         "generations": 1,
         "single_daughters": true,
-        "experiment_id": "item109-out-dir-s3-verify",
-        "out_dir": "s3://smsvpctest-shared-sharedbucket60d199d6-abfvwv0day91/item109-out-dir-verify/",
+        "experiment_id": "item109-j3-pbgnative-mechanics",
+        "out_dir": "out/batch_baseline",
         "max_duration_per_gen": 3600.0,
         "time_step": 1.0,
         "media": "minimal",
         "emitter": "both",
         "injected_processes": {
+          "fork_repo": "",
+          "add_processes": [],
           "swap_processes": {
             "ecoli-metabolism": "ecoli-metabolism-redux"
           },
-          "add_processes": [],
           "exclude_processes": [
             "exchange_data"
-          ],
-          "fork_repo": ""
+          ]
         }
       },
       "interval": 3600.0,
@@ -38,47 +38,6 @@
         "complete": [
           "lineages",
           "lineage_0000",
-          "complete"
-        ]
-      }
-    },
-    "lineage_0001": {
-      "_type": "process",
-      "address": "ray:LineageProcess",
-      "config": {
-        "cache_dir": "/tmp/item109-logs/real-cache",
-        "seed": 1,
-        "lineage_seed": 1,
-        "generations": 1,
-        "single_daughters": true,
-        "experiment_id": "item109-out-dir-s3-verify",
-        "out_dir": "s3://smsvpctest-shared-sharedbucket60d199d6-abfvwv0day91/item109-out-dir-verify/",
-        "max_duration_per_gen": 3600.0,
-        "time_step": 1.0,
-        "media": "minimal",
-        "emitter": "both",
-        "injected_processes": {
-          "swap_processes": {
-            "ecoli-metabolism": "ecoli-metabolism-redux"
-          },
-          "add_processes": [],
-          "exclude_processes": [
-            "exchange_data"
-          ],
-          "fork_repo": ""
-        }
-      },
-      "interval": 3600.0,
-      "inputs": {},
-      "outputs": {
-        "summary": [
-          "lineages",
-          "lineage_0001",
-          "summary"
-        ],
-        "complete": [
-          "lineages",
-          "lineage_0001",
           "complete"
         ]
       }
