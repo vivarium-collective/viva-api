@@ -62,8 +62,18 @@ images:
   # row (only the legacy SLURM-only run_parca handler does), so the
   # precondition 409'd on every real chain-dispatch-originated ParcaDataset.
   # Removed entirely, matching this codebase's pure-passthrough philosophy.
+  # 0.9.93 (PR #406, item 105/#401): injected_processes_from_config resolves
+  # swap_processes/add_processes/exclude_processes PER FIELD instead of
+  # choosing the whole nested-vs-flat shape once -- a nested submit setting
+  # only swap_processes was silently dropping a config's own flat
+  # add_processes/exclude_processes (observed live, sim 296:
+  # mecillinam_wellmixed.json's own 4 add_processes vanished under a nested
+  # metabolism swap, unreported; independently reproduced by jcschaff the
+  # same night as a 44.5s collapse). Nested wins on a real per-field
+  # conflict, logged rather than silent. Same root cause as #392/0.9.92 --
+  # reconstructing the block instead of merging into it.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.92
+    newTag: 0.9.93
   # ptools 0.5.9 -> 0.9.53 (DEV ONLY — prod sms-api-stanford stays on 0.5.9 while
   # this soaks). The long-standing 0.5.9 pin existed because CI builds only
   # sms-api (scripts/build_action.sh), so no newer sms-ptools existed on ghcr.io
