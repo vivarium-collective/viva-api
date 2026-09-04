@@ -348,3 +348,25 @@ async def test_submit_simulation_document_omits_num_nodes_by_default(fastapi_app
 
     assert response.status_code == 200
     assert captured["simulation_request"].num_nodes is None
+
+
+# --- item109: MAX_INTERVAL_TIME must fit a real pbg-native lineage campaign, and the
+# cap must still reject a genuinely malformed value (regression tests ported from the
+# duplicate fix in #383, adapted to this branch's own MAX_INTERVAL_TIME constant) ---
+
+
+def test_max_interval_time_accommodates_a_real_lineage_run() -> None:
+    """8 generations * 3600s/gen (a real CD2 lineage run's total simulated time)
+    must fit under the cap -- this used to be impossible at the old 1000s bound."""
+    assert compose_router.MAX_INTERVAL_TIME >= 8 * 3600.0
+
+
+@pytest.mark.asyncio
+async def test_submit_simulation_document_rejects_interval_past_the_new_cap(fastapi_app: object) -> None:
+    async with AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://testserver") as client:  # type: ignore[arg-type]
+        response = await client.post(
+            "/compose/v1/simulation/run-document",
+            json={"document": {"state": {}}, "interval_time": compose_router.MAX_INTERVAL_TIME + 1.0},
+        )
+    assert response.status_code == 400
+    assert "interval_time must be between" in response.json()["detail"]
