@@ -3922,6 +3922,13 @@ components:
           - type: string
           - type: 'null'
           title: Multi Node Composite Id
+        external_job_ids:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: External Job Ids
         job_id_ext:
           type: string
           title: Job Id Ext

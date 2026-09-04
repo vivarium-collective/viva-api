@@ -1,19 +1,24 @@
 import asyncio
+import datetime
 import os
 import random
 import string
 import tempfile
 import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import pytest_asyncio
 
 from viva_api.common.hpc.job_service import JobStatusInfo, JobStatusUpdate
+from viva_api.common.hpc.local_task_service import LocalTaskService
 from viva_api.common.hpc.models import SlurmJob
 from viva_api.common.hpc.slurm_service import SlurmService
 from viva_api.common.messaging.messaging_service_redis import MessagingServiceRedis
 from viva_api.common.models import JobId, JobStatus, SSHTarget
+from viva_api.common.simulator_defaults import RepoUrl
 from viva_api.common.ssh.ssh_service import SSHSessionService
 from viva_api.common.storage.file_paths import S3FilePath
 from viva_api.common.storage.file_service import FileService
@@ -21,9 +26,10 @@ from viva_api.common.storage.file_service_qumulo_s3 import FileServiceQumuloS3
 from viva_api.common.storage.file_service_s3 import FileServiceS3
 from viva_api.config import get_settings
 from viva_api.dependencies import get_ssh_session_service
+from viva_api.simulation import batch_build
 from viva_api.simulation.database_service import DatabaseServiceSQL
 from viva_api.simulation.hpc_utils import get_correlation_id
-from viva_api.simulation.job_scheduler import JobScheduler
+from viva_api.simulation.job_scheduler import LOCAL_ORPHAN_GRACE_SECONDS, JobScheduler
 from viva_api.simulation.models import (
     HpcRun,
     JobType,
@@ -1041,6 +1047,355 @@ class TestUpdateMultiNodeJobs:
 
 @pytest.mark.integration
 @pytest.mark.skipif(not Path(get_settings().slurm_submit_key_path).exists(), reason="slurm ssh key file not supplied")
+async def insert_local_build_row(
+    database_service: DatabaseServiceSQL,
+    *,
+    task_id: str,
+    repo_url: str = RepoUrl.V2ECOLI_REPO_URL.value,
+    external_job_ids: list[str] | None = None,
+    age_seconds: float = 0.0,
+) -> HpcRun:
+    """A BUILD_IMAGE HpcRun row pointing at a LOCAL task id -- the exact shape
+    upload_simulator writes for a DooD build (viva-api#414). ``age_seconds``
+    back-dates start_time so the reconciler's grace window can be exercised."""
+    simulator = await database_service.insert_simulator(
+        git_commit_hash=str(uuid.uuid4())[:7], git_repo_url=repo_url, git_branch="main"
+    )
+    hpcrun = await database_service.insert_hpcrun(
+        job_id=JobId.local(task_id), job_type=JobType.BUILD_IMAGE, ref_id=simulator.database_id, correlation_id="N/A"
+    )
+    if external_job_ids is not None:
+        await database_service.set_hpcrun_external_job_ids(hpcrun.database_id, external_job_ids)
+    if age_seconds:
+        started = datetime.datetime.now() - datetime.timedelta(seconds=age_seconds)
+        await database_service.update_hpcrun_status(
+            hpcrun_id=hpcrun.database_id,
+            update=JobStatusUpdate(job_id=hpcrun.job_id, status=JobStatus.RUNNING, start_time=started.isoformat()),
+        )
+    fresh = await database_service.get_hpcrun(hpcrun.database_id)
+    assert fresh is not None
+    return fresh
+
+
+def _batch_state(job_id: str, status: str, *, reason: str | None = None, stopped_at_ms: int | None = None) -> Any:
+    return batch_build.BatchJobState(
+        job_id=job_id, job_name=f"name-{job_id}", status=status, status_reason=reason, stopped_at_ms=stopped_at_ms
+    )
+
+
+def _reconciling_scheduler(database_service: DatabaseServiceSQL, local: LocalTaskService | None) -> JobScheduler:
+    return JobScheduler(
+        messaging_service=MagicMock(),
+        database_service=database_service,
+        slurm_service=None,
+        simulation_service_ray=None,
+        local_task_service=local,
+    )
+
+
+class TestReconcileLocalTasks:
+    """JobScheduler.reconcile_local_tasks (viva-api#414): every tick, finish
+    active LOCAL HpcRun rows that no live process owns from the external
+    work's true state. Real Postgres (testcontainers); AWS Batch mocked at the
+    batch_build helper boundary."""
+
+    @pytest_asyncio.fixture(autouse=True)
+    async def _retire_leftover_local_rows(self, database_service: DatabaseServiceSQL) -> None:
+        """The Postgres fixture is shared across tests; an active LOCAL row left
+        behind by another test would be reconciled here too and skew the
+        call-count assertions. Retire them first so every test sees only its own."""
+        for row in await database_service.list_active_local_hpcruns():
+            await database_service.update_hpcrun_status(
+                hpcrun_id=row.database_id,
+                update=JobStatusUpdate(job_id=row.job_id, status=JobStatus.CANCELLED, error_message="test cleanup"),
+            )
+
+    @pytest.mark.asyncio
+    async def test_noop_without_a_local_task_service(self) -> None:
+        db = MagicMock()
+        db.list_active_local_hpcruns = AsyncMock()
+        scheduler = JobScheduler(messaging_service=MagicMock(), database_service=db, local_task_service=None)
+        await scheduler.reconcile_local_tasks()
+        db.list_active_local_hpcruns.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_row_this_process_owns_is_left_alone(self, database_service: DatabaseServiceSQL) -> None:
+        local = LocalTaskService()
+
+        async def slow() -> None:
+            await asyncio.sleep(10)
+
+        job_id = local.submit(slow(), name="build")
+        row = await insert_local_build_row(database_service, task_id=job_id.value, external_job_ids=["bj-1"])
+        scheduler = _reconciling_scheduler(database_service, local)
+        with patch.object(batch_build, "describe_batch_jobs", new=AsyncMock()) as describe:
+            await scheduler.reconcile_local_tasks()
+        describe.assert_not_awaited()
+        fresh = await database_service.get_hpcrun(row.database_id)
+        assert fresh is not None and fresh.status == JobStatus.RUNNING
+        local.cancel(job_id.value)
+
+    @pytest.mark.asyncio
+    async def test_orphaned_build_whose_batch_job_succeeded_is_completed(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        """The measured case: hpcrun 506, build SUCCEEDED 6 minutes after the
+        owning pod was replaced, row stuck at running until hand-edited."""
+        row = await insert_local_build_row(database_service, task_id="dead0506", external_job_ids=["bj-1"])
+        scheduler = _reconciling_scheduler(database_service, LocalTaskService())
+        stopped_at = int(datetime.datetime(2026, 9, 4, 17, 19, 39).timestamp() * 1000)
+        with patch.object(
+            batch_build,
+            "describe_batch_jobs",
+            new=AsyncMock(return_value={"bj-1": _batch_state("bj-1", "SUCCEEDED", stopped_at_ms=stopped_at)}),
+        ) as describe:
+            await scheduler.reconcile_local_tasks()
+        describe.assert_awaited_once_with(["bj-1"])
+        fresh = await database_service.get_hpcrun(row.database_id)
+        assert fresh is not None
+        assert fresh.status == JobStatus.COMPLETED
+        assert fresh.error_message is None
+        assert fresh.end_time is not None and fresh.end_time.startswith("2026-09-04 17:19:39")
+
+    @pytest.mark.asyncio
+    async def test_orphaned_build_with_one_failed_job_is_failed_with_the_reason(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        row = await insert_local_build_row(database_service, task_id="deadf41l", external_job_ids=["arm", "amd"])
+        scheduler = _reconciling_scheduler(database_service, LocalTaskService())
+        with patch.object(
+            batch_build,
+            "describe_batch_jobs",
+            new=AsyncMock(
+                return_value={
+                    "arm": _batch_state("arm", "SUCCEEDED"),
+                    "amd": _batch_state("amd", "FAILED", reason="Essential container in task exited"),
+                }
+            ),
+        ):
+            await scheduler.reconcile_local_tasks()
+        fresh = await database_service.get_hpcrun(row.database_id)
+        assert fresh is not None
+        assert fresh.status == JobStatus.FAILED
+        assert "name-amd" in (fresh.error_message or "")
+        assert "Essential container" in (fresh.error_message or "")
+
+    @pytest.mark.asyncio
+    async def test_orphaned_build_still_running_on_batch_is_left_running(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        row = await insert_local_build_row(
+            database_service, task_id="deadrunn", external_job_ids=["bj-1"], age_seconds=LOCAL_ORPHAN_GRACE_SECONDS * 5
+        )
+        scheduler = _reconciling_scheduler(database_service, LocalTaskService())
+        with patch.object(
+            batch_build, "describe_batch_jobs", new=AsyncMock(return_value={"bj-1": _batch_state("bj-1", "RUNNING")})
+        ):
+            await scheduler.reconcile_local_tasks()
+        fresh = await database_service.get_hpcrun(row.database_id)
+        assert fresh is not None
+        assert fresh.status == JobStatus.RUNNING  # far past grace, but the work is alive: derive, don't guess
+        assert fresh.end_time is None
+
+    @pytest.mark.asyncio
+    async def test_orphaned_build_with_no_handle_is_failed_only_after_grace(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        young = await insert_local_build_row(database_service, task_id="deadyung", age_seconds=5)
+        old = await insert_local_build_row(
+            database_service, task_id="dead0old", age_seconds=LOCAL_ORPHAN_GRACE_SECONDS + 60
+        )
+        scheduler = _reconciling_scheduler(database_service, LocalTaskService())
+        settings = MagicMock(build_amd64_queue="q-amd64", build_arm64_queue="q-arm64")
+        with (
+            patch("viva_api.simulation.job_scheduler.get_settings", return_value=settings),
+            patch.object(batch_build, "find_batch_job_ids_by_name", new=AsyncMock(return_value=[])),
+            patch.object(batch_build, "describe_batch_jobs", new=AsyncMock()) as describe,
+        ):
+            await scheduler.reconcile_local_tasks()
+        describe.assert_not_awaited()
+        fresh_young = await database_service.get_hpcrun(young.database_id)
+        fresh_old = await database_service.get_hpcrun(old.database_id)
+        assert fresh_young is not None and fresh_young.status == JobStatus.RUNNING
+        assert fresh_old is not None and fresh_old.status == JobStatus.FAILED
+        assert "re-upload the simulator" in (fresh_old.error_message or "")
+
+    @pytest.mark.asyncio
+    async def test_legacy_build_row_is_resolved_by_deterministic_job_name_and_handle_persisted(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        """A row written before external_job_ids existed (every orphan on a
+        live site today) is still recoverable: the build's Batch job name is
+        deterministic in the commit."""
+        row = await insert_local_build_row(database_service, task_id="deadlegc", age_seconds=30)
+        simulator = await database_service.get_simulator(simulator_id=row.ref_id)
+        assert simulator is not None
+        scheduler = _reconciling_scheduler(database_service, LocalTaskService())
+        settings = MagicMock(build_amd64_queue="q-amd64", build_arm64_queue="q-arm64")
+        with (
+            patch("viva_api.simulation.job_scheduler.get_settings", return_value=settings),
+            patch.object(batch_build, "find_batch_job_ids_by_name", new=AsyncMock(return_value=["found-1"])) as find,
+            patch.object(
+                batch_build,
+                "describe_batch_jobs",
+                new=AsyncMock(return_value={"found-1": _batch_state("found-1", "RUNNING")}),
+            ),
+        ):
+            await scheduler.reconcile_local_tasks()
+        find.assert_awaited_once()
+        assert find.await_args is not None
+        assert find.await_args.args == ("q-amd64", batch_build.ray_build_job_name(simulator.git_commit_hash))
+        assert find.await_args.kwargs["created_after_ms"] is not None
+        fresh = await database_service.get_hpcrun(row.database_id)
+        assert fresh is not None
+        assert fresh.status == JobStatus.RUNNING
+        assert fresh.external_job_ids == ["found-1"]  # persisted: the next tick is a plain describe
+
+        # next tick: no name lookup, describe by the persisted id, finish
+        with (
+            patch.object(batch_build, "find_batch_job_ids_by_name", new=AsyncMock()) as find_again,
+            patch.object(
+                batch_build,
+                "describe_batch_jobs",
+                new=AsyncMock(return_value={"found-1": _batch_state("found-1", "SUCCEEDED")}),
+            ),
+        ):
+            await scheduler.reconcile_local_tasks()
+        find_again.assert_not_awaited()
+        fresh = await database_service.get_hpcrun(row.database_id)
+        assert fresh is not None and fresh.status == JobStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_legacy_vecoli_build_looks_up_both_arch_jobs(self, database_service: DatabaseServiceSQL) -> None:
+        row = await insert_local_build_row(
+            database_service, task_id="deadk8s0", repo_url=RepoUrl.VECOLI_PRIVATE_REPO_URL.value
+        )
+        simulator = await database_service.get_simulator(simulator_id=row.ref_id)
+        assert simulator is not None
+        names = batch_build.k8s_build_job_names(simulator.git_commit_hash)
+        scheduler = _reconciling_scheduler(database_service, LocalTaskService())
+        settings = MagicMock(build_amd64_queue="q-amd64", build_arm64_queue="q-arm64")
+
+        async def _find(queue: str, name: str, **_: Any) -> list[str]:
+            return {("q-arm64", names["arm64"]): ["arm-1"], ("q-amd64", names["amd64"]): ["amd-1"]}[(queue, name)]
+
+        with (
+            patch("viva_api.simulation.job_scheduler.get_settings", return_value=settings),
+            patch.object(batch_build, "find_batch_job_ids_by_name", new=AsyncMock(side_effect=_find)),
+            patch.object(
+                batch_build,
+                "describe_batch_jobs",
+                new=AsyncMock(
+                    return_value={
+                        "arm-1": _batch_state("arm-1", "SUCCEEDED"),
+                        "amd-1": _batch_state("amd-1", "SUCCEEDED"),
+                    }
+                ),
+            ) as describe,
+        ):
+            await scheduler.reconcile_local_tasks()
+        describe.assert_awaited_once_with(["arm-1", "amd-1"])
+        fresh = await database_service.get_hpcrun(row.database_id)
+        assert fresh is not None and fresh.status == JobStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_batch_no_longer_reporting_the_job_fails_the_row_only_after_grace(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        young = await insert_local_build_row(database_service, task_id="deadmis1", external_job_ids=["gone"])
+        old = await insert_local_build_row(
+            database_service, task_id="deadmis2", external_job_ids=["gone"], age_seconds=LOCAL_ORPHAN_GRACE_SECONDS + 60
+        )
+        scheduler = _reconciling_scheduler(database_service, LocalTaskService())
+        with patch.object(batch_build, "describe_batch_jobs", new=AsyncMock(return_value={})):
+            await scheduler.reconcile_local_tasks()
+        fresh_young = await database_service.get_hpcrun(young.database_id)
+        fresh_old = await database_service.get_hpcrun(old.database_id)
+        assert fresh_young is not None and fresh_young.status == JobStatus.RUNNING
+        assert fresh_old is not None and fresh_old.status == JobStatus.FAILED
+        assert "no longer reports" in (fresh_old.error_message or "")
+
+    @pytest.mark.asyncio
+    async def test_chain_dispatch_placeholder_superseded_by_the_real_row_is_completed(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        simulation, _slurm_job, _hpcrun = await insert_job(database_service, slurmjobid=0)
+        placeholder = await database_service.insert_hpcrun(
+            job_id=JobId.local("deadplc1"),
+            job_type=JobType.SIMULATION,
+            ref_id=simulation.database_id,
+            correlation_id="corr-plc",
+        )
+        real = await database_service.insert_hpcrun(
+            job_id=JobId.ray("parca-1"),
+            job_type=JobType.SIMULATION,
+            ref_id=simulation.database_id,
+            correlation_id="corr-plc",
+            chain_n_generations=3,
+            chain_final_job_ids=[],
+            chain_current_job_ids=[None],
+            chain_current_generation=[None],
+            chain_parca_done=False,
+        )
+        scheduler = _reconciling_scheduler(database_service, LocalTaskService())
+        await scheduler.reconcile_local_tasks()
+        fresh_placeholder = await database_service.get_hpcrun(placeholder.database_id)
+        fresh_real = await database_service.get_hpcrun(real.database_id)
+        assert fresh_placeholder is not None and fresh_placeholder.status == JobStatus.COMPLETED
+        assert fresh_real is not None and fresh_real.status == JobStatus.RUNNING  # never touched
+
+    @pytest.mark.asyncio
+    async def test_chain_dispatch_placeholder_with_no_successor_is_failed_only_after_grace(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        simulation, _slurm_job, hpcrun = await insert_job(database_service, slurmjobid=0)
+        # insert_job leaves a SLURM row for this simulation; retire it so the
+        # LOCAL placeholder is the most recent row, as in the real flow.
+        await database_service.delete_hpcrun(hpcrun.database_id)
+        placeholder = await database_service.insert_hpcrun(
+            job_id=JobId.local("deadplc2"),
+            job_type=JobType.SIMULATION,
+            ref_id=simulation.database_id,
+            correlation_id="corr-plc2",
+        )
+        scheduler = _reconciling_scheduler(database_service, LocalTaskService())
+        await scheduler.reconcile_local_tasks()
+        fresh = await database_service.get_hpcrun(placeholder.database_id)
+        assert fresh is not None and fresh.status == JobStatus.RUNNING  # young: might be another pod's
+
+        started = datetime.datetime.now() - datetime.timedelta(seconds=LOCAL_ORPHAN_GRACE_SECONDS + 60)
+        await database_service.update_hpcrun_status(
+            hpcrun_id=placeholder.database_id,
+            update=JobStatusUpdate(job_id=placeholder.job_id, status=JobStatus.RUNNING, start_time=started.isoformat()),
+        )
+        await scheduler.reconcile_local_tasks()
+        fresh = await database_service.get_hpcrun(placeholder.database_id)
+        assert fresh is not None and fresh.status == JobStatus.FAILED
+        assert "re-submit the simulation" in (fresh.error_message or "")
+
+    @pytest.mark.asyncio
+    async def test_polling_loop_reconciles_first_on_its_first_tick(self) -> None:
+        """Startup reconciliation is the poll loop's first action, not a separate hook."""
+        scheduler = JobScheduler(messaging_service=MagicMock(), database_service=MagicMock())
+        order: list[str] = []
+
+        async def _reconcile() -> None:
+            order.append("reconcile")
+            scheduler._stop_event.set()
+
+        async def _record(name: str) -> None:
+            order.append(name)
+
+        with (
+            patch.object(scheduler, "reconcile_local_tasks", new=_reconcile),
+            patch.object(scheduler, "update_running_jobs", new=lambda: _record("running")),
+            patch.object(scheduler, "update_chain_campaigns", new=lambda: _record("chain")),
+            patch.object(scheduler, "update_multi_node_jobs", new=lambda: _record("mnp")),
+        ):
+            await scheduler._polling_loop(interval_seconds=0)
+        assert order == ["reconcile", "running", "chain", "mnp"]
+
+
 @pytest.mark.asyncio
 async def test_messaging(
     redis_subscriber_service: MessagingServiceRedis,

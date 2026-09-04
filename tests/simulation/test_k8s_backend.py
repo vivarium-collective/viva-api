@@ -236,6 +236,38 @@ class TestLocalTaskService:
 class TestSimulationServiceK8s:
     """Tests for SimulationServiceK8s using injected mock fixtures."""
 
+    async def test_run_build_records_both_batch_job_ids(
+        self, simulation_service_k8s_mock: SimulationServiceK8s
+    ) -> None:
+        """viva-api#414: the multi-arch build persists BOTH Batch job ids it polls."""
+        service = simulation_service_k8s_mock
+        settings = MagicMock(
+            build_arm64_queue="q-arm64",
+            build_amd64_queue="q-amd64",
+            build_git_secret_arn="arn:secret",  # noqa: S106  (an ARN, not a secret)
+            ecr_account_id="123",
+            batch_region="us-gov-west-1",
+            ecr_repository="vecoli",
+            ecoli_sources_repo_url=None,
+            ecoli_sources_ref=None,
+        )
+        submitted = AsyncMock(side_effect=["arm-1", "amd-1"])
+        from viva_api.simulation.models import SimulatorVersion
+
+        with (
+            patch("viva_api.simulation.simulation_service_k8s.get_settings", return_value=settings),
+            patch("viva_api.simulation.simulation_service_k8s.batch_build.submit_batch_build", new=submitted),
+            patch("viva_api.simulation.simulation_service_k8s.batch_build.poll_batch_jobs", new=AsyncMock()) as poll,
+            patch.object(service._local, "record_external_job_ids", new=AsyncMock()) as record,
+        ):
+            await service._run_build(
+                SimulatorVersion(database_id=1, git_commit_hash="abc1234", git_repo_url="u", git_branch="b")
+            )
+        names = [c.args[0] for c in submitted.await_args_list]
+        assert names == ["build-arm64-abc1234", "build-amd64-abc1234"]
+        record.assert_awaited_once_with(["arm-1", "amd-1"])
+        poll.assert_awaited_once_with(["arm-1", "amd-1"])
+
     async def test_submit_simulation_creates_single_container_job(
         self,
         simulation_service_k8s_mock: SimulationServiceK8s,

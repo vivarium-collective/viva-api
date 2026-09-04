@@ -2569,6 +2569,98 @@ class TestSimulationServiceRayBuildSubmit:
             job_id = await service.submit_build_image_job(_v2ecoli_simulator())
         assert job_id.backend == JobBackend.LOCAL
 
+    @pytest.mark.asyncio
+    async def test_submitted_build_records_its_batch_job_id_and_finalizes_its_row(self) -> None:
+        """viva-api#414: the LOCAL build task persists the Batch job id it is
+        polling onto its bound HpcRun row (so a restart can recover the
+        build's outcome), and the row is finalized from the task's outcome."""
+        service = SimulationServiceRay()
+        db = MagicMock()
+        db.set_hpcrun_external_job_ids = AsyncMock()
+        db.update_hpcrun_status = AsyncMock()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch(
+                "viva_api.simulation.simulation_service_ray.batch_build.submit_batch_build",
+                new=AsyncMock(return_value="build-job-1"),
+            ) as mock_submit,
+            patch("viva_api.simulation.simulation_service_ray.batch_build.poll_batch_jobs", new=AsyncMock()),
+        ):
+            job_id = await service.submit_build_image_job(_v2ecoli_simulator())
+            await service._local.bind_hpcrun(job_id.value, hpcrun_id=506, database_service=db)
+            await service._local.wait_finalized(job_id.value)
+        assert mock_submit.call_args.kwargs["job_name"] == "v2ecoli-ray-build-abc1234"
+        db.set_hpcrun_external_job_ids.assert_awaited_once_with(506, ["build-job-1"])
+        update = db.update_hpcrun_status.await_args.kwargs["update"]
+        assert update.status == JobStatus.COMPLETED
+        assert update.end_time is not None
+
+
+class TestChainDispatchPlaceholderBinding:
+    """viva-api#414: the chain-dispatch placeholder row is bound to its
+    background task, so the DB row is finalized from the task's outcome
+    instead of staying `running` forever (and a submission crash is written
+    to the row, not only to this process's memory)."""
+
+    @pytest.mark.asyncio
+    async def test_placeholder_is_completed_once_the_task_finishes(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        setattr(experiment_request.config, "n_init_sims", 2)  # noqa: B010
+        experiment_request.config.generations = 3
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+        mock_batch = _fake_container_batch(["parca-1"])
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+        ):
+            job_id = await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-bind-ok"
+            )
+            placeholder = await database_service.get_hpcrun_by_job_id(job_id)
+            assert placeholder is not None and placeholder.status == JobStatus.RUNNING
+            await service._local.wait_finalized(job_id.value)
+        fresh = await database_service.get_hpcrun(placeholder.database_id)
+        assert fresh is not None
+        assert fresh.status == JobStatus.COMPLETED
+        assert fresh.end_time is not None
+        # the real campaign row is untouched and still the one every read resolves
+        campaign = await database_service.get_hpcrun_by_ref(ref_id=simulation.database_id, job_type=JobType.SIMULATION)
+        assert campaign is not None
+        assert campaign.database_id != placeholder.database_id
+        assert campaign.status == JobStatus.RUNNING
+
+    @pytest.mark.asyncio
+    async def test_placeholder_is_failed_with_the_error_when_submission_crashes(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        setattr(experiment_request.config, "n_init_sims", 2)  # noqa: B010
+        experiment_request.config.generations = 3
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+            patch.object(
+                service, "submit_chain_dispatch_job", new=AsyncMock(side_effect=RuntimeError("ParCa submit boom"))
+            ),
+        ):
+            job_id = await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-bind-crash"
+            )
+            await service._local.wait_finalized(job_id.value)
+            failed = await service.get_job_status(job_id)
+            assert failed is not None and failed.status == JobStatus.FAILED
+        placeholder = await database_service.get_hpcrun_by_job_id(job_id)
+        assert placeholder is not None
+        assert placeholder.status == JobStatus.FAILED
+        assert "ParCa submit boom" in (placeholder.error_message or "")
+
 
 class TestEnsureMnpJobDef:
     """Per-commit MNP job-def derivation (true commit image, no per-submission override)."""

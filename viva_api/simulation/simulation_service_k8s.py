@@ -173,10 +173,12 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ecr_repository}:{image_tag}-s
         settings = get_settings()
         commit = simulator_version.git_commit_hash
 
+        job_names = batch_build.k8s_build_job_names(commit)
+
         # ARM64: task image
         arm64_cmd = self._build_command(simulator_version, image_tag=f"{commit}-arm64")
         arm64_job_id = await self._submit_batch_build(
-            job_name=f"build-arm64-{commit}",
+            job_name=job_names["arm64"],
             queue=settings.build_arm64_queue,
             command=arm64_cmd,
             commit=commit,
@@ -185,11 +187,15 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ecr_repository}:{image_tag}-s
         # AMD64: task image + submit image
         amd64_cmd = self._build_command(simulator_version, image_tag=f"{commit}-amd64", submit_image=True)
         amd64_job_id = await self._submit_batch_build(
-            job_name=f"build-amd64-{commit}",
+            job_name=job_names["amd64"],
             queue=settings.build_amd64_queue,
             command=amd64_cmd,
             commit=commit,
         )
+
+        # viva-api#414: persist both Batch handles on this task's HpcRun row so
+        # the build's outcome survives the loss of this poller.
+        await self._local.record_external_job_ids([arm64_job_id, amd64_job_id])
 
         # Poll both until done
         await self._poll_batch_jobs([arm64_job_id, amd64_job_id])
