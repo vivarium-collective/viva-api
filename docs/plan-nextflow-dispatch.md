@@ -1,7 +1,8 @@
 # Nextflow as a third dispatch path: coarse outer DAG, process-bigraph inner engine
 
 **Status (2026-09-04):** design, nothing implemented. Code-grounded against viva-api
-`main` @ `1fa6fb14` (0.9.91), process-bigraph PR
+`main` @ `1fa6fb14` (0.9.91) — *main has since moved to 0.9.95; §11.4 records what changed
+that touches this plan* — process-bigraph PR
 [#197](https://github.com/vivarium-collective/process-bigraph/pull/197) (git ref `pr197`,
 and shipped identically in PBG **1.8.3**), v2ecoli and sms-ecoli working trees, and
 vEcoli's `runscripts/nextflow/`. The three claims left unverified have since been checked
@@ -49,6 +50,13 @@ and `scripts/build_new_gene_cache.py --state <parca_state.pkl>` is the derived b
 stamps an induction level. **`v2ecoli-parca` deliberately does not write a
 `load_cache_bundle`-readable directory** — that is the hydrate step's job, and mistaking
 this for a defect cost one wrongly-filed issue (v2ecoli#681, withdrawn).
+
+> **The two steps do not share a flag surface**, and assuming they did was a live bug:
+> `_parca_command()` appended `--new-genes`/`--bundle-overrides` to the `build_cache.py`
+> invocation as well as to `v2ecoli-parca`, and `build_cache.py` has neither — ParCa
+> succeeded (572.5 s, 669.3 MB, correct composed vio+GFP genes) and the hydrate died one
+> command later on "unrecognized arguments" (viva-api#410, merged 2026-09-04). A
+> `ParcaTaskStep` therefore emits **two commands with different flags**, not one.
 
 v2ecoli/sms-ecoli reach AWS Batch two ways today, and neither expresses this DAG well:
 
@@ -141,7 +149,7 @@ Verified 2026-09-04. The point of this table is that most of the machinery is al
 | **`parca` is already a registered generator** | `v2ecoli/composites/parca.py:94` — *no registration shim needed* |
 | `v2ecoli-parca` / `v2ecoli-analyze` console scripts, both `s3://`-capable | `v2ecoli/pyproject.toml:162,166` |
 | `scripts/build_cache.py` (hydrate `parca_state.pkl.gz` → loadable bundle) and `scripts/build_new_gene_cache.py --state` (the derived build) | v2ecoli `scripts/` — the two-step producer the tiers rely on |
-| **`POST /parca/new-gene-cache`** — the derived build made remotely reachable, so N builds run off one ParCa without staging from a laptop | viva-api#378, **merged 2026-09-03**, live at `api/routers/sms.py:525`. ⚠ **never exercised end-to-end** (its own PR body says so) — verify early |
+| **`POST /parca/new-gene-cache`** — the derived build made remotely reachable, so N builds run off one ParCa without staging from a laptop | viva-api#378, **merged 2026-09-03**, live at `api/routers/sms.py:525`. ⚠ **was never exercised end-to-end**, as its own PR body said — and its first real call, 2026-09-04, **501'd** (viva-api#412, §11.4). Read the "verify early" flag as vindicated, not retired |
 | A **proven GovCloud Nextflow profile** | `vEcoli/runscripts/nextflow/config.template:98-120` |
 | K8s head-Job submit shape; `.nextflow.log` → S3 | `viva_api/simulation/simulation_service_k8s.py:213-331` |
 | Weblog receiver + NDJSON event parsing, tested against a real fixture | `viva_api/common/hpc/nextflow_weblog.py`, `common/hpc/models.py:435-467` |
@@ -268,6 +276,28 @@ copy in its own scratch, needing **no shared filesystem and no S3 support in
 **Carry into Phase 4:** `stageInMode`/`scratch` is the lever, and it arrives via
 `nextflow_directives` (now confirmed working). Set it explicitly rather than trusting an
 executor default.
+
+> ### ⛔ …and that same lever re-triggers a bug viva-api already fixed once
+>
+> *Found 2026-09-04 while rechecking the repos; it corrects the recommendation directly
+> above.* `scratch true` is exactly what moves the task's cwd off `/app/v2ecoli` — and
+> v2ecoli's imports do not survive that.
+>
+> - The image sets `WORKDIR /app/v2ecoli` and **no `PYTHONPATH` at all**.
+> - Bare `from scripts._compare…` imports are load-bearing throughout —
+>   `composites/ecoli_baseline.py:56,2273` (the `baseline()` that **`LineageStep` calls**),
+>   `workflow/parca_study.py`, `workflow/comparison_materialize.py`, `v2ecoli/core.py:121`,
+>   `composites/vecoli.py:72`. They resolve only because cwd is the repo root.
+> - This already bit chain-dispatch: a real swap dispatch died on
+>   `ModuleNotFoundError('scripts')`, and **viva-api#359** fixed it by putting
+>   `PYTHONPATH={V2ECOLI_DIR}` into a shared `PBG_RUNNER_ENV` at all three `run_pbg.py`
+>   call sites — noting there that `cd {V2ECOLI_DIR}` alone never worked, because CPython
+>   puts the *script's* directory on `sys.path[0]`, not the cwd.
+>
+> **That fix does not travel to this path.** Under Nextflow the invoker is the generated
+> `main.nf` process block, which knows nothing about `PBG_RUNNER_ENV`. So Phase 4 must
+> re-emit `PYTHONPATH=/app/v2ecoli` itself, and "it works on chain-dispatch" is not evidence
+> that it works here. The deeper fix is the seam reconciliation of shared prerequisite 2.
 
 **Still unproven:** real S3 transfer (needs `awsbatch`); the real 90 MB + 165 MB cache
 (the stand-in was 23 bytes).
@@ -571,6 +601,27 @@ carry a swap and a per-seed cache today, which is what Phase 2 needed from it.
 > unrolls the pairs itself. Unrolling is the cheaper path here and is what the four-stage
 > prototype already does; #662 only matters if the pbg-native leg wants the same shape.
 
+**Shared prerequisite 2 — the injection resolver seam (v2ecoli#682/#683/#684).** *Added
+2026-09-04; it is the same root as the `PYTHONPATH` hazard in Phase 0, seen from the other
+end.* A native swap target with no explicit `process_config` reached
+`apply_injected_processes` with `config_dict=None` and was built on `config_schema`
+defaults — for metabolism-redux that is an **empty stoichiometry and 0 homeostatic
+targets**, so the process did nothing, the generation collapsed after one tick, and the run
+**still reported success** (sms-ecoli#210 §3d — the violacein blocker). #683 threads
+`cache_dir` into the injection spec; #682 makes the config-less case fail loud.
+
+**#684 is the structural half and it is the one this plan depends on.** v2ecoli's wheel does
+not ship `scripts/`, so `baseline()`'s bare import resolves *whichever repo's `scripts/` is
+on `sys.path`* — on the GovCloud pod that is **sms-ecoli's vendored copy**, which carries the
+native-redux builder that v2ecoli's own copy lacks. Cwd-dependent shadowing, decided by where
+the process happens to be launched from. #684 wheel-ships a single absolute-imported
+`v2ecoli/library/inject.py` as step **1 of 3**.
+
+⇒ **Steps 2–3 belong in the shared set, alongside Eran's N1–N4** — call it **N5**. Every
+outer DAG calls the same `baseline()`, and a resolver chosen by cwd is a hazard for all of
+them. It is *sharper* for this plan than for the others, because `scratch true` changes the
+cwd deliberately.
+
 - **Lineage — wrap it in a `LineageStep`, do not annotate the Process.**
   *Prototyped and rendered 2026-09-04.* `run_step` calls `instance.invoke(state)` **once**,
   while `LineageProcess.update()` advances **one generation per call** — so registering the
@@ -682,7 +733,14 @@ carry a swap and a per-seed cache today, which is what Phase 2 needed from it.
 `nextflow_dispatch` config block — not a new `ComputeBackend`, and not
 `ComputeBackend.BATCH`.**
 
-- *Not `BATCH`*: `SimulationServiceK8s` is hard-wired to vEcoli — it builds a
+- *Not `BATCH`* — **and there is now live evidence this ambiguity bites.** viva-api#412:
+  `run_new_gene_cache` resolved its service through `get_simulation_service()`, i.e. the
+  deployment's own `COMPUTE_BACKEND` default, which on `sms-api-stanford-test` is
+  **`batch` — meaning "AWS Batch via Nextflow, for vEcoli"**. It 501'd on a deployment where
+  every other route dispatches Ray fine, because those resolve repo-aware via
+  `get_simulation_service_for_repo`. A *second* Nextflow route entering that same enum makes
+  the ambiguity worse, not better — which is the strongest argument yet for the per-request
+  axis below. Structurally: `SimulationServiceK8s` is hard-wired to vEcoli — it builds a
   `vecoli:<sha>-amd64-submit` URI, `sed`s vEcoli's config template and runs vEcoli's
   `runscripts/workflow.py` — and its `NextflowLayout` would break v2ecoli result download (§4).
 - *Not a new backend value*: `compute_backend_for_repo` maps **repo → backend**
@@ -718,6 +776,7 @@ one on vEcoli's proven profile:
 | `queue` | `settings.batch_amd64_queue` |
 | `container` | ECR URI built as in `simulation_service_k8s.py:233-236` |
 | `containerOptions --env AWS_DEFAULT_REGION` | required for S3 access in-container |
+| **`containerOptions --env PYTHONPATH=/app/v2ecoli`** | **not optional under `scratch true`** — the image sets no `PYTHONPATH`, and v2ecoli's bare `scripts._compare` imports resolve on cwd alone. This is viva-api#359's fix, which does not reach a Nextflow-emitted process block (§Phase 0) |
 | `aws.region` | `settings.batch_region` |
 | **`aws.client.endpoint`** | `https://s3.<region>.amazonaws.com` — the GovCloud-only line currently injected by a `sed` hack at `simulation_service_k8s.py:265-267`; emitting it natively deletes the hack |
 | `aws.batch.maxSpotAttempts` / `maxTransferAttempts` | vEcoli precedent — and **not optional**: the default is 0 and this queue is Spot-first (§11.1b) |
@@ -757,6 +816,11 @@ exists to prevent.
    the broken version; only counting sweeps catches it. (Unrolled, 421 blocks render fine
    in 0.02 s but the 336-way gather cannot be expressed; under sub-workflow emission the
    count is small and `lineage.out` carries all 336.)
+   **4b. Assert the emitted COLUMNS, not just the sweep count.** @cplong90's 2026-09-04
+   correction on sms-ecoli#210 is the reason: a run that appeared to prove "the platform
+   cannot emit 'omics" was really a **curated path list** — the leaf is simply absent from
+   history while its *name* survives in `output_metadata`, and nothing errors. A 336-way
+   gather of 336 column-starved sweeps passes every count-based check.
 5. Nextflow head overhead vs a direct `run_composite` on the same small job < ~2 min.
 
 **If (2) or (3) fails, stop.** Those two are the entire justification for a third path.
@@ -821,7 +885,8 @@ improvement on hand-rolled dispatch.
 5. **This is a third path in a repo where a live design doc proposes deleting one.**
    Positioning is additive by decision, and the shared prerequisites are proving that out in
    practice: **N1 landed as v2ecoli#663** and the durability half as **#680**, both done by
-   the pbg-native effort and both consumed unchanged by this plan. N2–N4 remain; do them once.
+   the pbg-native effort and both consumed unchanged by this plan. **N2–N4 remain, and N5 —
+the #684 resolver-seam reconciliation — was added on 2026-09-04**; do them once.
 6. **PBG version skew is a hard sequencing gate.** v2ecoli pins `process-bigraph` at git
    `branch = "main"` and currently resolves to **1.5.0** — the older 438-line `nextflow.py`,
    **no `run_composite.py`, no `workflow/recipe.py`**. Everything in Phase 2 needs `--build`.
@@ -957,6 +1022,23 @@ Two constraints found while checking:
 path (mirroring the k8s one) or give v2ecoli its own submit Dockerfile. It is a small job,
 but it is a **prerequisite, not a detail** — and it is the place where 11.1's Nextflow
 version gets pinned.
+
+### 11.4 Repo recheck (2026-09-04, ~17:00 UTC) — what moved under this plan
+
+The doc is code-grounded at viva-api `1fa6fb14` (0.9.91). Since then:
+
+| landed | why it touches this plan |
+|---|---|
+| **viva-api#410** → 0.9.95 — `_parca_command()` leaked `--new-genes`/`--bundle-overrides` onto `build_cache.py`; `chain-dispatch.sh`'s `EXTRA_PARAMS` default emitted invalid JSON | §1's two-step producer: the steps have **different flag surfaces** |
+| **viva-api#412** (open) — `run_new_gene_cache` resolved the deployment-default backend (`batch`) instead of Ray; 501'd on its first-ever real call | §4's "never exercised" flag on #378, and Phase 3's "not `ComputeBackend.BATCH`" |
+| **v2ecoli#682 / #683** — config-less native swap built an empty config → one-tick collapse **reporting success**; now threaded and fail-loud | shared prerequisite 2; the layer `LineageStep` calls |
+| **v2ecoli#684** — wheel-shipped injection resolver, step 1/3 of un-shadowing `scripts._compare` | **N5**, and the same root as the Phase 0 `PYTHONPATH` hazard |
+| **v2ecoli#685** — `ptools_rxns` tolerates an injected reaction widening the flux array (2831 vs 2830) | not this plan; noted so the delta is complete |
+| **sms-ecoli#210** (Chris, 16:26 UTC) — the 'omics blocker is a **curated path list**, not emitter capability | go/no-go 4b |
+| **process-bigraph#197 / #201** — both still open, no reviews | **the sequencing gate has not moved**; risk 6 stands unchanged |
+
+Nothing here contradicts the plan's thesis. One thing contradicted a *recommendation* in it —
+the `scratch true` / `PYTHONPATH` collision in Phase 0 — and that is corrected in place.
 
 ### Still unverified after this pass
 
