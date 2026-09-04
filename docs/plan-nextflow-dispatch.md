@@ -15,19 +15,49 @@ vEcoli's `runscripts/nextflow/`. Claims marked ⚠UNVERIFIED were not checked.
 
 ## 1. The problem
 
-`ParCa → N lineages → analysis` is a DAG of a few **coarse** units. v2ecoli/sms-ecoli reach
-AWS Batch two ways today, and neither expresses that DAG well:
+The general campaign is **not** a single chain. It is a two-level scatter with a gather:
 
-| | shape | cost at Run 4 (336 lineages × 8 generations) |
+```
+for each of N variants v:
+      ParCa(v)                 ← variant-SPECIFIC: its own strain/expression cache
+         └─► for each of M seeds m:  lineage(v, m)     ← hours each
+                                        │
+              all N×M lineages ─────────┴─► analysis tasks over ALL the data
+```
+
+At **Run 4** that is N=84 variants × M=4 seeds: **84 ParCa runs, 336 lineages** (×8
+generations each), then analyses that span every variant.
+
+Two facts about ParCa make it a per-variant node rather than a shared prologue.
+`cache_version.py` folds `new_genes`, `bundle_overrides` and `perturbations` into the
+cache's `inputs_hash`, explicitly because *"Two strains that differed only [in those] …
+wrong-strain cache verified clean"* — so a variant that changes strain or expression
+**needs its own cache**. Today v2ecoli does not express that: `variants` is folded into
+`config_overrides` at the *lineage* level (`workflow/batch_lineage_ray.py:145-150`), whose
+own comment concedes *"A real variant sweep across `ray:` lineages is real, separate,
+not-yet-scoped."*
+
+v2ecoli/sms-ecoli reach AWS Batch two ways today, and neither expresses this DAG well:
+
+| | shape | cost at Run 4 |
 |---|---|---|
-| **chain-dispatch** | one Batch job per *(seed, generation)* | **2,688 jobs**, each paying container start + cache stage + cell rebuild |
+| **chain-dispatch** | one Batch job per *(seed, generation)* | 84 ParCa jobs + **2,688 generation jobs**, each paying container start + cache stage + cell rebuild |
 | **pbg-native / Ray** (item 101) | one MNP job holding N `ray:LineageProcess` actors | **1 job**, but one *homogeneous* allocation for the whole campaign |
 
 The Ray shape is the better of the two and is proven on real infrastructure. Its structural
-limit is that ParCa wants ~14 cores for a few minutes, a lineage wants ~12 GB for hours, and
-analysis is small — but they all get the same allocation, held for the whole run. A single
-lineage OOM (Eran's risk 3a: lineages reach 7–9 GB by generation 3–4) takes the allocation
-with it, and there is no per-unit retry.
+limit is exactly what the shape above exposes: **84 ParCas want ~14 cores for ~10 minutes
+each; 336 lineages want ~12 GB for hours each; the analyses are small** — three wildly
+different resource profiles inside one campaign, all served by a single allocation held for
+the whole run. A single lineage OOM (Eran's risk 3a: 7–9 GB by generation 3–4) takes the
+allocation with it, and there is no per-unit retry.
+
+A two-level scatter over heterogeneous, independent units with a final gather is the
+canonical case for a DAG engine. That — not "one more way to run a job" — is the argument.
+
+**A free consequence of content-addressing:** because a cache is identified by
+`inputs_hash` over exactly the variant-defining inputs, two variants that differ only in
+sim-time config resolve to the *same* ParCa. A DAG engine dedupes that automatically
+(and `-resume` reuses it across campaigns); hand-rolled dispatch has to be told.
 
 Nextflow at **lineage granularity — never at Step granularity** — buys three things the MNP
 shape structurally cannot: per-task retry, per-task resources, and `-resume`.
@@ -165,6 +195,43 @@ Then `nextflow_deploy.deploy(..., executor='local', launch=True)`.
 `sim_data_cache.dill` that ParCa produced in a *different* work directory. That is §2's
 thesis, tested for the cost of a day. These shadow-Steps are throwaway; Phase 1 deletes them.
 
+### Phase 0 result (2026-09-04): **PASSED**
+
+Run against process-bigraph 1.8.3 with Nextflow 25.04.3, using **no v2ecoli code** — the
+same shape with trivial shell commands, so a failure would have been unambiguously
+Nextflow/renderer rather than v2ecoli. The renderer emitted exactly:
+
+```
+workflow  { ch_cache_dir = parca()
+            ch_sweep_dir = lineage(ch_cache_dir)
+            ch_report    = analysis(ch_sweep_dir) }
+```
+
+- **Default staging: passed, but proves less than it appears.** Content flowed end to end,
+  yet the consumer's `cache` was a **symlink into the producer's work dir** — the local
+  executor always has a shared filesystem, which is the very thing risk 2 says MNP nodes
+  lack. Taking that as proof would have been a presence-check masquerading as an
+  effect-check.
+- **With `stageInMode 'copy'` + `scratch true`: the real result.** The consumer's `cache`
+  was a **real directory, materialized independently of the producer's filesystem**, and a
+  plain `open()` inside the task read it.
+
+⇒ The mechanism risk 2 says is missing does exist: a consumer can receive a materialized
+copy in its own scratch, needing **no shared filesystem and no S3 support in
+`load_cache_bundle`**.
+
+**Carry into Phase 4:** `stageInMode`/`scratch` is the lever, and it arrives via
+`nextflow_directives` (now confirmed working). Set it explicitly rather than trusting an
+executor default.
+
+**Still unproven:** real S3 transfer (needs `awsbatch`); the real 90 MB + 165 MB cache
+(the stand-in was 23 bytes); and scatter — this was one lineage, one variant.
+
+**Risk 6 arrived early.** Neither venv can run Phase 0 with real commands: v2ecoli has the
+composites but PBG **1.5.0** (no `run_composite`, no `workflow/recipe`), while sms-ecoli has
+PBG 1.8.3 but no importable `v2ecoli.composites`. Resolving that is a prerequisite for the
+real-command half, not just for Phase 2.
+
 ### Phase 1 — process-bigraph
 
 On top of `pr197`, all in `nextflow.py` / `nextflow_deploy.py`:
@@ -182,9 +249,19 @@ On top of `pr197`, all in `nextflow.py` / `nextflow_deploy.py`:
   delete the `:513` guess. `deploy()` passes `stage_dir=outdir`.
 - **All ports** — full loops in place of `next(iter(…))`; `--initial-state` driven by an
   explicit annotation, not positional "first port"; named `emit:` labels on the Step path.
-- **Implement `_cardinality`** — `many` on a consumer → `.flatten()` (scatter); `many` on
-  analysis → `.collect()` (gather); `one` on the broadcast ParCa cache → `.first()`. This is
-  what makes 336 lineages **3** process blocks instead of 336; roughly 15 lines.
+- **Implement `_cardinality`, and make it two-dimensional.** It is read at `:486`, passed
+  into `_channel_expr_for_input` (`:323`), and never used. The campaign in §1 needs a
+  **cross product**, not a single scatter: a variant channel and a seed channel combined
+  into N×M lineage tasks, each carrying *its own* variant's ParCa output — so the ParCa
+  cache is **not** a broadcast `.first()`, it is the left side of a join keyed by variant.
+  Then one `.collect()` for the gather.
+
+  **The operators already exist** as plumbing Steps (`process_bigraph/plumbing.py`):
+  `Combine` → `combine`, `GroupBy` → `groupTuple`, `Collect` → `collect`, `Join` → `join`,
+  `Mix` → `mix`, emitted by `_emit_plumbing_call` (`nextflow.py:357`). ⚠ **No test in the
+  PR exercises plumbing emission at all**, so treat these as unproven-but-present and cover
+  them first. Getting this right is what makes 84 ParCas + 336 lineages render as **~3
+  process blocks** rather than 420.
 - **`deploy()` fixes** — `render_options.setdefault('python', sys.executable)` (`:105`) is a
   latent Batch bug: the head's interpreter will not exist inside a task container. Default to
   `sys.executable` only for `executor='local'`. Add `resume`, `report`, `trace`,
@@ -215,9 +292,19 @@ façade.
 - **Analysis — do not wrap yet.** `v2ecoli-analyze` is already atomic and `s3://`-capable; an
   `AnalysisTaskStep` with `_cardinality: many` gets gather semantics for free. Wrapping the
   `AnalysisStep`s as a generator would duplicate `run_analyses`' own thread-pool fan-out.
-- **`@composite_generator("workflow_nf")`** assembling ParCa → N lineage nodes (reusing
-  `build_lineage_ray_batch_document`, so the seed×variant loop stays shared with pbg-native)
-  → analysis. This document is **rendered, never `run()` in-process**.
+- **`@composite_generator("workflow_nf")`** assembling the §1 shape: **one ParCa node per
+  variant**, each feeding that variant's M lineage nodes, all N×M gathering into the
+  analysis node. Reuse `build_lineage_ray_batch_document` for the seed loop so it stays
+  shared with pbg-native. This document is **rendered, never `run()` in-process**.
+
+  > **This is where the plan asks for something v2ecoli does not have yet.** Today
+  > `variants` collapses into `config_overrides` on the lineage
+  > (`batch_lineage_ray.py:145-150`) — one shared cache for the whole sweep. The
+  > per-variant ParCa node needs the variant's strain inputs (`new_genes`,
+  > `bundle_overrides`, `perturbations`) threaded to *ParCa*, not to the lineage. That is
+  > the same widening Eran's **N1/N2** describe (generator façade parameters, and the
+  > seed loop generalized to (variant, seed) pairs), which is another reason to do N1–N4
+  > once, first, rather than twice.
 
 ### Phase 3 — viva-api
 
@@ -270,13 +357,23 @@ exists to prevent.
 
 ## 8. Go/no-go before Phase 4
 
-1. Local `ParCa → 2 lineages → analysis` produces hive-partitioned parquet with a real `global_time`.
-2. **The handoff travels as a staged `path`**, not as `--state-out` JSON.
-3. `-resume` after a mid-lineage kill re-runs only the lineage, not ParCa.
-4. `n_seeds=336` still renders **3** process blocks, and `-stub-run` compiles it.
-5. Nextflow head overhead vs a direct `run_composite` on the same 2-lineage job < ~2 min.
+1. Local **2 variants × 2 seeds** (2 ParCas → 4 lineages → analysis) produces
+   hive-partitioned parquet with a real `global_time`, and **each lineage used its own
+   variant's cache** — assert the `inputs_hash` in each lineage's `cache_version.json`
+   differs by variant. A single shared cache silently passing here would hide the whole
+   per-variant question.
+2. **The handoff travels as a staged `path`**, not as `--state-out` JSON. *(Mechanism
+   proven locally in Phase 0; this re-tests it with the real cache.)*
+3. `-resume` after a mid-lineage kill re-runs only that lineage — not its ParCa, and not
+   the other variants.
+4. **84 variants × 4 seeds still renders ~3 process blocks**, not 420, and `-stub-run`
+   compiles it. This is the `_cardinality` + plumbing-operator work; it is the difference
+   between a DAG and a generated pile.
+5. Nextflow head overhead vs a direct `run_composite` on the same small job < ~2 min.
 
 **If (2) or (3) fails, stop.** Those two are the entire justification for a third path.
+**If (4) fails, the shape is wrong** even if it runs — 420 hand-emitted blocks is not an
+improvement on hand-rolled dispatch.
 
 ## 9. Risks
 
