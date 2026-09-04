@@ -1979,6 +1979,15 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         num_nodes = int(mnp_dispatch.get("num_nodes") or 1)
         params = dict(mnp_dispatch.get("params") or {})
         steps = int(mnp_dispatch.get("steps") or 1)
+        # cache_variant (item 105, mirrors chain-dispatch's own already-proven
+        # job_scheduler.py pattern -- getattr(simulation.config, "cache_variant",
+        # ...)): selects a variant-labeled derived ParCa cache (POST
+        # /parca/new-gene-cache, viva-api#378) instead of the plain per-commit
+        # default. Found missing 2026-09-04 firing the first-ever real strain-
+        # specific pbg-native dispatch -- this composite path never had it,
+        # only chain-dispatch did. None preserves today's behavior byte-for-
+        # byte (cache_s3_uri's own variant=None default).
+        cache_variant = mnp_dispatch.get("cache_variant") or None
 
         simulator = await database_service.get_simulator(simulator_id=ecoli_simulation.simulator_id)
         if simulator is None:
@@ -1993,7 +2002,7 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         if n_shards_default:
             n_shards_default *= num_nodes
 
-        cache_s3 = self.cache_s3_uri(commit)
+        cache_s3 = self.cache_s3_uri(commit, variant=cache_variant)
         runner_s3_uri = await self.stage_runner(experiment_id)
 
         base_tags = {
