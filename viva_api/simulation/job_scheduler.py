@@ -1,16 +1,26 @@
 import asyncio
+import datetime
 import logging
 
 from async_lru import alru_cache
 
 from viva_api.common.hpc.job_service import JobStatusUpdate
+from viva_api.common.hpc.local_task_service import LocalTaskService
 from viva_api.common.hpc.slurm_service import SlurmService
 from viva_api.common.messaging.messaging_service import MessagingService
 from viva_api.common.models import JobBackend, JobStatus, SSHTarget
-from viva_api.config import get_settings
+from viva_api.config import ComputeBackend, compute_backend_for_repo, get_settings
 from viva_api.dependencies import get_ssh_session_service
+from viva_api.simulation import batch_build
 from viva_api.simulation.database_service import DatabaseService
-from viva_api.simulation.models import ChainCampaignUpdate, HpcRun, Simulation, WorkerEvent, WorkerEventMessagePayload
+from viva_api.simulation.models import (
+    ChainCampaignUpdate,
+    HpcRun,
+    JobType,
+    Simulation,
+    WorkerEvent,
+    WorkerEventMessagePayload,
+)
 from viva_api.simulation.simulation_service_ray import (
     SimulationServiceRay,
     injected_processes_from_config,
@@ -19,11 +29,36 @@ from viva_api.simulation.simulation_service_ray import (
 
 logger = logging.getLogger(__name__)
 
+# viva-api#414: how old an active LOCAL row must be before an UNOWNED one with
+# nothing external to check is declared dead. Two pods overlap briefly during a
+# rolling restart, and the new pod's very first tick sees rows the old pod
+# still legitimately owns; a young row with no external handle yet is exactly
+# what an in-flight submission looks like from outside. A row whose external
+# Batch job IS known needs no grace -- its status is derived from Batch truth
+# and writing that truth is idempotent whoever else is watching.
+LOCAL_ORPHAN_GRACE_SECONDS = 600
+
+
+def _hpcrun_age_seconds(hpc_run: HpcRun, now: datetime.datetime | None = None) -> float:
+    """Seconds since the row's ``start_time`` (which insert_hpcrun always sets,
+    naive, in the pod's own clock -- compared against the same clock here).
+    A row with no start_time at all is treated as infinitely old."""
+    if not hpc_run.start_time:
+        return float("inf")
+    try:
+        started = datetime.datetime.fromisoformat(hpc_run.start_time)
+    except ValueError:
+        return float("inf")
+    if started.tzinfo is not None:
+        started = started.astimezone().replace(tzinfo=None)
+    return ((now or datetime.datetime.now()) - started).total_seconds()
+
 
 class JobScheduler:
     database_service: DatabaseService
     slurm_service: SlurmService | None
     simulation_service_ray: SimulationServiceRay | None
+    local_task_service: LocalTaskService | None
     messaging_service: MessagingService
     _polling_task: asyncio.Task[None] | None = None
     _stop_event: asyncio.Event
@@ -34,12 +69,17 @@ class JobScheduler:
         database_service: DatabaseService,
         slurm_service: SlurmService | None = None,
         simulation_service_ray: SimulationServiceRay | None = None,
+        local_task_service: LocalTaskService | None = None,
     ):
         self.messaging_service = messaging_service
         self.database_service = database_service
         self.slurm_service = slurm_service
         self.simulation_service_ray = simulation_service_ray
+        self.local_task_service = local_task_service
         self._stop_event = asyncio.Event()
+        # Orphaned LOCAL rows already announced at WARNING (one line per row,
+        # not one per 5-second tick).
+        self._orphans_announced: set[int] = set()
 
     @alru_cache
     async def get_hpcrun_by_correlation_id(self, correlation_id: str) -> int | None:
@@ -90,6 +130,12 @@ class JobScheduler:
 
     async def _polling_loop(self, interval_seconds: int) -> None:
         while not self._stop_event.is_set():
+            # First, so the very first tick after startup reconciles whatever
+            # the previous pod left behind (viva-api#414).
+            try:
+                await self.reconcile_local_tasks()
+            except Exception:
+                logger.exception("Error during orphaned local-task reconciliation")
             try:
                 await self.update_running_jobs()
             except Exception:
@@ -152,6 +198,199 @@ class JobScheduler:
             )
             await self.database_service.update_hpcrun_status(hpcrun_id=hpc_run.database_id, update=update)
             logger.info(f"Updated HpcRun {hpc_run.database_id} status to {new_status}")
+
+    async def reconcile_local_tasks(self) -> None:
+        """Finish every active LOCAL HpcRun row this process does not own
+        (viva-api#414).
+
+        A LOCAL row points at an in-process ``asyncio.Task`` that was polling
+        real work submitted elsewhere -- a DooD image build on AWS Batch, or
+        the chain-dispatch placeholder whose task submits ParCa and writes the
+        real campaign row. The task dies with its pod; nothing else ever
+        finished the row, so it stayed ``running`` forever while the work it
+        watched completed normally (measured live: hpcrun 506, 2026-09-04,
+        recovery was a redundant 10-minute rebuild).
+
+        Runs on every tick, first, so it is also the startup reconciliation.
+        Stateless by construction: nothing is re-attached, each tick derives
+        the row's state from external truth and writes it once terminal --
+        the same shape as ``update_chain_campaigns``. A row THIS process owns
+        is skipped entirely (its own done-callback finalizes it).
+        """
+        if self.local_task_service is None:
+            return
+        rows = await self.database_service.list_active_local_hpcruns()
+        for hpc_run in rows:
+            if self.local_task_service.owns(hpc_run.job_id.value):
+                continue
+            try:
+                await self._reconcile_orphaned_local_run(hpc_run)
+            except Exception:
+                logger.exception("Error reconciling orphaned LOCAL HpcRun %s", hpc_run.database_id)
+
+    async def _reconcile_orphaned_local_run(self, hpc_run: HpcRun) -> None:
+        age = _hpcrun_age_seconds(hpc_run)
+        if hpc_run.database_id not in self._orphans_announced:
+            self._orphans_announced.add(hpc_run.database_id)
+            logger.warning(
+                "Orphaned LOCAL HpcRun %s (%s, local task %s, %.0fs old): no live owner in this process; "
+                "reconciling from external state (external_job_ids=%s)",
+                hpc_run.database_id,
+                hpc_run.job_type.value,
+                hpc_run.job_id.value,
+                age,
+                hpc_run.external_job_ids,
+            )
+        if hpc_run.job_type == JobType.BUILD_IMAGE:
+            await self._reconcile_orphaned_build(hpc_run, age)
+        elif hpc_run.job_type == JobType.SIMULATION:
+            await self._reconcile_orphaned_simulation_placeholder(hpc_run, age)
+        elif age > LOCAL_ORPHAN_GRACE_SECONDS:
+            await self._finish_orphan(
+                hpc_run,
+                JobStatus.FAILED,
+                "orphaned: the api process that owned this local task restarted; its outcome is unknown",
+            )
+
+    async def _reconcile_orphaned_build(self, hpc_run: HpcRun, age: float) -> None:
+        """A build row: resolve it from its Batch build job(s). The ids come
+        from ``external_job_ids`` (written at submit time since #414) or, for
+        a row that predates that column, from the build's deterministic job
+        name. Once found by name they are persisted so the next tick is a
+        plain describe."""
+        job_ids = list(hpc_run.external_job_ids or [])
+        if not job_ids:
+            job_ids = await self._derive_build_job_ids(hpc_run)
+            if job_ids:
+                await self.database_service.set_hpcrun_external_job_ids(hpc_run.database_id, job_ids)
+                logger.info(
+                    "Orphaned build HpcRun %s: found its Batch job(s) by name: %s", hpc_run.database_id, job_ids
+                )
+        if not job_ids:
+            if age > LOCAL_ORPHAN_GRACE_SECONDS:
+                await self._finish_orphan(
+                    hpc_run,
+                    JobStatus.FAILED,
+                    "orphaned: the api process that owned this build restarted and no Batch build job "
+                    "could be found for it; re-upload the simulator to rebuild",
+                )
+            return
+
+        states = await batch_build.describe_batch_jobs(job_ids)
+        missing = [jid for jid in job_ids if jid not in states]
+        if missing:
+            if age > LOCAL_ORPHAN_GRACE_SECONDS:
+                await self._finish_orphan(
+                    hpc_run,
+                    JobStatus.FAILED,
+                    f"orphaned: AWS Batch no longer reports build job(s) {missing}; the outcome cannot be "
+                    "recovered -- re-upload the simulator to rebuild",
+                )
+            return  # not yet visible -- check again next tick
+        statuses = {jid: JobStatus.from_batch_state(states[jid].status) for jid in job_ids}
+        failed = [jid for jid, st in statuses.items() if st in (JobStatus.FAILED, JobStatus.CANCELLED)]
+        if failed:
+            reasons = "; ".join(
+                f"{states[jid].job_name}: {states[jid].status_reason or states[jid].status}" for jid in failed
+            )
+            await self._finish_orphan(
+                hpc_run,
+                JobStatus.FAILED,
+                f"Batch build job(s) failed: {reasons}",
+                end_time_ms=max((states[jid].stopped_at_ms or 0) for jid in job_ids) or None,
+            )
+            return
+        if all(st == JobStatus.COMPLETED for st in statuses.values()):
+            await self._finish_orphan(
+                hpc_run,
+                JobStatus.COMPLETED,
+                None,
+                end_time_ms=max((states[jid].stopped_at_ms or 0) for jid in job_ids) or None,
+            )
+            return
+        logger.debug(
+            "Orphaned build HpcRun %s: Batch job(s) still in flight (%s); leaving RUNNING",
+            hpc_run.database_id,
+            {jid: states[jid].status for jid in job_ids},
+        )
+
+    async def _derive_build_job_ids(self, hpc_run: HpcRun) -> list[str]:
+        """Legacy fallback: find a build's Batch job(s) by deterministic name."""
+        simulator = await self.database_service.get_simulator(simulator_id=hpc_run.ref_id)
+        if simulator is None:
+            logger.error("Orphaned build HpcRun %s: simulator %s not found", hpc_run.database_id, hpc_run.ref_id)
+            return []
+        settings = get_settings()
+        commit = simulator.git_commit_hash
+        backend = compute_backend_for_repo(simulator.git_repo_url)
+        if backend == ComputeBackend.RAY:
+            lookups = [(settings.build_amd64_queue, batch_build.ray_build_job_name(commit))]
+        elif backend == ComputeBackend.BATCH:
+            names = batch_build.k8s_build_job_names(commit)
+            lookups = [(settings.build_arm64_queue, names["arm64"]), (settings.build_amd64_queue, names["amd64"])]
+        else:
+            return []
+        created_after_ms: int | None = None
+        if hpc_run.start_time:
+            try:
+                started = datetime.datetime.fromisoformat(hpc_run.start_time)
+                # a minute of slack: the row is inserted AFTER the task is spawned
+                created_after_ms = int((started.timestamp() - 60) * 1000)
+            except ValueError:
+                created_after_ms = None
+        found: list[str] = []
+        for queue, name in lookups:
+            if not queue:
+                return []
+            ids = await batch_build.find_batch_job_ids_by_name(queue, name, created_after_ms=created_after_ms)
+            if not ids:
+                return []  # every job of the build must be findable, or we know nothing
+            found.append(ids[0])  # newest submission of that name
+        return found
+
+    async def _reconcile_orphaned_simulation_placeholder(self, hpc_run: HpcRun, age: float) -> None:
+        """The chain-dispatch placeholder (``SimulationServiceRay.
+        _submit_chain_dispatch_background``): its task's whole job is to
+        submit ParCa and insert the REAL campaign row for the same simulation.
+        If that row exists the task did its job -- the placeholder is
+        superseded and simply COMPLETED. If it does not, and the row is past
+        the grace window, the submission died with its pod and nothing is
+        tracking this simulation: say so, as FAILED, so the caller re-submits
+        instead of waiting on a row nobody will ever update."""
+        latest = await self.database_service.get_hpcrun_by_ref(ref_id=hpc_run.ref_id, job_type=JobType.SIMULATION)
+        if latest is not None and latest.database_id != hpc_run.database_id:
+            await self._finish_orphan(hpc_run, JobStatus.COMPLETED, None)
+            return
+        if age > LOCAL_ORPHAN_GRACE_SECONDS:
+            await self._finish_orphan(
+                hpc_run,
+                JobStatus.FAILED,
+                "orphaned: the api process restarted while this campaign was being submitted, before its "
+                "campaign row was written; nothing is tracking it (a ParCa job it may have started is "
+                "untracked) -- re-submit the simulation",
+            )
+
+    async def _finish_orphan(
+        self, hpc_run: HpcRun, status: JobStatus, error_message: str | None, *, end_time_ms: int | None = None
+    ) -> None:
+        end_time = (
+            datetime.datetime.fromtimestamp(end_time_ms / 1000).isoformat()
+            if end_time_ms
+            else datetime.datetime.now().isoformat()
+        )
+        await self.database_service.update_hpcrun_status(
+            hpcrun_id=hpc_run.database_id,
+            update=JobStatusUpdate(
+                job_id=hpc_run.job_id, status=status, end_time=end_time, error_message=error_message
+            ),
+        )
+        logger.warning(
+            "Orphaned LOCAL HpcRun %s (%s) finished from external state: %s%s",
+            hpc_run.database_id,
+            hpc_run.job_type.value,
+            status.value,
+            f" -- {error_message}" if error_message else "",
+        )
 
     async def update_chain_campaigns(self) -> None:
         """Advance every active chain-dispatch campaign by one tick each

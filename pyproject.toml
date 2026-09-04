@@ -1,6 +1,6 @@
 [project]
 name = "viva_api"
-version = "0.9.96"
+version = "0.9.97"
 description = "This is the api server for Vivarium simulation services."
 authors = [{ name = "Alex Patrie", email = "alexanderpatrie@gmail.com" }, { name = "Jim Schaff", email = "jschaff@gmail.com" }]
 requires-python = ">=3.13,<3.14"

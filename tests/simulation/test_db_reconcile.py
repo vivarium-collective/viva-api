@@ -4,11 +4,11 @@ These cover the state machine without touching a database. End-to-end
 stamp/upgrade behavior is exercised against a real Postgres by the migration
 Job in deployment; here we lock down the decision logic that drives it.
 
-The fingerprint vectors below are length-11, matching LEGACY_FINGERPRINTS:
+The fingerprint vectors below are length-12, matching LEGACY_FINGERPRINTS:
     [baseline, hpcrun-k8s, cancelled-enum, simulation.tags, analysis.n_tp,
      compose_hpcrun.job_id_ext, hpcrun.chain_final_job_ids,
      jobstatusdb-pending-and-cancelled-uppercase, hpcrun.chain_current_job_ids,
-     hpcrun.multi_node_composite_id, env_worker_task]
+     hpcrun.multi_node_composite_id, env_worker_task, hpcrun.external_job_ids]
 
 These vectors have to grow with every migration -- that is the fingerprint
 maintenance contract in CLAUDE.md making itself felt, and it is deliberate: a
@@ -18,7 +18,7 @@ stamped stale.
 
 from viva_api.simulation.db_reconcile import DbState, classify
 
-HEAD = "b4d7e9c02a15"
+HEAD = "c7d1f3a9b2e4"
 # Mirrors LEGACY_FINGERPRINTS ordering.
 REVS = [
     "fb7621a73e24",
@@ -32,13 +32,14 @@ REVS = [
     "71a5478673a8",
     "9c2e6b1f4a73",
     "b4d7e9c02a15",
+    "c7d1f3a9b2e4",
 ]
 
 
 def test_managed_database_takes_upgrade_path() -> None:
     diag = classify(
         alembic_revision="0f991fad32ba",
-        fingerprint=[True, True, False, False, False, False, False, False, False, False, False],
+        fingerprint=[True, True, False, False, False, False, False, False, False, False, False, False],
         head_revision=HEAD,
     )
     assert diag.state is DbState.MANAGED
@@ -51,7 +52,7 @@ def test_managed_database_takes_upgrade_path() -> None:
 def test_managed_takes_precedence_even_with_odd_fingerprint() -> None:
     diag = classify(
         alembic_revision=HEAD,
-        fingerprint=[False, False, False, False, False, False, False, False, False, False, False],
+        fingerprint=[False, False, False, False, False, False, False, False, False, False, False, False],
         head_revision=HEAD,
     )
     assert diag.state is DbState.MANAGED
@@ -60,7 +61,7 @@ def test_managed_takes_precedence_even_with_odd_fingerprint() -> None:
 def test_fresh_database_when_no_tables_and_no_version() -> None:
     diag = classify(
         alembic_revision=None,
-        fingerprint=[False, False, False, False, False, False, False, False, False, False, False],
+        fingerprint=[False, False, False, False, False, False, False, False, False, False, False, False],
         head_revision=HEAD,
     )
     assert diag.state is DbState.FRESH
@@ -71,7 +72,7 @@ def test_fresh_database_when_no_tables_and_no_version() -> None:
 def test_legacy_matches_baseline_only() -> None:
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True, False, False, False, False, False, False, False, False, False, False],
+        fingerprint=[True, False, False, False, False, False, False, False, False, False, False, False],
         head_revision=HEAD,
     )
     assert diag.state is DbState.LEGACY
@@ -81,7 +82,7 @@ def test_legacy_matches_baseline_only() -> None:
 def test_legacy_matches_middle_revision() -> None:
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True, True, False, False, False, False, False, False, False, False, False],
+        fingerprint=[True, True, False, False, False, False, False, False, False, False, False, False],
         head_revision=HEAD,
     )
     assert diag.state is DbState.LEGACY
@@ -91,7 +92,7 @@ def test_legacy_matches_middle_revision() -> None:
 def test_legacy_matches_cancelled_revision() -> None:
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True, True, True, False, False, False, False, False, False, False, False],
+        fingerprint=[True, True, True, False, False, False, False, False, False, False, False, False],
         head_revision=HEAD,
     )
     assert diag.state is DbState.LEGACY
@@ -101,7 +102,7 @@ def test_legacy_matches_cancelled_revision() -> None:
 def test_legacy_matches_tags_revision() -> None:
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True, True, True, True, False, False, False, False, False, False, False],
+        fingerprint=[True, True, True, True, False, False, False, False, False, False, False, False],
         head_revision=HEAD,
     )
     assert diag.state is DbState.LEGACY
@@ -111,7 +112,7 @@ def test_legacy_matches_tags_revision() -> None:
 def test_legacy_matches_analysis_revision() -> None:
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True, True, True, True, True, False, False, False, False, False, False],
+        fingerprint=[True, True, True, True, True, False, False, False, False, False, False, False],
         head_revision=HEAD,
     )
     assert diag.state is DbState.LEGACY
@@ -121,7 +122,7 @@ def test_legacy_matches_analysis_revision() -> None:
 def test_legacy_matches_compose_hpcrun_revision() -> None:
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True, True, True, True, True, True, False, False, False, False, False],
+        fingerprint=[True, True, True, True, True, True, False, False, False, False, False, False],
         head_revision=HEAD,
     )
     assert diag.state is DbState.LEGACY
@@ -131,7 +132,7 @@ def test_legacy_matches_compose_hpcrun_revision() -> None:
 def test_legacy_matches_chain_dispatch_revision() -> None:
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True, True, True, True, True, True, True, False, False, False, False],
+        fingerprint=[True, True, True, True, True, True, True, False, False, False, False, False],
         head_revision=HEAD,
     )
     assert diag.state is DbState.LEGACY
@@ -141,7 +142,7 @@ def test_legacy_matches_chain_dispatch_revision() -> None:
 def test_legacy_matches_pending_and_cancelled_uppercase_revision() -> None:
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True, True, True, True, True, True, True, True, False, False, False],
+        fingerprint=[True, True, True, True, True, True, True, True, False, False, False, False],
         head_revision=HEAD,
     )
     assert diag.state is DbState.LEGACY
@@ -151,7 +152,7 @@ def test_legacy_matches_pending_and_cancelled_uppercase_revision() -> None:
 def test_legacy_matches_chain_current_revision() -> None:
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True, True, True, True, True, True, True, True, True, False, False],
+        fingerprint=[True, True, True, True, True, True, True, True, True, False, False, False],
         head_revision=HEAD,
     )
     assert diag.state is DbState.LEGACY
@@ -161,7 +162,7 @@ def test_legacy_matches_chain_current_revision() -> None:
 def test_legacy_matches_head_when_all_markers_present() -> None:
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True, True, True, True, True, True, True, True, True, True, True],
+        fingerprint=[True, True, True, True, True, True, True, True, True, True, True, True],
         head_revision=HEAD,
     )
     assert diag.state is DbState.LEGACY
@@ -184,7 +185,7 @@ def test_legacy_matches_fresh_create_all_database() -> None:
     """
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True, True, True, True, True, True, True, True, True, True, True],
+        fingerprint=[True, True, True, True, True, True, True, True, True, True, True, True],
         head_revision=HEAD,
     )
     assert diag.state is DbState.LEGACY
@@ -194,7 +195,7 @@ def test_legacy_matches_fresh_create_all_database() -> None:
 def test_inconsistent_when_later_marker_present_but_earlier_missing() -> None:
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True, False, True, False, False, False, False, False, False, False, False],
+        fingerprint=[True, False, True, False, False, False, False, False, False, False, False, False],
         head_revision=HEAD,
     )
     assert diag.state is DbState.INCONSISTENT
@@ -205,7 +206,7 @@ def test_inconsistent_when_later_marker_present_but_earlier_missing() -> None:
 def test_inconsistent_when_baseline_missing_but_later_present() -> None:
     diag = classify(
         alembic_revision=None,
-        fingerprint=[False, True, True, True, True, True, True, True, True, True, False],
+        fingerprint=[False, True, True, True, True, True, True, True, True, True, False, False],
         head_revision=HEAD,
     )
     assert diag.state is DbState.INCONSISTENT
@@ -215,14 +216,15 @@ def test_inconsistent_when_baseline_missing_but_later_present() -> None:
 def test_markers_are_reported_with_labels() -> None:
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True, True, False, False, False, False, False, False, False, False, False],
+        fingerprint=[True, True, False, False, False, False, False, False, False, False, False, False],
         head_revision=HEAD,
     )
     labels = [label for label, _ in diag.markers]
     presence = [present for _, present in diag.markers]
-    assert presence == [True, True, False, False, False, False, False, False, False, False, False]
+    assert presence == [True, True, False, False, False, False, False, False, False, False, False, False]
     assert any("analysis.n_tp" in label for label in labels)
     assert any("chain_final_job_ids" in label for label in labels)
     assert any("PENDING" in label and "CANCELLED" in label for label in labels)
     assert any("chain_current_job_ids" in label for label in labels)
     assert any("multi_node_composite_id" in label for label in labels)
+    assert any("external_job_ids" in label for label in labels)

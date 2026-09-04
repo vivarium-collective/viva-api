@@ -12,7 +12,7 @@ from sqlalchemy.orm import InstrumentedAttribute
 
 from viva_api.analysis.models import AnalysisConfig, ExperimentAnalysisDTO
 from viva_api.common.hpc.job_service import JobStatusUpdate
-from viva_api.common.models import JobId, JobStatus
+from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.simulation.models import (
     ChainCampaignUpdate,
     HpcRun,
@@ -259,6 +259,21 @@ class DatabaseService(ABC):
     @abstractmethod
     async def update_hpcrun_status(self, hpcrun_id: int, update: JobStatusUpdate) -> None:
         """Update the status of a given HpcRun job."""
+        pass
+
+    @abstractmethod
+    async def list_active_local_hpcruns(self) -> list[HpcRun]:
+        """Return active (PENDING/RUNNING) HpcRun rows whose job is a LOCAL
+        in-process task (``job_backend == "local"``) -- the set
+        ``JobScheduler.reconcile_local_tasks`` checks for ownership on every
+        tick (viva-api#414). A row here that no live process owns is an orphan."""
+        pass
+
+    @abstractmethod
+    async def set_hpcrun_external_job_ids(self, hpcrun_id: int, job_ids: list[str]) -> None:
+        """Record the external (AWS Batch) job ids a LOCAL task is watching on
+        its HpcRun row (viva-api#414, "persist the external handle"). Replaces
+        any previous value."""
         pass
 
     @abstractmethod
@@ -1033,6 +1048,26 @@ class DatabaseServiceSQL(DatabaseService):
                     orm_hpcrun.end_time = dt.replace(tzinfo=None)
             if update.error_message:
                 orm_hpcrun.error_message = update.error_message
+            await session.flush()
+
+    @override
+    async def list_active_local_hpcruns(self) -> list[HpcRun]:
+        async with self.async_sessionmaker() as session:
+            stmt = select(ORMHpcRun).where(
+                ORMHpcRun.status.in_([JobStatusDB.PENDING, JobStatusDB.RUNNING]),
+                ORMHpcRun.job_backend == JobBackend.LOCAL.value,
+            )
+            result: Result[tuple[ORMHpcRun]] = await session.execute(stmt)
+            orm_hpcruns = result.scalars().all()
+            return [orm_hpcrun.to_hpc_run() for orm_hpcrun in orm_hpcruns]
+
+    @override
+    async def set_hpcrun_external_job_ids(self, hpcrun_id: int, job_ids: list[str]) -> None:
+        async with self.async_sessionmaker() as session, session.begin():
+            orm_hpcrun: ORMHpcRun | None = await self._get_orm_hpcrun(session, hpcrun_id=hpcrun_id)
+            if orm_hpcrun is None:
+                raise Exception(f"HpcRun with id {hpcrun_id} not found in the database")
+            orm_hpcrun.external_job_ids = list(job_ids)
             await session.flush()
 
     @override

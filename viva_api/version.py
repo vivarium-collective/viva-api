@@ -822,7 +822,31 @@
 #           one change. Non-lineage composites are byte-for-byte unaffected
 #           (no summary.generations shape found -> falls back to global_time
 #           exactly as before).
-__version__ = "0.9.96"
+#           0.9.97 -- orphaned job polling (viva-api#414): a LOCAL-backend HpcRun
+#           row (an in-process asyncio task polling a DooD image build on AWS
+#           Batch, or the chain-dispatch placeholder) stayed `running` forever
+#           once the api pod that owned the task was replaced, while the Batch
+#           job finished normally -- measured live 2026-09-04 (hpcrun 506,
+#           v2ecoli-ray-build-10ebc4c SUCCEEDED 6 min after the 0.9.95->0.9.96
+#           rollout; dispatch refused "build is still in progress"; recovery
+#           was a redundant 10-min rebuild). Three changes: (1) the build task
+#           persists its Batch job id(s) onto the row (new hpcrun.external_job_ids,
+#           migration c7d1f3a9b2e4 + fingerprint marker) so the work is
+#           addressable from any process; (2) LocalTaskService binds a task to
+#           its row (bind_hpcrun) and finalizes the row from the task's own
+#           outcome, with end_time -- the chain-dispatch placeholder is bound
+#           too, so a submission crash now reaches the DB instead of only this
+#           process's memory; (3) JobScheduler.reconcile_local_tasks runs FIRST
+#           on every poll tick (so at startup): every active LOCAL row this
+#           process does not own is finished from Batch truth (describe_jobs
+#           by persisted id, or by the deterministic build job name for rows
+#           that predate the column), SUCCEEDED->completed, FAILED->failed with
+#           the reason, still-running left alone; a placeholder superseded by
+#           its real campaign row is completed, one with no successor after a
+#           10-min grace window is failed and says to re-submit. Stateless by
+#           construction -- nothing is re-attached, so it does not matter how
+#           many polling events were missed.
+__version__ = "0.9.97"
 #           0.9.96 -- run_new_gene_cache resolved its service via
 #           get_simulation_service() (the deployment's own COMPUTE_BACKEND
 #           default -- "batch"/Nextflow on sms-api-stanford-test), not Ray --
