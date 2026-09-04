@@ -93,7 +93,16 @@ DESCRIPTION="${DESCRIPTION:-}"
 # above. Empty object omits it entirely (byte-identical to today's behavior
 # for every existing caller). Example:
 #   EXTRA_PARAMS='{"injected_processes": {"swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"}}}'
-EXTRA_PARAMS="${EXTRA_PARAMS:-{\}}"
+# NOTE: a bare "${EXTRA_PARAMS:-{\}}" default does NOT produce "{}" -- the
+# backslash survives literally, yielding invalid JSON ("{\}"). Confirmed
+# empirically 2026-09-04 (first real invocation that ever left EXTRA_PARAMS
+# genuinely unset -- every prior real dispatch this session always set it
+# explicitly, which is why this stayed hidden). Fixed via a plain conditional
+# instead of embedding a brace literal inside the substitution.
+EXTRA_PARAMS="${EXTRA_PARAMS:-}"
+if [[ -z "${EXTRA_PARAMS}" ]]; then
+  EXTRA_PARAMS='{}'
+fi
 
 # curl's -G forces EVERY -d/--data-urlencode value (including a later JSON
 # body) into the query string -- confirmed empirically, not assumed: `curl -G

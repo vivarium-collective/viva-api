@@ -2398,11 +2398,22 @@ class TestParcaCommand:
             )
         assert "--new-genes violacein_MG1655_M5 --bundle-overrides models/parca/composed_overlay.tsv" in cmd
 
-    def test_strain_flags_reach_the_build_cache_step(self) -> None:
-        """The strain must be stamped into the CLI-built bundle (v2ecoli#676), so the
-        flags ride on scripts/build_cache.py too -- not only v2ecoli-parca. Otherwise
-        cache_version.json records wild-type and the wrong-strain guard (P1-6) can't
-        fire on the GovCloud-built cache."""
+    def test_strain_flags_do_not_reach_the_build_cache_step(self) -> None:
+        """SUPERSEDES the old test_strain_flags_reach_the_build_cache_step
+        (v2ecoli#676-era design). scripts/build_cache.py's own real current CLI
+        (confirmed live 2026-09-04, sms-ecoli study/cd2-pnnl-02-strain-sims) has
+        ONLY --fixture/--cache/--media-condition/--fixed-media -- --new-genes/
+        --bundle-overrides raise `unrecognized arguments`, confirmed via a real
+        ParCa+build_cache dispatch that got exactly this far and crashed. Root
+        cause, from build_cache.py's own current comment: a second, redundant
+        write_cache_version() call that USED TO need these flags was removed
+        because it re-derived a version with none of the real build_params and
+        clobbered the correct one -- save_sim_input's own bundle-write already
+        produces a complete, correct cache_version.json straight from sim_data
+        (itself already correctly strain-specific, since v2ecoli-parca received
+        the real --new-genes/--bundle-overrides flags one command earlier in
+        this same chain). Restamping strain identity a second time at this step
+        is not just unsupported now, it would be redundant even if it were."""
         service = SimulationServiceRay()
         with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
             cmd = service._parca_command(
@@ -2410,8 +2421,12 @@ class TestParcaCommand:
             )
         # isolate just the build_cache.py invocation (between it and the trailing cp)
         build_step = cmd.split("&& python scripts/build_cache.py", 1)[1].split("&& cp", 1)[0]
-        assert "--new-genes violacein_MG1655_M5" in build_step
-        assert "--bundle-overrides models/parca/composed_overlay.tsv" in build_step
+        assert "--new-genes" not in build_step
+        assert "--bundle-overrides" not in build_step
+        # the flags still reach v2ecoli-parca, one command earlier in the chain
+        parca_step = cmd.split("&& v2ecoli-parca", 1)[1].split("&& gzip", 1)[0]
+        assert "--new-genes violacein_MG1655_M5" in parca_step
+        assert "--bundle-overrides models/parca/composed_overlay.tsv" in parca_step
 
 
 class TestCacheS3UriVariant:

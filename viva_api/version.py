@@ -822,4 +822,13 @@
 #           one change. Non-lineage composites are byte-for-byte unaffected
 #           (no summary.generations shape found -> falls back to global_time
 #           exactly as before).
-__version__ = "0.9.94"
+__version__ = "0.9.95"
+#           0.9.95 -- _parca_command's own build_cache.py step no longer carries
+#           --new-genes/--bundle-overrides -- confirmed live 2026-09-04, its real
+#           current CLI has neither flag (`unrecognized arguments`), stalling ANY
+#           new_genes ParCa dispatch one step after ParCa itself succeeds. Not a
+#           regression to work around: build_cache.py's own save_sim_input already
+#           writes a complete, correct cache_version.json straight from sim_data,
+#           itself already strain-specific since v2ecoli-parca received both flags
+#           one command earlier in the same chain. Restamping here was redundant
+#           even when it was once supported.
