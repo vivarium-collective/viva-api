@@ -232,6 +232,12 @@ simulation_cli = typer.Typer(help="Run and inspect simulation workflows.")
 parca_cli = typer.Typer(help="Inspect parca (parameter calculator) datasets and runs.")
 analysis_cli = typer.Typer(help="Inspect analysis jobs and outputs.")
 compose_cli = typer.Typer(help="Compose (process-bigraph) simulation commands.")
+composite_cli = typer.Typer(
+    help="Process-bigraph-native composite dispatch (item 101/109) -- N real, ray:-addressed "
+    "nodes wired directly into one composite's own state tree, no external job-chain orchestrator. "
+    "Distinct from 'compose' (item 98's OMEX/PBG/SBML file-upload family) -- this is the "
+    "multi_node_dispatch mechanism on POST /api/v1/simulations."
+)
 worker_cli = typer.Typer(help="Run and call env workers (a simulator image as a live process).")
 demo_cli = typer.Typer(help="Demo and utility commands.")
 tui_cli = typer.Typer(help="TUI's command line interface.")
@@ -243,6 +249,7 @@ cli.add_typer(simulation_cli, name="simulation")
 cli.add_typer(parca_cli, name="parca")
 cli.add_typer(analysis_cli, name="analysis")
 cli.add_typer(compose_cli, name="compose")
+cli.add_typer(composite_cli, name="composite")
 cli.add_typer(worker_cli, name="worker")
 cli.add_typer(demo_cli, name="demo")
 cli.add_typer(tui_cli)
@@ -1079,6 +1086,168 @@ def simulation_run(
         return
 
     # Poll until done
+    console.print("\n[memphis.info]Polling simulation status...[/]")
+    poll_interval = 30
+    elapsed = 0
+    status = "running"
+    run = None
+    while status not in ("completed", "failed", "cancelled", "unknown"):
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+        try:
+            run = data_service.get_workflow_status(simulation_id=simulation.database_id)
+            status = run.status.value
+        except Exception as e:
+            console.print(f"  [{elapsed}s] [memphis.error]error: {e}[/]")
+            continue
+        console.print(f"  [{elapsed}s] status: [{status_style(status)}]{status}[/]")
+
+    error_detail = f"\n{run.error_message}" if run and run.error_message else ""
+    console.print(
+        Panel(
+            f"[{status_style(status)}]{status.upper()}[/]{error_detail}",
+            title=f"Simulation {simulation.database_id}",
+            border_style=status_border(status),
+        )
+    )
+    if status == "completed":
+        console.print(
+            f"\n[memphis.hint]Download data:[/]  atlantis simulation outputs {simulation.database_id} --dest ./debug"
+        )
+
+
+@composite_cli.command(
+    "run",
+    help="Submit a process-bigraph-native multi-node composite dispatch (item 101/109) -- N real "
+    "ray:-addressed nodes in one composite, no external job-chain orchestrator.",
+)
+def composite_run(
+    experiment_id: str = Argument(help="Unique experiment identifier."),
+    simulator_id: int = Argument(help="Database ID of the simulator to use."),
+    composite_id: str = Option(
+        default="v2ecoli.composites.lineage_ray_batch",
+        help="Registered process_bigraph composite id to dispatch. ANY id resolvable by "
+        "process_bigraph.composite_spec.get() works, not just lineage_ray_batch -- see "
+        "docs/plan/design-pbg-native-for-jim.md.",
+    ),
+    num_nodes: int = Option(default=2, help="Real AWS Batch MNP nodes to request."),
+    # --- lineage_ray_batch-shaped convenience flags -- kept for the common case, but every one
+    # of these is just a named shortcut for a key inside --params below. A DIFFERENT composite_id
+    # (a future one, or one that already exists with a different parameter shape) should use
+    # --params directly instead -- these flags are not composite-agnostic themselves, --params is.
+    seeds: int | None = Option(default=None, help="[lineage_ray_batch] n_seeds -- independent seed-lineages."),
+    generations: int | None = Option(default=None, help="[lineage_ray_batch] n_generations per lineage."),
+    base_seed: int | None = Option(default=None, help="[lineage_ray_batch] First seed; seeds are contiguous."),
+    cache_dir: str | None = Option(default=None, help="[lineage_ray_batch] Path to the ParCa cache directory."),
+    out_dir: str | None = Option(
+        default=None,
+        help="[lineage_ray_batch] Output dir for both the parquet and xarray streams. Omit to use the "
+        "deployment-standard location (recommended -- this is also where the auto-triggered "
+        "post-completion analysis job reads from, submit_multi_node_analysis). Pass an s3:// URI to "
+        "redirect both streams there instead -- verified working (item 109), but the auto-analysis "
+        "will NOT follow a custom out_dir and will find no history there.",
+    ),
+    emitter: str | None = Option(default=None, help="[lineage_ray_batch] 'parquet' | 'xarray' | 'both'."),
+    n_workers: int | None = Option(
+        default=None,
+        help="[lineage_ray_batch] Real target concurrency for the ray: actor pool. Omit (recommended) "
+        "to let it fall through to the cluster-derived RAY_SHARDS_DEFAULT env var, computed from real "
+        "per-node vCPUs x num_nodes. Set explicitly only to deliberately cap concurrency.",
+    ),
+    max_duration_per_gen: float | None = Option(
+        default=None, help="[lineage_ray_batch] Per-generation sim-time cap (seconds)."
+    ),
+    time_step: float | None = Option(default=None, help="[lineage_ray_batch] Integration timestep (seconds)."),
+    media: str | None = Option(default=None, help="[lineage_ray_batch] Media condition."),
+    # --- fully generic escape hatch: works for ANY composite_id, not just lineage_ray_batch.
+    # Merges OVER whatever the named flags above produced (explicit --params always wins on a key
+    # collision) -- the same "named convenience + raw JSON override" shape chain-dispatch.sh's own
+    # EXTRA_PARAMS gives CD2 runs, so this command is parameterizable at the same level.
+    params: str | None = Option(
+        default=None,
+        help="Raw JSON object merged into multi_node_dispatch.params, on top of any of the named "
+        "flags above -- the fully generic path to ANY composite's own parameters (e.g. a future "
+        "composite_id's own variants/injected_processes-equivalent, once one exists). "
+        'Example: --params \'{"n_seeds": 100, "n_generations": 10}\'.',
+    ),
+    steps: int = Option(default=36000, help="Total simulated seconds requested for the whole composite run."),
+    description: str | None = Option(default=None, help="Custom description for this simulation run."),
+    tag: list[str] = Option(
+        default_factory=list,
+        help="Free-form tag to attach for later filtering. Repeat for multiple.",
+    ),
+    poll: bool = Option(default=False, help="Poll simulation status until completion."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    """Fires the exact same request pbg-dispatch.sh builds -- POST /api/v1/simulations with
+    extra_params.multi_node_dispatch -- through the atlantis CLI instead of a shell script.
+
+    KeyError risk, stated plainly (see docs/plan/design-pbg-native-for-jim.md): lineage_ray_batch's
+    own registered @composite_generator parameters do NOT currently include variants/
+    injected_processes/config_overrides -- passing any of those (via --params) would hard-fail
+    server-side with a real KeyError, not silently no-op. Nothing here pre-validates against a
+    composite's own schema; the server does, by design (pure passthrough).
+    """
+    import json as _json_mod2
+    import time
+
+    from rich.panel import Panel
+
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+
+    composite_params: dict[str, Any] = {"experiment_id": experiment_id}
+    named = {
+        "n_seeds": seeds,
+        "n_generations": generations,
+        "base_seed": base_seed,
+        "cache_dir": cache_dir,
+        "out_dir": out_dir,
+        "emitter": emitter,
+        "n_workers": n_workers,
+        "max_duration_per_gen": max_duration_per_gen,
+        "time_step": time_step,
+        "media": media,
+    }
+    composite_params.update({k: v for k, v in named.items() if v is not None})
+    if params:
+        try:
+            parsed_params = _json_mod2.loads(params)
+        except _json_mod2.JSONDecodeError as e:
+            console.print(f"[memphis.error]--params is not valid JSON:[/] {e}")
+            raise typer.Exit(1) from None
+        if not isinstance(parsed_params, dict):
+            console.print("[memphis.error]--params must be a JSON object.[/]")
+            raise typer.Exit(1)
+        composite_params.update(parsed_params)
+
+    extra_params: dict[str, Any] = {
+        "multi_node_dispatch": {
+            "composite_id": composite_id,
+            "num_nodes": num_nodes,
+            "params": composite_params,
+            "steps": steps,
+        }
+    }
+
+    with console.status("[memphis.spinner]Submitting composite dispatch..."):
+        simulation = data_service.run_workflow(
+            experiment_id=experiment_id,
+            simulator_id=simulator_id,
+            description=description or f"sim{simulator_id}-{experiment_id}; composite; {composite_id}",
+            tags=list(tag) or None,
+            extra_params=extra_params,
+        )
+
+    console.print(f"[memphis.success]Composite dispatch submitted![/]  ID: {simulation.database_id}")
+    display_json(simulation.model_dump(), console)
+
+    if not poll:
+        sim_id = simulation.database_id
+        console.print(f"\n[memphis.hint]Track progress:[/]  atlantis simulation status {sim_id}")
+        console.print(f"[memphis.hint]Download data:[/]   atlantis simulation outputs {sim_id} --dest ./debug")
+        return
+
     console.print("\n[memphis.info]Polling simulation status...[/]")
     poll_interval = 30
     elapsed = 0

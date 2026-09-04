@@ -764,4 +764,21 @@
 #           (tests/common/handlers/test_simulations_handler.py) cover the
 #           real gap the original PR's tests missed -- they mocked the
 #           service layer, never this handler's own DB-facing logic.
-__version__ = "0.9.88"
+#
+# 0.9.89 -- `atlantis simulation run-pbg-native` (backlog item 101/109): a new
+#           CLI command for the pbg-native multiseed/multigeneration dispatch
+#           (N real ray:LineageProcess nodes in one composite), giving it a
+#           real first-class client alongside `simulation run` (chain-
+#           dispatch) instead of only a hand-rolled curl script
+#           (pbg-dispatch.sh). Fires the identical POST /api/v1/simulations +
+#           extra_params.multi_node_dispatch request that script builds.
+#           Along the way, fixed a real, previously-unexercised body-shape bug
+#           in app_data_service.py's own submit_run_workflow: the route
+#           declares TWO separate Body(...) params (analysis_options,
+#           extra_params), which FastAPI nests under their own keys
+#           (`{"analysis_options": ..., "extra_params": ...}`) -- the old
+#           client sent analysis_options bare/unwrapped instead, a latent bug
+#           that never surfaced because no existing caller set BOTH at once.
+#           Verified live: a real smoke dispatch's stored config showed
+#           multi_node_dispatch reaching the server intact, then cancelled.
+__version__ = "0.9.89"
