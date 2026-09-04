@@ -54,8 +54,8 @@ container.
 
 ## Path C - pbg-native dispatch:
 
-Path C (pbg-native multi-node dispatch): atlantis composite run (or pbg-dispatch.sh) 
-→ POST /api/v1/simulations with extra_params.multi_node_dispatch={composite_id, num_nodes, params, steps} 
+Path C (pbg-native multi-node dispatch): atlantis composite run (or pbg-dispatch.sh)
+→ POST /api/v1/simulations with extra_params.multi_node_dispatch={composite_id, num_nodes, params, steps}
 → SimulationServiceRay's real fork point (simulation_service_ray.py:1448, checked before chain-dispatch's own composite is None and n_generations > 1 fork specifically to stop a
   multi-node request from silently misrouting) → _submit_multi_node_composite() (line 1685) submits two real AWS Batch jobs via _submit_mnp — ParCa (1 node) first, then the composite job (N
   nodes) gated depends_on=[parca_job_id] — → the composite job's container command, built by _multi_node_composite_command() (line 1643): stages run_pbg.py fresh from S3, sets
