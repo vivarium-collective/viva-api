@@ -4,7 +4,7 @@ Both files in this directory are **real output**, not hand-written illustrations
 produced by calling the exact Python function the real dispatch path calls at runtime
 (`process_bigraph.composite_spec`'s `to_document()` machinery, the same call
 `viva_api/compose/run_pbg.py`'s own `_resolve_document()` makes on every real dispatch — see
-`../plan/design-pbg-native-for-jim.md` §"The shared entrypoint" for the full trace), run locally
+`../docs/design-pbg-native-for-jim.md` §"The shared entrypoint" for the full trace), run locally
 against a real, complete ParCa cache (commit `4da4e43`, downloaded verbatim from
 `s3://smsvpctest-shared-sharedbucket60d199d6-abfvwv0day91/ray-parca-cache/4da4e43/` — the exact
 cache a real dispatch, `database_id=282`, used and succeeded against on 2026-09-03).
@@ -18,7 +18,7 @@ cache a real dispatch, `database_id=282`, used and succeeded against on 2026-09-
   (v2ecoli PR #663) to show the now-real `injected_processes` capability — the `swap_processes`/
   `exclude_processes` block on each node is the exact real content dispatch `database_id=288` used
   on real GovCloud infra (`configs/cd2/run2_j3_injected_metabolism.json`), not a hypothetical
-  example. See `../plan/design-pbg-native-for-jim.md` §11a for the full trace.
+  example. See `../docs/design-pbg-native-for-jim.md` §11a for the full trace.
 - **`chain-dispatch-ecoli-baseline-composite.json`** — `v2ecoli.composites.ecoli_baseline`, built
   with the exact params `SimulationServiceRay._seed_generation_command` constructs for one real
   chained generation job (`n_seeds=1, n_generations=1, stop_at_division=True, analyses=none,
@@ -34,7 +34,7 @@ aws s3 sync "s3://smsvpctest-shared-sharedbucket60d199d6-abfvwv0day91/ray-parca-
   /tmp/real-cache/ --profile stanford-sso --region us-gov-west-1
 # ...or build one locally: cd v2ecoli && uv run v2ecoli-parca --mode fast --out /tmp/real-cache
 
-# 2. Run the dump script (see ../plan/design-pbg-native-for-jim.md Appendix A for the full source)
+# 2. Run the dump script (see ../docs/design-pbg-native-for-jim.md Appendix A for the full source)
 cd v2ecoli && uv run python dump_composites.py
 ```
 
