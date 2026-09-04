@@ -898,6 +898,14 @@ class SimulationServiceRay(SimulationService):
         is small next to the rest of the cache, and every existing consumer of
         this cache dir already tolerates unknown files (nothing here globs or
         rejects extras).
+
+        ``new_genes``/``bundle_overrides`` do NOT ride onto the ``build_cache.py``
+        step below (confirmed 2026-09-04 against a real crash: its current CLI has
+        neither flag, ``unrecognized arguments``). Not a gap -- its own bundle-write
+        (``save_sim_input``) already produces a complete, correct ``cache_version.json``
+        straight from ``sim_data``, which is already strain-specific because
+        ``v2ecoli-parca`` received both flags one command earlier in this same chain.
+        Restamping here would be redundant even where it was once supported.
         """
         settings = get_settings()
         new_genes_flag = f" --new-genes {shlex.quote(new_genes)}" if new_genes and new_genes != "off" else ""
@@ -909,7 +917,7 @@ class SimulationServiceRay(SimulationService):
             f" && gzip -f -k {PARCA_SIMDATA_DIR}/parca_state.pkl"
             f" && python scripts/build_cache.py"
             f" --fixture {PARCA_SIMDATA_DIR}/parca_state.pkl.gz"
-            f" --cache {PARCA_CACHE_DIR}{new_genes_flag}{bundle_overrides_flag}"
+            f" --cache {PARCA_CACHE_DIR}"
             f" && cp {PARCA_SIMDATA_DIR}/parca_state.pkl.gz {PARCA_CACHE_DIR}/parca_state.pkl.gz"
         )
         # A config that requests a real strain (new_genes != "off") MUST produce a
