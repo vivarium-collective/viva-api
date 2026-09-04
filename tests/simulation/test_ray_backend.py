@@ -1778,7 +1778,11 @@ def test_stage_out_env_emits_expect_vars_for_a_real_strain() -> None:
     carries the requested strain so the entrypoint can reject a wrong-strain cache."""
     svc = SimulationServiceRay()
     env = svc._stage_out_env(
-        prefix="RAY", out_dir="/o", out_s3="s3://o", stage_s3="s3://c", stage_dir="/c",
+        prefix="RAY",
+        out_dir="/o",
+        out_s3="s3://o",
+        stage_s3="s3://c",
+        stage_dir="/c",
         expect_new_genes="violacein_MG1655_M5",
         expect_bundle_overrides="models/parca/composed_overlay.tsv",
     )
@@ -1792,8 +1796,11 @@ def test_stage_out_env_omits_expect_vars_for_wild_type(wild: str | None) -> None
     """off/empty/None is wild-type -> no expectation, byte-identical to before."""
     svc = SimulationServiceRay()
     env = svc._stage_out_env(
-        prefix="RAY", out_dir="/o", out_s3="s3://o",
-        expect_new_genes=wild, expect_bundle_overrides=wild,
+        prefix="RAY",
+        out_dir="/o",
+        out_s3="s3://o",
+        expect_new_genes=wild,
+        expect_bundle_overrides=wild,
     )
     names = _env_names(env)
     assert "RAY_EXPECT_NEW_GENES" not in names
@@ -1804,7 +1811,10 @@ def test_stage_out_env_expect_vars_follow_the_prefix() -> None:
     """CONTAINER path gets CONTAINER_EXPECT_* (future-proofs the chain-dispatch path)."""
     svc = SimulationServiceRay()
     env = svc._stage_out_env(
-        prefix="CONTAINER", out_dir="/o", out_s3="s3://o", expect_new_genes="violacein",
+        prefix="CONTAINER",
+        out_dir="/o",
+        out_s3="s3://o",
+        expect_new_genes="violacein",
     )
     assert "CONTAINER_EXPECT_NEW_GENES" in _env_names(env)
 
