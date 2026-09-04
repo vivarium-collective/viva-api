@@ -887,12 +887,30 @@ improvement on hand-rolled dispatch.
    practice: **N1 landed as v2ecoli#663** and the durability half as **#680**, both done by
    the pbg-native effort and both consumed unchanged by this plan. **N2–N4 remain, and N5 —
 the #684 resolver-seam reconciliation — was added on 2026-09-04**; do them once.
-6. **PBG version skew is a hard sequencing gate.** v2ecoli pins `process-bigraph` at git
-   `branch = "main"` and currently resolves to **1.5.0** — the older 438-line `nextflow.py`,
-   **no `run_composite.py`, no `workflow/recipe.py`**. Everything in Phase 2 needs `--build`.
-   So **#197 must land on `main` and both venvs must be re-locked before Phase 2 is even
-   testable** — which is also why #196 (removing the module from main) would have broken
-   v2ecoli.
+6. **PBG version skew — ⛔ CORRECTED 2026-09-04, this risk was overstated.**
+
+   > **What this said, and why it was wrong.** It claimed v2ecoli's `branch = "main"` pin
+   > "currently resolves to **1.5.0** — the older 438-line `nextflow.py`, no
+   > `run_composite.py`, no `workflow/recipe.py`", and concluded Phase 2 was not even
+   > testable until #197 landed. **Checked directly against the lockfile and the synced
+   > venv: it resolved to `8f49d80` = 1.8.3, with both files present.** §4 of this same
+   > document said as much — "PBG **1.8.3**, `nextflow.py` byte-identical to `pr197`" — so
+   > the doc contradicted itself and I read the wrong half when writing the risk.
+
+   The real gate was narrower: 1.8.3 already had `run_composite` and `workflow/recipe.py`,
+   so `--build` existed. What was missing was **#201's sub-workflow emission** — without it
+   a nested `Composite` could only be flattened or collapsed, and the N-way gather had no
+   correct expression (§5, §7). Phase 2 was blocked on the *gather*, not on `--build`.
+
+   **Now resolved.** #197 merged 2026-09-04 18:25 UTC, #201 at 19:16 UTC; v2ecoli is
+   re-locked to `7bfde083` in v2ecoli#689 (verified against the synced env: sub-workflow
+   emission and config threading both present, 6/6 lineage tests, composites import).
+   **sms-ecoli's re-lock is the remaining half** — and it carries a second, unrelated
+   payload: its v2ecoli pin (`rev=3084a15f`) predates v2ecoli#688, so the per-generation
+   success-sentinel fix does not reach the deployment until that bump lands.
+
+   The one part of the original claim that stands: #196 (removing the module from `main`)
+   would still have broken v2ecoli, since the pin tracks `main`.
 
 ## 10. Verification
 
