@@ -50,11 +50,38 @@ class AnalysisNotReadyError(Exception):
 
 
 async def list_simulation_analyses(db_service: DatabaseService, simulation_id: int) -> list[ExperimentAnalysisDTO]:
-    """List existing analysis records for a simulation (by its experiment_id)."""
+    """List existing analysis records for a simulation (by its experiment_id).
+
+    Item 111: this used to be a plain DB read with zero live resolution --
+    a Ray-backend analysis row could show a non-terminal status here
+    indefinitely even after the real job finished, because nothing except a
+    direct ``GET /analyses/{id}/status`` call (``handle_get_ray_analysis_status``,
+    which does the real S3-manifest/job-status check) ever refreshed it.
+    Confirmed live: a record stuck at ``running`` for 90+ minutes here
+    resolved instantly once the per-ID endpoint was queried directly.
+    Callers of this LIST endpoint should not need to know that separate
+    endpoint exists -- lazily resolve any non-terminal ``backend="ray"`` row
+    the same way, reusing the existing resolver rather than a new one.
+    """
     simulation = await db_service.get_simulation(simulation_id=simulation_id)
     if simulation is None:
         raise ValueError(f"Simulation {simulation_id} not found")
-    return await db_service.list_analyses(experiment_id=simulation.experiment_id)
+    records = await db_service.list_analyses(experiment_id=simulation.experiment_id)
+
+    resolved: list[ExperimentAnalysisDTO] = []
+    for record in records:
+        if record.backend == "ray" and record.status not in (JobStatus.COMPLETED, JobStatus.FAILED):
+            try:
+                run = await handle_get_ray_analysis_status(db_service, record)
+            except Exception:
+                logging.getLogger(__name__).debug(
+                    "list_simulation_analyses: live resolution failed for analysis %s, returning stored status",
+                    record.database_id,
+                )
+            else:
+                record = record.model_copy(update={"status": run.status})
+        resolved.append(record)
+    return resolved
 
 
 _ANALYSIS_PLOT_EXTENSIONS = (".html",)

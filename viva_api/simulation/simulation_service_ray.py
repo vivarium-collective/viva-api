@@ -2211,6 +2211,9 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         composite_id: str,
         history_uri: str,
         out_uri: str,
+        n_seeds: int | None = None,
+        n_generations: int = 1,
+        modules: dict[str, dict[str, Any]] | str | None = None,
     ) -> str:
         """Build the "Analysis flush" DAG node's command for a generic
         multi-node process-bigraph composite dispatch (backlog item 88).
@@ -2218,22 +2221,32 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         Unlike ``_analysis_command`` (a fixed hive-parquet seed x generation
         sweep, v2ecoli-specific analysis modules), this points at a separate,
         generic entrypoint (``scripts/run_multi_node_analysis.py``) that
-        dispatches through v2ecoli's own generic post-run mechanism
-        (``v2ecoli.workflow.flush.run_flush``, the SAME one every other
-        composite's cd1_*/ptools_* analyses use) rather than branching on
-        ``composite_id`` at all -- a composite-specific renderer, if one is
-        ever needed, is a new registered post-sim step (e.g.
-        ``EmitterHistorySummary``), never a per-composite branch here. Reads
-        whatever ``run_pbg.py`` staged at ``history_uri`` (an
-        ``emitter_history.json`` gathered from the composite's own in-memory
-        emitter when no file-backed emitter already shipped its own output --
-        see ``run_pbg.run``'s own docstring -- falling back to
-        ``final_state.json`` when no history was captured), and writes
-        whatever ``run_flush`` renders + ``_manifest.json`` to ``out_uri``,
-        matching the same S3-manifest contract ``GET /analyses/{id}/status``
-        already probes for every other analysis kind.
+        tries TWO read paths in order (item 109's own fix): (1) when
+        ``n_seeds`` is given, a hive-parquet sweep read via the same
+        DuckDB-httpfs mechanism ``run_standalone_analysis.py`` already uses --
+        the shape a ``lineage_ray_batch`` pbg-native dispatch actually
+        produces; (2) the original flat-file fallback (``emitter_history
+        .json``/``final_state.json`` -> ``v2ecoli.workflow.flush.run_flush``),
+        colony's own shape (item 88), unconditionally tried when path 1 is
+        not applicable or finds nothing. Nothing in either path branches on
+        ``composite_id`` -- a composite-specific renderer, if one is ever
+        needed, is a new registered post-sim step, never a per-composite
+        branch here. Writes whichever path succeeds + ``_manifest.json`` to
+        ``out_uri``, matching the same S3-manifest contract
+        ``GET /analyses/{id}/status`` already probes for every other
+        analysis kind.
+
+        ``modules`` mirrors ``_analysis_command``'s own encoding exactly (same
+        real bug class to avoid): the ``"applicable"`` keyword must ride as a
+        bare, unquoted-in-JSON-sense token, not ``json.dumps``'d -- JSON-
+        encoding it would produce the 12-character string ``'"applicable"'``
+        (quotes included), which the receiving script's own ``.strip().lower()
+        == "applicable"`` check would silently miss, falling through to
+        ``json.loads`` and handing back the bare word as if it were a real
+        module mapping -- a real bug caught here before shipping, not a
+        theoretical one.
         """
-        return (
+        cmd = (
             f"cd {V2ECOLI_DIR}"
             f" && python scripts/run_multi_node_analysis.py"
             f" --composite-id {shlex.quote(composite_id)}"
@@ -2241,6 +2254,11 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             f" --out-uri {shlex.quote(out_uri)}"
             f" --experiment-id {shlex.quote(experiment_id)}"
         )
+        if n_seeds:
+            modules_arg = modules if isinstance(modules, str) else json.dumps(modules or {})
+            cmd += f" --n-seeds {int(n_seeds)} --n-generations {int(n_generations)}"
+            cmd += f" --modules {shlex.quote(modules_arg)}"
+        return cmd
 
     async def submit_multi_node_analysis(
         self,
@@ -2260,8 +2278,25 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         ``_submit_analysis_job``: a submission failure is recorded as a FAILED
         row, not just logged, so it's visible through the same
         ``GET /analyses/{id}/status`` surface a successful submission uses.
+
+        Item 109: also extracts ``n_seeds``/``n_generations`` from the
+        ORIGINAL dispatch's own stored ``multi_node_dispatch.params`` (already
+        on ``simulation.config`` -- no new DB column needed) and the analysis
+        module selection via ``analysis_modules_for`` -- the SAME already-
+        tested resolver ``_analysis_command`` (chain-dispatch's own analysis
+        node) already uses, reused rather than re-derived, so an unset/empty
+        ``analysis_options`` resolves to the ``"applicable"`` keyword here
+        too, not a silently-different "run nothing" -- both threaded into the
+        command builder so a ``lineage_ray_batch``-shaped dispatch's real
+        hive-parquet output is actually read, not just colony's own
+        flat-file fallback.
         """
         experiment_id = str(simulation.config.experiment_id)
+        mnp_dispatch = getattr(simulation.config, "multi_node_dispatch", None) or {}
+        dispatch_params = mnp_dispatch.get("params") or {} if isinstance(mnp_dispatch, dict) else {}
+        n_seeds = dispatch_params.get("n_seeds")
+        n_generations = int(dispatch_params.get("n_generations") or 1)
+        modules = analysis_modules_for(simulation.config)
         analysis_name = f"analysis-mnp-{experiment_id[:20]}-{_rand_suffix()}"
         results_uri = self._results_s3_uri(experiment_id).rstrip("/")
         result_uri = f"{results_uri}/analyses/{analysis_name}"
@@ -2295,6 +2330,9 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
                     composite_id=composite_id,
                     history_uri=results_uri,
                     out_uri=result_uri,
+                    n_seeds=n_seeds,
+                    n_generations=n_generations,
+                    modules=modules,
                 ),
                 out_s3=self._results_s3_uri(experiment_id),
                 out_dir=ANALYSIS_OUT_DIR,
