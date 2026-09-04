@@ -2215,6 +2215,21 @@ class TestParcaCommand:
             )
         assert "--new-genes violacein_MG1655_M5 --bundle-overrides models/parca/composed_overlay.tsv" in cmd
 
+    def test_strain_flags_reach_the_build_cache_step(self) -> None:
+        """The strain must be stamped into the CLI-built bundle (v2ecoli#676), so the
+        flags ride on scripts/build_cache.py too -- not only v2ecoli-parca. Otherwise
+        cache_version.json records wild-type and the wrong-strain guard (P1-6) can't
+        fire on the GovCloud-built cache."""
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._parca_command(
+                new_genes="violacein_MG1655_M5", bundle_overrides="models/parca/composed_overlay.tsv"
+            )
+        # isolate just the build_cache.py invocation (between it and the trailing cp)
+        build_step = cmd.split("&& python scripts/build_cache.py", 1)[1].split("&& cp", 1)[0]
+        assert "--new-genes violacein_MG1655_M5" in build_step
+        assert "--bundle-overrides models/parca/composed_overlay.tsv" in build_step
+
 
 class TestCacheS3UriVariant:
     """cache_s3_uri's new `variant` kwarg (backlog item 105) -- mirrors
