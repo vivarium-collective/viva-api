@@ -19,7 +19,11 @@ images:
     # multi_node_composite_id migration, 9c2e6b1f4a73) -- the app was deployed
     # slightly ahead of this Job (real, caught live via UndefinedColumnError
     # spam in the api pod's own logs, fixed the same few minutes).
-    newTag: 0.9.96
+    newTag: 0.9.98
+    # 2026-09-04: 0.9.96 -> 0.9.98, matching the app overlay bump (PR#414/#418
+    # -- carries a REAL new Alembic migration, c7d1f3a9b2e4_add_external_
+    # job_ids_to_hpcrun.py -- the migration Job must actually be re-run,
+    # not just tagged).
     # 2026-09-04: 0.9.95 -> 0.9.96, matching the app overlay bump (PR#412's
     # new-gene-cache backend-resolution fix -- no new Alembic migration this
     # release, a service-lookup-only change).
