@@ -267,15 +267,6 @@ wheels = [
 ]
 
 [[package]]
-name = "async-lru"
-version = "2.3.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e8/1f/989ecfef8e64109a489fff357450cb73fa73a865a92bd8c272170a6922c2/async_lru-2.3.0.tar.gz", hash = "sha256:89bdb258a0140d7313cf8f4031d816a042202faa61d0ab310a0a538baa1c24b6", size = 16332, upload-time = "2026-03-19T01:04:32.413Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/e2/c2e3abf398f80732e58b03be77bde9022550d221dd8781bf586bd4d97cc1/async_lru-2.3.0-py3-none-any.whl", hash = "sha256:eea27b01841909316f2cc739807acea1c623df2be8c5cfad7583286397bb8315", size = 8403, upload-time = "2026-03-19T01:04:30.883Z" },
-]
-
-[[package]]
 name = "asyncpg"
 version = "0.30.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2058,7 +2049,7 @@ name = "pexpect"
 version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ptyprocess" },
+    { name = "ptyprocess", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [
@@ -3660,7 +3651,7 @@ wheels = [
 
 [[package]]
 name = "viva-api"
-version = "0.9.98"
+version = "0.9.99"
 source = { editable = "." }
 dependencies = [
     { name = "aioboto3" },
@@ -3668,7 +3659,6 @@ dependencies = [
     { name = "alembic" },
     { name = "altair" },
     { name = "anywidget" },
-    { name = "async-lru" },
     { name = "asyncpg" },
     { name = "asyncssh" },
     { name = "biomodels" },
@@ -3758,7 +3748,6 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.16.2,<2" },
     { name = "altair", specifier = ">=5.5.0,<7" },
     { name = "anywidget", specifier = ">=0.9.18,<0.12" },
-    { name = "async-lru", specifier = ">=2.0.5,<3" },
     { name = "asyncpg", specifier = ">=0.30.0,<0.32" },
     { name = "asyncssh", specifier = ">=2.21.0,<3" },
     { name = "biomodels", specifier = ">=0.3.2" },
