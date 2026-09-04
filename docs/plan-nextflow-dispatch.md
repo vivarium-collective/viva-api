@@ -4,7 +4,8 @@
 `main` @ `1fa6fb14` (0.9.91), process-bigraph PR
 [#197](https://github.com/vivarium-collective/process-bigraph/pull/197) (git ref `pr197`,
 and shipped identically in PBG **1.8.3**), v2ecoli and sms-ecoli working trees, and
-vEcoli's `runscripts/nextflow/`. Claims marked ⚠UNVERIFIED were not checked.
+vEcoli's `runscripts/nextflow/`. The three claims left unverified have since been checked
+against nf-amazon's bytecode and live GovCloud infrastructure — see §11.
 
 > Companion documents: [`plan-chain-dispatch-generations.md`](plan-chain-dispatch-generations.md)
 > (the three current dispatch paths, and what is still open on chain-dispatch) and
@@ -145,6 +146,7 @@ Verified 2026-09-04. The point of this table is that most of the machinery is al
 | K8s head-Job submit shape; `.nextflow.log` → S3 | `viva_api/simulation/simulation_service_k8s.py:213-331` |
 | Weblog receiver + NDJSON event parsing, tested against a real fixture | `viva_api/common/hpc/nextflow_weblog.py`, `common/hpc/models.py:435-467` |
 | Runner staging to S3 (the 8192-byte Batch command cap) | `viva_api/simulation/simulation_service_ray.py:925` |
+| `s3_work_bucket` / `s3_work_prefix` / `s3_output_prefix` settings, **already populated live** (`S3_WORK_BUCKET` = the `smsvpctest` shared bucket, the one the IRSA role grants — §11.2) | `viva_api/config.py:215-217` |
 | `MAX_INTERVAL_TIME = 100_000`, so a 28,800 s lineage is already accepted | `viva_api/api/routers/compose.py:55` (shipped in 0.9.91) |
 
 **Nextflow is already live in viva-api — for vEcoli, not v2ecoli.** `ComputeBackend.BATCH`
@@ -702,6 +704,10 @@ awsbatch executor work".
 
 ### Phase 4 — the `awsbatch` profile
 
+**Prerequisite, found 2026-09-04:** there is no v2ecoli/sms-ecoli image with Java and the
+Nextflow binary — the submit layer is built only for vEcoli, and ECR confirms it (§11.3).
+Add it before anything here can dispatch.
+
 `generate_nextflow_config` emits literally `// STUB (untested in v1)` plus
 `process { executor = 'awsbatch' }` — **no queue, work-dir, region, container or
 errorStrategy**. "Untested" understates it; it is structurally incomplete. Model the real
@@ -714,9 +720,13 @@ one on vEcoli's proven profile:
 | `containerOptions --env AWS_DEFAULT_REGION` | required for S3 access in-container |
 | `aws.region` | `settings.batch_region` |
 | **`aws.client.endpoint`** | `https://s3.<region>.amazonaws.com` — the GovCloud-only line currently injected by a `sed` hack at `simulation_service_k8s.py:265-267`; emitting it natively deletes the hack |
-| `aws.batch.maxSpotAttempts` / `maxTransferAttempts` | vEcoli precedent |
+| `aws.batch.maxSpotAttempts` / `maxTransferAttempts` | vEcoli precedent — and **not optional**: the default is 0 and this queue is Spot-first (§11.1b) |
 | `workDir` | `s3://{s3_work_bucket}/{s3_work_prefix}/{eid}/work` |
-| per-label **`time`** | already supported by `_resource_lines`; the only bound on a runaway task |
+| per-label **`time`** | already supported by `_resource_lines`; the only bound on a runaway task. **Confirmed** to reach Batch `attemptDurationSeconds`, with a 60 s floor (§11.1) |
+
+Emit `errorStrategy` **with `maxRetries`** — Nextflow-side resubmission is the only thing
+that retries an OOM or a code fault, and it is what makes risk 1's "the outer DAG is the
+resubmitter" true rather than aspirational (§11.1b).
 
 Use `errorStrategy = 'finish'`. vEcoli uses `'ignore'`, which is safe **only because** it
 also sets `workflow.failOnIgnore = true` (`config.template:96`); `'finish'` is safe
@@ -799,9 +809,15 @@ improvement on hand-rolled dispatch.
    AWS Batch's default `attempts: 1`. Verified: base `smsvpctest-ray-container`
    `attempts: 2`; per-commit `…-container-68e2c67` `retryStrategy=None`. (Found by
    @cplong90 on the MNP side; it extends to the container path.) This plan previously
-   asserted `retry=2`, from reading a definition nothing uses. Emit `time` per label — and
-   ⚠verify
-   empirically that Nextflow maps it to `attemptDurationSeconds`.
+   asserted `retry=2`, from reading a definition nothing uses.
+
+   > **Checked 2026-09-04, and it changes the shape of this risk on *this* path.** `time`
+   > per label does map to Batch `attemptDurationSeconds` (60 s floor), and nf-amazon sets
+   > **both** timeout and retry on the `SubmitJobRequest` — so the per-commit `attempts: 1`
+   > above, real as it is for the Ray/chain dispatches, is overridden per submission here.
+   > What replaces it is a worse default: `maxSpotAttempts` is **0** unless set, this queue
+   > is **Spot-first**, and `errorStrategy` defaults to `terminate`. Both knobs must be
+   > emitted — see §11.1b.
 5. **This is a third path in a repo where a live design doc proposes deleting one.**
    Positioning is additive by decision, and the shared prerequisites are proving that out in
    practice: **N1 landed as v2ecoli#663** and the durability half as **#680**, both done by
@@ -833,11 +849,119 @@ improvement on hand-rolled dispatch.
 - **Acceptance** — Run 4: 336 lineages × 8 generations, with a same-seed subset compared
   against a Ray-dispatched run.
 
-## 11. ⚠UNVERIFIED — check before relying on
+## 11. The three ⚠UNVERIFIED items — checked 2026-09-04
 
-- Whether Nextflow's `time` directive maps to AWS Batch `attemptDurationSeconds` at our
-  pinned Nextflow version.
-- Whether the `batch-submit` service account may submit to `batch_amd64_queue` and write the
-  S3 work-dir prefix (it works for vEcoli, but that is a different queue selection).
-- Whether an ECR image for v2ecoli/sms-ecoli with Java + the Nextflow binary exists —
-  `_build_command(submit_image=True)` builds one only for vEcoli.
+All three are now settled. Two of them changed something in this plan: one adds a
+**build prerequisite** Phase 4 did not carry, the other sharpens risk 4.
+
+### 11.1 `time` → AWS Batch `attemptDurationSeconds` — **CONFIRMED, at both versions we pin**
+
+nf-amazon's `AwsBatchTaskHandler` builds the `SubmitJobRequest`:
+
+```groovy
+// nf-amazon 2.15.0 (pulled by Nextflow 25.04.3 — Phase 0's version), :794-802
+final time = task.config.getTime()
+if( time ) {
+    def secs = time.toSeconds() as Integer
+    if( secs < 60 ) secs = 60            // Batch minimum
+    result.setTimeout(new JobTimeout().withAttemptDurationSeconds(secs))
+}
+```
+
+nf-amazon **3.4.2** (pulled by Nextflow **25.10.2**, the version the submit-image
+Dockerfile pins) ships no source, so this was read out of the bytecode: `javap -v` on
+`AwsBatchTaskHandler.class` shows the AWS SDK **v2** `JobTimeout` class and the
+`attemptDurationSeconds` constant at adjacent constant-pool entries. Same mapping, newer SDK.
+
+Two consequences worth carrying into Phase 4:
+
+- **It is set on the `SubmitJobRequest`, not on the job definition** — a per-submission
+  override, so no job-def change is needed to bound a runaway lineage.
+- **There is a 60-second floor.** Any `time` below that is silently raised.
+
+> **Version skew to resolve.** Phase 0 ran **25.04.3** locally; the only Nextflow we
+> actually ship anywhere is **25.10.2**, baked into the vEcoli submit image. Pin one
+> deliberately in 11.3's new image rather than inheriting whichever the Dockerfile's
+> `ARG` default happens to be.
+
+### 11.1b The same method also settles risk 4 — and the answer is worse than "no retry"
+
+`retryStrategy` is attached to the submit request **only if `maxSpotAttempts() > 0`**, and
+that default is **0** (`:736-743`; it is 5 only under Fusion snapshots). Meanwhile
+`batch_amd64_queue` = `smsvpctest-vecoli-task-amd64` is **Spot-first** — verified live:
+CE order 1 `Amd64SpotComputeEnv`, order 2 `Amd64OnDemandComputeEnv`, queue ENABLED/VALID.
+
+⇒ On the stub profile as written, **a spot reclaim of a multi-hour lineage gets no Batch
+retry and no Nextflow retry** (`errorStrategy` defaults to `terminate`), and takes the run
+with it. Two independent knobs, both absent from the stub:
+
+| knob | who retries | what it survives |
+|---|---|---|
+| `aws.batch.maxSpotAttempts` | **Batch**, same job, new instance | spot reclaim only — Nextflow pins `EvaluateOnExit`: `RETRY` on `Host EC2*`, `EXIT` on `*` |
+| `errorStrategy 'retry'` + `maxRetries` | **Nextflow**, as a *new* Batch submission | everything else, including OOM |
+
+This also resolves how risk 4's per-commit `attempts: 1` interacts with this path: it is
+still true of the Ray/chain dispatches, but it does **not** bind here, because Nextflow
+overrides retry *and* timeout per submission. **Risk 1's claim that "the resubmitter is the
+outer DAG" is only true once the second row above is emitted** — it is a config line, not a
+property of using Nextflow.
+
+### 11.2 `batch-submit` may submit to `batch_amd64_queue` and write the work dir — **CONFIRMED (effect-checked)**
+
+Not read off the policy — executed from inside the running api pod under the pod's own
+IRSA identity (`kubectl exec … /app/.venv/bin/python`):
+
+```
+identity  = …assumed-role/smsvpctest-batch-BatchSubmitIrsaRole31BE49CD-xETZl8o1n6cE/botocore-session-…
+s3://…-sharedbucket…-abfvwv0day91/nextflow/work/   put → get → delete   OK
+batch:SubmitJob  smsvpctest-vecoli-task-amd64  →  ClientException
+                 "JobDefinition definitely-not-a-real-jobdef-permcheck does not exist"
+```
+
+The SubmitJob probe names a deliberately nonexistent job definition, so it reaches the
+service's own validation **without creating a job**; authorization is evaluated first, so
+`ClientException`-not-`AccessDeniedException` is the proof. `S3_WORK_BUCKET` in the live
+configmap is exactly the bucket the policy grants, and `s3_work_prefix` is free to be
+anything under it (the grant is bucket-scoped, not prefix-scoped).
+
+Backing policy `BatchSubmitIrsaRoleDefaultPolicy…`: `batch:SubmitJob` /
+`RegisterJobDefinition` / `DescribeJob*` / `ListJobs` / `TerminateJob` / `TagResource` and
+`logs:*` on `*`, plus full read/write on that one bucket. **`RegisterJobDefinition` matters
+more than it looks** — the `awsbatch` executor auto-registers a job definition per
+container image, and it is granted.
+
+Two constraints found while checking:
+
+- **`iam:PassRole` is limited to four named roles** (`smsvpctest-ray-mnp-execution`,
+  `-ray-mnp-job`, `BatchComputeRole…`, and the IRSA role itself). So leave
+  **`aws.batch.jobRole` unset**; any other value fails at registration/submit.
+- With it unset the task container runs as the **instance profile**
+  `smsvpctest-batch-BatchComputeRole…`, which independently carries the same full
+  read/write on that same bucket (checked) — so staging in *and* out of the S3 work dir
+  works from the task side, not just the head side.
+
+### 11.3 A v2ecoli/sms-ecoli image with Java + Nextflow — **CONFIRMED ABSENT; it is a Phase 4 prerequisite**
+
+- `SimulationServiceK8s._build_command(submit_image=True)` appends the submit layer
+  (`default-jre-headless`, then `ARG NEXTFLOW_VERSION=25.10.2`) — and it is reached only
+  from `_run_build`'s **amd64 vEcoli** build.
+- `SimulationServiceRay._build_command` — the v2ecoli/sms-ecoli path — has **no
+  `submit_image` parameter at all**; it clones the repo and runs
+  `docker/build-and-push-ecr.sh`, full stop.
+- Neither v2ecoli's nor sms-ecoli's root `Dockerfile` mentions java / jre / jdk / nextflow
+  (zero hits in either).
+- Live ECR (`us-gov-west-1`, 476270107793): repository `vecoli` carries **30** `*-submit`
+  tags; repository `v2ecoli` carries **113** tags and **zero**.
+
+⇒ Before Phase 4 can dispatch anything, either add a `submit_image` branch to the Ray build
+path (mirroring the k8s one) or give v2ecoli its own submit Dockerfile. It is a small job,
+but it is a **prerequisite, not a detail** — and it is the place where 11.1's Nextflow
+version gets pinned.
+
+### Still unverified after this pass
+
+- **Real S3 staging of the real cache** (90 MB + 165 MB, vs Phase 0's 23-byte stand-in).
+- Whether an emitted `time` actually lands as `attemptDurationSeconds` on a *submitted*
+  job. The mapping is proven in the code path; only a live submission proves the profile
+  reaches it — and §10's "one trivial `echo` task" closes that together with 11.2, once
+  11.3's image exists.
