@@ -1603,6 +1603,9 @@ class TestSimulationServiceRayBuild:
         # own comment in simulation_service_ray.py for the full incident history).
         assert "--composite-id v2ecoli.composites.ecoli_baseline.ecoli_baseline " in cmd
         assert "PBG_CORE_BUILDER=v2ecoli.core:build_core" in cmd
+        # Effect guard (#395 / #375 §3e): the generation command carries the min-global-time
+        # floor so a one-tick collapse fails loud instead of reporting success.
+        assert "PBG_MIN_GLOBAL_TIME=" in cmd
         # PYTHONPATH=V2ECOLI_DIR (backlog item 93): ecoli_baseline.baseline()'s
         # injection branch does `from scripts._compare.inject import (...)`, a bare
         # absolute import that only resolves with the repo root on sys.path --
@@ -1753,6 +1756,17 @@ class TestSimulationServiceRayBuild:
         assert "--vecoli-source vivarium-process" in vecoli
         # v2ecoli engine ignores vecoli_source (guarded by _is_upstream_vecoli)
         assert "--vecoli-source" not in v2ecoli
+
+
+def test_runner_env_carries_both_output_guards() -> None:
+    """The CD2 baseline/lineage dispatch env pairs the presence guard
+    (PBG_REQUIRE_OUTPUT) with the effect guard (PBG_MIN_GLOBAL_TIME, #395 / #375 §3e),
+    and the floor is above the one-tick collapse (global_time ~= 1.0)."""
+    from viva_api.simulation.simulation_service_ray import PBG_MIN_GLOBAL_TIME, PBG_RUNNER_ENV
+
+    assert "PBG_REQUIRE_OUTPUT=1" in PBG_RUNNER_ENV
+    assert f"PBG_MIN_GLOBAL_TIME={PBG_MIN_GLOBAL_TIME}" in PBG_RUNNER_ENV
+    assert PBG_MIN_GLOBAL_TIME > 1.0
 
 
 class TestSeedGenerationCommand:
