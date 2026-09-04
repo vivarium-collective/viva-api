@@ -822,7 +822,16 @@
 #           one change. Non-lineage composites are byte-for-byte unaffected
 #           (no summary.generations shape found -> falls back to global_time
 #           exactly as before).
-__version__ = "0.9.98"
+#           0.9.99 -- JobScheduler/ComposeJobMonitor.get_hpcrun_by_correlation_id
+#           no longer caches a miss (viva-api#416). It was @alru_cache, which
+#           keeps a successful None forever; every dispatch path submits to the
+#           backend BEFORE inserting the HpcRun row, so a worker event that
+#           arrived first poisoned its correlation_id for the pod's life and
+#           every later WorkerEvent for that run was dropped ("No HpcRun found
+#           ... Skipping event") while the row sat running. Hits (immutable
+#           ids) are still cached; a miss is re-asked next time. Found by the
+#           in-memory-state survey done for #414.
+__version__ = "0.9.99"
 #           0.9.98 -- _submit_multi_node_composite (the pbg-native/lineage_
 #           ray_batch dispatch path) never had cache_variant support at all --
 #           only chain-dispatch did. Found firing the first-ever real

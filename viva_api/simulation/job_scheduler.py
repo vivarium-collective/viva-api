@@ -2,8 +2,6 @@ import asyncio
 import datetime
 import logging
 
-from async_lru import alru_cache
-
 from viva_api.common.hpc.job_service import JobStatusUpdate
 from viva_api.common.hpc.local_task_service import LocalTaskService
 from viva_api.common.hpc.slurm_service import SlurmService
@@ -80,10 +78,23 @@ class JobScheduler:
         # Orphaned LOCAL rows already announced at WARNING (one line per row,
         # not one per 5-second tick).
         self._orphans_announced: set[int] = set()
+        # correlation_id -> hpcrun_id, HITS only (see get_hpcrun_by_correlation_id)
+        self._hpcrun_ids_by_correlation: dict[str, int] = {}
 
-    @alru_cache
     async def get_hpcrun_by_correlation_id(self, correlation_id: str) -> int | None:
-        return await self.database_service.get_hpcrun_id_by_correlation_id(correlation_id=correlation_id)
+        """Resolve a worker event's correlation id to its HpcRun id, caching
+        only HITS (viva-api#416). This was ``@alru_cache``, which keeps a
+        successful ``None`` forever -- and every dispatch path submits to the
+        backend BEFORE inserting the row, so a worker event arriving first
+        made "no row" the permanent answer and every later event for that
+        run was silently dropped. An hpcrun_id is immutable, so a hit is safe
+        to cache; a miss must be re-asked."""
+        hpcrun_id = self._hpcrun_ids_by_correlation.get(correlation_id)
+        if hpcrun_id is None:
+            hpcrun_id = await self.database_service.get_hpcrun_id_by_correlation_id(correlation_id=correlation_id)
+            if hpcrun_id is not None:
+                self._hpcrun_ids_by_correlation[correlation_id] = hpcrun_id
+        return hpcrun_id
 
     async def subscribe(self) -> None:
         channel = get_settings().redis_channel
