@@ -290,11 +290,41 @@ the reason Phase 1f is not a small job:
 `_cardinality: 'many'` was present on every port in both attempts and changed nothing —
 **dead, confirmed empirically** rather than by reading.
 
-⇒ **Phase 1f is not "~15 lines to add `.flatten()`".** It needs: a channel-source construct
-(a list-valued store/param → `Channel.from(...)`); cardinality actually consulted; a
-cross/join for variant×seed keyed by variant rather than a broadcast; the plumbing
-operators wired in and tested; and a bridge from composite state into `params`. Treat it as
-the **critical path of Phase 1**, not a footnote.
+### Unrolling changes the answer (2026-09-04) — scatter is free, the GATHER is the wall
+
+Go/no-go 4 asked the renderer to *scatter*. It cannot. But the generating script can
+**unroll** the loops into distinct scalar-wired nodes — already the idiom
+(`build_lineage_ray_batch_document` emits N per-seed nodes) — and then:
+
+**The scatter side works completely, with no framework changes.** 84 ParCa + 336 lineage +
+1 analysis = **421 process blocks, rendered in 0.02 s**, 108 KB / 4,803 lines; ordering
+correct at every scale (each lineage after *its own* producer, analysis last); plain scalar
+ports. **No `_cardinality`, no channel-source, no `params` bridge.** All three blockers
+above apply only if you ask the renderer to scatter — so don't.
+
+**The gather fails three ways, and the third is the dangerous one.**
+
+| approach | result |
+|---|---|
+| unrolled fan-in, N arguments | ✅ to **252** inputs (316 tasks ran) · ❌ at **256** → `java.lang.IllegalArgumentException: bad parameter count 257`; ≥264 aborts the JVM (exit 134). **Java's 255-parameter method limit.** Run 4 needs 336 |
+| `Collect` plumbing Step | ✅ emits `.collect()` correctly, consumer takes ONE argument — but gathers a **single** channel |
+| `Mix` plumbing Step | ❌ **unrepresentable** — its `streams` port wants a list of wire paths; composite construction raises `TypeError: unhashable type: 'list'` (`bigraph_schema/methods/resolve.py:726`) |
+| one shared output store | ⚠ **SILENTLY WRONG** (below) |
+
+> **The silent one.** Wiring all N lineages to a single store — the obvious thing to
+> write — renders `ch_sweeps = lineage_0000()` … `ch_sweeps = lineage_0003()`:
+> **last-writer-wins**, N−1 producers overwritten. Measured: `exit=0`, all 5 tasks ran, no
+> errors or warnings, and the analysis reported **1** sweep instead of **4**.
+> `render_composite` assigns `path_to_channel[out_path]` per producer
+> (`nextflow.py:472-474`), so N producers on one path collapse to one Groovy variable.
+> At Run 4 this is a campaign that analyses 1/336 of its data and reports success — the
+> **fourth** instance of this page's organizing pattern.
+
+⇒ **Revised Phase 1f.** Not five things, and not one — **two**: (a) make the silent
+overwrite loud (a render-time error, or an automatic `.mix()`), and (b) make `Mix`'s
+`streams` representable so `Mix → Collect →` one-argument consumer becomes the sanctioned
+N-way gather. That pair takes Run 4's 336-way fan-in. The scatter work is **cancelled** —
+unrolling covers it.
 
 **Bonus `deploy()` bug for Phase 1g:** a *relative* `outdir` makes Nextflow treat
 `<outdir>/main.nf` as a remote project name — it tried to pull
@@ -336,11 +366,13 @@ On top of `pr197`, all in `nextflow.py` / `nextflow_deploy.py`:
   PR exercises plumbing emission at all**, so treat these as unproven-but-present and cover
   them first.
 
-  **Measured, not estimated** — see the go/no-go-4 result under Phase 0. This is the
-  critical path of Phase 1, and it is four things, not one: a **channel-source** construct
-  (list-valued store → `Channel.from`), cardinality actually **consulted**, a **cross/join**
-  keyed by variant, and a **state → `params`** bridge without which the rendered workflow
-  does not even launch.
+  **Superseded by the unrolling result** (see Phase 0). The scatter half of this is
+  **cancelled** — unrolling the loops in the generating script covers it with no framework
+  change. What remains is the **gather**, and it is two things: make a shared output store
+  fail loudly instead of silently dropping N−1 producers, and make `Mix`'s `streams` port
+  representable so `Mix → Collect →` a one-argument consumer becomes the sanctioned N-way
+  fan-in. Without that pair, Run 4's 336-way gather has **no correct expression** — the
+  unrolled call exceeds Java's 255-parameter limit.
 - **`deploy()` fixes** — `render_options.setdefault('python', sys.executable)` (`:105`) is a
   latent Batch bug: the head's interpreter will not exist inside a task container. Default to
   `sys.executable` only for `executor='local'`. Add `resume`, `report`, `trace`,
@@ -453,9 +485,10 @@ exists to prevent.
    proven locally in Phase 0; this re-tests it with the real cache.)*
 3. `-resume` after a mid-lineage kill re-runs only that lineage — not its ParCa, and not
    the other variants.
-4. **84 variants × 4 seeds still renders ~3 process blocks**, not 420, and `-stub-run`
-   compiles it. This is the `_cardinality` + plumbing-operator work; it is the difference
-   between a DAG and a generated pile.
+4. **84 variants × 4 seeds renders and RUNS.** Unrolled, that is 421 process blocks —
+   which is fine (0.02 s to render, 108 KB) — but the **336-way gather must actually
+   gather**: assert the analysis task sees 336 sweeps, not 1. A shared output store passes
+   every structural check while silently analysing one of them.
 5. Nextflow head overhead vs a direct `run_composite` on the same small job < ~2 min.
 
 **If (2) or (3) fails, stop.** Those two are the entire justification for a third path.
