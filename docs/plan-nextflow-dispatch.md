@@ -463,6 +463,17 @@ mandatory, not stylistic.
 (founders differ across seeds, compared on content) and **1c** (ParCa mode recorded
 out-of-band, since `inputs_hash` cannot distinguish fast from full).
 
+> **1b got sharper rather than closer, 2026-09-04.** v2ecoli#680's `seed_overrides` is
+> **pure addressing** — @cplong90 and @AlexPatrie both confirmed it copies three fields
+> (`cache_dir`, `initial_carry_state_path`, `initial_generation_index`) and derives no
+> state. So it gives independent *caches*, and independent *founders* only where the caches
+> were built with different founders. That is exactly sufficient for §1's shape (1 ParCa →
+> N derived strain caches, each a distinct founder by construction) and **not** sufficient
+> for M statistically-independent replicates off one strain — for which the M caches still
+> have to be built, and which is flagged in `batch_lineage_ray.py`'s own comment as real,
+> separate, unscoped work. ⇒ **1b is a v2ecoli question, not a renderer question**, and this
+> plan should not claim it.
+
 ## Phase 1 — process-bigraph
 
 On top of `pr197`, all in `nextflow.py` / `nextflow_deploy.py`:
@@ -522,20 +533,41 @@ Evidence so far is split and neither half is sufficient:
 | `lineage_ray_batch` (pbg-native) | **crashed immediately**, `intermediates_idx` `IndexError` |
 
 > **Acceptance bar: a completed generation that WROTE A HISTORY PARTITION** — not merely a
-> division event. The chain-dispatch run above divided and wrote **no `history/` partition
-> at all** (3 `.pq` files vs 97 for the no-swap baseline; see viva-api#408 discussion), so
-> "completed a generation" and "produced the generation's data" have already come apart
-> once on this exact question.
+> division event. The chain-dispatch run above divided, wrote an 11.5 MB daughter
+> checkpoint, and produced **no `history/` partition at all** — only a 500-byte
+> outer-emitter fallback. So "completed a generation" and "produced the generation's data"
+> have already come apart once on this exact question.
+>
+> *Corrected 2026-09-04:* an earlier version of this line compared 3 shards against 97 for
+> "the no-swap baseline". **That comparison is withdrawn** — the 97 shards were written by a
+> different, four-hours-older pbg-native run sharing the same `vecoli-output/<experiment_id>/`
+> prefix. Cross-run S3 comparisons need isolated prefixes or a timestamp check against the
+> job's own `createdAt`.
+>
+> **Scope, confirmed independently by @AlexPatrie:** this is **chain-dispatch-specific**.
+> pbg-native dispatch 313 ran the same J3 config and the same swap, divided at the identical
+> t=2527 s / ~826 fg boundary, and wrote a fully populated `history/` — 7 chunks at 45–53 MB,
+> verified by direct parquet read. ⇒ **The `lineage_ray_batch` leg of the table above is not
+> blocked by it**, and neither is this plan's use of `LineageStep`, which invokes the same
+> layer the populated run used. Suspected cause is the ParquetEmitter "default experiment_id"
+> fallback already seen on dispatch 287; not root-caused.
 
 ⚠ **Nothing in this plan's Phase 0 or the four-stage prototype touches this.** Both use
 stand-in Steps carrying no biology; the `LineageStep` wrapper of §2a changes *who invokes*
 the layer, not whether a swap survives inside it.
 
-**Shared prerequisite 1:** Eran's **N1** — widen `lineage_ray_batch`'s generator
-`parameters` (`composites/lineage_ray_batch.py:30-70`) to accept `injected_processes`,
-`config_overrides`, `variant_grid`, `emitter_arg`. The *builder* already accepts three of
-them (`batch_lineage_ray.py:94-96`); only the façade omits them, and `--build` addresses the
-façade.
+**Shared prerequisite 1 — ✅ LANDED, not ours to do.** Eran's **N1** (widen
+`lineage_ray_batch`'s generator `parameters`, which `--build` addresses, to match the builder
+that already accepted them) was merged as **v2ecoli#663** on 2026-09-04. The façade now
+exposes `injected_processes`, `config_overrides`, `variants` and `emitter_arg`, plus
+`seed_overrides` from #680. `--build {"generator": "lineage_ray_batch", …}` can therefore
+carry a swap and a per-seed cache today, which is what Phase 2 needed from it.
+
+> **One piece is still open: `variant_grid`.** #663 exposes `variants` (a flat override
+> block), not the **(variant, seed) cross-product** — that is v2ecoli#662, still open. The
+> §1 campaign shape needs the cross-product, so either #662 lands or the generating script
+> unrolls the pairs itself. Unrolling is the cheaper path here and is what the four-stage
+> prototype already does; #662 only matters if the pbg-native leg wants the same shape.
 
 - **Lineage — wrap it in a `LineageStep`, do not annotate the Process.**
   *Prototyped and rendered 2026-09-04.* `run_step` calls `instance.invoke(state)` **once**,
@@ -771,7 +803,9 @@ improvement on hand-rolled dispatch.
    ⚠verify
    empirically that Nextflow maps it to `attemptDurationSeconds`.
 5. **This is a third path in a repo where a live design doc proposes deleting one.**
-   Positioning is additive by decision, but N1–N4 are shared prerequisites; do them once.
+   Positioning is additive by decision, and the shared prerequisites are proving that out in
+   practice: **N1 landed as v2ecoli#663** and the durability half as **#680**, both done by
+   the pbg-native effort and both consumed unchanged by this plan. N2–N4 remain; do them once.
 6. **PBG version skew is a hard sequencing gate.** v2ecoli pins `process-bigraph` at git
    `branch = "main"` and currently resolves to **1.5.0** — the older 438-line `nextflow.py`,
    **no `run_composite.py`, no `workflow/recipe.py`**. Everything in Phase 2 needs `--build`.
