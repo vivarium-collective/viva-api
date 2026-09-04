@@ -543,6 +543,87 @@ def test_run_does_not_guard_output_when_require_output_unset(tmp_path: Path, mon
     assert out.name == "final_state.json"
 
 
+# --- _assert_run_advanced: P0-3 effect check, a one-tick collapse must not report success ---
+
+
+def _write_final_state(results_dir: Path, state: Any) -> None:
+    results_dir.mkdir(parents=True, exist_ok=True)
+    (results_dir / "final_state.json").write_text(json.dumps(state))
+
+
+def test_final_global_time_reads_top_level(tmp_path: Path) -> None:
+    _write_final_state(tmp_path, {"global_time": 2528.0, "ran": True})
+    assert run_pbg._final_global_time(tmp_path) == 2528.0
+    _write_final_state(tmp_path, {"global_time": 5})  # int is fine
+    assert run_pbg._final_global_time(tmp_path) == 5.0
+
+
+def test_final_global_time_none_when_absent_or_not_a_number(tmp_path: Path) -> None:
+    assert run_pbg._final_global_time(tmp_path) is None  # no file
+    _write_final_state(tmp_path, {"ran": True})  # no key
+    assert run_pbg._final_global_time(tmp_path) is None
+    _write_final_state(tmp_path, {"global_time": "1.0"})  # string, not a number
+    assert run_pbg._final_global_time(tmp_path) is None
+    _write_final_state(tmp_path, {"global_time": True})  # bool must not read as 1.0
+    assert run_pbg._final_global_time(tmp_path) is None
+
+
+def test_assert_run_advanced_noop_when_min_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default (unset): no check even on a one-tick final state."""
+    monkeypatch.delenv("PBG_MIN_GLOBAL_TIME", raising=False)
+    _write_final_state(tmp_path, {"global_time": 1.0})
+    run_pbg._assert_run_advanced(tmp_path)  # must not raise
+
+
+def test_assert_run_advanced_raises_on_one_tick_collapse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The effect check: a non-empty store from a one-tick run (global_time ~= 1.0)
+    must fail when a real generation was expected (#210 §3d / #375 §3e)."""
+    monkeypatch.setenv("PBG_MIN_GLOBAL_TIME", "100")
+    _write_final_state(tmp_path, {"global_time": 1.0})
+    with pytest.raises(SystemExit):
+        run_pbg._assert_run_advanced(tmp_path)
+
+
+def test_assert_run_advanced_passes_a_real_generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PBG_MIN_GLOBAL_TIME", "100")
+    _write_final_state(tmp_path, {"global_time": 2528.0})
+    run_pbg._assert_run_advanced(tmp_path)  # must not raise
+
+
+def test_assert_run_advanced_raises_when_global_time_unverifiable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Caller demanded the check but the run left no readable global_time -> refuse
+    to report success rather than pass blindly."""
+    monkeypatch.setenv("PBG_MIN_GLOBAL_TIME", "100")
+    _write_final_state(tmp_path, {"ran": True})  # no global_time
+    with pytest.raises(SystemExit):
+        run_pbg._assert_run_advanced(tmp_path)
+
+
+def test_assert_run_advanced_raises_on_non_numeric_min(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PBG_MIN_GLOBAL_TIME", "not-a-number")
+    _write_final_state(tmp_path, {"global_time": 2528.0})
+    with pytest.raises(SystemExit):
+        run_pbg._assert_run_advanced(tmp_path)
+
+
+def test_run_raises_when_min_global_time_set_but_run_did_not_advance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: run() calls the effect check. The fake composite serializes no
+    global_time, so with PBG_MIN_GLOBAL_TIME set the run must exit non-zero even
+    though emitted history satisfies PBG_REQUIRE_OUTPUT (presence != effect)."""
+    monkeypatch.setenv("PBG_REQUIRE_OUTPUT", "1")
+    monkeypatch.setenv("PBG_MIN_GLOBAL_TIME", "100")
+    _install_fake_pbg_for_run(monkeypatch, gather_emitter_results=lambda composite: {("emitter",): [(0.0, {"x": 1})]})
+
+    pbg = tmp_path / "m.pbg"
+    pbg.write_text(json.dumps({"composition": {"emitter": {"address": "local:RAMEmitter", "config": {}}}}))
+    with pytest.raises(SystemExit):
+        run_pbg.run(str(pbg), steps=1, results_dir=tmp_path / "output")
+
+
 # --- _workspace_core: the workspace registers types the generic core can't know ---
 
 
