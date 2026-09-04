@@ -352,6 +352,68 @@ def _final_global_time(results_dir: Path) -> float | None:
     return float(gt)
 
 
+def _lineage_generation_duration_total(results_dir: Path) -> float | None:
+    """Sum ``duration`` across every ``summary.generations`` entry found anywhere
+    in the run's ``final_state.json``, or ``None`` if no such shape is present.
+
+    v2ecoli's ``LineageProcess`` (chain-dispatch's ``stop_at_division`` route,
+    and pbg-native's ``lineage_ray_batch``) does not report elapsed simulated
+    time through the composite's top-level ``global_time`` at all — its own
+    docstring: "the inner composite's global_time RESTARTS at 0 each
+    generation." What it reports instead is a real per-generation ``duration``
+    in the ``summary`` its ``update()`` returns
+    (``{"summary": {"generations": [{"duration": ..., "divided": ...}, ...]}}``).
+    A chain-dispatch job that runs exactly one generation per external
+    ``Composite.run(interval)`` call still only advances the OUTER composite's
+    own clock by that one call's requested interval regardless of how long the
+    generation's own internal division-seeking loop actually took — so a real,
+    multi-thousand-second division reads as ``global_time`` ~= the requested
+    interval (often 1.0), indistinguishable from a genuine one-tick collapse if
+    ``global_time`` were the only signal checked. Found live: sms-ecoli#210,
+    dispatch 297 (real division at t=2527s, `global_time` read back as 1.0).
+    Recursive rather than path-specific, since a lineage node's own key in the
+    document varies by composite/seed.
+    """
+    fs = results_dir / "final_state.json"
+    if not fs.is_file():
+        return None
+    try:
+        state = json.loads(fs.read_text())
+    except (OSError, ValueError):
+        return None
+
+    durations: list[float] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            summary = node.get("summary")
+            if isinstance(summary, dict):
+                durations.extend(_durations_from_generations(summary.get("generations")))
+            for value in node.values():
+                _walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                _walk(value)
+
+    _walk(state)
+    return sum(durations) if durations else None
+
+
+def _durations_from_generations(generations: Any) -> list[float]:
+    """Extract valid numeric ``duration`` values from a ``summary.generations`` list."""
+    if not isinstance(generations, list):
+        return []
+    out: list[float] = []
+    for gen in generations:
+        if not isinstance(gen, dict):
+            continue
+        duration = gen.get("duration")
+        if isinstance(duration, bool) or not isinstance(duration, int | float):
+            continue
+        out.append(float(duration))
+    return out
+
+
 def _assert_run_advanced(results_dir: Path) -> None:
     """Fail the run (``SystemExit(1)``) when it emitted output but did not actually
     advance in simulated time.
@@ -369,6 +431,16 @@ def _assert_run_advanced(results_dir: Path) -> None:
     only a dispatch that knows the expected generation length turns it on. Runs
     after ``final_state.json`` is written, so it reads ``global_time`` from that file
     and the file survives as a postmortem artifact on failure.
+
+    Checks the larger of two independent signals: the composite's own top-level
+    ``global_time``, and (when present) the total ``duration`` across any
+    ``LineageProcess``-shaped generation summary (see
+    ``_lineage_generation_duration_total``) — a chain-dispatch/pbg-native
+    generation's real elapsed time lives in the latter, not the former (sms-
+    ecoli#210, dispatch 297: a genuine division at t=2527s still reads
+    ``global_time`` ~= 1.0, since that field only counts the outer composite's
+    own ``run(interval)`` ticks, decoupled from how long the generation's own
+    internal division-seeking loop took).
     """
     raw = os.environ.get("PBG_MIN_GLOBAL_TIME")
     if raw is None or raw.strip() == "":
@@ -378,14 +450,21 @@ def _assert_run_advanced(results_dir: Path) -> None:
     except ValueError:
         raise SystemExit(f"run_pbg: PBG_MIN_GLOBAL_TIME={raw!r} is not a number.")
     gt = _final_global_time(results_dir)
-    if gt is None:
+    lineage_total = _lineage_generation_duration_total(results_dir)
+    candidates = [v for v in (gt, lineage_total) if v is not None]
+    if not candidates:
         raise SystemExit(
             f"run_pbg: PBG_MIN_GLOBAL_TIME={minimum} is set but {results_dir}/final_state.json "
-            f"has no readable global_time — cannot verify the run advanced. Refusing to report success."
+            f"has no readable global_time (and no LineageProcess-shaped generation summary) — "
+            f"cannot verify the run advanced. Refusing to report success."
         )
-    if gt < minimum:
+    effective = max(candidates)
+    if effective < minimum:
+        detail = f"global_time={gt}" if gt is not None else "global_time=<unreadable>"
+        if lineage_total is not None:
+            detail += f", lineage_generation_duration_total={lineage_total}"
         raise SystemExit(
-            f"run_pbg: the run advanced only global_time={gt} of simulated time "
+            f"run_pbg: the run advanced only {effective} of simulated time ({detail}) "
             f"(< PBG_MIN_GLOBAL_TIME={minimum}) under {results_dir}. The emitted store is "
             f"non-empty but the generation did not run — e.g. a one-tick collapse "
             f"(sms-ecoli#210 / #375 §3d-e, a swap that reaches the run but closes the "

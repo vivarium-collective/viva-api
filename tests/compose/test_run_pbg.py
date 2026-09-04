@@ -608,6 +608,71 @@ def test_assert_run_advanced_raises_on_non_numeric_min(tmp_path: Path, monkeypat
         run_pbg._assert_run_advanced(tmp_path)
 
 
+# --- _lineage_generation_duration_total: LineageProcess's real per-generation clock,
+# --- decoupled from the outer composite's own global_time (sms-ecoli#210, dispatch 297) ---
+
+
+def test_lineage_generation_duration_total_sums_nested_summaries(tmp_path: Path) -> None:
+    _write_final_state(
+        tmp_path,
+        {
+            "global_time": 1.0,
+            "seed_0000": {
+                "summary": {
+                    "generations": [
+                        {"generation": 0, "duration": 2527.0, "divided": True},
+                    ]
+                }
+            },
+            "seed_0001": {"summary": {"generations": [{"generation": 0, "duration": 1800.0, "divided": True}]}},
+        },
+    )
+    assert run_pbg._lineage_generation_duration_total(tmp_path) == 4327.0
+
+
+def test_lineage_generation_duration_total_none_when_absent(tmp_path: Path) -> None:
+    assert run_pbg._lineage_generation_duration_total(tmp_path) is None  # no file
+    _write_final_state(tmp_path, {"global_time": 2528.0})  # no summary anywhere
+    assert run_pbg._lineage_generation_duration_total(tmp_path) is None
+    _write_final_state(tmp_path, {"seed_0000": {"summary": {"generations": []}}})  # empty list
+    assert run_pbg._lineage_generation_duration_total(tmp_path) is None
+    _write_final_state(tmp_path, {"seed_0000": {"summary": {"generations": [{"divided": True}]}}})  # no duration
+    assert run_pbg._lineage_generation_duration_total(tmp_path) is None
+
+
+def test_assert_run_advanced_passes_a_real_lineage_generation_even_though_global_time_reads_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reproduces dispatch 297 exactly (sms-ecoli#210): a chain-dispatch/pbg-native
+    generation genuinely divided at t=2527s, but the outer composite's own
+    global_time only reflects the single external run(interval) tick (~1.0) —
+    the effect check must not treat this as a one-tick collapse."""
+    monkeypatch.setenv("PBG_MIN_GLOBAL_TIME", "100")
+    _write_final_state(
+        tmp_path,
+        {
+            "global_time": 1.0,
+            "seed_0000": {"summary": {"generations": [{"generation": 0, "duration": 2527.0, "divided": True}]}},
+        },
+    )
+    run_pbg._assert_run_advanced(tmp_path)  # must not raise
+
+
+def test_assert_run_advanced_still_raises_on_a_real_lineage_one_tick_collapse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lineage summary that itself reports a short duration is still a real
+    collapse — the lineage-aware signal doesn't blanket-exempt this composite
+    family from the check, it just reads the correct clock."""
+    monkeypatch.setenv("PBG_MIN_GLOBAL_TIME", "100")
+    _write_final_state(
+        tmp_path,
+        {"global_time": 1.0, "seed_0000": {"summary": {"generations": [{"duration": 1.0, "divided": False}]}}},
+    )
+    with pytest.raises(SystemExit):
+        run_pbg._assert_run_advanced(tmp_path)
+
+
 def test_run_raises_when_min_global_time_set_but_run_did_not_advance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

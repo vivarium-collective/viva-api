@@ -805,4 +805,21 @@
 #           silent one). Same root cause as #392 above -- both are
 #           consequences of RECONSTRUCTING the block instead of merging into
 #           it, cplong90's own framing on #401.
-__version__ = "0.9.93"
+# 0.9.94 -- fix: run_pbg.py's effect check (#395/#398, PBG_MIN_GLOBAL_TIME) now
+#           also checks LineageProcess's own per-generation `duration` (summed
+#           across every summary.generations entry found in final_state.json),
+#           not just the composite's top-level global_time. A chain-dispatch/
+#           pbg-native generation only advances the OUTER composite's clock by
+#           the single external run(interval) tick it was invoked with --
+#           LineageProcess's own docstring: "the inner composite's global_time
+#           RESTARTS at 0 each generation" -- so a real, multi-thousand-second
+#           division reads back as global_time~=1.0, indistinguishable from a
+#           genuine one-tick collapse under the old check. Found live: sms-
+#           ecoli#210, dispatch 297 -- chain-dispatch's metabolism-redux swap
+#           genuinely divided at t=2527s (confirmed via the real CloudWatch
+#           log) but the job still exited 1, effect-check false positive. Both
+#           dispatch mechanisms share this runner, so both are fixed by the
+#           one change. Non-lineage composites are byte-for-byte unaffected
+#           (no summary.generations shape found -> falls back to global_time
+#           exactly as before).
+__version__ = "0.9.94"
