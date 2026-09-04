@@ -159,13 +159,14 @@ testpaths = ["tests"]
 addopts = "--cov-report=html"
 
 [tool.deptry]
-exclude = [".venv/*", "home/*", "simulation_configs/*", "app/ui/explore_outputs.py"]
+exclude = [".venv/*", "home/*", "simulation_configs/*", "app/ui/explore_outputs.py", "knowledge/composites/dump_composites.py"]
 ignore = ["DEP002", "DEP003", "DEP004", "DEP001"]
 
 [tool.ruff]
 target-version = "py313"
 line-length = 120
 fix = true
+extend-exclude = ["knowledge/"]
 
 [tool.ruff.lint]
 select = [

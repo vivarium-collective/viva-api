@@ -183,6 +183,12 @@ scratchpads/
 notes/
 .ruff_cache/
 
+# Reference/knowledge docs, composite dumps, and dispatch scripts -- real
+# content Jim/others may want to browse in the repo, but not shippable
+# runtime code. Dockerfile-api never referenced this path; Dockerfile-sms's
+# broad `COPY . .` would otherwise pull it into that (unsupported) image.
+knowledge/
+
 # Archives: never ship tarballs in a build context. assets/ptools/ alone holds
 # ~4 GB of aic-export archives, and no image but ptools wants any of them.
 # Dockerfile-ptools opts its one archive back in via Dockerfile-ptools.dockerignore

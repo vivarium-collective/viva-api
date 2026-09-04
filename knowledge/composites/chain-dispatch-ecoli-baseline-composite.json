@@ -1,0 +1,75 @@
+{
+  "state": {
+    "batch": {},
+    "global_time": 0.0,
+    "batch_runner": {
+      "priority": 1.0,
+      "_type": "step",
+      "address": "local:v2ecoli.steps.batch_baseline_runner.BatchBaselineRunner",
+      "config": {
+        "n_seeds": 1,
+        "n_generations": 1,
+        "base_seed": 0,
+        "single_daughters": true,
+        "time_step": 1.0,
+        "max_duration": 3600.0,
+        "variants": {},
+        "variant": 0,
+        "cache_dir": "/tmp/item109-logs/real-cache",
+        "out_dir": "s3://smsvpctest-shared-sharedbucket60d199d6-abfvwv0day91/chain-dispatch-real-example/seed-0000/",
+        "experiment_id": "chain-dispatch-real-example",
+        "emitter": "parquet",
+        "analyses": "none",
+        "study": "",
+        "parallel": "",
+        "base_config_overrides": {},
+        "media": "minimal",
+        "injected_processes": {},
+        "features": [],
+        "ppgpp_regulation": true,
+        "trna_attenuation": false,
+        "supercoiling": false,
+        "mass_conservation": false,
+        "exchange_fluxes": {},
+        "exchange_flux_basis": "counts",
+        "transcript_initiation_mode": "discrete",
+        "polypeptide_initiation_mode": "discrete",
+        "initial_carry_state_path": "",
+        "initial_generation_index": 0,
+        "daughter_state_out_path": "s3://smsvpctest-shared-sharedbucket60d199d6-abfvwv0day91/chain-dispatch-real-example/daughter-states/seed=0000/generation=0000.json"
+      },
+      "_inputs": {
+        "batch": "inplace_dict"
+      },
+      "_outputs": {
+        "batch": "inplace_dict"
+      },
+      "instance": "<non-serializable:BatchBaselineRunner>",
+      "inputs": {
+        "batch": [
+          "batch"
+        ]
+      },
+      "outputs": {
+        "batch": [
+          "batch"
+        ]
+      }
+    },
+    "emitter": {
+      "_type": "step",
+      "address": "local:ParquetEmitter",
+      "config": {
+        "out_dir": "s3://smsvpctest-shared-sharedbucket60d199d6-abfvwv0day91/chain-dispatch-real-example/seed-0000/",
+        "emit": {
+          "global_time": "node"
+        }
+      },
+      "inputs": {
+        "global_time": [
+          "global_time"
+        ]
+      }
+    }
+  }
+}
