@@ -290,41 +290,65 @@ the reason Phase 1f is not a small job:
 `_cardinality: 'many'` was present on every port in both attempts and changed nothing —
 **dead, confirmed empirically** rather than by reading.
 
-### Unrolling changes the answer (2026-09-04) — scatter is free, the GATHER is the wall
+### The real finding: the renderer discards the hierarchy (2026-09-04)
 
-Go/no-go 4 asked the renderer to *scatter*. It cannot. But the generating script can
-**unroll** the loops into distinct scalar-wired nodes — already the idiom
-(`build_lineage_ray_batch_document` emits N per-seed nodes) — and then:
+Everything above this line described *symptoms*. The cause is one implementation choice.
 
-**The scatter side works completely, with no framework changes.** 84 ParCa + 336 lineage +
-1 analysis = **421 process blocks, rendered in 0.02 s**, 108 KB / 4,803 lines; ordering
-correct at every scale (each lineage after *its own* producer, analysis last); plain scalar
-ports. **No `_cardinality`, no channel-source, no `params` bridge.** All three blockers
-above apply only if you ask the renderer to scatter — so don't.
+`render_composite` has exactly two behaviours for a nested `Composite`, with nothing
+between them: **flatten** (inner Steps become peers in one flat workflow) or **collapse**
+(`isinstance(instance, Composite)` → one opaque `run_composite` task, `nextflow.py:506-543`).
+The document keeps the hierarchy; the renderer throws it away.
 
-**The gather fails three ways, and the third is the dangerous one.**
+Verified — a nested `Composite` exposes everything a recursive renderer needs:
 
-| approach | result |
+```
+step_paths        : ['lineage_0','lineage_1','lineage_2','lineage_3']
+step_dependencies : present      node_dependencies : present
+bridge            : {'inputs': {}, 'outputs': {}}
+('lineage_0',)    : inputs={'cache': ['cache']} outputs={'o': ['sweep_0']}
+```
+
+The missing mapping is **one Nextflow sub-workflow per nested Composite** — ordinary DSL2,
+with `take:`/`emit:` mapping onto the composite's own `bridge`:
+
+```groovy
+workflow runs {
+    take: cache
+    main: lineage(cache)          // ONE process, invoked over a channel
+    emit: lineage.out.collect()   // N results as ONE collected channel
+}
+workflow { ch_results = runs(parca()); analysis(ch_results) }
+```
+
+**This dissolves all three gather failures at once**, because every one of them is an
+artifact of the *unrolled* form — N lineages as N *distinct* process blocks, each with its
+own channel, which is the only reason anything needs merging:
+
+| measured failure | under sub-workflow emission |
 |---|---|
-| unrolled fan-in, N arguments | ✅ to **252** inputs (316 tasks ran) · ❌ at **256** → `java.lang.IllegalArgumentException: bad parameter count 257`; ≥264 aborts the JVM (exit 134). **Java's 255-parameter method limit.** Run 4 needs 336 |
-| `Collect` plumbing Step | ✅ emits `.collect()` correctly, consumer takes ONE argument — but gathers a **single** channel |
-| `Mix` plumbing Step | ❌ **unrepresentable** — its `streams` port wants a list of wire paths; composite construction raises `TypeError: unhashable type: 'list'` (`bigraph_schema/methods/resolve.py:726`) |
-| one shared output store | ⚠ **SILENTLY WRONG** (below) |
+| 255-parameter limit (`bad parameter count 257` at 256 inputs; JVM abort ≥264) | **gone** — `analysis(ch_results)` takes one argument |
+| `Mix` unrepresentable (`TypeError: unhashable type: 'list'`; renders a TODO stub on the legal wiring; zero usages, zero tests) | **gone** — nothing to merge; `lineage.out` is already one channel |
+| shared store silently drops N−1 producers (exit 0, no warnings, analysis saw **1** of 4) | **gone** — N invocations of one process, not N producers on one path |
 
-> **The silent one.** Wiring all N lineages to a single store — the obvious thing to
-> write — renders `ch_sweeps = lineage_0000()` … `ch_sweeps = lineage_0003()`:
-> **last-writer-wins**, N−1 producers overwritten. Measured: `exit=0`, all 5 tasks ran, no
-> errors or warnings, and the analysis reported **1** sweep instead of **4**.
-> `render_composite` assigns `path_to_channel[out_path]` per producer
-> (`nextflow.py:472-474`), so N producers on one path collapse to one Groovy variable.
-> At Run 4 this is a campaign that analyses 1/336 of its data and reports success — the
-> **fourth** instance of this page's organizing pattern.
+**What survives from the unrolling experiment:** it is still true that unrolling gets
+fan-*out* for free (421 blocks, 0.02 s, correct ordering, plain scalar ports), and that is
+a usable fallback. It is just the wrong shape — it flattens what the document nests, and
+then needs a merge that does not exist.
 
-⇒ **Revised Phase 1f.** Not five things, and not one — **two**: (a) make the silent
-overwrite loud (a render-time error, or an automatic `.mix()`), and (b) make `Mix`'s
-`streams` representable so `Mix → Collect →` one-argument consumer becomes the sanctioned
-N-way gather. That pair takes Run 4's 336-way fan-in. The scatter work is **cancelled** —
-unrolling covers it.
+⇒ **Phase 1f is replaced by one item: sub-workflow emission.** Not "implement
+`_cardinality`", not "fix `Mix` + the overwrite". Preserve the hierarchy the document
+already carries. No bigraph-schema change, no new plumbing operator.
+
+> The silent-overwrite behaviour is still worth making loud on its own merits — it is
+> reachable from the documented API and fails quietly — but it stops being load-bearing.
+
+**Three shapes are now on the table**, and the choice is a real one:
+
+| | per-lineage retry / sizing | needs |
+|---|---|---|
+| **container as one task** (works today) | ✗ — structurally the Ray/MNP design | nothing |
+| **unrolled + working merge** | ✓ | the overwrite repair + a working `Mix` |
+| **sub-workflow emission** | ✓ | recursion in `render_composite` |
 
 **Bonus `deploy()` bug for Phase 1g:** a *relative* `outdir` makes Nextflow treat
 `<outdir>/main.nf` as a remote project name — it tried to pull
@@ -366,13 +390,13 @@ On top of `pr197`, all in `nextflow.py` / `nextflow_deploy.py`:
   PR exercises plumbing emission at all**, so treat these as unproven-but-present and cover
   them first.
 
-  **Superseded by the unrolling result** (see Phase 0). The scatter half of this is
-  **cancelled** — unrolling the loops in the generating script covers it with no framework
-  change. What remains is the **gather**, and it is two things: make a shared output store
-  fail loudly instead of silently dropping N−1 producers, and make `Mix`'s `streams` port
-  representable so `Mix → Collect →` a one-argument consumer becomes the sanctioned N-way
-  fan-in. Without that pair, Run 4's 336-way gather has **no correct expression** — the
-  unrolled call exceeds Java's 255-parameter limit.
+  **Replaced by sub-workflow emission** (see Phase 0). Neither `_cardinality` nor a
+  `Mix`/overwrite repair is the right change: all of those patch symptoms of flattening a
+  document that already says *nest*. The one change is to make `render_composite` **recurse
+  into a nested `Composite` and emit a Nextflow sub-workflow** (`take:`/`emit:` from the
+  composite's own `bridge`) instead of collapsing it to a single `run_composite` task.
+  Scatter, the 255-parameter gather and the `Mix` gap all disappear together, with no
+  bigraph-schema change and no new plumbing operator.
 - **`deploy()` fixes** — `render_options.setdefault('python', sys.executable)` (`:105`) is a
   latent Batch bug: the head's interpreter will not exist inside a task container. Default to
   `sys.executable` only for `executor='local'`. Add `resume`, `report`, `trace`,
@@ -485,10 +509,11 @@ exists to prevent.
    proven locally in Phase 0; this re-tests it with the real cache.)*
 3. `-resume` after a mid-lineage kill re-runs only that lineage — not its ParCa, and not
    the other variants.
-4. **84 variants × 4 seeds renders and RUNS.** Unrolled, that is 421 process blocks —
-   which is fine (0.02 s to render, 108 KB) — but the **336-way gather must actually
-   gather**: assert the analysis task sees 336 sweeps, not 1. A shared output store passes
-   every structural check while silently analysing one of them.
+4. **84 variants × 4 seeds renders and RUNS, and the gather actually gathers** —
+   assert the analysis task sees **336** sweeps, not 1. Counting process blocks passes on
+   the broken version; only counting sweeps catches it. (Unrolled, 421 blocks render fine
+   in 0.02 s but the 336-way gather cannot be expressed; under sub-workflow emission the
+   count is small and `lineage.out` carries all 336.)
 5. Nextflow head overhead vs a direct `run_composite` on the same small job < ~2 min.
 
 **If (2) or (3) fails, stop.** Those two are the entire justification for a third path.
