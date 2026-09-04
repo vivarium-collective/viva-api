@@ -326,6 +326,73 @@ def _assert_emitted_output(results_dir: Path) -> None:
     )
 
 
+def _final_global_time(results_dir: Path) -> float | None:
+    """Read ``global_time`` from the run's ``final_state.json``, or ``None`` if it
+    is not present/readable as a number.
+
+    process_bigraph tracks simulated time as a top-level ``global_time`` in the
+    composite state that ``serialize_state()`` writes here. It is how much
+    biological time the run actually advanced — the single most robust tell of a
+    generation that "completed" without running (sms-ecoli#210 §3d / PR #375 §3e:
+    a swap campaign collapsing to one tick reaches ``final_state.json`` with
+    ``global_time`` ~= one time-step, e.g. 1.0, while a real generation reaches its
+    doubling time).
+    """
+    fs = results_dir / "final_state.json"
+    if not fs.is_file():
+        return None
+    try:
+        state = json.loads(fs.read_text())
+    except (OSError, ValueError):
+        return None
+    gt = state.get("global_time") if isinstance(state, dict) else None
+    # bool is an int subclass — exclude it so a stray True can't read as 1.0.
+    if isinstance(gt, bool) or not isinstance(gt, int | float):
+        return None
+    return float(gt)
+
+
+def _assert_run_advanced(results_dir: Path) -> None:
+    """Fail the run (``SystemExit(1)``) when it emitted output but did not actually
+    advance in simulated time.
+
+    Gated by ``PBG_MIN_GLOBAL_TIME`` (a float the dispatch sets to a value safely
+    below one real generation and far above a single tick). ``_assert_emitted_output``
+    proves a store EXISTS but not that it holds a real trajectory — presence, not
+    effect. A swap campaign that collapses to one tick (sms-ecoli#210 §3d / PR #375
+    §3e: the swap reaches the run but the generation closes after one tick,
+    ``global_time`` ~= 1.0) still writes a non-empty ``1.pq`` and passes the
+    presence check. This is the effect check: the run must have advanced past
+    ``PBG_MIN_GLOBAL_TIME`` of simulated time.
+
+    Opt-in: unset/empty ``PBG_MIN_GLOBAL_TIME`` → no check (unchanged behavior), so
+    only a dispatch that knows the expected generation length turns it on. Runs
+    after ``final_state.json`` is written, so it reads ``global_time`` from that file
+    and the file survives as a postmortem artifact on failure.
+    """
+    raw = os.environ.get("PBG_MIN_GLOBAL_TIME")
+    if raw is None or raw.strip() == "":
+        return
+    try:
+        minimum = float(raw)
+    except ValueError:
+        raise SystemExit(f"run_pbg: PBG_MIN_GLOBAL_TIME={raw!r} is not a number.")
+    gt = _final_global_time(results_dir)
+    if gt is None:
+        raise SystemExit(
+            f"run_pbg: PBG_MIN_GLOBAL_TIME={minimum} is set but {results_dir}/final_state.json "
+            f"has no readable global_time — cannot verify the run advanced. Refusing to report success."
+        )
+    if gt < minimum:
+        raise SystemExit(
+            f"run_pbg: the run advanced only global_time={gt} of simulated time "
+            f"(< PBG_MIN_GLOBAL_TIME={minimum}) under {results_dir}. The emitted store is "
+            f"non-empty but the generation did not run — e.g. a one-tick collapse "
+            f"(sms-ecoli#210 / #375 §3d-e, a swap that reaches the run but closes the "
+            f"generation after one tick). Refusing to report success."
+        )
+
+
 def _redirect_emitters(node: Any, results_dir: Path) -> int:
     """Point every emitter step's output location at *results_dir*, recursively.
 
@@ -498,6 +565,10 @@ def run(
     # to exit 0 when only final_state.json was produced. Runs AFTER final_state is
     # written so it survives as a postmortem artifact even on this failure.
     _assert_emitted_output(results_dir)
+    # P0-3 (effect, not just presence): a run can emit a non-empty store yet not have
+    # advanced — a one-tick collapse (sms-ecoli#210 §3d / #375 §3e). Under
+    # PBG_MIN_GLOBAL_TIME (opt-in), refuse to exit 0 unless real simulated time elapsed.
+    _assert_run_advanced(results_dir)
     return out
 
 
