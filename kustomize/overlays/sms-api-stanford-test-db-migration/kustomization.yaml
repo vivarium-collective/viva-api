@@ -19,7 +19,10 @@ images:
     # multi_node_composite_id migration, 9c2e6b1f4a73) -- the app was deployed
     # slightly ahead of this Job (real, caught live via UndefinedColumnError
     # spam in the api pod's own logs, fixed the same few minutes).
-    newTag: 0.9.88
+    newTag: 0.9.90
+    # 2026-09-03: 0.9.89 -> 0.9.90, matching the app overlay bump (item 109/111's
+    # pbg-native analysis-mechanism gap fix, PR#390 -- no new Alembic migration
+    # this release either, a handler-logic-only change).
     # 2026-09-03: 0.9.87 -> 0.9.88, matching the app overlay bump (item 105's
     # run_new_gene_cache precondition-removal fix, PR#380 -- no new Alembic
     # migration this release either, a handler-logic-only change).

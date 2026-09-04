@@ -13,7 +13,7 @@ import pytest
 from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.config import ComputeBackend
-from viva_api.simulation.models import HpcRun, JobType
+from viva_api.simulation.models import AnalysisOptions, HpcRun, JobType
 from viva_api.simulation.simulation_service_ray import (
     NEW_GENE_INDUCED_CACHE_DIR,
     PARCA_CACHE_DIR,
@@ -840,6 +840,162 @@ class TestSubmitMultiNodeComposite:
         # Byte-for-byte the same outcome as test_composite_comparison_ensemble_with_multiple_generations_stays_on_mnp.
         assert job_id == JobId.ray("sim-456")
         assert mock_batch.submit_job.call_count == 2
+
+
+class TestMultiNodeAnalysisCommand:
+    """Item 109: _multi_node_analysis_command tries a hive-parquet read
+    (matching run_standalone_analysis.py's own DuckDB mechanism) before
+    falling back to the original flat-file path, when n_seeds is given."""
+
+    def test_omits_seed_flags_entirely_when_n_seeds_not_given(self) -> None:
+        """Byte-for-byte unchanged from before this item's fix -- colony's own
+        real shape (item 88) never has n_seeds in the same sense."""
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._multi_node_analysis_command(
+                experiment_id="exp1",
+                composite_id="v2ecoli.composites.ecoli_colony.ecoli_colony",
+                history_uri="s3://bucket/exp1",
+                out_uri="s3://bucket/exp1/analyses/a1",
+            )
+        assert "--n-seeds" not in cmd
+        assert "--n-generations" not in cmd
+        assert "--modules" not in cmd
+        assert "run_multi_node_analysis.py" in cmd
+
+    def test_applicable_keyword_rides_as_a_bare_token_not_json_encoded(self) -> None:
+        """Regression for the real bug caught while building this: json.dumps
+        would turn "applicable" into the 12-char string '"applicable"'
+        (quotes included), which the receiving script's own
+        `.strip().lower() == "applicable"` check would silently miss."""
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._multi_node_analysis_command(
+                experiment_id="exp1",
+                composite_id="v2ecoli.composites.lineage_ray_batch",
+                history_uri="s3://bucket/exp1",
+                out_uri="s3://bucket/exp1/analyses/a1",
+                n_seeds=10,
+                n_generations=10,
+                modules="applicable",
+            )
+        tokens = shlex.split(cmd.split("&&", 1)[1])
+        assert tokens[tokens.index("--modules") + 1] == "applicable"
+        assert "--n-seeds 10" in cmd
+        assert "--n-generations 10" in cmd
+
+    def test_explicit_module_mapping_rides_as_real_json(self) -> None:
+        service = SimulationServiceRay()
+        modules: dict[str, dict[str, Any]] = {"multiseed": {"doubling_time_distribution": {}}}
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            cmd = service._multi_node_analysis_command(
+                experiment_id="exp1",
+                composite_id="v2ecoli.composites.lineage_ray_batch",
+                history_uri="s3://bucket/exp1",
+                out_uri="s3://bucket/exp1/analyses/a1",
+                n_seeds=10,
+                modules=modules,
+            )
+        tokens = shlex.split(cmd.split("&&", 1)[1])
+        assert json.loads(tokens[tokens.index("--modules") + 1]) == modules
+
+
+class TestSubmitMultiNodeAnalysisExtraction:
+    """submit_multi_node_analysis (item 109) extracts n_seeds/n_generations
+    from the ORIGINAL dispatch's own stored multi_node_dispatch.params, and
+    the module selection via analysis_modules_for (the SAME resolver
+    _analysis_command already uses) -- both threaded into the command
+    builder rather than left at colony's own flat-file-only default."""
+
+    @pytest.mark.asyncio
+    async def test_extracts_n_seeds_and_modules_from_the_original_dispatch_config(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        setattr(  # noqa: B010
+            experiment_request.config,
+            "multi_node_dispatch",
+            {
+                "composite_id": "v2ecoli.composites.lineage_ray_batch",
+                "num_nodes": 4,
+                "params": {"n_seeds": 10, "n_generations": 10},
+            },
+        )
+        experiment_request.config.analysis_options = AnalysisOptions.model_validate({
+            "multiseed": {"doubling_time_distribution": {}}
+        })
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        service = SimulationServiceRay()
+        captured: dict[str, Any] = {}
+
+        def fake_submit_container(*, job_cmd: str, **kw: Any) -> str:
+            captured["job_cmd"] = job_cmd
+            return "mnp-analysis-job-1"
+
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch.object(service, "_submit_container", side_effect=fake_submit_container),
+            patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
+            patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
+        ):
+            job_id = await service.submit_multi_node_analysis(
+                simulation=simulation,
+                database_service=database_service,
+                commit="abc123",
+                composite_id="v2ecoli.composites.lineage_ray_batch",
+            )
+
+        assert job_id == "mnp-analysis-job-1"
+        cmd = captured["job_cmd"]
+        assert "--n-seeds 10" in cmd
+        assert "--n-generations 10" in cmd
+        tokens = shlex.split(cmd.split("&&", 1)[1])
+        assert json.loads(tokens[tokens.index("--modules") + 1]) == {"multiseed": {"doubling_time_distribution": {}}}
+
+    @pytest.mark.asyncio
+    async def test_unset_analysis_options_and_no_n_seeds_falls_back_to_the_old_flat_file_shape(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """Colony's own real shape (item 88): no multi_node_dispatch.params at
+        all (a caller who never set n_seeds) must still build byte-for-byte
+        the same command as before this item's fix -- no --n-seeds/--modules
+        flags at all, so an older simulator image (built before this fix)
+        keeps working unchanged."""
+        setattr(  # noqa: B010
+            experiment_request.config,
+            "multi_node_dispatch",
+            {"composite_id": "v2ecoli.composites.ecoli_colony.ecoli_colony", "num_nodes": 2, "params": {}},
+        )
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        service = SimulationServiceRay()
+        captured: dict[str, Any] = {}
+
+        def fake_submit_container(*, job_cmd: str, **kw: Any) -> str:
+            captured["job_cmd"] = job_cmd
+            return "mnp-analysis-job-2"
+
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch.object(service, "_submit_container", side_effect=fake_submit_container),
+            patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
+            patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
+        ):
+            await service.submit_multi_node_analysis(
+                simulation=simulation,
+                database_service=database_service,
+                commit="abc123",
+                composite_id="v2ecoli.composites.ecoli_colony.ecoli_colony",
+            )
+
+        cmd = captured["job_cmd"]
+        assert "--n-seeds" not in cmd
+        assert "--modules" not in cmd
+        assert "run_multi_node_analysis.py" in cmd
 
 
 class TestSubmitMnpStandaloneQueueRouting:
