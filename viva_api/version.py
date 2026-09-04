@@ -822,7 +822,18 @@
 #           one change. Non-lineage composites are byte-for-byte unaffected
 #           (no summary.generations shape found -> falls back to global_time
 #           exactly as before).
-__version__ = "0.9.95"
+__version__ = "0.9.96"
+#           0.9.96 -- run_new_gene_cache resolved its service via
+#           get_simulation_service() (the deployment's own COMPUTE_BACKEND
+#           default -- "batch"/Nextflow on sms-api-stanford-test), not Ray --
+#           501'd on this endpoint's own first-ever real call, 2026-09-04,
+#           on a deployment that fires real Ray/Batch MNP jobs successfully
+#           through every other route (those resolve via
+#           get_simulation_service_for_repo, commit/repo-aware). Now asks
+#           for ComputeBackend.RAY by name, matching what this handler's own
+#           docstring always said it wanted. New regression test is the
+#           first one in its class to actually exercise resolution instead
+#           of injecting a mock service directly.
 #           0.9.95 -- _parca_command's own build_cache.py step no longer carries
 #           --new-genes/--bundle-overrides -- confirmed live 2026-09-04, its real
 #           current CLI has neither flag (`unrecognized arguments`), stalling ANY

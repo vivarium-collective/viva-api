@@ -784,6 +784,41 @@ class TestRunNewGeneCache:
         assert result.commit == "82e1b1e"
 
     @pytest.mark.asyncio
+    async def test_resolves_ray_by_name_not_deployment_default(self) -> None:
+        """Real bug, found live 2026-09-04 on this endpoint's own first-ever
+        real call: with simulation_service omitted, the handler used to call
+        get_simulation_service() -- the DEPLOYMENT's "default" backend, which
+        on sms-api-stanford-test is COMPUTE_BACKEND=batch (Nextflow), not
+        Ray -- so a deployment that dispatches real Ray/Batch MNP jobs
+        successfully through every OTHER route (those resolve via
+        get_simulation_service_for_repo, commit/repo-aware) 501'd on this one.
+        Every other test in this class masked the bug by injecting
+        simulation_service directly, never exercising resolution at all --
+        this is the one test that actually calls the handler with it omitted."""
+        from viva_api.common.handlers.simulations import run_new_gene_cache
+        from viva_api.simulation.models import NewGeneCacheRequest
+
+        mock_ray = AsyncMock(spec=SimulationServiceRay)
+        mock_ray.submit_new_gene_cache_job.return_value = JobId.ray("new-gene-cache-2")
+        mock_ray.cache_s3_uri.return_value = "s3://bucket/ray-parca-cache/82e1b1e/j3-induced/"
+        mock_db = AsyncMock()
+        mock_db.get_parca_dataset.return_value = _make_parca_dataset()
+
+        with patch(
+            "viva_api.common.handlers.simulations.get_simulation_service_for_backend"
+        ) as mock_resolve:
+            mock_resolve.return_value = mock_ray
+            result = await run_new_gene_cache(
+                request=NewGeneCacheRequest(
+                    parca_dataset_id=158, variant="j3-induced", expression=1e6, translation_efficiency=1.0
+                ),
+                database_service=mock_db,
+            )
+
+        mock_resolve.assert_called_once_with(ComputeBackend.RAY)
+        assert result.job_id == "new-gene-cache-2"
+
+    @pytest.mark.asyncio
     async def test_unknown_parca_dataset_404s(self) -> None:
         from viva_api.common.handlers.simulations import run_new_gene_cache
         from viva_api.simulation.models import NewGeneCacheRequest
