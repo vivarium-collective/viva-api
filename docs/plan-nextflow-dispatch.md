@@ -183,6 +183,12 @@ into `_channel_expr_for_input` (`:323`), whose body never references it.
 
 ## 6. The annotation
 
+> **Superseded by prototyping (2026-09-04).** The reasoning below stands as an analysis of
+> the renderer's vocabulary, but it is **no longer the recommended change**. Wrapping the
+> lineage in a **Step** (§2a) removes the need for a new annotation entirely: a Step already
+> renders through `run_step`, the fully-supported path. Keep this section for the naming
+> argument, which still applies if a `Process`-shaped node ever does need a task.
+
 **`nextflow_task = True`, a class attribute** — with a companion instance method
 `nextflow_task_recipe()` returning a `build_from_recipe` document.
 
@@ -335,7 +341,29 @@ fan-*out* for free (421 blocks, 0.02 s, correct ordering, plain scalar ports), a
 a usable fallback. It is just the wrong shape — it flattens what the document nests, and
 then needs a merge that does not exist.
 
-⇒ **Phase 1f is replaced by sub-workflow emission — nesting *plus* one more thing.**
+### A sixth silent failure, found while prototyping: config was never threaded
+
+`run_step`'s CLI accepts `--config`, and the renderer **never emitted it** — only
+`--class`, `--in`, `--out`. An unrolled sweep is N nodes differing *only by config*, so
+**every node ran with defaults**: three lineages configured `seed=0,1,2` would all have run
+seed 0.
+
+> It passes every structural check — N tasks, N distinct work dirs, N outputs, N distinct
+> hashes — and nothing reports a problem. It silently destroys a **parameter sweep** rather
+> than a gather, and it is the same hazard @cplong90 flagged about shared founders,
+> arriving by a completely different route.
+
+Fixed in process-bigraph#201: a `config_ref` threaded through `_script_body`/`_process_block`,
+each node's resolved config collected into `options['_staged_configs']`, and `deploy()`
+writing those files beside `main.nf`. Verified — three staged configs carrying
+`seed=0,1,2` and distinct `experiment_id`s, with a test asserting they do not collapse.
+
+**This is the sixth instance of the page's organizing pattern**, and the one that would
+have been hardest to notice: nothing about the output *shape* differs between a real sweep
+and N copies of one run.
+
+⇒ **Phase 1f is replaced by sub-workflow emission — nesting *plus* two more things**
+(the second found only by building it; see the config finding directly above).
 Not "implement `_cardinality`", not "fix `Mix` + the overwrite": preserve the hierarchy the
 document already carries. But **nesting alone is not sufficient**, and this is the part
 that only showed up on implementing it: the merge *inside* a sub-workflow is still N-wide,
@@ -430,14 +458,33 @@ On top of `pr197`, all in `nextflow.py` / `nextflow_deploy.py`:
 them (`batch_lineage_ray.py:94-96`); only the façade omits them, and `--build` addresses the
 façade.
 
-- **Lineage.** `LineageProcess` gains `nextflow_task = True`, `nextflow_directives`
-  (cpus / memory / **time**) and `nextflow_task_recipe()` returning `lineage_ray_batch` with
-  `n_seeds=1, base_seed=<seed>` and `run.steps = generations * max_duration_per_gen` —
-  **total simulated time**, the trap `batch_lineage_ray.py:105-110` warns about.
-  `inputs()` goes from `{}` to `{cache_dir: {_is_file, _cardinality: 'one'}}`. **This is a
-  change to a load-bearing class**: it must fall back to `self.config['cache_dir']` when the
-  port is unwired, so Ray dispatch is untouched, and the Ray regression suite must pass
-  before merge.
+- **Lineage — wrap it in a `LineageStep`, do not annotate the Process.**
+  *Prototyped and rendered 2026-09-04.* `run_step` calls `instance.invoke(state)` **once**,
+  while `LineageProcess.update()` advances **one generation per call** — so registering the
+  Process directly as a Step would run generation 0 and report success, another silent
+  truncation. The wrapper's `update()` builds a one-node composite and runs it for
+  `generations × max_duration_per_gen` of **simulated time**; the generation loop stays
+  exactly where it is.
+
+  Three problems dissolve at once:
+
+  | | |
+  |---|---|
+  | `RayShadow_LineageProcess` | gone — no `ray:` registration, so the renderer sees a real class |
+  | `inputs: {}` | fixed — `cache_dir` becomes a **real wire**, so ParCa→lineage is an edge the renderer stages as a `path` |
+  | two output ports (`summary`+`complete`) | avoidable — emit one result port; `complete` is internal |
+
+  It also needs **no new process-bigraph feature**: `run_step` is the supported path. That
+  is what retires the `nextflow_task` annotation in §6.
+
+  **And it makes Ray optional for fan-out.** `LineageProcess` contains no Ray
+  (`grep 'import ray|ray\.'` on `lineage.py` is empty) — `ray:` is purely the addressing
+  layer, and `local:LineageProcess` builds fine. A lineage is internally **sequential**
+  (one generation per tick, each depending on the previous daughter state), so Ray's only
+  contribution is running N *independent* lineages concurrently — which task scheduling
+  also provides, with per-lineage retry and sizing that the actor form structurally cannot.
+  Ray remains right for the colony/MNP composite, which is genuinely multi-node.
+
 - **ParCa — use the CLI, not `--build`.** The generator is registered but explicitly
   *"Structural, not auto-run"*: it carries `raw_data=None` and does not set
   `run_steps_on_init`, so `Composite(doc).run(n)` would jump `global_time` and **run
