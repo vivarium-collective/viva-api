@@ -804,9 +804,7 @@ class TestRunNewGeneCache:
         mock_db = AsyncMock()
         mock_db.get_parca_dataset.return_value = _make_parca_dataset()
 
-        with patch(
-            "viva_api.common.handlers.simulations.get_simulation_service_for_backend"
-        ) as mock_resolve:
+        with patch("viva_api.common.handlers.simulations.get_simulation_service_for_backend") as mock_resolve:
             mock_resolve.return_value = mock_ray
             result = await run_new_gene_cache(
                 request=NewGeneCacheRequest(
