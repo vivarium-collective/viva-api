@@ -781,4 +781,4 @@
 #           that never surfaced because no existing caller set BOTH at once.
 #           Verified live: a real smoke dispatch's stored config showed
 #           multi_node_dispatch reaching the server intact, then cancelled.
-__version__ = "0.9.89"
+__version__ = "0.9.90"
