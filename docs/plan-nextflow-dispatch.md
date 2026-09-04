@@ -407,7 +407,63 @@ composites but PBG **1.5.0** (no `run_composite`, no `workflow/recipe`), while s
 PBG 1.8.3 but no importable `v2ecoli.composites`. Resolving that is a prerequisite for the
 real-command half, not just for Phase 2.
 
-### Phase 1 — process-bigraph
+#### The four-stage campaign, prototyped end to end (2026-09-04)
+
+The §1 shape — **1 ParCa → N derived caches → N×M lineages → gather** — now renders and
+runs. Derived builds and lineages share **one nested scope**, which is what keeps the
+parent at three nodes regardless of N×M:
+
+```groovy
+workflow  { ch_parca_store   = parca()
+            ch_results_store = runs(ch_parca_store)
+            ch_report        = analysis(ch_results_store) }
+
+workflow runs {
+    take: parca_state
+    main: ch_cache_v000 = derived_v000(parca_state)     // one ParCa, N derived
+          ch_cache_v001 = derived_v001(parca_state)
+          ch_sweep_v000_s00 = lineage_v000_s00(ch_cache_v000)   // each seed reads
+          ch_sweep_v000_s01 = lineage_v000_s01(ch_cache_v000)   // ITS variant's cache
+          ch_sweep_v001_s00 = lineage_v001_s00(ch_cache_v001)
+          ch_sweep_v001_s01 = lineage_v001_s01(ch_cache_v001)
+          _merged = …mix chain…
+    emit: _merged.collect() }
+```
+
+Because each cache is **consumed inside** the scope, it is not terminal — so `emit:`
+collects exactly the sweeps, and the analysis takes one argument at any N×M.
+
+| check | result |
+|---|---|
+| `parca → runs → analysis` | ✅ 3 parent nodes, 8 blocks at 2×2 |
+| one ParCa → N derived builds | ✅ |
+| each lineage reads **its own** variant's cache | ✅ |
+| **go/no-go 1: per-variant provenance distinct** | ✅ `2 × strain_000 (expr 1.0)`, `2 × strain_001 (expr 2.0)` |
+| end to end | ✅ exit 0, 8/8 tasks |
+
+**Two defects in my own process-bigraph#201 were found by running this**, both the page's
+pattern turned on the author:
+
+1. **The config was never a declared input.** `deploy()` wrote `<node>.config.json` and the
+   script referenced `--config`, but Nextflow stages only *declared* inputs — so every task
+   opened a path absent from its work dir. **All four lineages read `{}`: the variant sweep
+   silently collapsed to one strain, with 8/8 tasks green.**
+2. **Groovy does not interpolate single-quoted strings.** `file('${projectDir}/x')` is a
+   literal dollar sign; the task failed during staging with **no `.command.err` at all**.
+
+Both fixed (`23c339b`) with a regression test. The lesson generalises past this PR: *the
+artifact existed and the flag was emitted — what was never checked is whether the consumer
+could read it.*
+
+**A third, cheaper trap, hit twice:** Nextflow stages an input under the **producer's**
+filename, so a consumer declaring `path cache_dir` receives `cache/`. `stageAs` is
+mandatory, not stylistic.
+
+**Still unproven** — both need real biology rather than stand-ins: go/no-go **1b**
+(founders differ across seeds, compared on content) and **1c** (ParCa mode recorded
+out-of-band, since `inputs_hash` cannot distinguish fast from full).
+
+## Phase 1 — process-bigraph
 
 On top of `pr197`, all in `nextflow.py` / `nextflow_deploy.py`:
 
