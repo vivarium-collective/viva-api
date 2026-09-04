@@ -333,11 +333,9 @@ it also covers anything submitting against those definitions from outside this m
 
 ### 3g. Every generation after the first silently lost its trailing parquet **and** its success sentinel
 
-*Root-caused and fixed 2026-09-04 in v2ecoli commit `10ebc4c2` (local branch
-`fix/lineage-generation-emitter-finalize`) — **not pushed, and there is no PR #687 on
-GitHub**; the number in the commit subject is anticipated, not merged. Recorded here anyway
-because the defect is real and measured, and it invalidates a check §5 recommends and a
-hazard §4 describes.*
+*Root-caused 2026-09-04 — **v2ecoli issue #687**, fixed by **v2ecoli PR #688**
+(`10ebc4c2`, open, 6/6 tests passing). Recorded here because it invalidates a check §5
+recommends and a hazard §4 describes.*
 
 Division finalizes the parent emitter by looking it up in the process-global registry,
 deriving the key from `_PARQUET_EMITTER_OVERRIDE`'s metadata and falling back to
@@ -363,15 +361,15 @@ that filters on it**.
 The fix finalizes in the object that owns the key — `LineageProcess` calls
 `finalize_emitter_for_agent(self._agent_id)` alongside `flush_parquet`; the two cover
 disjoint cases (timed out vs divided) and both are idempotent. Ships with
-`tests/test_lineage_emitter_finalize.py`. **It needs pushing and a PR before anything can
-depend on it.**
+`tests/test_lineage_emitter_finalize.py` (6 passed). **Open as v2ecoli#688 — merge it before
+anything depends on generation ≥ 1 data.**
 
 Two consequences for this document:
 
 - **§4's "the zarr store enforces the chain"** — generation *N* refuses to open unless
   *N−1* carries the success attr from a clean `close(success=True)`. That sentinel was
   **never written for any generation ≥ 1**, so the hazard was firing, not hypothetical —
-  and still is, until `10ebc4c2` lands.
+  and still is, until v2ecoli#688 merges.
 - **§5's "assert >1 parquet shard"** — a truncated trailing batch still leaves multiple
   shards, so the check passed while the data was short. Assert the **success sentinel**
   per generation as well as the shard count.
