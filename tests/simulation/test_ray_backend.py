@@ -2243,6 +2243,53 @@ class TestInjectedProcessesFromConfig:
         assert result is not None
         assert result["swap_processes"] == {"ecoli-metabolism": "ecoli-metabolism-redux"}
 
+    def test_nested_swap_only_preserves_configs_flat_add_and_exclude(self) -> None:
+        """viva-api#401 regression: a nested block carrying ONLY swap_processes must
+        not silently drop the config's own flat add_processes/exclude_processes --
+        the two shapes are not a whole-block either/or, each of the three fields is
+        resolved independently. Observed live (sim 296, mecillinam_wellmixed.json):
+        a nested metabolism swap that never mentioned add_processes silently dropped
+        all 4 of the config's own add_processes, and nothing reported it."""
+        config = SimpleNamespace(
+            injected_processes={"swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"}},
+            add_processes=["permeability", "antibiotic-transport-odeint"],
+            exclude_processes=["exchange_data"],
+        )
+        result = injected_processes_from_config(config)
+        assert result == {
+            "swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"},
+            "add_processes": ["permeability", "antibiotic-transport-odeint"],
+            "exclude_processes": ["exchange_data"],
+            "fork_repo": "",
+        }
+
+    def test_nested_field_wins_over_flat_on_real_conflict(self) -> None:
+        """When both the nested block and the flat config set the SAME field, the
+        caller's nested value wins -- an explicit override of the caller's own
+        stated intent, not a silent drop of it."""
+        config = SimpleNamespace(
+            injected_processes={"swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"}},
+            swap_processes={"ecoli-metabolism": "some-other-swap"},
+        )
+        result = injected_processes_from_config(config)
+        assert result is not None
+        assert result["swap_processes"] == {"ecoli-metabolism": "ecoli-metabolism-redux"}
+
+    def test_nested_add_only_preserves_configs_flat_swap(self) -> None:
+        """Symmetric to the swap-only case above: a nested block setting only
+        add_processes must not drop the config's own flat swap_processes."""
+        config = SimpleNamespace(
+            injected_processes={"add_processes": ["gillespie"]},
+            swap_processes={"ecoli-metabolism": "ecoli-metabolism-redux"},
+        )
+        result = injected_processes_from_config(config)
+        assert result == {
+            "swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"},
+            "add_processes": ["gillespie"],
+            "exclude_processes": [],
+            "fork_repo": "",
+        }
+
 
 class TestIsUpstreamVecoli:
     """The single routing predicate shared by submit_ecoli_simulation_job and _sim_command."""

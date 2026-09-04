@@ -318,7 +318,7 @@ def injected_processes_from_config(config: Any) -> dict[str, Any] | None:
     must be present even though it is always empty on this path.
     """
 
-    # Two accepted shapes:
+    # Two accepted shapes, resolved PER FIELD, not as a whole-block either/or:
     #   (1) FLAT: swap_processes / add_processes / exclude_processes as top-level
     #       config extras (the legacy shape this helper was written for).
     #   (2) NESTED: a whole ``injected_processes`` block passed through as an extra
@@ -328,7 +328,16 @@ def injected_processes_from_config(config: Any) -> dict[str, Any] | None:
     #       resolved config, but this helper only read the flat fields, found none,
     #       returned None, and the swap was silently dropped at every downstream hop
     #       (chain-dispatch ran wild-type, reporting success).
-    # Honor the nested block when it carries intent; otherwise read the flat fields.
+    # A nested submit and the config's own flat fields are NOT mutually-exclusive
+    # alternatives (viva-api#401): choosing the whole shape once meant a nested
+    # submit setting only ``swap_processes`` silently dropped a config's own flat
+    # ``add_processes``/``exclude_processes``, even though nothing about the
+    # caller's request implied dropping them -- observed live (sim 296): a
+    # mecillinam config's own 4 ``add_processes`` vanished under a nested swap
+    # that never mentioned them. Each of the three fields is now resolved
+    # independently -- the nested value wins when set, else fall back to flat --
+    # so a caller sending only ``swap_processes`` keeps the config's own
+    # ``add_processes``/``exclude_processes`` rather than losing them.
     def _read(src: Any, key: str, default: Any) -> Any:
         if isinstance(src, dict):
             return src.get(key) or default
@@ -340,11 +349,36 @@ def injected_processes_from_config(config: Any) -> dict[str, Any] | None:
         or _read(nested, "add_processes", None)
         or _read(nested, "exclude_processes", None)
     )
-    src = nested if nested_has_intent else config
 
-    swap_processes = _read(src, "swap_processes", {})
-    add_processes = _read(src, "add_processes", [])
-    exclude_processes = _read(src, "exclude_processes", [])
+    flat_swap = _read(config, "swap_processes", {})
+    flat_add = _read(config, "add_processes", [])
+    flat_exclude = _read(config, "exclude_processes", [])
+    nested_swap = _read(nested, "swap_processes", None)
+    nested_add = _read(nested, "add_processes", None)
+    nested_exclude = _read(nested, "exclude_processes", None)
+
+    # A real conflict (both sides set the SAME field) is a silent override,
+    # not just a merge -- worth a log line so it is at least discoverable,
+    # per cplong90's own framing on #401 ("an override worth logging, not one
+    # to make silently"), matching this codebase's own repeated fix pattern
+    # for silent-success-masking-a-real-difference (items 93/103/111/114).
+    for name, nested_val, flat_val in (
+        ("swap_processes", nested_swap, flat_swap),
+        ("add_processes", nested_add, flat_add),
+        ("exclude_processes", nested_exclude, flat_exclude),
+    ):
+        if nested_val and flat_val:
+            logger.warning(
+                "injected_processes_from_config: nested %s overrides the config's own flat %s (nested=%r, flat=%r)",
+                name,
+                name,
+                nested_val,
+                flat_val,
+            )
+
+    swap_processes = nested_swap or flat_swap
+    add_processes = nested_add or flat_add
+    exclude_processes = nested_exclude or flat_exclude
     if not (swap_processes or add_processes or exclude_processes):
         return None
 
