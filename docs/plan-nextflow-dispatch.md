@@ -622,6 +622,30 @@ outer DAG calls the same `baseline()`, and a resolver chosen by cwd is a hazard 
 them. It is *sharper* for this plan than for the others, because `scratch true` changes the
 cwd deliberately.
 
+- **⚠ Re-assert emitted output PER TASK — the Ray path's guard does not come with us.**
+  *Added 2026-09-04, from a real failure on the Ray path.* viva-api's `run_pbg.py` carries a
+  `PBG_REQUIRE_OUTPUT` guard (#395, P0-3): refuse to exit 0 when a run produced only the
+  always-written `final_state.json` and no real emitted store. It exists because a composite
+  that emits nothing otherwise reaches `SUCCEEDED` and lands `completed` with no science in it.
+
+  **`process_bigraph/run_composite.py` — which `LineageStep` invokes — has no such assertion
+  of any kind.** Checked directly: zero `require_output` / `has_emitted` / refuse-to-exit
+  logic. So adopting this path *silently drops P0-3* unless we put it back. Worse, the
+  natural substitute is untrustworthy by design: `--state-out` is **best-effort** and writes a
+  `{note, error, composite}` marker on serialization failure (risk 3), i.e. exactly the
+  fallback artifact the guard was written not to accept as evidence.
+
+  > **The good news is that the check gets *more* correct here, not less.** The Ray version
+  > failed in both directions — it scans a node-local dir while Ray places emitters on
+  > whatever node it likes, so a fully successful 2-seed run reported FAILED twice tonight
+  > (viva-api#419). Under Nextflow a task's work dir **is** where that task's emitters write,
+  > so a local check is sound at exactly this granularity. Per-task is where this assertion
+  > belongs; it was only ever wrong because it ran on a driver that owned none of the output.
+
+  ⇒ Phase 2 obligation: `LineageStep` (and the analysis task) asserts its own emitted output
+  before returning success, on the task's own work dir. Cheap, local, and it keeps a
+  protection we already paid for.
+
 - **Lineage — wrap it in a `LineageStep`, do not annotate the Process.**
   *Prototyped and rendered 2026-09-04.* `run_step` calls `instance.invoke(state)` **once**,
   while `LineageProcess.update()` advances **one generation per call** — so registering the
@@ -822,6 +846,11 @@ exists to prevent.
    history while its *name* survives in `output_metadata`, and nothing errors. A 336-way
    gather of 336 column-starved sweeps passes every count-based check.
 5. Nextflow head overhead vs a direct `run_composite` on the same small job < ~2 min.
+6. **A task that emits nothing FAILS.** Run one lineage task with its emitter deliberately
+   disabled and assert the task exits non-zero — not that the workflow merely completes.
+   `run_composite` ships no such guard (§Phase 2), and `--state-out` writes a marker rather
+   than raising, so without this the campaign can go green having produced no science. This
+   is the one gate that tests the *absence* of output rather than its shape.
 
 **If (2) or (3) fails, stop.** Those two are the entire justification for a third path.
 **If (4) fails, the shape is wrong** even if it runs — 420 hand-emitted blocks is not an
