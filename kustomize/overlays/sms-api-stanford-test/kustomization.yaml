@@ -63,7 +63,7 @@ images:
   # precondition 409'd on every real chain-dispatch-originated ParcaDataset.
   # Removed entirely, matching this codebase's pure-passthrough philosophy.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.89
+    newTag: 0.9.90
   # ptools 0.5.9 -> 0.9.53 (DEV ONLY — prod sms-api-stanford stays on 0.5.9 while
   # this soaks). The long-standing 0.5.9 pin existed because CI builds only
   # sms-api (scripts/build_action.sh), so no newer sms-ptools existed on ghcr.io
