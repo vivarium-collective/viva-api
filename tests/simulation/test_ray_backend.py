@@ -2610,6 +2610,73 @@ class TestSubmitNewGeneCacheJob:
         assert "k4-induced" not in env["CONTAINER_STAGE_S3"]
 
 
+class TestRaySubmitImage:
+    """The Nextflow HEAD image for the Ray/v2ecoli path (plan-nextflow-dispatch.md §11.3).
+
+    Only the process that runs ``nextflow run`` needs a JVM. On vEcoli's proven awsbatch
+    profile the Batch TASKS run ``container = params.container_image`` -- the plain science
+    image -- and v2ecoli's own Dockerfile already installs AWS CLI v2, which is the one thing
+    Nextflow requires inside a task container to stage the S3 work dir. So this is a thin
+    derived layer, and the task side is deliberately untouched.
+    """
+
+    def test_default_build_is_byte_identical_and_has_no_submit_layer(self) -> None:
+        """Same guarantee item 87 established for include_new_gene_data: adding a flag must
+        not perturb any existing caller. The unflagged script must be a strict PREFIX of the
+        flagged one -- not merely 'similar'."""
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            default = service._build_command(_v2ecoli_simulator())[2]
+            flagged = service._build_command(_v2ecoli_simulator(), include_submit_image=True)[2]
+        assert "Dockerfile-submit" not in default
+        assert "default-jre-headless" not in default
+        assert flagged.startswith(default)
+
+    def test_submit_image_adds_java_and_a_pinned_nextflow(self) -> None:
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            script = service._build_command(_v2ecoli_simulator(), include_submit_image=True)[2]
+        assert "default-jre-headless" in script
+        # Pinned, not floating: an unpinned `nextflow` download would silently change the
+        # renderer's runtime between two builds of the same commit.
+        assert "ARG NEXTFLOW_VERSION=25.10.2" in script
+
+    def test_submit_image_is_derived_from_this_commit_and_pushed_beside_it(self) -> None:
+        """The head must be built FROM the same commit's task image, or the workflow it
+        launches is not the code the simulator record names."""
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            script = service._build_command(_v2ecoli_simulator(), include_submit_image=True)[2]
+        assert "BASE_URI=$ECR_REGISTRY/v2ecoli:abc1234" in script
+        assert 'docker push "$ECR_REGISTRY/v2ecoli:abc1234-submit"' in script
+
+    def test_submit_image_workdir_is_the_repo_root(self) -> None:
+        """WORKDIR /app/v2ecoli, not vEcoli's /vEcoli. v2ecoli bare-imports `scripts._compare`
+        throughout, which resolves on cwd alone -- the same root cause as viva-api#359 and the
+        reason the awsbatch profile must also export PYTHONPATH."""
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+            script = service._build_command(_v2ecoli_simulator(), include_submit_image=True)[2]
+        assert "WORKDIR /app/v2ecoli" in script
+
+    @pytest.mark.asyncio
+    async def test_run_build_threads_the_flag(self) -> None:
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch(
+                "viva_api.simulation.simulation_service_ray.batch_build.submit_batch_build",
+                new=AsyncMock(return_value="build-job-1"),
+            ) as mock_submit,
+            patch(
+                "viva_api.simulation.simulation_service_ray.batch_build.poll_batch_jobs",
+                new=AsyncMock(),
+            ),
+        ):
+            await service._run_build(_v2ecoli_simulator(), include_submit_image=True)
+        assert "Dockerfile-submit" in mock_submit.call_args.kwargs["command"][2]
+
+
 class TestSimulationServiceRayBuildSubmit:
     """Build-image submission: DooD Batch job to the amd64 queue, then poll."""
 

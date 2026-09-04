@@ -1486,7 +1486,11 @@ class SimulationServiceRay(SimulationService):
 
     @override
     async def submit_build_image_job(
-        self, simulator_version: SimulatorVersion, *, include_new_gene_data: bool = False
+        self,
+        simulator_version: SimulatorVersion,
+        *,
+        include_new_gene_data: bool = False,
+        include_submit_image: bool = False,
     ) -> JobId:
         """Build the self-contained v2ecoli Ray image via a DooD Batch job.
 
@@ -1501,11 +1505,21 @@ class SimulationServiceRay(SimulationService):
         """
         commit = simulator_version.git_commit_hash
         return self._local.submit(
-            self._run_build(simulator_version, include_new_gene_data=include_new_gene_data),
+            self._run_build(
+                simulator_version,
+                include_new_gene_data=include_new_gene_data,
+                include_submit_image=include_submit_image,
+            ),
             name=f"ray-build-{commit}",
         )
 
-    def _build_command(self, simulator_version: SimulatorVersion, *, include_new_gene_data: bool = False) -> list[str]:
+    def _build_command(
+        self,
+        simulator_version: SimulatorVersion,
+        *,
+        include_new_gene_data: bool = False,
+        include_submit_image: bool = False,
+    ) -> list[str]:
         """DooD build command: clone v2ecoli@commit, run its build-and-push recipe.
 
         Mirrors SimulationServiceK8s._build_command (apk deps, PAT clone, in-repo recipe),
@@ -1553,16 +1567,62 @@ git checkout {commit}
 # recipe builds + pushes v2ecoli:<sha> and the :latest deploy tag the MNP job def uses.
 bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -R {settings.batch_region}{build_flags}
 """
+        if include_submit_image:
+            # The Nextflow HEAD image. Deliberately a thin derived layer, not a change to the
+            # task image: on vEcoli's proven awsbatch profile the Batch tasks run
+            # ``container = params.container_image`` -- the PLAIN science image, with no JVM
+            # and no nextflow binary anywhere. Only the process that runs ``nextflow run``
+            # needs Java. v2ecoli's own image already installs AWS CLI v2 (Dockerfile:149-156),
+            # which is the one thing Nextflow *does* require inside a task container to stage
+            # the S3 work dir, so nothing about the task side has to change.
+            #
+            # Mirrors SimulationServiceK8s._build_command(submit_image=True) rather than
+            # inventing a second recipe; NEXTFLOW_VERSION is pinned to the same 25.10.2 that
+            # image uses, so one Nextflow version spans the deployment. (Phase 0 of
+            # docs/plan-nextflow-dispatch.md measured 25.04.3; both map `time` to Batch
+            # attemptDurationSeconds -- see its §11.1 -- and the skew is resolved here in
+            # favour of what already ships.)
+            script += f"""
+BASE_URI=$ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}
+
+cat > /tmp/Dockerfile-submit <<'DOCKERFILE'
+ARG BASE_IMAGE
+FROM ${{BASE_IMAGE}}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends default-jre-headless \\
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+ARG NEXTFLOW_VERSION=25.10.2
+RUN curl -fsSL "https://github.com/nextflow-io/nextflow/releases/download/v${{NEXTFLOW_VERSION}}/nextflow" \\
+    -o /usr/local/bin/nextflow && chmod +x /usr/local/bin/nextflow
+WORKDIR /app/v2ecoli
+DOCKERFILE
+
+docker build -t "$ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-submit" \
+    --build-arg BASE_IMAGE="$BASE_URI" \
+    -f /tmp/Dockerfile-submit /tmp
+docker push "$ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-submit"
+echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-submit"
+"""
         return ["sh", "-c", script]
 
-    async def _run_build(self, simulator_version: SimulatorVersion, *, include_new_gene_data: bool = False) -> None:
+    async def _run_build(
+        self,
+        simulator_version: SimulatorVersion,
+        *,
+        include_new_gene_data: bool = False,
+        include_submit_image: bool = False,
+    ) -> None:
         """Submit the DooD v2ecoli image build to Batch (amd64 queue) and poll it."""
         settings = get_settings()
         commit = simulator_version.git_commit_hash
         job_id = await batch_build.submit_batch_build(
             job_name=batch_build.ray_build_job_name(commit),
             queue=settings.build_amd64_queue,
-            command=self._build_command(simulator_version, include_new_gene_data=include_new_gene_data),
+            command=self._build_command(
+                simulator_version,
+                include_new_gene_data=include_new_gene_data,
+                include_submit_image=include_submit_image,
+            ),
         )
         # viva-api#414: persist the Batch handle on this task's HpcRun row so
         # the build's outcome is recoverable from any process, not only the
