@@ -508,7 +508,30 @@ On top of `pr197`, all in `nextflow.py` / `nextflow_deploy.py`:
 
 ### Phase 2 — v2ecoli / sms-ecoli
 
-**Shared prerequisite first:** Eran's **N1** — widen `lineage_ray_batch`'s generator
+**Shared prerequisite 0 — retire the swap-inside-`LineageProcess` risk** (@cplong90,
+2026-09-04). Post-#369 `stop_at_division=True` is dispatched on **every** chain generation,
+so **chain-dispatch and `lineage_ray_batch` both run through `LineageProcess` today**. A
+failure in that layer therefore invalidates *both* plans, which is exactly the argument for
+doing it once, first.
+
+Evidence so far is split and neither half is sufficient:
+
+| route | swap inside `LineageProcess` |
+|---|---|
+| chain-dispatch | a generation **completed** — real division at t=2527 s |
+| `lineage_ray_batch` (pbg-native) | **crashed immediately**, `intermediates_idx` `IndexError` |
+
+> **Acceptance bar: a completed generation that WROTE A HISTORY PARTITION** — not merely a
+> division event. The chain-dispatch run above divided and wrote **no `history/` partition
+> at all** (3 `.pq` files vs 97 for the no-swap baseline; see viva-api#408 discussion), so
+> "completed a generation" and "produced the generation's data" have already come apart
+> once on this exact question.
+
+⚠ **Nothing in this plan's Phase 0 or the four-stage prototype touches this.** Both use
+stand-in Steps carrying no biology; the `LineageStep` wrapper of §2a changes *who invokes*
+the layer, not whether a swap survives inside it.
+
+**Shared prerequisite 1:** Eran's **N1** — widen `lineage_ray_batch`'s generator
 `parameters` (`composites/lineage_ray_batch.py:30-70`) to accept `injected_processes`,
 `config_overrides`, `variant_grid`, `emitter_arg`. The *builder* already accepts three of
 them (`batch_lineage_ray.py:94-96`); only the façade omits them, and `--build` addresses the
@@ -532,6 +555,10 @@ façade.
 
   It also needs **no new process-bigraph feature**: `run_step` is the supported path. That
   is what retires the `nextflow_task` annotation in §6.
+
+  > **What it does NOT retire:** whether a *swapped* process survives inside
+  > `LineageProcess`. The wrapper changes who invokes the layer, not what happens within
+  > it — and both dispatch paths inherit that layer either way. See shared prerequisite 0.
 
   **And it makes Ray optional for fan-out.** `LineageProcess` contains no Ray
   (`grep 'import ray|ray\.'` on `lineage.py` is empty) — `ray:` is purely the addressing
@@ -696,11 +723,33 @@ improvement on hand-rolled dispatch.
 
 ## 9. Risks
 
-1. **An atomic multi-hour task has no intermediate resume point.** A retry restarts
-   generation 0. The seam already exists and is unused: `LineageProcess.config_schema`
-   declares `initial_carry_state_path`, `initial_generation_index` and
-   `daughter_state_out_path`, added so a wave orchestrator could retry at generation
-   granularity. A follow-on can turn one lineage task into a per-generation chain.
+1. **Durability: checkpointing now exists; RESUMPTION is this plan's obligation.**
+   *Rewritten 2026-09-04 — v2ecoli#680 overtook the original text, and @cplong90's reading
+   of it sharpens what remains.* `LineageProcess` always wrote a per-generation checkpoint;
+   it was a no-op on the pbg-native path because nothing gave it a real destination.
+   **v2ecoli#680 (`checkpoint_dir` + `seed_overrides`) fixes that**, verified live on
+   `smsvpctest` — a distinct `gen_{N:04d}.pkl` per generation, and a resumed lineage that
+   read `gen_0000.pkl` byte-unchanged and went straight to `gen_0001.pkl`.
+
+   > **But a checkpoint is only recovery if something resubmits** (@cplong90). The
+   > per-commit job definitions every real dispatch runs on carry **no retry** (see risk 4),
+   > so #680 converts *"no recoverable state"* into *"manually recoverable state"* — a real
+   > gain (a 2-hour lineage failing at 1.5 h now loses 30 minutes, not everything), but not
+   > automatic resumption. **On this plan the resubmitter is the outer DAG, i.e. Nextflow.**
+
+   And that obligation is more specific than "Nextflow gives you retry": **`-resume` reuses
+   cached *successful* tasks on a NEW invocation**; automatic in-run retry is
+   `errorStrategy` + `maxRetries` — a config choice, and **absent from the `awsbatch`
+   profile stub entirely** (§Phase 4). Emit it, or the outer DAG inherits `attempts: 1` and
+   offers no more automatic recovery than today.
+
+   Also not to over-read: **`seed_overrides` is pure addressing** — it copies `cache_dir` /
+   `initial_carry_state_path` / `initial_generation_index` into one seed's config and
+   touches neither state nor founders. It gives independent *caches*, and independent
+   *founders* only if the caches it points at were built with different founders. Exactly
+   right for 1 ParCa → N derived strain caches; **not** a founder-generation mechanism for
+   replicate cells (see go/no-go 1b).
+
 2. **`-resume` needs a durable session cache, not just a durable work-dir.** Nextflow's
    `.nextflow/history` and cache DB live on the **head's local filesystem** — an ephemeral
    K8s pod in this design. Plan the S3 sync of `.nextflow/` around the run; it is easy to
@@ -711,7 +760,15 @@ improvement on hand-rolled dispatch.
    load-bearing edge.** Every real inter-task dependency is an `_is_file` port over a real
    artifact. Worth proposing `--state-out-required` upstream.
 4. **No task timeout today.** Our Batch job definitions report `timeout=NONE` with
-   `retry=2` (a retry restarts from scratch). Emit `time` per label — and ⚠verify
+   **no retry** — *corrected 2026-09-04*. The base definitions carry
+   `retryStrategy={'attempts': 2}`, but **nothing dispatches against them**: both
+   `_ensure_mnp_job_def` and `_ensure_container_job_def` clone only `nodeProperties` /
+   `containerProperties` and never `retryStrategy`, so every per-commit definition gets
+   AWS Batch's default `attempts: 1`. Verified: base `smsvpctest-ray-container`
+   `attempts: 2`; per-commit `…-container-68e2c67` `retryStrategy=None`. (Found by
+   @cplong90 on the MNP side; it extends to the container path.) This plan previously
+   asserted `retry=2`, from reading a definition nothing uses. Emit `time` per label — and
+   ⚠verify
    empirically that Nextflow maps it to `attemptDurationSeconds`.
 5. **This is a third path in a repo where a live design doc proposes deleting one.**
    Positioning is additive by decision, but N1–N4 are shared prerequisites; do them once.
