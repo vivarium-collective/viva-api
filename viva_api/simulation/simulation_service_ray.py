@@ -278,6 +278,7 @@ def injected_processes_from_config(config: Any) -> dict[str, Any] | None:
     ``injected_processes["fork_repo"]`` directly (not ``.get``), so the key
     must be present even though it is always empty on this path.
     """
+
     # Two accepted shapes:
     #   (1) FLAT: swap_processes / add_processes / exclude_processes as top-level
     #       config extras (the legacy shape this helper was written for).
