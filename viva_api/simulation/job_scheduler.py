@@ -11,7 +11,11 @@ from viva_api.config import get_settings
 from viva_api.dependencies import get_ssh_session_service
 from viva_api.simulation.database_service import DatabaseService
 from viva_api.simulation.models import ChainCampaignUpdate, HpcRun, Simulation, WorkerEvent, WorkerEventMessagePayload
-from viva_api.simulation.simulation_service_ray import SimulationServiceRay, injected_processes_from_config
+from viva_api.simulation.simulation_service_ray import (
+    SimulationServiceRay,
+    injected_processes_from_config,
+    strain_from_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +344,7 @@ class JobScheduler:
         # ParCa SUCCEEDED -- fan out generation 0 for every seed at once.
         runner_s3_uri = await simulation_service_ray.stage_runner(experiment_id)
         cache_variant = getattr(simulation.config, "cache_variant", None) or None
+        expect_new_genes, expect_bundle_overrides = strain_from_config(simulation.config)
         submitted = await simulation_service_ray.submit_chain_generation_batch(
             seeds=list(range(n_seeds)),
             generation_index=0,
@@ -351,6 +356,8 @@ class JobScheduler:
             injected_processes=injected_processes_from_config(simulation.config),
             variants=getattr(simulation.config, "variants", None) or None,
             composite_id=getattr(simulation.config, "composite_id", None) or None,
+            expect_new_genes=expect_new_genes,
+            expect_bundle_overrides=expect_bundle_overrides,
         )
         for seed in range(n_seeds):
             if seed in submitted:
@@ -408,6 +415,7 @@ class JobScheduler:
         variants = getattr(simulation.config, "variants", None) or None
         composite_id = getattr(simulation.config, "composite_id", None) or None
         cache_variant = getattr(simulation.config, "cache_variant", None) or None
+        expect_new_genes, expect_bundle_overrides = strain_from_config(simulation.config)
         next_gen_runner_s3_uri: str | None = None
         for seed, job_id in enumerate(current_job_ids):
             if job_id is None:
@@ -436,6 +444,8 @@ class JobScheduler:
                 injected_processes=injected_processes,
                 variants=variants,
                 composite_id=composite_id,
+                expect_new_genes=expect_new_genes,
+                expect_bundle_overrides=expect_bundle_overrides,
             )
             current_generation[seed] = gen + 1
 
