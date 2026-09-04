@@ -64,6 +64,10 @@ class HpcRun(BaseModel):
     # chain_n_generations by construction (a row is written by exactly one
     # dispatch shape).
     multi_node_composite_id: str | None = None
+    # viva-api#414: for a LOCAL-backend row, the AWS Batch job ids the in-process
+    # task is watching (a DooD build's build job(s)). What a recovering process
+    # resolves the row from once the task's owner pod is gone. None otherwise.
+    external_job_ids: list[str] | None = None
 
     @model_validator(mode="before")
     @classmethod

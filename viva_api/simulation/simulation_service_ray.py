@@ -1560,10 +1560,14 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
         settings = get_settings()
         commit = simulator_version.git_commit_hash
         job_id = await batch_build.submit_batch_build(
-            job_name=f"v2ecoli-ray-build-{commit}",
+            job_name=batch_build.ray_build_job_name(commit),
             queue=settings.build_amd64_queue,
             command=self._build_command(simulator_version, include_new_gene_data=include_new_gene_data),
         )
+        # viva-api#414: persist the Batch handle on this task's HpcRun row so
+        # the build's outcome is recoverable from any process, not only the
+        # one holding this asyncio.Task (which dies with the pod).
+        await self._local.record_external_job_ids([job_id])
         await batch_build.poll_batch_jobs([job_id])
         logger.info("v2ecoli Ray image build complete: %s:%s", settings.ray_ecr_repository, commit)
 
@@ -2303,7 +2307,7 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
 
         task_job_id = self._local.submit(_run(), name=f"chain-dispatch-{ecoli_simulation.config.experiment_id}")
         try:
-            await database_service.insert_hpcrun(
+            placeholder = await database_service.insert_hpcrun(
                 job_id=task_job_id,
                 job_type=JobType.SIMULATION,
                 ref_id=ecoli_simulation.database_id,
@@ -2315,6 +2319,12 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             # is about to be handed an error.
             self._local.cancel(task_job_id.value)
             raise
+        # viva-api#414: bind the placeholder to its task so the row is finalized
+        # from the task's own outcome (COMPLETED once the real campaign row has
+        # superseded it; FAILED, with the exception, if submission crashed).
+        # Before this the placeholder stayed `running` in the DB forever, and a
+        # submission crash was visible only in this process's memory.
+        await self._local.bind_hpcrun(task_job_id.value, placeholder.database_id, database_service)
         placeholder_recorded.set()
         logger.info(
             "Chain dispatch %s: submitting the campaign in the background as local task %s "

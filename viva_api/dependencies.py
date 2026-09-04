@@ -19,6 +19,7 @@ from viva_api.simulation.database_service import DatabaseService, DatabaseServic
 from viva_api.simulation.tables_orm import create_db
 
 if TYPE_CHECKING:
+    from viva_api.common.hpc.local_task_service import LocalTaskService
     from viva_api.common.models import JobId
     from viva_api.simulation.job_scheduler import JobScheduler
     from viva_api.simulation.simulation_service import SimulationService
@@ -136,6 +137,22 @@ def get_simulation_service_for_job(job_id: "JobId") -> "SimulationService | None
     return global_simulation_service
 
 
+# ------ local task service (the ONE process-wide LocalTaskService) ------
+
+global_local_task_service: "LocalTaskService | None" = None
+
+
+def set_local_task_service(service: "LocalTaskService | None") -> None:
+    global global_local_task_service
+    global_local_task_service = service
+
+
+def get_local_task_service() -> "LocalTaskService | None":
+    """The process-wide LocalTaskService every backend service shares (viva-api#414:
+    JobScheduler.reconcile_local_tasks asks it which active LOCAL rows this process owns)."""
+    return global_local_task_service
+
+
 # ------ job scheduler (standalone) -----------------------------
 
 global_job_scheduler: "JobScheduler | None" = None
@@ -212,6 +229,7 @@ def _init_simulation_service(job_backend: str, settings: Settings) -> None:
 
     default_backend = ComputeBackend(job_backend)
     shared_local = LocalTaskService()
+    set_local_task_service(shared_local)
     registry: dict[ComputeBackend, SimulationService] = {}
 
     # AWS Batch + Nextflow (K8s) — built when a K8s namespace is configured.
@@ -377,6 +395,7 @@ async def init_standalone(enable_ssl: bool = True) -> None:
             database_service=db_service,
             slurm_service=slurm_service,
             simulation_service_ray=simulation_service_ray,
+            local_task_service=get_local_task_service(),
         )
         set_job_scheduler(job_scheduler)
         logger.info("✓ JobScheduler initialized")

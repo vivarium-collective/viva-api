@@ -31,6 +31,7 @@ class HpcRun:
         chain_current_generation (Union[None, Unset, list[Union[None, int]]]):
         chain_parca_done (Union[None, Unset, bool]):
         multi_node_composite_id (Union[None, Unset, str]):
+        external_job_ids (Union[None, Unset, list[str]]):
     """
 
     database_id: int
@@ -49,6 +50,7 @@ class HpcRun:
     chain_current_generation: Union[None, Unset, list[Union[None, int]]] = UNSET
     chain_parca_done: Union[None, Unset, bool] = UNSET
     multi_node_composite_id: Union[None, Unset, str] = UNSET
+    external_job_ids: Union[None, Unset, list[str]] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -143,6 +145,15 @@ class HpcRun:
         else:
             multi_node_composite_id = self.multi_node_composite_id
 
+        external_job_ids: Union[None, Unset, list[str]]
+        if isinstance(self.external_job_ids, Unset):
+            external_job_ids = UNSET
+        elif isinstance(self.external_job_ids, list):
+            external_job_ids = self.external_job_ids
+
+        else:
+            external_job_ids = self.external_job_ids
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({
@@ -173,6 +184,8 @@ class HpcRun:
             field_dict["chain_parca_done"] = chain_parca_done
         if multi_node_composite_id is not UNSET:
             field_dict["multi_node_composite_id"] = multi_node_composite_id
+        if external_job_ids is not UNSET:
+            field_dict["external_job_ids"] = external_job_ids
 
         return field_dict
 
@@ -339,6 +352,23 @@ class HpcRun:
 
         multi_node_composite_id = _parse_multi_node_composite_id(d.pop("multi_node_composite_id", UNSET))
 
+        def _parse_external_job_ids(data: object) -> Union[None, Unset, list[str]]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                external_job_ids_type_0 = cast(list[str], data)
+
+                return external_job_ids_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[None, Unset, list[str]], data)
+
+        external_job_ids = _parse_external_job_ids(d.pop("external_job_ids", UNSET))
+
         hpc_run = cls(
             database_id=database_id,
             correlation_id=correlation_id,
@@ -356,6 +386,7 @@ class HpcRun:
             chain_current_generation=chain_current_generation,
             chain_parca_done=chain_parca_done,
             multi_node_composite_id=multi_node_composite_id,
+            external_job_ids=external_job_ids,
         )
 
         hpc_run.additional_properties = d

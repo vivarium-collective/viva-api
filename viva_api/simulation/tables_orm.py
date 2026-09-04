@@ -160,6 +160,14 @@ class ORMHpcRun(Base):
     # JobScheduler.update_multi_node_jobs's own query can never overlap with
     # list_active_chain_campaigns's.
     multi_node_composite_id: Mapped[str | None] = mapped_column(nullable=True)
+    # viva-api#414: for a LOCAL-backend row (an in-process task watching work
+    # it submitted elsewhere -- today the DooD image builds), the AWS Batch job
+    # ids that work actually runs as. The LOCAL uuid in job_id_ext dies with the
+    # pod that minted it; these ids are what a different process can re-derive
+    # the row's true terminal state from (JobScheduler.reconcile_local_tasks).
+    # NULL for every non-LOCAL row and for a LOCAL row whose task has not
+    # submitted anything yet.
+    external_job_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
 
     def _build_job_id(self) -> JobId:
         """Construct a JobId from the ORM columns."""
@@ -189,6 +197,7 @@ class ORMHpcRun(Base):
             else None,
             chain_parca_done=self.chain_parca_done,
             multi_node_composite_id=self.multi_node_composite_id,
+            external_job_ids=list(self.external_job_ids) if self.external_job_ids is not None else None,
         )
 
 
