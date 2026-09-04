@@ -314,12 +314,27 @@ def injected_processes_from_config(config: Any) -> dict[str, Any] | None:
     exclude_processes = _read(src, "exclude_processes", [])
     if not (swap_processes or add_processes or exclude_processes):
         return None
-    return {
+
+    # Carry the caller-supplied nested block through rather than rebuilding a
+    # fresh dict from just the four keys below (viva-api#392): a nested submit
+    # can carry additional real intent -- e.g. `cache_dir`, which a fork-free
+    # swap's own resolve_injections() spec-building needs to load the target
+    # process's config from the ParCa bundle. Reconstructing only
+    # {swap_processes, add_processes, exclude_processes, fork_repo} silently
+    # dropped it, so the swapped-in process mounted with an empty config
+    # instead of failing loud or running correctly. The four keys are
+    # normalized defaults layered ON TOP of the carried-through block, not a
+    # replacement for it, so this stays byte-identical for the flat/legacy
+    # shape (nothing to carry through there) and for any nested submit that
+    # never set the four keys to begin with.
+    result: dict[str, Any] = dict(nested) if isinstance(nested, dict) and nested_has_intent else {}
+    result.update({
         "swap_processes": swap_processes,
         "add_processes": add_processes,
         "exclude_processes": exclude_processes,
         "fork_repo": "",
-    }
+    })
+    return result
 
 
 def _batch_domain_overrides(

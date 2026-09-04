@@ -2094,6 +2094,51 @@ class TestInjectedProcessesFromConfig:
             "add_processes": [],
             "exclude_processes": [],
             "fork_repo": "",
+            "cache_dir": "/app/v2ecoli/out/cache",
+        }
+
+    def test_nested_block_carries_extra_keys_through(self) -> None:
+        """viva-api#392 regression: #387 fixed the nested-block DROP but reconstructed
+        only the four canonical keys, silently dropping everything else the caller
+        put in the block -- e.g. `cache_dir`, which a fork-free swap's own
+        resolve_injections() spec-building needs to load the target process's config
+        from the ParCa bundle (confirmed via cplong90's own trace on PR#387, and
+        jcschaff's independent live-pod confirmation). Without it the swapped-in
+        process mounts with an empty config and crashes at tick 0 well away from the
+        real cause. The fix must carry ARBITRARY extra keys through, not just
+        special-case `cache_dir` -- assert with an unrelated marker key too."""
+        config = SimpleNamespace(
+            injected_processes={
+                "fork_repo": "",
+                "swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"},
+                "cache_dir": "/app/v2ecoli/out/cache",
+                "some_future_key": "must-survive",
+            }
+        )
+        result = injected_processes_from_config(config)
+        assert result is not None
+        assert result["cache_dir"] == "/app/v2ecoli/out/cache"
+        assert result["some_future_key"] == "must-survive"
+        # The four canonical keys are still normalized defaults layered on top,
+        # not left to whatever the caller happened to send for them.
+        assert result["add_processes"] == []
+        assert result["exclude_processes"] == []
+        assert result["fork_repo"] == ""
+
+    def test_flat_shape_stays_byte_identical_no_carry_through(self) -> None:
+        """The legacy FLAT shape has no nested block to carry extra keys from --
+        the fix must not change its output at all (byte-identical regression)."""
+        config = SimpleNamespace(
+            swap_processes={"ecoli-metabolism": "ecoli-metabolism-redux"},
+            add_processes=[],
+            exclude_processes=[],
+        )
+        result = injected_processes_from_config(config)
+        assert result == {
+            "swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"},
+            "add_processes": [],
+            "exclude_processes": [],
+            "fork_repo": "",
         }
 
     def test_nested_block_without_intent_falls_through_to_flat(self) -> None:

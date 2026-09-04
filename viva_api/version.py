@@ -781,4 +781,15 @@
 #           that never surfaced because no existing caller set BOTH at once.
 #           Verified live: a real smoke dispatch's stored config showed
 #           multi_node_dispatch reaching the server intact, then cancelled.
-__version__ = "0.9.91"
+# 0.9.92 -- carry a caller's extra injected_processes keys (e.g. cache_dir)
+#           through injected_processes_from_config's rebuild instead of
+#           reconstructing only {swap_processes, add_processes,
+#           exclude_processes, fork_repo} (viva-api#392, follow-up to #385/
+#           #387). Without cache_dir a fork-free swap's resolve_injections()
+#           spec-building has no ParCa bundle path, so the swapped-in process
+#           mounts with an empty config and crashes at tick 0 well away from
+#           the real cause -- root-caused precisely by cplong90 on #387's own
+#           thread, independently confirmed live by jcschaff. The four
+#           canonical keys are still normalized defaults layered on top, not
+#           replaced -- flat/legacy-shape output is byte-identical.
+__version__ = "0.9.92"

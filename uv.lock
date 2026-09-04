@@ -3660,7 +3660,7 @@ wheels = [
 
 [[package]]
 name = "viva-api"
-version = "0.9.90"
+version = "0.9.92"
 source = { editable = "." }
 dependencies = [
     { name = "aioboto3" },
