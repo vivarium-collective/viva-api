@@ -266,6 +266,57 @@ compare against.
 dispatched overrides, so #369 is live on this path; and the `[batch-container]` log
 prefix confirms recent per-commit images do ship `batch-container-entrypoint.sh`.)*
 
+#### Measured: the post-#387 run (sim 296, `smsvpctest` @ 0.9.91, 2026-09-04)
+
+**The risk above is no longer a prediction. It happened.**
+
+0.9.91 was cut and deployed for this (PR #394; pod verified — the `NESTED` marker went
+0 → 1). The pre-#387 control could **not** be re-created: #362's
+`allow_default_fallback=False` now hard-404s the default
+`simulation_config_filename=api_simulation_default.json`, which is the embedded template
+sim 294 actually ran on. So the post run uses `mecillinam_wellmixed.json` — chosen because
+it carries **flat** `add_processes` and **no nested block**, making flat and nested
+payloads textually distinguishable in the dispatched command.
+
+**#387 works.** gen0's `CONTAINER_JOB_CMD` now carries the nested block:
+
+```json
+"injected_processes": {"swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"},
+                       "add_processes": [], "exclude_processes": [], "fork_repo": ""}
+```
+
+Against sim 294's twelve keys with no `injected_processes` at all. The nested read is live.
+
+**And the generation collapsed:**
+
+| | 0.9.90 (sim 294) | 0.9.91 (sim 296) |
+|---|---|---|
+| nested block reaches runner | no — dropped | **yes** |
+| gen0 duration | **796.8 s** | **44.5 s** |
+| parquet shards | 7 (through `2528.pq`) | **1** (`1.pq`, 500 bytes) |
+| daughter state | written | **none** |
+| reported status | SUCCEEDED | **SUCCEEDED, exit 0** |
+
+44.5 s sits inside Chris's 25–46 s fast-completion band, against his 814.7/805.4 s no-swap
+control. No daughter state means gen1 has nothing to resume from either.
+
+**Neither proposed guard catches it.** `PBG_REQUIRE_OUTPUT=1` was set on this very command
+(#362 is live) and passed — it requires a *non-empty* store, and a 500-byte `1.pq` is
+non-empty. `injected_processes` non-null on the artifact is also true. Both assert
+presence; neither asserts effect. This is the concrete case for the §5 effect check.
+
+> **Confound, stated rather than glossed.** #387 makes the nested block **replace** the
+> flat fields, so this run also lost the config's own `add_processes`
+> (`permeability`, `antibiotic-transport-odeint`, `concentrations_deriver`, `gillespie`) —
+> visible as `"add_processes": []` above. So *this run alone* cannot separate "the swap
+> causes tick-1" from "the dropped processes cause tick-1". Chris's 2×2 already isolated
+> the swap on his own config, so the combined evidence points at the swap; this run is a
+> hybrid and is not claimed as more. **The operational conclusion is unaffected either
+> way:** a swap-carrying chain-dispatch generation completed in 44.5 s, wrote one
+> 500-byte shard and no checkpoint, and reported success.
+>
+> That replace-not-merge behavior is a separate defect, filed as its own issue.
+
 ## 4. Hazards now live (chain jobs actually run `LineageProcess` since #369)
 
 - **Division-by-exception is now type-guarded upstream** — *correction from Alex on
