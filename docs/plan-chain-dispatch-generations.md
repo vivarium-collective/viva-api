@@ -111,7 +111,11 @@ Per its own header: the durable `n_workers` fix (v2ecoli #647, viva-api #366) ne
 a simulator built from v2ecoli `8b293abf` or later; `SIMULATOR_ID=97` predates it,
 so a dispatch with `N_WORKERS=""` against 97 re-runs the old default of 2.
 
-### 3d. Open: `swap_processes` collapses every generation to one tick (post-#369)
+### 3d. ~~Open: `swap_processes` collapses every generation to one tick~~ — **RETRACTED**
+
+> The measurements below were withdrawn by their author (@cplong90) and the premise is
+> false: `LineageProcess` + swap divides normally. Kept for the record; see the boxed
+> correction below and §3e.
 
 From Chris's dispatches on `smsvpctest` (PR #375 thread, 2026-09-03). Same simulator
 image, same ParCa dataset, `new_genes: off` on both sides, n=1 per cell:
@@ -181,178 +185,69 @@ type-guarded and warned — Alex saw zero warnings on sim262/gen0, so unlikely),
 per signal at the close-out, one redispatch of Chris's swap cell, one CloudWatch
 read.
 
-### 3e. Two distinct failure modes, not one — and #387 may trade between them
+### 3e. ~~Two distinct failure modes, not one~~ — **RETRACTED in full (2026-09-04)**
 
-*Added 2026-09-04, after #387 merged (`db47201f`).*
+> This section argued that #385 (nested submit, swap dropped, full-length wild-type) and
+> §3d (swap present, one-tick collapse) were **two bugs with opposite symptoms**, and that
+> #387 would trade the first for the second. **Both halves of that are now known to be
+> wrong**, and the cut should not be built on. Kept rather than deleted because it was
+> cited across #375, #387 and #408.
 
-The silent-wild-type report (#385) and the tick-1 completion (§3d) have been
-discussed as one bug. They are two, with **opposite** symptoms, and the discriminator
-is the **submit shape**:
+**What went wrong, in order:**
 
-| | submit shape | swap reaches the run? | observed |
-|---|---|---|---|
-| **#385** | **nested** — `extra_params={"injected_processes": {...}}` | **no** — dropped in viva-api | **full-length** wild-type: 206 columns, 4 daughter checkpoints, identical to a no-swap control |
-| **§3d (Chris)** | swap present at the runner | **yes** | **25–46 s/gen**, one `1.pq` shard |
+1. **§3d's symptom was withdrawn by its author.** @cplong90 retracted the 25–46 s
+   measurements: those runs had no shards, no `daughter-state/`, `batch: {}` — *"they did
+   not simulate at all."* **There was never a one-tick completion to root-cause**, so the
+   second half of the "two modes" cut had no referent.
+2. **`global_time == 1.0` was never evidence** — see the boxed correction in §3d. It reads
+   ≈1.0 on *every* chain-dispatch generation, pass or fail.
+3. **My own confirming run was a different bug.** I read sim 296 (0.9.91, nested swap,
+   44.5 s, one 500-byte shard, no checkpoint, `SUCCEEDED`) as the predicted trade. It was
+   **viva-api#401**: `mecillinam_wellmixed.json` carries no swap and no `cache_dir`, and my
+   nested block **replaced its four flat `add_processes`** — so the composite built without
+   them and ran to completion producing nothing. @cplong90: *"Two observations, one
+   event."*
+4. **And the premise is false.** `LineageProcess` + swap **works** via chain-dispatch:
+   @AlexPatrie's run divided at t=2527 s with a real 11.5 MB daughter checkpoint.
 
-A *dropped* swap produces a normal-length wild-type run — which is exactly what #385
-measured. It cannot produce a 25-second generation. So:
+⇒ **There is no trade.** #387 fixes a real drop (#385) and does not convert it into
+anything.
 
-**#387 fixes #385, and does not explain §3d.** Its root cause is real and narrow:
-`injected_processes_from_config` (`simulation_service_ray.py:265`) read only the FLAT
-top-level `swap_processes`/`add_processes`/`exclude_processes` extras, so a nested
-block returned `None` and the swap was dropped at every hop after. The helper now
-accepts both shapes. Nothing about that touches the generation-boundary machinery.
+#### What replaced it: a real, scoped defect
 
-**The risk this creates.** Before #387, a nested submit dropped the swap and ran
-wild-type to full length. After #387, that same submit **carries the swap** — which is
-precisely the configuration §3d measured collapsing to one tick. So #387 may convert a
-silent-wild-type failure into a tick-1 failure rather than into a correct run. That is
-still a strict improvement (loud-ish beats silent), but it is **not** the same thing as
-Run 2's W3 being unblocked.
+The run that divided at t=2527 s **wrote no `history/` partition at all** — 3 `.pq` files
+(`configuration/`, `success/`, and the 500-byte outer-emitter `default/history/1.pq`)
+against **97** for the no-swap baseline, with the 53 MB
+`…/generation=0/agent_id=0/800.pq` simply absent. Confirmed independently by @AlexPatrie
+against S3.
 
-**Why the proposed acceptance test would not catch it.** #385 recommends checking
-`injected_processes` is non-null on the returned artifact. Post-#387 that is true in
-*both* outcomes — it asserts **presence, not effect**. #362's `_assert_emitted_output()`
-does not close the gap either: it requires a *non-empty* emitted store, and a tick-1 run
-writes `1.pq`, which is non-empty.
+**Scoped, not root-caused.** pbg-native dispatch 313 — same config, same swap — divided at
+the identical t=2527 s with a **fully populated** `history/`: 7 chunks, 45–53 MB each.
+So this is **chain-dispatch-specific**, plausibly the ParquetEmitter "default
+`experiment_id`" fallback seen in dispatch 287.
 
-⇒ **Pair the presence check with an effect check** before calling W3 green. Either is
-cheap and both come from data the run already produces:
+> **⚠ Live hazard.** `summary.json` records `duration: 2527.0`, so **#408's new check passes
+> this run**, and `PBG_REQUIRE_OUTPUT` passes because the store is non-empty. #408 correctly
+> removes a bad signal — but that signal was *masking* the missing history, so removing it
+> turns a loud wrong-reason failure into a **silent pass on a run with no data**. The
+> analysis over it already reports `status: OK` with eight empty modules (#403).
+> **Companion check wanted: assert a hive-partitioned `history/` partition exists**, not
+> merely a non-empty store.
 
-- **wall-clock per generation** — ~800 s is a real cell; 25–46 s is not;
-- **shard count / max shard index** — 7 shards through `2528.pq` vs a single `1.pq`;
-- ~~**`global_time` on the final state** — `1.0` is the tell.~~ **WRONG — see the
-  correction below.**
+#### The acceptance check that survives
 
-The shard-count check is the more robust of these, since wall-clock varies with instance
-type.
+§5's effect check stands, with the emphasis moved: assert **a real per-generation
+`duration`** (the sum across `summary.generations`, per #408) **and a `history/`
+partition**. Duration alone passes a run that produced nothing; a non-empty store passes it
+too.
 
-> #### Correction (2026-09-04): `global_time` was never evidence
->
-> This document cited `global_time == 1.0` as a symptom of the one-tick collapse. **It is
-> not.** `global_time` on `final_state.json` is the **outer** composite's clock, advanced
-> by exactly the interval the caller's `Composite.run(interval)` requested — and
-> chain-dispatch always dispatches `run_pbg.py … -n 1`. `LineageProcess`'s own docstring is
-> explicit that *"the inner composite's global_time RESTARTS at 0 each generation."*
->
-> So **every** chain-dispatch generation reads back `global_time ≈ 1.0`, passing or
-> failing — indistinguishable from the collapse it was being used to detect.
->
-> Established independently two ways on 2026-09-04: @AlexPatrie's **viva-api#408** (from a
-> live false-positive — dispatch 297, a real metabolism-redux swap that genuinely divided
-> at t=2527 s while the job exited 1), and by reading the dispatch chain — `-n 1` looks
-> truncating, but `stop_at_division=True` routes into `_build_batch_document`, which wires
-> `BatchBaselineRunner` as a **step**, and a Step runs to completion regardless of the run
-> interval. `-n 1` therefore sets only the outer clock and truncates nothing.
->
-> **#408's replacement signal:** the sum of `duration` across `summary.generations`
-> entries — the real per-generation figure `LineageProcess.update()` already returns —
-> using the larger of that and `global_time`.
->
-> **What survives** from the observations below: **wall-clock per generation** (25–46 s vs
-> ~814 s) and **shard count** (one `1.pq` vs seven through `2528.pq`). Those are unexplained
-> and still real. What does not survive is any inference drawn from `global_time`.
->
-> **And "the swap causes tick-1" is now known to be wrong as stated** — dispatch 297 shows
-> a real swap dividing normally. Whatever distinguished @cplong90's fast runs, it was not
-> the presence of a swap per se.
+#### Why this is worth keeping as a record
 
-#### Measured: the pre-#387 control (sim 294, `smsvpctest`, 2026-09-04)
-
-The nested-shape half of the table above is no longer inferred. Submitted #385's exact
-request shape against `sms-api:0.9.90` — verified on the running pod to predate #387
-(`grep -c NESTED` → 0; the helper reads only `getattr(config, "swap_processes")` and
-returns `None`), simulator 109 (`sms-ecoli@4da4e43`), 1 seed × 2 generations,
-`new_genes: off`, `condition basal`.
-
-**The drop is mechanical, and visible before the run finishes:**
-
-| hop | `injected_processes` |
-|---|---|
-| submitted (nested `extra_params`) | sent |
-| POST response's resolved config | **present, intact** |
-| gen0's `CONTAINER_JOB_CMD --overrides` | **absent** |
-
-gen0's dispatched overrides carry twelve keys — `n_seeds`, `n_generations`,
-`stop_at_division`, `cache_dir`, `out_dir`, `experiment_id`, `analyses`, `parallel`,
-`seed`, `initial_generation_index`, `initial_carry_state_path`,
-`daughter_state_out_path` — and **none of them is the swap**. So the block reaches the
-resolved config and dies at the dispatch hop, exactly as #385 traced.
-
-> **Read `CONTAINER_JOB_CMD`, not the Batch job's `command`.** The container command is
-> only `/opt/batch-container-entrypoint.sh`; the real `run_pbg.py` invocation and its
-> `--overrides` live in that env var. Checking argv yields a meaningless "absent" for
-> every key. Job names also key on the **simulator** id, not the `database_id`
-> (`chain-seed0-gen0-sim109-…`), which makes a `sim294` search silently match nothing.
-
-**And it then ran wild-type**, which is the half that matters for §3e's risk claim:
-
-| | Chris's control (no swap) | Chris's swap runs | **sim 294 gen0** |
-|---|---|---|---|
-| duration/gen | 814.7 / 805.4 s | 25–46 s | **796.8 s** (SUCCEEDED, exit 0) |
-
-Within ~2% of the no-swap control and 17–32× the fast-completion mode.
-
-⇒ **This is the pre-#387 baseline, and it is internally consistent**: no swap in the
-command, no swap effect in the runtime. It does **not** test the risk in the paragraph
-above — that needs a build carrying #387 deployed to `smsvpctest` and the identical
-submit re-run. Until then §3e's trade remains a prediction, with a precise baseline to
-compare against.
-
-*(Incidental confirmations from the same run: `stop_at_division: true` is present in the
-dispatched overrides, so #369 is live on this path; and the `[batch-container]` log
-prefix confirms recent per-commit images do ship `batch-container-entrypoint.sh`.)*
-
-#### Measured: the post-#387 run (sim 296, `smsvpctest` @ 0.9.91, 2026-09-04)
-
-**The risk above is no longer a prediction. It happened.**
-
-0.9.91 was cut and deployed for this (PR #394; pod verified — the `NESTED` marker went
-0 → 1). The pre-#387 control could **not** be re-created: #362's
-`allow_default_fallback=False` now hard-404s the default
-`simulation_config_filename=api_simulation_default.json`, which is the embedded template
-sim 294 actually ran on. So the post run uses `mecillinam_wellmixed.json` — chosen because
-it carries **flat** `add_processes` and **no nested block**, making flat and nested
-payloads textually distinguishable in the dispatched command.
-
-**#387 works.** gen0's `CONTAINER_JOB_CMD` now carries the nested block:
-
-```json
-"injected_processes": {"swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"},
-                       "add_processes": [], "exclude_processes": [], "fork_repo": ""}
-```
-
-Against sim 294's twelve keys with no `injected_processes` at all. The nested read is live.
-
-**And the generation collapsed:**
-
-| | 0.9.90 (sim 294) | 0.9.91 (sim 296) |
-|---|---|---|
-| nested block reaches runner | no — dropped | **yes** |
-| gen0 duration | **796.8 s** | **44.5 s** |
-| parquet shards | 7 (through `2528.pq`) | **1** (`1.pq`, 500 bytes) |
-| daughter state | written | **none** |
-| reported status | SUCCEEDED | **SUCCEEDED, exit 0** |
-
-44.5 s sits inside Chris's 25–46 s fast-completion band, against his 814.7/805.4 s no-swap
-control. No daughter state means gen1 has nothing to resume from either.
-
-**Neither proposed guard catches it.** `PBG_REQUIRE_OUTPUT=1` was set on this very command
-(#362 is live) and passed — it requires a *non-empty* store, and a 500-byte `1.pq` is
-non-empty. `injected_processes` non-null on the artifact is also true. Both assert
-presence; neither asserts effect. This is the concrete case for the §5 effect check.
-
-> **Confound, stated rather than glossed.** #387 makes the nested block **replace** the
-> flat fields, so this run also lost the config's own `add_processes`
-> (`permeability`, `antibiotic-transport-odeint`, `concentrations_deriver`, `gillespie`) —
-> visible as `"add_processes": []` above. So *this run alone* cannot separate "the swap
-> causes tick-1" from "the dropped processes cause tick-1". Chris's 2×2 already isolated
-> the swap on his own config, so the combined evidence points at the swap; this run is a
-> hybrid and is not claimed as more. **The operational conclusion is unaffected either
-> way:** a swap-carrying chain-dispatch generation completed in 44.5 s, wrote one
-> 500-byte shard and no checkpoint, and reported success.
->
-> That replace-not-merge behavior is a separate defect, filed as its own issue.
+Every retraction above has one shape: **a sound observation carrying an unverified
+explanation.** The 25–46 s numbers were real. `global_time = 1.0` was real. Sim 296's
+44.5 s and 500-byte shard were real. Each was attached to a cause nobody had checked —
+including by me, twice. That is the same failure this document catalogues in the code
+(#401/#402/#403), applied to our own reasoning about it.
 
 ## 4. Hazards now live (chain jobs actually run `LineageProcess` since #369)
 
