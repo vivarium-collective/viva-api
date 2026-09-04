@@ -28,6 +28,7 @@ from viva_api.dependencies import (
     get_database_service,
     get_file_service,
     get_simulation_service,
+    get_simulation_service_for_backend,
     get_simulation_service_for_job,
     get_simulation_service_for_repo,
     get_ssh_session_service,
@@ -812,7 +813,17 @@ async def run_new_gene_cache(
     directly against the backend.
     """
     if not simulation_service:
-        simulation_service = get_simulation_service()
+        # NOT get_simulation_service() -- that resolves the deployment's own
+        # COMPUTE_BACKEND default, which on sms-api-stanford-test is "batch"
+        # (Nextflow), not Ray. Confirmed live 2026-09-04: this endpoint 501'd
+        # on its own first-ever real call, on a deployment that dispatches
+        # real Ray/Batch MNP jobs successfully through every OTHER route
+        # (those resolve via get_simulation_service_for_repo, which is
+        # commit/repo-aware, not deployment-default-aware). This handler
+        # always wants Ray specifically -- its own docstring says so -- so
+        # ask for it by name instead of trusting whatever the deployment
+        # calls "default".
+        simulation_service = get_simulation_service_for_backend(ComputeBackend.RAY)
     if simulation_service is None:
         logger.exception("Simulation service is not initialized")
         raise HTTPException(status_code=404, detail="Simulation service is not initialized")
