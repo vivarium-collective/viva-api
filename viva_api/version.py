@@ -831,7 +831,20 @@
 #           ... Skipping event") while the row sat running. Hits (immutable
 #           ids) are still cached; a miss is re-asked next time. Found by the
 #           in-memory-state survey done for #414.
-__version__ = "0.9.100"
+__version__ = "0.9.101"
+#           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
+#           on every node of every Ray MNP submission. Found: a single-node
+#           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in
+#           raylet bootstrap before any application code ran -- the plasma
+#           object store's default request (~10.2GB) exceeded the container's
+#           /dev/shm (~9.66GB available). Ray's own documented fallback (disk-
+#           backed instead of a hard error); zero behavior change on any node
+#           where shm is already sufficient.
+#           0.9.100 -- fix(comparison-ensemble): thread cache_variant through
+#           the composite-comparison dispatch path (Run 4's genotype fan-out
+#           was never reachable with real genotype content via any remote
+#           dispatch path -- only ever run locally against a manually-selected
+#           cache). #430.
 #           0.9.98 -- _submit_multi_node_composite (the pbg-native/lineage_
 #           ray_batch dispatch path) never had cache_variant support at all --
 #           only chain-dispatch did. Found firing the first-ever real

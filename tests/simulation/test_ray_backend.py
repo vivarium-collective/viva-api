@@ -1254,6 +1254,37 @@ class TestSubmitMnpStandaloneQueueRouting:
         assert mock_batch.submit_job.call_args.kwargs["jobQueue"] == "smscdk-ray-mnp"
 
 
+class TestSubmitMnpAllowsSlowStorage:
+    """Item 105/109: a single-node lineage_ray_batch diagnostic (database_id=344,
+    2026-09-05) died in Ray's own raylet bootstrap -- before any application code
+    ran -- because the container's /dev/shm was smaller than the plasma object
+    store's default request. RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1 is Ray's own
+    documented fallback (disk-backed instead of a hard error), applied
+    unconditionally since it changes nothing on a node where shm is sufficient."""
+
+    def test_flag_present_in_every_node_environment(self) -> None:
+        settings = _ray_settings()
+        mock_batch = MagicMock()
+        mock_batch.submit_job.return_value = {"jobId": "job-1"}
+        service = SimulationServiceRay()
+        with patch("viva_api.simulation.simulation_service_ray.get_settings", return_value=settings):
+            service._submit_mnp(
+                job_name="shm-test",
+                job_definition="smscdk-ray-mnp",
+                num_nodes=2,
+                ray_job_cmd="echo hi",
+                out_s3="s3://bucket/out/",
+                out_dir="/out",
+                batch_client=mock_batch,
+            )
+        node_overrides = mock_batch.submit_job.call_args.kwargs["nodeOverrides"]
+        env = node_overrides["nodePropertyOverrides"][0]["containerOverrides"]["environment"]
+        env_by_name = {e["name"]: e["value"] for e in env}
+        assert env_by_name["RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE"] == "1"
+        # Targets "0:" (every node), not just the head -- every node runs its own raylet.
+        assert node_overrides["nodePropertyOverrides"][0]["targetNodes"] == "0:"
+
+
 class TestAnalysisModulesFor:
     """analysis_modules_for reads the simulation's OWN configured analyses."""
 
