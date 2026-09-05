@@ -1,6 +1,11 @@
 # Nextflow as a third dispatch path: coarse outer DAG, process-bigraph inner engine
 
-**Status (2026-09-04):** design, nothing implemented. Code-grounded against viva-api
+**Status (2026-09-05): Phases 0–3 are BUILT AND MERGED; the remaining gates are execution
+gates.** See §12 for what landed and what each go/no-go now needs. What follows below is the
+original design, preserved with its corrections inline — the reasoning is what makes the
+implementation reviewable, so it is not rewritten in hindsight.
+
+*Originally written 2026-09-04: design, nothing implemented.* Code-grounded against viva-api
 `main` @ `1fa6fb14` (0.9.91) — *main has since moved to 0.9.95; §11.4 records what changed
 that touches this plan* — process-bigraph PR
 [#197](https://github.com/vivarium-collective/process-bigraph/pull/197) (git ref `pr197`,
@@ -1121,3 +1126,97 @@ the `scratch true` / `PYTHONPATH` collision in Phase 0 — and that is corrected
   job. The mapping is proven in the code path; only a live submission proves the profile
   reaches it — and §10's "one trivial `echo` task" closes that together with 11.2, once
   11.3's image exists.
+
+---
+
+## 12. Implementation status (2026-09-05)
+
+Everything below Phase 4 is merged. The gates that decide whether this path is *justified*
+are unchanged — and two of the three are now **runnable rather than blocked**, which is a
+different thing from passing.
+
+### What landed
+
+| | |
+|---|---|
+| **Phase 1** | process-bigraph **#197** (renderer, `run_composite`, `run_step` restored to `main`), **#201** (nested `Composite` → sub-workflow, plus per-node config threading), **#203** (`deploy()` gains `-resume`, `report`/`trace`/`weblog_url`, and scopes the `sys.executable` pin to `executor='local'`). Released as **v1.8.4** (#202) |
+| **Phase 2** | v2ecoli **#694** — `LineageStep` (a whole lineage as one atomic task) and `workflow_nf` (the campaign DAG). Reviewed by @eagmon; his review caught two defects that would have surfaced first on real infrastructure |
+| **Phase 3** | viva-api **#427** (`render_nf.py`, the compiler) and **#428** (`nextflow_dispatch`, the per-request axis) |
+| **Prerequisite (§11.3)** | viva-api **#423** built the head-image branch, **#426** made it requestable. `v2ecoli:266ed00-submit` exists and is **verified on Batch**: OpenJDK 17.0.20.1 and Nextflow 25.10.2 both answering, rc=0 |
+
+### The gather works, and go/no-go 4 renders at Run 4 scale
+
+§7 predicted this and #201 supplied the mechanism; `workflow_nf` uses it. Each variant's
+lineages are a **nested Composite**, rendered as a DSL2 sub-workflow whose `emit:` collects
+M channels into one — which is what a flat sibling list cannot express at all (it raises
+`TypeError: unhashable type: 'list'` inside `core.realize`, *before* the renderer runs).
+
+```
+84 variants × 4 seeds = 336 lineages
+  421 process blocks · 84 sub-workflows · 336 lineage calls
+  built + rendered in 2.5 s
+  parent call at 84 arguments   (the unrolled form died at 256: "bad parameter count 257")
+  every mix binary — never one n-ary call
+```
+
+⚠ **That is rendering, not running.** Go/no-go 4's full text asks that the analysis task
+*see 336 sweeps, not 1*, which needs execution.
+
+### Where each gate stands
+
+| gate | status |
+|---|---|
+| **1** — per-variant caches | expressible now (`workflow_nf` puts strain inputs on **ParCa**), untested end to end |
+| **1b** — founders differ across seeds | ⛔ **measured, and it FAILS on the current Ray path** — see below |
+| **1c** — ParCa mode recorded out-of-band | unchanged |
+| **2** — handoff as a staged `path` at real cache size | mechanism proven in Phase 0 at 23 bytes; needs the `awsbatch` profile |
+| **3** — `-resume` re-runs only the failed lineage | **now possible**: `deploy()` could not emit `-resume` at all until #203. Needs Phase 4 to exercise |
+| **4** — 336 renders and the gather gathers | renders ✅, gathers ✅ structurally; the "sees 336 sweeps" half needs execution |
+| **5** — head overhead < ~2 min | untested |
+| **6** — a task that emits nothing FAILS | implemented in `LineageStep` and in `render_nf`'s own guard |
+
+### ⛔ Go/no-go 1b failed, and it is not a Nextflow problem
+
+Measured on simulation 326 (2 seeds × 2 generations, production stack). Comparing
+`bulk__count` at `global_time == 0`:
+
+```
+cache initial_state.json vs seed0 : 633 / 16321 differ
+cache initial_state.json vs seed1 : 608 / 16321 differ
+seed0 vs seed1                    : 251 / 16321 differ   (1.5%)
+within seed0, ONE timestep        : 754 species change
+listeners__mass__cell_mass        : BYTE-IDENTICAL across seeds
+```
+
+**Two seeds differ from each other by less than one timestep changes one seed.** The
+mechanism is `v2ecoli/core.py:198` — `_load_cache_bundle_cached` is `lru_cache`d **by
+`cache_dir` alone** and returns the initial state *by reference*, so seeds sharing a cache
+share a founder object. Filed as **v2ecoli#693**.
+
+This is a property of the path CD2 runs **today**, not of this plan. It matters here because
+§1's campaign shape gives each *variant* its own cache but M seeds within a variant still
+share one — so "N independent cells to average over" is wrong on any dispatch mechanism until
+#693 is resolved. As §8 says, this had to be a science check; every structural check passed.
+
+### Also resolved since the plan was written
+
+- **viva-api#419** — `PBG_REQUIRE_OUTPUT` was node-local, so a successful MNP run whose actors
+  landed off the head reported FAILED. It fired on *both* verification dispatches. Fixed in
+  **#425**: the guard now consults the shared prefix every node syncs into.
+- **viva-api#414** — an api restart stranded completed work as permanently `running`. Fixed
+  independently by the parallel effort; `reconcile_local_tasks` now runs first on every tick.
+- **v2ecoli#688** — every generation after the first silently lost its trailing parquet *and*
+  its success sentinel. Merged, deployed, and confirmed 4/4 on the production stack.
+- **Pinning** — v2ecoli and sms-ecoli briefly pinned the `v1.8.4` tag and have since moved
+  back to an explicit `rev` off `main` (v2ecoli#697, sms-ecoli#228). A tag pin costs four
+  ordered PRs per upstream fix, and `main` declaring `1.8.4` while carrying #203 recreated the
+  very ambiguity the release removed. Tag again when Phases 1–4 stop moving.
+
+### What Phase 4 still needs
+
+The `awsbatch` profile is still `// STUB (untested in v1)`. Beyond §Phase 4's table, two
+items are now non-optional and both were measured rather than assumed: **`PYTHONPATH`**
+(§Phase 0 — `scratch true` moves cwd off `/app/v2ecoli`, and viva-api#359's fix lives in
+`PBG_RUNNER_ENV`, which a Nextflow-emitted process block never sees) and **retry**
+(§11.1b — `maxSpotAttempts` defaults to 0 on a Spot-first queue, and `errorStrategy` defaults
+to `terminate`).
