@@ -29,9 +29,7 @@ workflow  {
 """
 
 
-def _fake_deploy(
-    outdir: Path, text: str = _MAIN_NF, configs: tuple[str, ...] = ("parca_v0.config.json",)
-) -> Any:
+def _fake_deploy(outdir: Path, text: str = _MAIN_NF, configs: tuple[str, ...] = ("parca_v0.config.json",)) -> Any:
     """Stand in for process_bigraph's deploy(): writes what it would have written."""
 
     def deploy(composite: Any, **kwargs: Any) -> dict[str, Any]:
@@ -95,9 +93,14 @@ def test_launch_flags_reach_deploy(tmp_path: Path) -> None:
     from a repeated one, since a reused task reports CACHED only there."""
     deploy = _fake_deploy(tmp_path)
     _render(
-        tmp_path, deploy, launch=True, resume=True,
-        trace=str(tmp_path / "t.csv"), report=str(tmp_path / "r.html"),
-        weblog_url="http://receiver/events", work_dir="s3://bucket/work",
+        tmp_path,
+        deploy,
+        launch=True,
+        resume=True,
+        trace=str(tmp_path / "t.csv"),
+        report=str(tmp_path / "r.html"),
+        weblog_url="http://receiver/events",
+        work_dir="s3://bucket/work",
     )
     assert deploy.kwargs["launch"] is True
     assert deploy.kwargs["resume"] is True
