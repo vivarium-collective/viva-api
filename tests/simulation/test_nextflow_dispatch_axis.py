@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 from tests.simulation.test_ray_backend import _ray_settings, _v2ecoli_simulator
+from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
 
 def _sim(**extras: Any) -> MagicMock:
@@ -74,9 +74,11 @@ async def test_absent_axis_leaves_every_other_route_untouched() -> None:
 @pytest.mark.asyncio
 async def test_missing_composite_id_fails_rather_than_guessing() -> None:
     service = SimulationServiceRay()
-    with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
-        with pytest.raises(ValueError, match="composite_id is required"):
-            await service._submit_nextflow_dispatch(_sim(), _db(), {})
+    with (
+        patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+        pytest.raises(ValueError, match="composite_id is required"),
+    ):
+        await service._submit_nextflow_dispatch(_sim(), _db(), {})
 
 
 # --- the command that actually runs in the container ------------------------
