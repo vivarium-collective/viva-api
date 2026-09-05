@@ -90,8 +90,12 @@ the chain didn't chain. Worth adding as a post-run assertion to `chain-dispatch.
 
 ## 3. Still open on `main` (0.9.99)
 
-> *Re-checked against `origin/main` and live `smsvpctest` on 2026-09-04, after this doc was
-> first written at 0.9.90. 3a–3c are still open; 3f and 3g are new.*
+> *Re-checked 2026-09-05. **3a, 3b and 3f remain open and unfixed.** 3c is unchanged. 3g is
+> CLOSED — v2ecoli#688 merged and deployed (simulator 133), confirmed 4/4 sentinels on the
+> production stack. Two adjacent defects filed from this document's own findings are also
+> now fixed: viva-api#419 (the node-local emitted-output check, which failed BOTH
+> verification dispatches despite complete data) and viva-api#414 (an api restart stranding
+> completed work as permanently `running`).*
 >
 > **3d and 3e are deliberately absent from this section** — both were retracted in full and
 > now live in [§6](#6-retracted--what-this-document-got-wrong-and-how), keeping their original
@@ -278,6 +282,16 @@ Two consequences for this document:
   absolute-imported `v2ecoli/library/inject.py` as step 1 of 3; until steps 2–3 land, which
   resolver runs is a property of the launch environment. Pairs with the pin bullet below:
   the pin names a commit, and does not determine which `inject.py` executes.
+- ⛔ **M seeds sharing a `cache_dir` SHARE A FOUNDER CELL — they are not M independent
+  replicates.** *(New 2026-09-05, v2ecoli#693.)* `_load_cache_bundle_cached`
+  (`v2ecoli/core.py:198`) is `lru_cache`d **by `cache_dir` alone** and returns the initial
+  state *by reference*, so every seed pointing at one cache receives the same object.
+  Measured on simulation 326: two seeds differ at `t=0` by **251 of 16,321** species —
+  *less than one timestep changes a single seed* (754) — and `cell_mass` is byte-identical.
+  Every structural check passed: distinct partitions, distinct hashes, 4/4 sentinels,
+  `divided: true`. Fine for "sample the stochastic trajectory"; **wrong for "independent
+  cells to average over"**, where it understates variance invisibly. This applies to every
+  mechanism in §1, because they all read the cache the same way.
 - ~~**The v2ecoli pin is a branch pin**~~ — **RESOLVED 2026-09-04.** It read `branch="main"`
   (locked to `268515f0`), so `uv lock` could move `LineageProcess` under the deployment without
   anyone deciding to. sms-ecoli#221 replaced it with an explicit rev
@@ -287,6 +301,12 @@ Two consequences for this document:
   it by a 40-character hash with no version — the same ambiguity one layer down.
 
 ## 5. Verification
+
+> **2026-09-05:** the v2ecoli Nextflow path adds a fourth thing to verify, and its gates are
+> written down separately — see [`plan-nextflow-dispatch.md`](plan-nextflow-dispatch.md) §8
+> and §12. Its go/no-go **1b** (founders differ across seeds) is the one that has since been
+> *measured and failed*, and the cause is in §4 above: it is a property of the shared cache,
+> not of any dispatch mechanism.
 
 - Unit: `uv run pytest tests/simulation/test_ray_backend.py tests/simulation/test_scheduler.py`
 - Smoke, on `smsvpctest` via the tunnel: `chain-dispatch.sh` (defaults = sim 257's
