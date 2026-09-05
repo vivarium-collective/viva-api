@@ -28,6 +28,9 @@ import argparse
 import contextlib
 import json
 import os
+import shutil
+import subprocess
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -298,6 +301,65 @@ def _has_emitted_output(results_dir: Path) -> bool:
     return False
 
 
+# How long to keep re-checking the shared prefix before giving up. Peer nodes sync on a
+# periodic timer (RAY_OUT_SYNC_INTERVAL, default 30 s), so a peer that emitted may not have
+# uploaded in the last few seconds when the driver reaches this check. We are asking "did
+# ANYTHING get emitted", not "is it complete", so one interval plus slack is enough.
+_SHARED_OUTPUT_WAIT_SECONDS = 90
+_SHARED_OUTPUT_POLL_SECONDS = 15
+
+_OUTPUT_SUFFIXES = (".pq", ".parquet")
+_ZARR_MARKERS = (".zgroup", ".zarray", "zarr.json", ".zattrs")
+
+
+def _has_emitted_output_shared(out_s3: str) -> bool | None:
+    """True/False when the shared S3 prefix can be listed; ``None`` when it cannot.
+
+    ``None`` is deliberately distinct from ``False``: "no output" and "could not look" are
+    different answers, and only the first justifies failing a run.
+
+    Shells out to the AWS CLI rather than importing boto3 — this module is stdlib-only by
+    design (it is staged into the simulator image, not installed with viva-api), and the
+    image's own entrypoint already depends on `aws` for these very syncs.
+    """
+    aws = shutil.which("aws")
+    if aws is None:
+        # The image's entrypoint warns and skips its own S3 sync in this case, so there is
+        # nothing to cross-check against either.
+        return None
+    try:
+        # Fixed argv (no shell), absolute resolved binary, and out_s3 comes from the
+        # entrypoint's own RAY_OUT_S3 -- the same value it syncs to.
+        proc = subprocess.run(  # noqa: S603
+            [aws, "s3", "ls", "--recursive", out_s3],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    for line in proc.stdout.splitlines():
+        # `aws s3 ls --recursive` → "<date> <time> <size> <key>"
+        parts = line.split(maxsplit=3)
+        if len(parts) < 4:
+            continue
+        try:
+            size = int(parts[2])
+        except ValueError:
+            continue
+        key = parts[3]
+        if size > 0 and key.endswith(_OUTPUT_SUFFIXES):
+            return True
+        if key.rsplit("/", 1)[-1] in _ZARR_MARKERS:
+            return True
+        if size > 0 and key.endswith("emitter_history.json"):
+            return True
+    return False
+
+
 def _assert_emitted_output(results_dir: Path) -> None:
     """Fail the run (``SystemExit(1)``) when it produced no emitted output.
 
@@ -319,10 +381,39 @@ def _assert_emitted_output(results_dir: Path) -> None:
         return
     if _has_emitted_output(results_dir):
         return
+
+    # This process's OWN filesystem is not authoritative on a multi-node run (viva-api#419).
+    # Ray places `ray:`-addressed actors wherever it likes, and the emitters write on the node
+    # that actually hosts the actor -- which need not be this one. Twice on 2026-09-04 a
+    # fully successful lineage run was failed here because Ray put every actor on a peer and
+    # the driver checked an empty directory; the run's ~700 MB of parquet was already in S3.
+    #
+    # What IS authoritative is the shared prefix every node syncs into (RAY_OUT_S3, see the
+    # image's ray-batch entrypoint). Consult it before failing.
+    out_s3 = (os.environ.get("RAY_OUT_S3") or "").strip()
+    if out_s3:
+        deadline = time.monotonic() + _SHARED_OUTPUT_WAIT_SECONDS
+        unreachable = False
+        while True:
+            found = _has_emitted_output_shared(out_s3)
+            if found:
+                return
+            unreachable = found is None
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(_SHARED_OUTPUT_POLL_SECONDS)
+        where = (
+            f"and the shared prefix {out_s3} could not be listed"
+            if unreachable
+            else f"nor under the shared prefix {out_s3} (checked for {_SHARED_OUTPUT_WAIT_SECONDS}s)"
+        )
+    else:
+        where = "and no shared prefix (RAY_OUT_S3) is configured to cross-check"
+
     raise SystemExit(
         f"run_pbg: PBG_REQUIRE_OUTPUT is set but the run produced no emitted output under "
-        f"{results_dir} (no non-empty parquet/zarr store and no emitter history; only the "
-        f"final_state.json fallback would remain). Refusing to report success."
+        f"{results_dir} {where} (no non-empty parquet/zarr store and no emitter history; only "
+        f"the final_state.json fallback would remain). Refusing to report success."
     )
 
 

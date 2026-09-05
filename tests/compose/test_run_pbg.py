@@ -1,4 +1,6 @@
 import json
+import shutil
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -529,6 +531,97 @@ def test_run_succeeds_when_require_output_set_and_history_written(
     out = run_pbg.run(str(pbg), steps=1, results_dir=tmp_path / "output")
     assert out.name == "final_state.json"
     assert (tmp_path / "output" / "emitter_history.json").exists()
+
+
+# --- viva-api#419: the driver's own filesystem is not authoritative on a multi-node run ---
+
+
+def _fake_aws(monkeypatch: pytest.MonkeyPatch, listing: str, *, rc: int = 0, missing: bool = False) -> list[list[str]]:
+    """Stub the `aws s3 ls` probe. Returns the calls made, so a test can assert it was
+    NOT called on the paths where the local check already answered."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(shutil, "which", lambda _: None if missing else "/usr/local/bin/aws")
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, rc, stdout=listing, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return calls
+
+
+_S3_WITH_OUTPUT = (
+    "2026-09-04 21:30:58        408 vecoli-output/x/success/generation=1/agent_id=00/s.pq\n"
+    "2026-09-04 21:22:11   54677027 vecoli-output/x/history/generation=0/agent_id=0/400.pq\n"
+)
+_S3_EMPTY_ONLY = "2026-09-04 21:30:58       2147 vecoli-output/x/final_state.json\n"
+
+
+def test_shared_prefix_rescues_a_run_whose_actors_ran_on_a_PEER_node(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The #419 regression, stated as the failure it actually was: two successful
+    lineage runs were failed here because Ray placed every actor on another node, so
+    the driver's local dir was empty while ~700MB of parquet sat in S3."""
+    monkeypatch.setenv("PBG_REQUIRE_OUTPUT", "1")
+    monkeypatch.setenv("RAY_OUT_S3", "s3://bucket/vecoli-output/x/")
+    calls = _fake_aws(monkeypatch, _S3_WITH_OUTPUT)
+    (tmp_path / "final_state.json").write_text("{}")  # only the fallback, locally
+
+    run_pbg._assert_emitted_output(tmp_path)  # must NOT raise
+    assert calls and calls[0][1:4] == ["s3", "ls", "--recursive"]
+
+
+def test_local_output_short_circuits_without_consulting_s3(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When this node did host an actor the local answer is sufficient — no probe,
+    no 120s subprocess on the happy path."""
+    monkeypatch.setenv("PBG_REQUIRE_OUTPUT", "1")
+    monkeypatch.setenv("RAY_OUT_S3", "s3://bucket/vecoli-output/x/")
+    calls = _fake_aws(monkeypatch, _S3_WITH_OUTPUT)
+    (tmp_path / "part.pq").write_bytes(b"nonempty")
+
+    run_pbg._assert_emitted_output(tmp_path)
+    assert calls == []
+
+
+def test_still_fails_when_neither_local_nor_shared_has_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The guard must keep doing its job: a genuinely empty run still fails, and the
+    message names BOTH places looked at."""
+    monkeypatch.setenv("PBG_REQUIRE_OUTPUT", "1")
+    monkeypatch.setenv("RAY_OUT_S3", "s3://bucket/vecoli-output/x/")
+    monkeypatch.setattr(run_pbg, "_SHARED_OUTPUT_WAIT_SECONDS", 0)
+    _fake_aws(monkeypatch, _S3_EMPTY_ONLY)
+
+    with pytest.raises(SystemExit) as exc:
+        run_pbg._assert_emitted_output(tmp_path)
+    assert "s3://bucket/vecoli-output/x/" in str(exc.value)
+
+
+def test_unreachable_shared_prefix_says_so_rather_than_claiming_no_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """'Could not look' and 'nothing there' are different answers. Failing is still the
+    conservative choice, but the message must not assert an absence it never verified."""
+    monkeypatch.setenv("PBG_REQUIRE_OUTPUT", "1")
+    monkeypatch.setenv("RAY_OUT_S3", "s3://bucket/vecoli-output/x/")
+    monkeypatch.setattr(run_pbg, "_SHARED_OUTPUT_WAIT_SECONDS", 0)
+    _fake_aws(monkeypatch, "", missing=True)  # no aws binary in the image
+
+    with pytest.raises(SystemExit) as exc:
+        run_pbg._assert_emitted_output(tmp_path)
+    assert "could not be listed" in str(exc.value)
+
+
+def test_without_ray_out_s3_behaviour_is_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Single-node and non-Batch callers keep the old, purely local semantics."""
+    monkeypatch.setenv("PBG_REQUIRE_OUTPUT", "1")
+    monkeypatch.delenv("RAY_OUT_S3", raising=False)
+    calls = _fake_aws(monkeypatch, _S3_WITH_OUTPUT)
+
+    with pytest.raises(SystemExit) as exc:
+        run_pbg._assert_emitted_output(tmp_path)
+    assert calls == []
+    assert "no shared prefix" in str(exc.value)
 
 
 def test_run_does_not_guard_output_when_require_output_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
