@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import sys
 import types
@@ -539,13 +540,13 @@ def _fake_aws(monkeypatch: pytest.MonkeyPatch, listing: str, *, rc: int = 0, mis
     """Stub the `aws s3 ls` probe. Returns the calls made, so a test can assert it was
     NOT called on the paths where the local check already answered."""
     calls: list[list[str]] = []
-    monkeypatch.setattr(run_pbg.shutil, "which", lambda _: None if missing else "/usr/local/bin/aws")
+    monkeypatch.setattr(shutil, "which", lambda _: None if missing else "/usr/local/bin/aws")
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, rc, stdout=listing, stderr="")
 
-    monkeypatch.setattr(run_pbg.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     return calls
 
 
