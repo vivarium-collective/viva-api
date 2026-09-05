@@ -80,6 +80,9 @@ logger = logging.getLogger(__name__)
 # the multi-generation batch path below dispatches through the identical mechanism instead
 # of a v2ecoli-specific CLI script — see backlog items 26/27.
 _RUNNER_SRC = (_res.files("viva_api.compose") / "run_pbg.py").read_text()
+# The Nextflow compiler, staged the same way and for the same reason (Batch caps a
+# container override command at 8192 bytes).
+_RENDER_NF_SRC = (_res.files("viva_api.compose") / "render_nf.py").read_text()
 
 # Registered composite id (process_bigraph.composite_spec) for the multi-generation
 # batch orchestrator, and the workspace core-builder that resolves its registered
@@ -1012,6 +1015,136 @@ class SimulationServiceRay(SimulationService):
             f" --copy-to {PARCA_CACHE_DIR}{config_flag}"
         )
 
+    async def stage_render_nf(self, experiment_id: str) -> str:
+        """Upload the Nextflow compiler beside the run_pbg runner; return its URI.
+
+        Same staging idiom and the same reason as ``stage_runner``: Batch caps a
+        container override command at 8192 bytes, so the script travels through S3
+        rather than the command line. Deterministic from ``experiment_id``.
+        """
+        from viva_api.dependencies import get_file_service
+
+        file_service = get_file_service()
+        if file_service is None:
+            raise RuntimeError("FileService not initialized; cannot stage render_nf.py to S3.")
+        exp_prefix = data_layout.RayLayout.experiment_prefix(experiment_id)
+        runner_key = f"{exp_prefix}/render_nf.py"
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tmp:
+            tmp.write(_RENDER_NF_SRC)
+            runner_local = tmp.name
+        try:
+            await file_service.upload_file(Path(runner_local), S3FilePath(s3_path=Path(runner_key)))
+        finally:
+            Path(runner_local).unlink(missing_ok=True)
+        return data_layout.s3_uri(runner_key)
+
+    def _submit_image_uri(self, commit: str) -> str:
+        """The Nextflow HEAD image for a commit: ``<repo>:<commit>-submit``.
+
+        Only the process running ``nextflow run`` needs a JVM; Batch TASKS run the
+        plain science image. Built on request by ``include_submit_image``
+        (viva-api#423/#426) -- a dispatch asking for Nextflow against a commit whose
+        head image was never built fails at the Batch pull, which is why the
+        submitter names the tag explicitly rather than reusing ``_image_uri``.
+        """
+        settings = get_settings()
+        registry = f"{settings.ecr_account_id}.dkr.ecr.{settings.batch_region}.amazonaws.com"
+        return f"{registry}/{settings.ray_ecr_repository}:{commit}-submit"
+
+    def _render_nf_command(
+        self,
+        *,
+        runner_s3_uri: str,
+        composite_id: str,
+        params: dict[str, Any] | None,
+        executor: str,
+        launch: bool,
+        outdir: str,
+        work_dir: str | None = None,
+        resume: bool = False,
+    ) -> str:
+        """The container command: fetch the compiler, render, optionally launch.
+
+        ``--executor local`` is the intended FIRST check (Phase 3 of
+        docs/plan-nextflow-dispatch.md): it answers "does render+launch work in our
+        real image" separately from "does the awsbatch executor work", so a failure
+        has one candidate cause rather than two.
+        """
+        overrides_flag = ""
+        if params:
+            overrides_flag = f" --overrides {shlex.quote(json.dumps(params))}"
+        launch_flag = " --launch" if launch else ""
+        resume_flag = " --resume" if resume else ""
+        work_dir_flag = f" --work-dir {shlex.quote(work_dir)}" if work_dir else ""
+        # A trace is how a resumed run is told apart from a repeated one: a reused
+        # task reports CACHED there and nowhere else.
+        return (
+            f"cd {V2ECOLI_DIR}"
+            f" && aws s3 cp {shlex.quote(runner_s3_uri)} /tmp/render_nf.py"
+            f" && python /tmp/render_nf.py"
+            f" --composite-id {shlex.quote(composite_id)}"
+            f" --outdir {shlex.quote(outdir)}"
+            f" --executor {shlex.quote(executor)}"
+            f" --trace {shlex.quote(outdir)}/trace.csv"
+            f"{overrides_flag}{launch_flag}{resume_flag}{work_dir_flag}"
+        )
+
+    async def _submit_nextflow_dispatch(
+        self,
+        ecoli_simulation: Simulation,
+        database_service: DatabaseService,
+        nf_dispatch: dict[str, Any],
+        *,
+        correlation_id: str | None = None,
+    ) -> JobId:
+        """Compile a registered composite to a Nextflow workflow and run it.
+
+        The third dispatch path (docs/plan-nextflow-dispatch.md). Runs as a
+        CONTAINER job on the Nextflow HEAD image -- reusing ``_submit_container``
+        exactly as the plan specifies, so Phase 3 is verified with
+        ``executor='local'`` before Phase 4 introduces the awsbatch executor.
+        """
+        simulator = await database_service.get_simulator(simulator_id=ecoli_simulation.simulator_id)
+        if simulator is None:
+            raise ValueError(f"Simulator {ecoli_simulation.simulator_id} not found")
+
+        composite_id = nf_dispatch.get("composite_id")
+        if not composite_id:
+            raise ValueError("nextflow_dispatch.composite_id is required")
+
+        commit = simulator.git_commit_hash
+        experiment_id = str(ecoli_simulation.config.experiment_id)
+        outdir = f"{V2ECOLI_DIR}/nf-render"
+
+        job_def = self._ensure_container_job_def(self._submit_image_uri(commit), f"{commit}-submit")
+        runner_s3_uri = await self.stage_render_nf(experiment_id)
+        command = self._render_nf_command(
+            runner_s3_uri=runner_s3_uri,
+            composite_id=str(composite_id),
+            params=nf_dispatch.get("params"),
+            executor=str(nf_dispatch.get("executor", "local")),
+            launch=bool(nf_dispatch.get("launch", False)),
+            outdir=outdir,
+            work_dir=nf_dispatch.get("work_dir"),
+            resume=bool(nf_dispatch.get("resume", False)),
+        )
+        job_id = self._submit_container(
+            job_name=f"nf-dispatch-{experiment_id}-{_rand_suffix()}"[:128],
+            job_definition=job_def,
+            job_cmd=command,
+            out_s3=self._results_s3_uri(experiment_id),
+            out_dir=outdir,
+            tags={
+                "Project": "v2ecoli-nextflow-dispatch",
+                "ExperimentId": experiment_id[:255],
+                "CompositeId": str(composite_id)[:255],
+                "Commit": str(commit)[:12],
+            },
+        )
+        # JobId.ray, like every other Batch-backed path here: the poller tracks it
+        # with describe_jobs regardless of which mechanism submitted it.
+        return JobId.ray(job_id)
+
     async def stage_runner(self, experiment_id: str) -> str:
         """Upload the generic run_pbg.py runner to S3 for this experiment; return its URI.
 
@@ -1755,6 +1888,22 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         # field -- checked FIRST, before the chain-dispatch routing below, since a
         # multi-node request may otherwise also satisfy that check's own
         # composite-is-None/generations>1 condition and would silently misroute.
+        # A Nextflow dispatch is checked BEFORE multi_node_dispatch for the same
+        # reason that one is checked before chain-dispatch: it carries a
+        # composite_id too, so a later check would silently claim it first and the
+        # request would run on the wrong mechanism while looking like it worked.
+        #
+        # Deliberately a per-request extra rather than a new ComputeBackend:
+        # compute_backend_for_repo maps repo -> backend, so a NEXTFLOW member would
+        # either reroute every v2ecoli request or be dead configuration. This is the
+        # same axis multi_node_dispatch already uses to pick pbg-native over
+        # chain-dispatch for the same repo, same image, one config field apart.
+        nf_dispatch = getattr(config, "nextflow_dispatch", None)
+        if nf_dispatch is not None:
+            return await self._submit_nextflow_dispatch(
+                ecoli_simulation, database_service, nf_dispatch, correlation_id=correlation_id
+            )
+
         mnp_dispatch = getattr(config, "multi_node_dispatch", None)
         if mnp_dispatch is not None:
             return await self._submit_multi_node_composite(
