@@ -1,3 +1,4 @@
+import inspect
 import logging
 
 from fastapi import HTTPException
@@ -65,6 +66,7 @@ async def upload_simulator(  # noqa: C901
     simulation_service_slurm: SimulationService | SimulationServiceHpc | None = None,
     database_service: DatabaseService | None = None,
     force: bool = False,
+    include_submit_image: bool = False,
 ) -> SimulatorVersion:
     if not simulation_service_slurm:
         # Route the build to the simulator's backend (v2ecoli→Ray builds v2ecoli:<sha>,
@@ -109,7 +111,28 @@ async def upload_simulator(  # noqa: C901
         verify_simulator_payload(simulator)
 
     if needs_build:
-        build_job_id = await simulation_service_slurm.submit_build_image_job(simulator_version=simulator)
+        # ``include_submit_image``: also build the NEXTFLOW HEAD image
+        # (base + JRE + the nextflow binary) beside the task image. Only the
+        # process that runs ``nextflow run`` needs a JVM -- Batch TASKS run the
+        # plain science image -- so this is a thin derived layer, off by default.
+        # Supported by the Ray build path (viva-api#423); other services ignore
+        # a flag they do not accept, so ask by keyword only where it exists.
+        build_kwargs: dict[str, object] = {"simulator_version": simulator}
+        if include_submit_image:
+            if (
+                "include_submit_image"
+                not in inspect.signature(simulation_service_slurm.submit_build_image_job).parameters
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "include_submit_image is not supported by the build path for "
+                        f"{simulator.git_repo_url!r}. The Nextflow head image is built by the "
+                        "Ray/v2ecoli path; vEcoli builds its own -submit image unconditionally."
+                    ),
+                )
+            build_kwargs["include_submit_image"] = True
+        build_job_id = await simulation_service_slurm.submit_build_image_job(**build_kwargs)  # type: ignore[arg-type]
         hpc_run = await database_service.insert_hpcrun(
             job_id=build_job_id,
             job_type=JobType.BUILD_IMAGE,

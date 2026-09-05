@@ -176,7 +176,16 @@ async def get_simulator_status(simulator_id: int) -> HpcRun:
 async def insert_simulator_version(
     simulator: Simulator,
     force: bool = False,
+    include_submit_image: bool = False,
 ) -> SimulatorVersion:
+    """``include_submit_image``: also build the Nextflow HEAD image beside the task
+    image (base + JRE + the nextflow binary, pushed as ``<repo>:<sha>-submit``).
+
+    Only the process that runs ``nextflow run`` needs a JVM -- Batch TASKS run the
+    plain science image, which already carries the AWS CLI Nextflow needs to stage
+    an S3 work dir. So this is a thin derived layer, and it is OFF by default
+    because every build would otherwise pay for it.
+    """
     # verify simulator request
     handlers.simulators.verify_simulator_payload(simulator)
 
@@ -210,6 +219,7 @@ async def insert_simulator_version(
             simulation_service_slurm=sim_service,
             database_service=db_service,
             force=force,
+            include_submit_image=include_submit_image,
         )
     except Exception as e:
         logger.exception("Error inserting simulator version.")
