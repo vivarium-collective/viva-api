@@ -553,6 +553,111 @@ class TestSimulationServiceRaySubmit:
         assert "--composite vecoli" in _env_of(sim_call)["RAY_JOB_CMD"]
         assert parca_call.kwargs["nodeOverrides"]["numNodes"] == 1
 
+    @pytest.mark.asyncio
+    async def test_composite_comparison_cache_variant_reaches_the_staged_cache_uri(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """Real gap, found live 2026-09-05 scoping a real remote genotype-sweep
+        dispatch: run_comparison_ensemble.py's own --cache-dir already defaults
+        to the exact path this path stages (REPO_ROOT/out/cache ==
+        PARCA_CACHE_DIR) -- confirmed identical, so no command-line change is
+        needed -- but cache_s3 (what gets staged there) never respected a
+        caller-supplied cache_variant, unlike every other dispatch path
+        (mirrors test_cache_variant_reaches_the_staged_cache_uri's own MNP
+        case). Without this, a caller pointed at a real genotype-specific
+        cache would silently get the plain per-commit default instead."""
+        setattr(experiment_request.config, "composite", "v2ecoli")  # noqa: B010
+        setattr(experiment_request.config, "cache_variant", "cd2-run4-genotype-07")  # noqa: B010
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        mock_batch = _fake_batch(["parca-9", "sim-9"])
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+            patch.object(service, "cache_s3_uri", wraps=service.cache_s3_uri) as mock_cache_s3_uri,
+        ):
+            await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-comparison-variant"
+            )
+
+        mock_cache_s3_uri.assert_called_once()
+        assert mock_cache_s3_uri.call_args.kwargs.get("variant") == "cd2-run4-genotype-07"
+
+    @pytest.mark.asyncio
+    async def test_composite_comparison_omitted_cache_variant_is_byte_identical_to_before(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """cache_variant omitted must resolve to the plain per-commit cache,
+        unchanged from every existing caller's own behavior."""
+        setattr(experiment_request.config, "composite", "v2ecoli")  # noqa: B010
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        mock_batch = _fake_batch(["parca-10", "sim-10"])
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+            patch.object(service, "cache_s3_uri", wraps=service.cache_s3_uri) as mock_cache_s3_uri,
+        ):
+            await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation,
+                database_service=database_service,
+                correlation_id="corr-comparison-no-variant",
+            )
+
+        mock_cache_s3_uri.assert_called_once()
+        assert mock_cache_s3_uri.call_args.kwargs.get("variant") is None
+
+    @pytest.mark.asyncio
+    async def test_composite_comparison_upstream_vecoli_ignores_cache_variant(
+        self,
+        experiment_request: "SimulationRequest",
+        database_service: "DatabaseServiceSQL",
+    ) -> None:
+        """The upstream-vEcoli engine (--composite vecoli) uses its own,
+        entirely separate config_path-driven cache mechanism (item 87) -- a
+        cache_variant set alongside it must be ignored, not misapplied to the
+        wrong cache family."""
+        setattr(experiment_request.config, "composite", "vecoli")  # noqa: B010
+        setattr(experiment_request.config, "cache_variant", "should-be-ignored")  # noqa: B010
+        simulation = await database_service.insert_simulation(sim_request=experiment_request)
+
+        mock_batch = _fake_batch(["parca-11", "sim-11"])
+        fake_file_service = AsyncMock()
+        fake_file_service.upload_file = AsyncMock()
+
+        service = SimulationServiceRay()
+        with (
+            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+            patch.object(service, "cache_s3_uri", wraps=service.cache_s3_uri) as mock_cache_s3_uri,
+        ):
+            await service.submit_ecoli_simulation_job(
+                ecoli_simulation=simulation,
+                database_service=database_service,
+                correlation_id="corr-comparison-upstream",
+            )
+
+        # Upstream vEcoli never calls the v2ecoli cache_s3_uri helper at all.
+        mock_cache_s3_uri.assert_not_called()
+
 
 def _fake_multi_node_batch(submit_ids: list[str], *, per_node_vcpus: int = 16) -> MagicMock:
     """Like _fake_batch, but also answers describe_job_definitions for the

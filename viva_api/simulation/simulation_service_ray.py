@@ -1802,7 +1802,20 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         # every other engine stages the v2ecoli cache. Both ParCa and the sim use
         # the matching pair so the staged simData is consistent across all nodes.
         is_upstream = _is_upstream_vecoli(composite)
-        cache_s3 = self._upstream_cache_s3_uri(commit) if is_upstream else self.cache_s3_uri(commit)
+        # Backlog item 105: same generic cache_variant passthrough already proven
+        # for the chain-dispatch/multi-node-composite paths -- irrelevant to the
+        # upstream-vEcoli engine (its own config_path-driven mechanism is separate).
+        # This is the whole fix for the comparison-ensemble path's own real gap: the
+        # driver's `--cache-dir` default already resolves to PARCA_CACHE_DIR (the
+        # exact path staged below), so redirecting the STAGED cache via `variant`
+        # is sufficient -- no command-line change needed, confirmed the two paths
+        # are byte-identical (`REPO_ROOT/out/cache` == `/app/v2ecoli/out/cache`).
+        cache_variant = None if is_upstream else (getattr(config, "cache_variant", None) or None)
+        cache_s3 = (
+            self._upstream_cache_s3_uri(commit)
+            if is_upstream
+            else self.cache_s3_uri(commit, variant=cache_variant)
+        )
         # Backlog item 93: same generic new_genes passthrough as
         # submit_chain_dispatch_job -- irrelevant to the upstream-vEcoli
         # engine (its own config_path-driven mechanism, item 87, is separate).
