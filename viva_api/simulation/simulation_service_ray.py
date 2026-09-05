@@ -630,6 +630,19 @@ class SimulationServiceRay(SimulationService):
             expect_new_genes=expect_new_genes,
             expect_bundle_overrides=expect_bundle_overrides,
         )
+        # Ray's own documented safety net (not a bespoke workaround): by default Ray
+        # refuses to start its plasma object store when the container's /dev/shm is
+        # smaller than the size it wants to request, which is a real, observed
+        # failure mode on this fleet -- a single-node lineage_ray_batch diagnostic
+        # (item 105/109, database_id=344, 2026-09-05) died in raylet bootstrap,
+        # before any application code ran, requesting ~10.2GB against ~9.66GB
+        # available. This flag makes Ray fall back to a disk-backed object store
+        # instead of erroring -- zero behavioral change on every node where shm is
+        # already sufficient (every other MNP dispatch to date), a graceful
+        # (slower, not silent) degradation instead of a hard crash on the ones
+        # that aren't. Every node runs its own raylet, so this belongs in
+        # shared_env, not head-only.
+        shared_env.append({"name": "RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE", "value": "1"})
 
         # The head additionally runs the workload (RAY_JOB_CMD) and writes the report.
         # Workers receive these too but never act on them — the entrypoint branches on
