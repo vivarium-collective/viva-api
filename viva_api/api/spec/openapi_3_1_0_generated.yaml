@@ -1328,7 +1328,7 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-09-12T19:30:34.310354'
+                  created_at: '2026-09-13T01:39:32.801665'
                 parca_config:
                   outdir: .
                   operons: true
@@ -4229,6 +4229,51 @@ components:
             type: array
           - type: 'null'
           title: External Job Ids
+        exit_code:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Exit Code
+        attempt:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Attempt
+        error_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Source
+        trace_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trace Id
+        campaign_span_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Campaign Span Id
+        events_s3_prefix:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Events S3 Prefix
+        stage:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stage
+        generation:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Generation
+        last_event_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Event At
         job_id_ext:
           type: string
           title: Job Id Ext
@@ -4954,7 +4999,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-09-12 19:30:34.250050'
+          default: '2026-09-13 01:39:32.736116'
         job_id:
           anyOf:
           - type: string

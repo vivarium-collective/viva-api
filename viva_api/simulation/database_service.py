@@ -13,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import InstrumentedAttribute
 
 from viva_api.analysis.models import AnalysisConfig, ExperimentAnalysisDTO
-from viva_api.common.hpc.job_service import JobStatusUpdate
+from viva_api.common.events_env import campaign_span_id, trace_id_from_correlation
+from viva_api.common.hpc.job_service import JobStatusUpdate, error_source_rank
 from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.simulation.models import (
     ChainCampaignUpdate,
@@ -342,8 +343,43 @@ class DatabaseService(ABC):
         pass
 
     @abstractmethod
+    async def list_active_nextflow_hpcruns(self) -> list[HpcRun]:
+        """Return active (PENDING/RUNNING) HpcRun rows whose job is a Nextflow
+        HEAD running as a K8s Job (``job_backend == k8s_nextflow``) -- the set
+        ``JobScheduler.update_nextflow_heads`` polls each tick (observability
+        plan D4c). Before that poller existed a Nextflow run's status changed
+        only when a user called ``GET /status``. Structurally disjoint from the
+        chain-campaign and multi-node result sets: those rows are RAY-backed."""
+        pass
+
+    @abstractmethod
+    async def finalize_nextflow_head(
+        self,
+        hpcrun_id: int,
+        status: JobStatus,
+        *,
+        error_message: str | None = None,
+        error_source: str | None = None,
+        exit_code: int | None = None,
+        attempt: int | None = None,
+    ) -> bool:
+        """Atomically transition one Nextflow-head HpcRun from PENDING/RUNNING to
+        a terminal ``status`` (COMPLETED / FAILED), returning ``True``
+        only if THIS call performed the transition -- the same single-row
+        conditional UPDATE ``finalize_multi_node_job`` uses, for the same reason
+        (two overlapping polling ticks must not both act)."""
+        pass
+
+    @abstractmethod
     async def update_hpcrun_status(self, hpcrun_id: int, update: JobStatusUpdate) -> None:
-        """Update the status of a given HpcRun job."""
+        """Update the status of a given HpcRun job.
+
+        ``error_message`` is written by PRECEDENCE, not last-writer-wins: an
+        update whose ``error_source`` ranks below the row's current one leaves
+        the message alone (``viva_api.common.hpc.job_service.ERROR_SOURCE_RANK``),
+        so a task's traceback is never replaced by Kubernetes' generic backoff
+        text on a later poll. A CANCELLED update with no message clears it.
+        """
         pass
 
     @abstractmethod
@@ -795,6 +831,10 @@ class DatabaseServiceSQL(DatabaseService):
                 else None,
                 chain_parca_done=chain_parca_done,
                 multi_node_composite_id=multi_node_composite_id,
+                # Derived, never minted: the dispatcher already handed every task
+                # the same ids (viva_api.common.events_env) before this row existed.
+                trace_id=trace_id_from_correlation(correlation_id),
+                campaign_span_id=campaign_span_id(correlation_id),
             )
             session.add(orm_hpc_run)
             await session.flush()
@@ -1251,6 +1291,60 @@ class DatabaseServiceSQL(DatabaseService):
             return [orm_hpcrun.to_hpc_run() for orm_hpcrun in orm_hpcruns]
 
     @override
+    async def list_active_nextflow_hpcruns(self) -> list[HpcRun]:
+        async with self.async_sessionmaker() as session:
+            stmt = select(ORMHpcRun).where(
+                ORMHpcRun.status.in_([JobStatusDB.PENDING, JobStatusDB.RUNNING]),
+                ORMHpcRun.job_backend == JobBackend.K8S_NEXTFLOW.value,
+            )
+            result: Result[tuple[ORMHpcRun]] = await session.execute(stmt)
+            orm_hpcruns = result.scalars().all()
+            return [orm_hpcrun.to_hpc_run() for orm_hpcrun in orm_hpcruns]
+
+    @override
+    async def finalize_nextflow_head(
+        self,
+        hpcrun_id: int,
+        status: JobStatus,
+        *,
+        error_message: str | None = None,
+        error_source: str | None = None,
+        exit_code: int | None = None,
+        attempt: int | None = None,
+    ) -> bool:
+        async with self.async_sessionmaker() as session, session.begin():
+            stmt = (
+                sa_update(ORMHpcRun)
+                .where(
+                    ORMHpcRun.id == hpcrun_id,
+                    ORMHpcRun.status.in_([JobStatusDB.PENDING, JobStatusDB.RUNNING]),
+                )
+                .values(
+                    status=JobStatusDB.from_job_status(status),
+                    end_time=datetime.datetime.now(),
+                    error_message=error_message,
+                    error_source=error_source if error_message else None,
+                    exit_code=exit_code,
+                    attempt=attempt,
+                )
+            )
+            result = cast(CursorResult[Any], await session.execute(stmt))
+            return bool(result.rowcount)
+
+    @staticmethod
+    def _apply_error_message(orm_hpcrun: ORMHpcRun, update: JobStatusUpdate) -> None:
+        """Write ``error_message`` by precedence (see ``update_hpcrun_status``)."""
+        if update.error_message:
+            if error_source_rank(update.error_source) >= error_source_rank(orm_hpcrun.error_source):
+                orm_hpcrun.error_message = update.error_message
+                orm_hpcrun.error_source = update.error_source
+        elif update.status == JobStatus.CANCELLED:
+            # A cancel is not a failure; whatever error text preceded it would
+            # otherwise be shown as the reason the run stopped.
+            orm_hpcrun.error_message = None
+            orm_hpcrun.error_source = None
+
+    @override
     async def update_hpcrun_status(self, hpcrun_id: int, update: JobStatusUpdate) -> None:
         async with self.async_sessionmaker() as session, session.begin():
             orm_hpcrun: ORMHpcRun | None = await self._get_orm_hpcrun(session, hpcrun_id=hpcrun_id)
@@ -1265,8 +1359,12 @@ class DatabaseServiceSQL(DatabaseService):
                 with contextlib.suppress(ValueError):
                     dt = datetime.datetime.fromisoformat(update.end_time)
                     orm_hpcrun.end_time = dt.replace(tzinfo=None)
-            if update.error_message:
-                orm_hpcrun.error_message = update.error_message
+            self._apply_error_message(orm_hpcrun, update)
+            if update.exit_code is not None:
+                with contextlib.suppress(ValueError):
+                    orm_hpcrun.exit_code = int(update.exit_code)
+            if update.attempt is not None:
+                orm_hpcrun.attempt = update.attempt
             await session.flush()
 
     @override
@@ -1320,8 +1418,11 @@ class DatabaseServiceSQL(DatabaseService):
             if update.terminal_status is not None:
                 orm_hpcrun.status = JobStatusDB.from_job_status(update.terminal_status)
                 orm_hpcrun.end_time = datetime.datetime.now()
-                if update.error_message:
+                if update.error_message and error_source_rank(update.error_source) >= error_source_rank(
+                    orm_hpcrun.error_source
+                ):
                     orm_hpcrun.error_message = update.error_message
+                    orm_hpcrun.error_source = update.error_source
             await session.flush()
 
     @override

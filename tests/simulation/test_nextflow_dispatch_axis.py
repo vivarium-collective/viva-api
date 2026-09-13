@@ -815,3 +815,47 @@ def test_the_gather_starts_above_the_size_a_3x2_oom_killed() -> None:
     assert base >= 32, mem
     # and it still scales on 137 specifically, not on every failure
     assert "task.exitStatus == 137" in mem
+
+
+# --- Observability plan D4a: every task gets the run's PBG_* identity env -------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_threads_the_runs_identity_env_into_every_batch_task() -> None:
+    """PBG_TRACEPARENT / PBG_TRACE_BAGGAGE / PBG_EVENT_SINKS ride `container_env`,
+    the same directive the request's task_env uses, so every parca/lineage/
+    analysis task of the campaign stamps its events with one trace id. Inert on
+    an image whose engine predates process_bigraph.events."""
+    from viva_api.common.events_env import campaign_span_id, trace_id_from_correlation, traceparent
+
+    service, k8s = _svc_with_k8s()
+    sim = _sim()
+    with (
+        patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+        patch.object(service, "stage_render_nf", new=AsyncMock(return_value="s3://b/e/render_nf.py")),
+        patch.object(service, "stage_runner", new=AsyncMock(return_value="s3://b/e/run_pbg.py")),
+    ):
+        await service._submit_nextflow_dispatch(
+            sim,
+            _db(),
+            {"composite_id": "v2ecoli.composites.workflow_nf", "executor": "awsbatch", "task_env": {"MY_KNOB": "1"}},
+            correlation_id="sim133_abc_1234567",
+        )
+    env = _dispatched_nf_params(k8s)["container_env"]
+    assert env["PYTHONPATH"] == "/app/v2ecoli"  # the service's own keys survive
+    assert env["MY_KNOB"] == "1"  # so does the request's
+    assert env["PBG_TRACEPARENT"] == traceparent(
+        trace_id_from_correlation("sim133_abc_1234567"), campaign_span_id("sim133_abc_1234567")
+    )
+    assert env["PBG_TRACE_BAGGAGE"].endswith("experiment_id=sim133-exp-nf-a1b2")
+    assert env["PBG_EVENT_TAGS"] == "backend=nextflow"
+    assert env["PBG_EVENT_SINKS"] == "stdout,s3://mybucket/nextflow/work/sim133-exp-nf-a1b2/events/"
+    # Rendered as docker --env K=V: no value may carry the forbidden characters.
+    for value in env.values():
+        assert not set(value) & set(" \t\n\"'$\\"), value
+
+
+def test_the_profile_helper_alone_adds_no_identity_env() -> None:
+    """`_awsbatch_nf_params` is a pure settings->profile mapping; identity is the
+    dispatch's business, merged into task_env before the helper is called."""
+    assert not any(k.startswith("PBG_") for k in _nf_params()["container_env"])

@@ -3,7 +3,7 @@ import enum
 import logging
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import ForeignKey, Index, func
+from sqlalchemy import ForeignKey, Index, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs, AsyncEngine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -201,6 +201,22 @@ class ORMHpcRun(Base):
     # NULL for every non-LOCAL row and for a LOCAL row whose task has not
     # submitted anything yet.
     external_job_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    # Observability plan (D4b/D4c). Every column nullable and NULL on rows that
+    # predate it -- additive, no rewrite of existing rows. ``trace_id`` and
+    # ``campaign_span_id`` are DERIVED from ``correlation_id`` at insert
+    # (``viva_api.common.events_env``), so the dispatcher can hand a task its
+    # identity before this row exists and the ingester can recompute them for
+    # older rows. ``events_cursor`` is ``{s3 key: bytes already ingested}``.
+    exit_code: Mapped[int | None] = mapped_column(nullable=True)
+    attempt: Mapped[int | None] = mapped_column(nullable=True)
+    error_source: Mapped[str | None] = mapped_column(nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(nullable=True, index=True)
+    campaign_span_id: Mapped[str | None] = mapped_column(nullable=True)
+    events_s3_prefix: Mapped[str | None] = mapped_column(nullable=True)
+    events_cursor: Mapped[dict[str, int] | None] = mapped_column(JSONB, nullable=True)
+    stage: Mapped[str | None] = mapped_column(nullable=True)
+    generation: Mapped[int | None] = mapped_column(nullable=True)
+    last_event_at: Mapped[datetime.datetime | None] = mapped_column(nullable=True)
 
     def _build_job_id(self) -> JobId:
         """Construct a JobId from the ORM columns."""
@@ -231,7 +247,74 @@ class ORMHpcRun(Base):
             chain_parca_done=self.chain_parca_done,
             multi_node_composite_id=self.multi_node_composite_id,
             external_job_ids=list(self.external_job_ids) if self.external_job_ids is not None else None,
+            exit_code=self.exit_code,
+            attempt=self.attempt,
+            error_source=self.error_source,
+            trace_id=self.trace_id,
+            campaign_span_id=self.campaign_span_id,
+            events_s3_prefix=self.events_s3_prefix,
+            stage=self.stage,
+            generation=self.generation,
+            last_event_at=str(self.last_event_at) if self.last_event_at else None,
         )
+
+
+class ORMHpcRunEvent(Base):
+    """One structured event from a run's task stream (observability plan D1/D4b).
+
+    Written by the ingester (PR-D) from the tasks' ``events.jsonl`` objects and
+    by the dispatcher/scheduler directly for lifecycle events (``submitted``,
+    ``head_exit``, ``task_outcome``, ...). ``tick`` heartbeats are never stored.
+    ``(trace_id, source, seq)`` is unique so re-ingesting an object is idempotent.
+    """
+
+    __tablename__ = "hpcrun_event"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    hpcrun_id: Mapped[int] = mapped_column(ForeignKey("hpcrun.id"), nullable=False, index=True)
+    trace_id: Mapped[str] = mapped_column(nullable=False, index=True)
+    source: Mapped[str] = mapped_column(nullable=False)  # writer: batch job id / host-pid / "api"
+    seq: Mapped[int] = mapped_column(nullable=False)
+    ts: Mapped[datetime.datetime] = mapped_column(nullable=False)
+    layer: Mapped[str] = mapped_column(nullable=False)  # engine | runner | dispatcher | api
+    event: Mapped[str] = mapped_column(nullable=False)
+    level: Mapped[str] = mapped_column(nullable=False, server_default="info")
+    generation: Mapped[int | None] = mapped_column(nullable=True)
+    global_time: Mapped[float | None] = mapped_column(nullable=True)
+    wall_time: Mapped[float | None] = mapped_column(nullable=True)
+    span_id: Mapped[str | None] = mapped_column(nullable=True)
+    parent_span_id: Mapped[str | None] = mapped_column(nullable=True)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    tags: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("trace_id", "source", "seq", name="uq_hpcrun_event_trace_source_seq"),
+        Index("ix_hpcrun_event_trace_span", "trace_id", "span_id"),
+    )
+
+
+class ORMHpcRunSpan(Base):
+    """A span of a run's trace tree (campaign > parca / lineage / analysis >
+    generation > ...), materialised from ``span_start``/``span_end`` events. An
+    open span (``end_ts`` NULL) after the row goes terminal is closed as
+    ``status='unknown'`` by the ingester (PR-D).
+    """
+
+    __tablename__ = "hpcrun_span"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    hpcrun_id: Mapped[int] = mapped_column(ForeignKey("hpcrun.id"), nullable=False, index=True)
+    trace_id: Mapped[str] = mapped_column(nullable=False, index=True)
+    span_id: Mapped[str] = mapped_column(nullable=False)
+    parent_span_id: Mapped[str | None] = mapped_column(nullable=True)
+    name: Mapped[str] = mapped_column(nullable=False)
+    attrs: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    start_ts: Mapped[datetime.datetime | None] = mapped_column(nullable=True)
+    end_ts: Mapped[datetime.datetime | None] = mapped_column(nullable=True)
+    status: Mapped[str | None] = mapped_column(nullable=True)  # ok | error | unknown
+    error: Mapped[str | None] = mapped_column(nullable=True)
+
+    __table_args__ = (UniqueConstraint("trace_id", "span_id", name="uq_hpcrun_span_trace_span"),)
 
 
 class ORMParcaDataset(Base):

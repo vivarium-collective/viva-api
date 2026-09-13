@@ -570,6 +570,87 @@ async def test_get_simulation_status_non_chain_run_unaffected() -> None:
     mock_db_service.update_hpcrun_status.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_status_does_NOT_persist_a_terminal_nextflow_head() -> None:
+    """B1 (eagmon, #609): GET /status must not finalize a Nextflow head.
+
+    The sim-749 shape: the head exits 0 with a gather task dead, so the K8s Job
+    condition reads Complete. Persisting that here would write the row terminal,
+    and ``finalize_nextflow_head``'s ``WHERE status IN (PENDING, RUNNING)`` means
+    the trace poller could then never win -- the run would read COMPLETED forever
+    with a failed task in it. Reachable by nothing more exotic than polling status
+    inside the <= 30 s gap before the next scheduler tick.
+
+    So the handler still REPORTS what the backend says; it just must not write it.
+    """
+    from viva_api.common.handlers.simulations import get_simulation_status
+    from viva_api.common.hpc.job_service import JobStatusInfo
+
+    hpc_run = HpcRun(
+        database_id=301,
+        job_id=JobId.k8s_nextflow("nf-exp-749"),
+        correlation_id="N/A",
+        job_type=JobType.SIMULATION,
+        ref_id=749,
+        status=JobStatus.RUNNING,
+    )
+    mock_db_service = AsyncMock()
+    mock_db_service.get_simulation.return_value = SimpleNamespace(database_id=749)
+    mock_db_service.get_hpcrun_by_ref.return_value = hpc_run
+
+    mock_service = AsyncMock()
+    mock_service.get_job_status.return_value = JobStatusInfo(
+        job_id=hpc_run.job_id, status=JobStatus.COMPLETED, start_time="t0", end_time="t1"
+    )
+
+    with patch(
+        "viva_api.common.handlers.simulations.get_simulation_service_for_job",
+        return_value=mock_service,
+    ):
+        result = await get_simulation_status(db_service=mock_db_service, id=749)
+
+    # reported live ...
+    assert result.status == JobStatus.COMPLETED
+    # ... but NOT written down: the poller stays the single writer of the outcome.
+    mock_db_service.update_hpcrun_status.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_status_still_persists_a_terminal_head_for_other_backends() -> None:
+    """The B1 fix is scoped to K8S_NEXTFLOW. Other backends have no separate trace
+    authority, so a live poll is the only source and must still be cached -- this
+    is the viva-api#484 behaviour (a cancelled campaign reading "unknown" a minute
+    after the cancel handler answered) that the persist exists for."""
+    from viva_api.common.handlers.simulations import get_simulation_status
+    from viva_api.common.hpc.job_service import JobStatusInfo
+
+    hpc_run = HpcRun(
+        database_id=302,
+        job_id=JobId.ray("ray-job-xyz"),
+        correlation_id="N/A",
+        job_type=JobType.SIMULATION,
+        ref_id=750,
+        status=JobStatus.RUNNING,
+    )
+    mock_db_service = AsyncMock()
+    mock_db_service.get_simulation.return_value = SimpleNamespace(database_id=750)
+    mock_db_service.get_hpcrun_by_ref.return_value = hpc_run
+
+    mock_service = AsyncMock()
+    mock_service.get_job_status.return_value = JobStatusInfo(
+        job_id=hpc_run.job_id, status=JobStatus.COMPLETED, start_time="t0", end_time="t1"
+    )
+
+    with patch(
+        "viva_api.common.handlers.simulations.get_simulation_service_for_job",
+        return_value=mock_service,
+    ):
+        result = await get_simulation_status(db_service=mock_db_service, id=750)
+
+    assert result.status == JobStatus.COMPLETED
+    mock_db_service.update_hpcrun_status.assert_called_once()
+
+
 # ─── get_simulation_chain_progress (backlog item 6) ─────────────────────────
 
 
@@ -1318,3 +1399,68 @@ async def test_a_terminal_row_is_reported_without_asking_a_backend_that_may_be_g
         run = await handlers.get_simulation_status(db_service=db, id=567)
     assert run.status == JobStatus.CANCELLED
     service.get_job_status.assert_not_awaited()
+
+
+# --- Observability plan D4c: the log path routes by the RUN's backend -----------
+
+
+@pytest.mark.asyncio
+async def test_k8s_log_for_a_nextflow_head_uses_the_service_that_owns_the_run() -> None:
+    """A v2ecoli Nextflow head is owned by SimulationServiceRay; the old
+    `isinstance(get_simulation_service(), SimulationServiceK8s)` check raised
+    TypeError for exactly that run on a deployment whose default service is not
+    the vEcoli K8s one."""
+    from viva_api.common.handlers.simulations import _get_k8s_log
+
+    hpc_run = HpcRun(
+        database_id=1,
+        job_id=JobId.k8s_nextflow("nf-exp-abc"),
+        correlation_id="c",
+        job_type=JobType.SIMULATION,
+        ref_id=1,
+        status=JobStatus.FAILED,
+    )
+    ray_service = MagicMock()
+    ray_service._k8s.get_job_logs.return_value = "N E X T F L O W\nexecutor > awsbatch\n"
+    with patch(
+        "viva_api.common.handlers.simulations.get_simulation_service_for_job", return_value=ray_service
+    ) as lookup:
+        log = await _get_k8s_log(hpc_run, MagicMock(), 1)
+    assert log.startswith("N E X T F L O W")
+    lookup.assert_called_once_with(hpc_run.job_id)
+    ray_service._k8s.get_job_logs.assert_called_once_with("nf-exp-abc")
+
+
+@pytest.mark.asyncio
+async def test_s3_nextflow_log_falls_back_to_the_v2ecoli_results_layout() -> None:
+    """A v2ecoli head stages its render dir wholesale to the RESULTS prefix, so
+    `.nextflow.log` sits beside trace.csv at vecoli-output/<exp>/.nextflow.log
+    (sim 749) -- not under the vEcoli `<work>/<exp>/logs/` key."""
+    from viva_api.common.handlers.simulations import _get_s3_nextflow_log
+
+    simulation = MagicMock()
+    simulation.experiment_id = "sim184-run1-k4"
+    simulation.config.experiment_id = "sim184-run1-k4"
+    db = MagicMock()
+    db.get_simulation = AsyncMock(return_value=simulation)
+    fs = MagicMock()
+
+    async def _get(s3_path: Any) -> bytes | None:
+        return (
+            b"Sep-10 03:15 Execution complete -- Goodbye" if str(s3_path.s3_path).startswith("vecoli-output/") else None
+        )
+
+    fs.get_file_contents = AsyncMock(side_effect=_get)
+    saved = get_file_service()
+    set_file_service(fs)
+    try:
+        with patch("viva_api.common.handlers.simulations.get_settings") as settings:
+            settings.return_value = MagicMock(
+                s3_work_prefix="nextflow/work", s3_work_bucket="mybucket", s3_output_prefix="vecoli-output"
+            )
+            log = await _get_s3_nextflow_log(db, 1)
+    finally:
+        set_file_service(saved)
+    assert log is not None and "Goodbye" in log
+    tried = [str(c.args[0].s3_path) for c in fs.get_file_contents.await_args_list]
+    assert tried == ["nextflow/work/sim184-run1-k4/logs/.nextflow.log", "vecoli-output/sim184-run1-k4/.nextflow.log"]

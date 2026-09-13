@@ -114,6 +114,11 @@ class JobStatus(StrEnumBase):
     CANCELLED = "cancelled"
     FAILED = "failed"
 
+    @property
+    def is_terminal(self) -> bool:
+        """COMPLETED, FAILED or CANCELLED -- the run will not change again."""
+        return self in TERMINAL_JOB_STATUSES
+
     @classmethod
     def from_slurm_state(cls, slurm_state: str) -> "JobStatus":
         """Parse SLURM job state string to JobStatus enum.
@@ -142,6 +147,13 @@ class JobStatus(StrEnumBase):
         """
         return _BATCH_STATE_MAP.get(batch_state.strip().upper() if batch_state else "", cls.UNKNOWN)
 
+
+#: The statuses after which a run's row will not change again.
+TERMINAL_JOB_STATUSES: frozenset[JobStatus] = frozenset({
+    JobStatus.COMPLETED,
+    JobStatus.FAILED,
+    JobStatus.CANCELLED,
+})
 
 # Map SLURM job states to JobStatus (defined after enum class)
 # See: https://slurm.schedmd.com/squeue.html#SECTION_JOB-STATE-CODES

@@ -1,0 +1,108 @@
+Sep-10 02:10:07.576 [main] DEBUG nextflow.cli.Launcher - $> nextflow -q -C nextflow.config run main.nf -profile local --fail_analysis true -with-trace trace.failed.csv -work-dir work-failed
+Sep-10 02:10:07.625 [main] INFO  nextflow.cli.CmdRun - N E X T F L O W  ~  version 25.04.3
+Sep-10 02:10:07.635 [main] DEBUG nextflow.plugin.PluginsFacade - Setting up plugin manager > mode=prod; embedded=false; plugins-dir=/home/user/.nextflow/plugins; core-plugins: nf-amazon@2.15.0,nf-azure@1.16.0,nf-cloudcache@0.4.3,nf-codecommit@0.2.3,nf-console@1.2.1,nf-google@1.21.0,nf-k8s@1.0.0,nf-tower@1.11.3,nf-wave@1.12.1
+Sep-10 02:10:07.651 [main] INFO  o.pf4j.DefaultPluginStatusProvider - Enabled plugins: []
+Sep-10 02:10:07.651 [main] INFO  o.pf4j.DefaultPluginStatusProvider - Disabled plugins: []
+Sep-10 02:10:07.653 [main] INFO  org.pf4j.DefaultPluginManager - PF4J version 3.12.0 in 'deployment' mode
+Sep-10 02:10:07.658 [main] INFO  org.pf4j.AbstractPluginManager - No plugins
+Sep-10 02:10:07.667 [main] DEBUG nextflow.config.ConfigBuilder - Parsing config file: /tmp/nf-toy/nextflow.config
+Sep-10 02:10:07.681 [main] DEBUG n.secret.LocalSecretsProvider - Secrets store: /home/user/.nextflow/secrets/store.json
+Sep-10 02:10:07.683 [main] DEBUG nextflow.secret.SecretsLoader - Discovered secrets providers: [nextflow.secret.LocalSecretsProvider@40ab8a8] - activable => nextflow.secret.LocalSecretsProvider@40ab8a8
+Sep-10 02:10:07.689 [main] DEBUG nextflow.config.ConfigBuilder - Applying config profile: `local`
+Sep-10 02:10:07.917 [main] DEBUG nextflow.config.ConfigBuilder - Available config profiles: [slurm, google-batch, awsbatch, local]
+Sep-10 02:10:07.930 [main] DEBUG nextflow.cli.CmdRun - Applied DSL=2 from script declaration
+Sep-10 02:10:07.939 [main] INFO  nextflow.cli.CmdRun - Launching `main.nf` [distraught_minsky] DSL2 - revision: 5fe476e787
+Sep-10 02:10:07.939 [main] DEBUG nextflow.plugin.PluginsFacade - Plugins default=[]
+Sep-10 02:10:07.939 [main] DEBUG nextflow.plugin.PluginsFacade - Plugins resolved requirement=[]
+Sep-10 02:10:07.961 [main] DEBUG nextflow.Session - Session UUID: 8e3c3caa-4f56-4868-8f51-4b77ff439934
+Sep-10 02:10:07.962 [main] DEBUG nextflow.Session - Run name: distraught_minsky
+Sep-10 02:10:07.962 [main] DEBUG nextflow.Session - Executor pool size: 16
+Sep-10 02:10:07.965 [main] DEBUG nextflow.file.FilePorter - File porter settings maxRetries=3; maxTransfers=50; pollTimeout=null
+Sep-10 02:10:07.967 [main] DEBUG nextflow.util.ThreadPoolBuilder - Creating thread pool 'FileTransfer' minSize=10; maxSize=48; workQueue=LinkedBlockingQueue[-1]; allowCoreThreadTimeout=false
+Sep-10 02:10:07.980 [main] DEBUG nextflow.cli.CmdRun -
+  Version: 25.04.3 build 5949
+  Created: 02-06-2025 20:56 UTC (16:56 EDT)
+  System: Mac OS X 15.7.4
+  Runtime: Groovy 4.0.26 on OpenJDK 64-Bit Server VM 23.0.2+7-jvmci-b01
+  Encoding: UTF-8 (UTF-8)
+  Process: 23275@LT-0919652 [192.168.4.46]
+  CPUs: 16 - Mem: 128 GB (16.5 GB) - Swap: 0 (0)
+Sep-10 02:10:07.987 [main] DEBUG nextflow.Session - Work-dir: /tmp/nf-toy/work-failed [Mac OS X]
+Sep-10 02:10:07.987 [main] DEBUG nextflow.Session - Script base path does not exist or is not a directory: /tmp/nf-toy/bin
+Sep-10 02:10:07.992 [main] DEBUG nextflow.executor.ExecutorFactory - Extension executors providers=[]
+Sep-10 02:10:07.997 [main] DEBUG nextflow.Session - Observer factory: DefaultObserverFactory
+Sep-10 02:10:08.001 [main] DEBUG nextflow.Session - Observer factory (v2): LinObserverFactory
+Sep-10 02:10:08.013 [main] DEBUG nextflow.cache.CacheFactory - Using Nextflow cache factory: nextflow.cache.DefaultCacheFactory
+Sep-10 02:10:08.017 [main] DEBUG nextflow.util.CustomThreadPool - Creating default thread pool > poolSize: 17; maxThreads: 1000
+Sep-10 02:10:08.046 [main] DEBUG nextflow.Session - Session start
+Sep-10 02:10:08.048 [main] DEBUG nextflow.trace.TraceFileObserver - Workflow started -- trace file: /tmp/nf-toy/trace.failed.csv
+Sep-10 02:10:08.141 [main] DEBUG nextflow.script.ScriptRunner - > Launching execution
+Sep-10 02:10:08.178 [main] DEBUG nextflow.executor.ExecutorFactory - << taskConfig executor: local
+Sep-10 02:10:08.178 [main] DEBUG nextflow.executor.ExecutorFactory - >> processorType: 'local'
+Sep-10 02:10:08.181 [main] DEBUG nextflow.executor.Executor - [warm up] executor > local
+Sep-10 02:10:08.189 [main] DEBUG n.processor.LocalPollingMonitor - Creating local task monitor for executor 'local' > cpus=16; memory=128 GB; capacity=16; pollInterval=100ms; dumpInterval=5m
+Sep-10 02:10:08.190 [main] DEBUG n.processor.TaskPollingMonitor - >>> barrier register (monitor: local)
+Sep-10 02:10:08.200 [main] DEBUG nextflow.processor.TaskProcessor - Creating process 'parca_v0': maxForks=0; fair=false; array=0
+Sep-10 02:10:08.226 [main] DEBUG nextflow.executor.ExecutorFactory - << taskConfig executor: local
+Sep-10 02:10:08.226 [main] DEBUG nextflow.executor.ExecutorFactory - >> processorType: 'local'
+Sep-10 02:10:08.227 [main] DEBUG nextflow.processor.TaskProcessor - Creating process 'lineage_v0_s0': maxForks=0; fair=false; array=0
+Sep-10 02:10:08.229 [main] DEBUG nextflow.executor.ExecutorFactory - << taskConfig executor: local
+Sep-10 02:10:08.229 [main] DEBUG nextflow.executor.ExecutorFactory - >> processorType: 'local'
+Sep-10 02:10:08.230 [main] DEBUG nextflow.processor.TaskProcessor - Creating process 'analysis_v0': maxForks=0; fair=false; array=0
+Sep-10 02:10:08.231 [main] DEBUG nextflow.Session - Workflow process names [dsl2]: parca_v0, flaky_v0, analysis_v0, lineage_v0_s0
+Sep-10 02:10:08.232 [main] DEBUG nextflow.Session - Igniting dataflow network (3)
+Sep-10 02:10:08.232 [main] DEBUG nextflow.processor.TaskProcessor - Starting process > parca_v0
+Sep-10 02:10:08.232 [main] DEBUG nextflow.processor.TaskProcessor - Starting process > lineage_v0_s0
+Sep-10 02:10:08.232 [main] DEBUG nextflow.processor.TaskProcessor - Starting process > analysis_v0
+Sep-10 02:10:08.233 [main] DEBUG nextflow.script.ScriptRunner - Parsed script files:
+  Script_8998c78db346ab27: /tmp/nf-toy/main.nf
+Sep-10 02:10:08.233 [main] DEBUG nextflow.script.ScriptRunner - > Awaiting termination
+Sep-10 02:10:08.233 [main] DEBUG nextflow.Session - Session await
+Sep-10 02:10:08.290 [Task submitter] WARN  n.executor.BashWrapperBuilder - Task runtime metrics are not reported when using macOS without a container engine
+Sep-10 02:10:08.297 [Task submitter] DEBUG n.executor.local.LocalTaskHandler - Launch cmd line: /bin/bash -ue .command.run
+Sep-10 02:10:08.299 [Task submitter] INFO  nextflow.Session - [f3/b0ee40] Submitted process > parca_v0
+Sep-10 02:10:08.326 [Task monitor] DEBUG n.processor.TaskPollingMonitor - Task completed > TaskHandler[id: 1; name: parca_v0; status: COMPLETED; exit: 0; error: -; workDir: /tmp/nf-toy/work-failed/f3/b0ee40738eefb8d133e8f18ed81502]
+Sep-10 02:10:08.326 [Task monitor] DEBUG nextflow.util.ThreadPoolBuilder - Creating thread pool 'TaskFinalizer' minSize=10; maxSize=48; workQueue=LinkedBlockingQueue[-1]; allowCoreThreadTimeout=false
+Sep-10 02:10:08.349 [Task submitter] DEBUG n.executor.local.LocalTaskHandler - Launch cmd line: /bin/bash -ue .command.run
+Sep-10 02:10:08.350 [Task submitter] INFO  nextflow.Session - [3c/4ff1ee] Submitted process > lineage_v0_s0
+Sep-10 02:10:08.378 [Task monitor] DEBUG n.processor.TaskPollingMonitor - Task completed > TaskHandler[id: 2; name: lineage_v0_s0; status: COMPLETED; exit: 0; error: -; workDir: /tmp/nf-toy/work-failed/3c/4ff1ee1eba8dec4892215208a02670]
+Sep-10 02:10:08.390 [Task submitter] DEBUG n.executor.local.LocalTaskHandler - Launch cmd line: /bin/bash -ue .command.run
+Sep-10 02:10:08.391 [Task submitter] INFO  nextflow.Session - [5c/fdb081] Submitted process > analysis_v0
+Sep-10 02:10:08.420 [Task monitor] DEBUG n.processor.TaskPollingMonitor - Task completed > TaskHandler[id: 3; name: analysis_v0; status: COMPLETED; exit: 1; error: -; workDir: /tmp/nf-toy/work-failed/5c/fdb0811581f9f8de0dfbe254e5b6bd]
+Sep-10 02:10:08.422 [TaskFinalizer-3] DEBUG nextflow.processor.TaskProcessor - Handling unexpected condition for
+  task: name=analysis_v0; work-dir=/tmp/nf-toy/work-failed/5c/fdb0811581f9f8de0dfbe254e5b6bd
+  error [nextflow.exception.ProcessFailedException]: Process `analysis_v0` terminated with an error exit status (1)
+Sep-10 02:10:08.431 [TaskFinalizer-3] ERROR nextflow.processor.TaskProcessor - Error executing process > 'analysis_v0'
+
+Caused by:
+  Process `analysis_v0` terminated with an error exit status (1)
+
+
+Command executed:
+
+  echo 'Traceback (most recent call last):' >&2
+  echo "FileNotFoundError: [Errno 2] No such file or directory: 'analysis.config.json'" >&2
+  exit 1
+
+Command exit status:
+  1
+
+Command output:
+  (empty)
+
+Command error:
+  Traceback (most recent call last):
+  FileNotFoundError: [Errno 2] No such file or directory: 'analysis.config.json'
+
+Work dir:
+  /tmp/nf-toy/work-failed/5c/fdb0811581f9f8de0dfbe254e5b6bd
+
+Tip: you can try to figure out what's wrong by changing to the process work dir and showing the script file named `.command.sh`
+Sep-10 02:10:08.432 [main] DEBUG nextflow.Session - Session await > all processes finished
+Sep-10 02:10:08.433 [TaskFinalizer-3] DEBUG nextflow.Session - Session aborted -- Cause: Process `analysis_v0` terminated with an error exit status (1)
+Sep-10 02:10:08.442 [main] DEBUG nextflow.Session - Session await > all barriers passed
+Sep-10 02:10:08.442 [Task monitor] DEBUG n.processor.TaskPollingMonitor - <<< barrier arrives (monitor: local) - terminating tasks monitor poll loop
+Sep-10 02:10:08.445 [main] DEBUG n.trace.WorkflowStatsObserver - Workflow completed > WorkflowStats[succeededCount=2; failedCount=1; ignoredCount=0; cachedCount=0; pendingCount=0; submittedCount=0; runningCount=0; retriesCount=0; abortedCount=0; succeedDuration=0ms; failedDuration=8ms; cachedDuration=0ms;loadCpus=0; loadMemory=0; peakRunning=1; peakCpus=1; peakMemory=0; ]
+Sep-10 02:10:08.445 [main] DEBUG nextflow.trace.TraceFileObserver - Workflow completed -- saving trace file
+Sep-10 02:10:08.449 [main] DEBUG nextflow.cache.CacheDB - Closing CacheDB done
+Sep-10 02:10:08.456 [main] DEBUG nextflow.script.ScriptRunner - > Execution complete -- Goodbye

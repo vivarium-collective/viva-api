@@ -29,6 +29,7 @@ MEMPHIS_THEME = Theme({
     "memphis.border": "bright_magenta",
     "memphis.border.success": "bright_green",
     "memphis.border.error": "bright_red",
+    "memphis.border.warning": "bright_yellow",
     "memphis.border.info": "bright_cyan",
     # Progress / spinners
     "memphis.spinner": "bold bright_magenta",

@@ -92,7 +92,10 @@ TASK_ENV_RESERVED_NAMES: frozenset[str] = frozenset({
 })
 #: Prefixes the service or the executors own outright (Batch/Ray/container
 #: entrypoint contracts, AWS SDK, Nextflow).
-TASK_ENV_RESERVED_PREFIXES: tuple[str, ...] = ("AWS_", "RAY_", "CONTAINER_", "NXF_", "NEXTFLOW_")
+# ``PBG_``: the service sets the process-bigraph identity/event env itself
+# (``viva_api.common.events_env``: PBG_TRACEPARENT, PBG_TRACE_BAGGAGE,
+# PBG_EVENT_SINKS, ...); a request must not shadow a run's identity.
+TASK_ENV_RESERVED_PREFIXES: tuple[str, ...] = ("AWS_", "RAY_", "CONTAINER_", "NXF_", "NEXTFLOW_", "PBG_")
 
 
 def validate_task_env(task_env: Any, *, where: str = "task_env") -> dict[str, str]:

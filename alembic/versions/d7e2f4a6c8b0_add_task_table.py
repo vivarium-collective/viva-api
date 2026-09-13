@@ -29,9 +29,10 @@ depends_on: str | Sequence[str] | None = None
 # type creation. Without this, ``op.create_table`` emits a SECOND, unguarded
 # CREATE TYPE for the column, and the migration fails with
 # DuplicateObjectError: type "taskstatusdb" already exists -- on every run,
-# including a fresh database. Nothing on main runs the alembic chain end to end,
-# which is why this merged green; it was caught by a real-alembic-chain test on
-# the observability branch (viva-api#609), which is where that coverage lands.
+# including a fresh database. Caught by the real-alembic-chain test this branch
+# adds (tests/simulation/test_observability_migration.py); nothing on main ran
+# the chain end to end, which is why it was not seen at merge (#636 carried the
+# same fix to main ahead of this branch, with the citation adapted).
 _task_status = postgresql.ENUM("COMPUTING", "READY", "FAILED", name="taskstatusdb", create_type=False)
 
 

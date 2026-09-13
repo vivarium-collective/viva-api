@@ -113,6 +113,33 @@ class K8sJobService:
             if e.status != 404:
                 raise
 
+    def get_pod_exit(self, job_name: str) -> tuple[str | None, int | None]:
+        """``(reason, exit_code)`` of this Job's terminated container, or ``(None, None)``.
+
+        The structured sibling of :meth:`get_pod_termination` for the Nextflow
+        head poller (observability plan D4c): the exit code decides COMPLETED vs
+        COMPLETED vs FAILED together with ``trace.csv``, and the reason ("OOMKilled",
+        "Error", "Completed") is worth more than Kubernetes' Job-level "backoff
+        limit" text. Best-effort, never raises; ``(None, None)`` means "no better
+        answer available" (pod gone after the Job TTL, API unreachable).
+        """
+        try:
+            pods = self._core_api.list_namespaced_pod(
+                namespace=self._namespace,
+                label_selector=f"job-name={job_name}",
+            )
+        except k8s_client.rest.ApiException:
+            logger.warning(f"Failed to read pod exit for Job {job_name}")
+            return None, None
+        for pod in pods.items:
+            for status in (pod.status.container_statuses or []) if pod.status else []:
+                terminated = getattr(status.state, "terminated", None) if status.state else None
+                if terminated is None:
+                    continue
+                code = terminated.exit_code
+                return (terminated.reason or "terminated"), (int(code) if code is not None else None)
+        return None, None
+
     def get_pod_termination(self, job_name: str) -> str | None:
         """Why this Job's pod stopped, as a short phrase — or ``None``.
 

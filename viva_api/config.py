@@ -216,6 +216,18 @@ class Settings(BaseSettings):
     s3_work_prefix: str = "nextflow/work"  # Prefix for Nextflow work directory
     s3_output_prefix: str = "vecoli-output"  # Prefix for workflow output data
 
+    # --- Simulation event stream (observability plan D4a; viva_api.common.events_env) ---
+    # Every dispatched task gets PBG_* identity env so the process-bigraph engine
+    # (>= 1.9) can stamp its JSON-lines events with the run's trace/span ids and
+    # write them to stdout (CloudWatch) and, when a work bucket is configured, to
+    # a per-run S3 prefix. Inert on an image whose engine predates the events
+    # module. ``events_s3_prefix`` is a template with ``{experiment_id}``; empty
+    # derives ``s3://<s3_work_bucket>/<s3_work_prefix>/<experiment_id>/events/``.
+    events_enabled: bool = True
+    events_s3_prefix: str = ""
+    events_flush_seconds: int = 60  # how often a task rewrites its events.jsonl object
+    events_heartbeat_seconds: int = 30  # engine tick heartbeat cadence (wall clock)
+
     # ECR settings
     ecr_account_id: str = ""  # AWS account ID for ECR registry (e.g. "476270107793")
     ecr_repository: str = "vecoli"  # ECR repository name for vEcoli images

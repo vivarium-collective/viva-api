@@ -3,6 +3,8 @@ import datetime
 import logging
 
 from viva_api.common.dispatch_validation import resolve_task_env
+from viva_api.common.events_env import with_events_env
+from viva_api.common.hpc import nextflow_trace
 from viva_api.common.hpc.job_service import JobStatusUpdate
 from viva_api.common.hpc.local_task_service import LocalTaskService
 from viva_api.common.hpc.slurm_service import SlurmService
@@ -164,6 +166,10 @@ class JobScheduler:
                 await self.update_multi_node_jobs()
             except Exception:
                 logger.exception("Error during multi-node composite job polling")
+            try:
+                await self.update_nextflow_heads()
+            except Exception:
+                logger.exception("Error during Nextflow head polling")
             await asyncio.sleep(interval_seconds)
 
     async def update_running_jobs(self) -> None:
@@ -662,7 +668,17 @@ class JobScheduler:
             expect_new_genes=expect_new_genes,
             expect_bundle_overrides=expect_bundle_overrides,
             lineage_debug_division=lineage_debug_division,
-            task_env=resolve_task_env(simulation.config),
+            # The campaign's PBG_* identity under the request's env, so every
+            # seed's events share the ParCa job's trace id (events_env).
+            task_env=with_events_env(
+                resolve_task_env(simulation.config),
+                correlation_id=fresh.correlation_id,
+                experiment_id=experiment_id,
+                sim_id=simulation.database_id,
+                backend="chain",
+                tags={"phase": "lineage"},
+                settings=get_settings(),
+            ),
         )
         for seed in range(n_seeds):
             if seed in submitted:
@@ -728,6 +744,27 @@ class JobScheduler:
             current_job_ids[seed] = None
             final_job_ids.append(job_id)
 
+    @staticmethod
+    def _describe_failed_jobs(
+        simulation_service_ray: SimulationServiceRay, failed_job_ids: list[str], limit: int = 5
+    ) -> list[str]:
+        """``"<job name> (failed, exit 1, <statusReason>)"`` per failed seed job,
+        capped at ``limit``. Best-effort: a describe_jobs error, or a test double
+        that returns nothing dict-shaped, yields ``[]`` rather than a crash."""
+        if not failed_job_ids:
+            return []
+        try:
+            details = simulation_service_ray.get_batch_job_details(failed_job_ids[:limit])
+        except Exception:
+            logger.debug("describe_jobs failed for %d failed seed jobs", len(failed_job_ids))
+            return []
+        if not isinstance(details, dict):
+            return []
+        lines = [details[jid].describe() for jid in failed_job_ids[:limit] if jid in details]
+        if len(failed_job_ids) > limit:
+            lines.append(f"(+{len(failed_job_ids) - limit} more)")
+        return lines
+
     async def _finalize_campaign(
         self,
         simulation_service_ray: SimulationServiceRay,
@@ -762,28 +799,43 @@ class JobScheduler:
         # non-empty, so a single surviving lineage out of thousands reported the
         # whole sweep complete and the multivariant analysis then ran over a store
         # full of undetectable holes (CD2 audit §2.11 / P0-7). A partial result is
-        # terminal but NOT a success: mark it FAILED (there is no PARTIAL job
-        # status without a DB enum migration; see the PR note) and name the
-        # missing/failed seed chains, and do not submit an analysis over an
-        # incomplete store.
+        # terminal but NOT a success: mark it FAILED, name the missing/failed
+        # seed chains in ``error_message``, and do not submit an analysis over an
+        # incomplete store. How many seeds survived is recorded in the message
+        # rather than in the status -- a status that means "look at the data to
+        # find out" is not a status.
         all_succeeded = len(succeeded) == n_seeds
+        error_source: str | None = None
         if all_succeeded:
             error_message: str | None = None
-        elif not succeeded:
-            error_message = "chain dispatch: zero seed chains succeeded"
+            terminal_status = JobStatus.COMPLETED
         else:
-            missing = failed or ["(seeds that never submitted generation 0)"]
-            error_message = (
-                f"chain dispatch: partial completion — {len(succeeded)}/{n_seeds} seed chains "
-                f"succeeded; missing/failed final job ids: {missing}"
-            )
+            # Name the failed seeds by what Batch said about them, not by id: a
+            # UUID sends the reader to CloudWatch by hand (observability plan D4c).
+            reasons = self._describe_failed_jobs(simulation_service_ray, failed)
+            if not succeeded:
+                error_message = "chain dispatch: zero seed chains succeeded"
+                terminal_status = JobStatus.FAILED
+            else:
+                # Terminal but not a success: k/N lineages are on disk, the rest
+                # are not. The k/N count goes in the message, where a reader can
+                # act on it; the status stays FAILED because the campaign did not
+                # deliver what was asked of it.
+                error_message = f"chain dispatch: partial completion — {len(succeeded)}/{n_seeds} seed chains succeeded"
+                terminal_status = JobStatus.FAILED
+            if reasons:
+                error_message += "; failed: " + "; ".join(reasons)
+                error_source = "batch_status_reason"
+            elif not succeeded and not failed:
+                error_message += " (seeds that never submitted generation 0)"
         update = ChainCampaignUpdate(
             chain_current_job_ids=current_job_ids,
             chain_current_generation=current_generation,
             chain_parca_done=True,
             chain_final_job_ids=final_job_ids,
-            terminal_status=JobStatus.COMPLETED if all_succeeded else JobStatus.FAILED,
+            terminal_status=terminal_status,
             error_message=error_message,
+            error_source=error_source,
         )
         if not all_succeeded:
             logger.warning(
@@ -901,6 +953,155 @@ class JobScheduler:
             composite_id,
             analysis_job_id,
         )
+
+    async def update_nextflow_heads(self) -> None:
+        """Advance every active Nextflow-dispatch run by one tick (observability
+        plan D4c). Before this poller a Nextflow run's row changed only when a
+        user called ``GET /status`` -- and that read mapped the K8s Job
+        condition straight to FAILED with Kubernetes' "backoff limit" text,
+        whatever the campaign's tasks had done. The status is now read from the
+        head's own accounting (``trace.csv``) plus the pod's exit code, and the
+        first failed task's ``.command.err`` becomes the ``error_message``.
+        Separate, additive code path -- deliberately NOT sharing logic with the
+        chain/multi-node pollers, whose rows are RAY-backed and disjoint from
+        this query by construction (``list_active_nextflow_hpcruns``)."""
+        if self.simulation_service_ray is None:
+            return
+        simulation_service_ray = self.simulation_service_ray
+        active_runs = await self.database_service.list_active_nextflow_hpcruns()
+        if not active_runs:
+            logger.debug("No active Nextflow head runs found for polling.")
+            return
+        for hpc_run in active_runs:
+            try:
+                await self._advance_nextflow_head(hpc_run, simulation_service_ray)
+            except Exception:
+                logger.exception("Error advancing Nextflow head HpcRun %s", hpc_run.database_id)
+
+    async def _advance_nextflow_head(self, hpc_run: HpcRun, simulation_service_ray: SimulationServiceRay) -> None:
+        """Poll one Nextflow head; once its K8s Job is terminal, classify the run
+        from ``trace.csv`` + the pod's exit code and finalize the row exactly
+        once (single-winner conditional UPDATE, like ``_advance_multi_node_job``).
+
+        Status rule (``nextflow_trace.classify_run``): every task COMPLETED/CACHED
+        and head exit 0 -> COMPLETED; anything else -> FAILED, with the per-task
+        detail in ``error_message`` and the trace rows. When the trace cannot be
+        read at all, the K8s Job condition decides, as before.
+        """
+        job_info = await simulation_service_ray.get_job_status(hpc_run.job_id)
+        if job_info is None or job_info.status not in (JobStatus.COMPLETED, JobStatus.FAILED):
+            return  # still running, or not yet visible -- nothing to do this tick
+
+        job_name = hpc_run.job_id.value
+        k8s = getattr(simulation_service_ray, "_k8s", None)
+        reason: str | None = None
+        exit_code: int | None = None
+        if k8s is not None:
+            try:
+                reason, exit_code = k8s.get_pod_exit(job_name)
+            except Exception:
+                logger.debug("pod exit unavailable for Nextflow head %s", job_name)
+        if exit_code is None and job_info.status == JobStatus.COMPLETED:
+            exit_code = 0
+
+        # S1 (eagmon, #609 review): a head the K8s Job reports as FAILED whose exit
+        # code we could NOT read -- get_pod_exit threw, or the pod is already gone.
+        # Left as None, ``classify_run``'s tie-break is inert (``not in (None, 0)``),
+        # so a run whose every task COMPLETED comes back COMPLETED and the head's
+        # failure is silently discarded -- precisely the stage-out/publish failure
+        # the tie-break exists to catch.
+        #
+        # The sentinel is deliberately LOCAL to the classification: -1 is not a real
+        # exit code and must not be written to the database as though we had read one.
+        # ``exit_code`` itself stays None, so the row records "unknown", which is true.
+        head_exit_for_classification = exit_code
+        if exit_code is None and job_info.status == JobStatus.FAILED:
+            head_exit_for_classification = -1
+
+        simulation = await self.database_service.get_simulation(simulation_id=hpc_run.ref_id)
+        experiment_id = str(simulation.experiment_id) if simulation is not None else None
+        trace_rows = await self._read_nextflow_trace(experiment_id)
+
+        status = job_info.status
+        error_message = job_info.error_message
+        error_source: str | None = "k8s_condition" if error_message else None
+        attempt: int | None = None
+        if trace_rows is not None:
+            summary = nextflow_trace.summarize(trace_rows)
+            status = nextflow_trace.classify_run(head_exit_for_classification, summary)
+            attempt = summary.max_attempt or None
+            if status != JobStatus.COMPLETED:
+                head_reason = f"head pod {reason}" if reason else None
+                error_message = nextflow_trace.failure_headline(exit_code, summary, head_reason)
+                error_source = "nextflow_trace"
+                tail = await self._read_failed_task_log(simulation, experiment_id, summary)
+                if tail:
+                    error_message = tail
+                    error_source = "command_err"
+
+        won = await self.database_service.finalize_nextflow_head(
+            hpc_run.database_id,
+            status,
+            error_message=error_message,
+            error_source=error_source,
+            exit_code=exit_code,
+            attempt=attempt,
+        )
+        if not won:
+            return
+        logger.info(
+            "Nextflow head %s (HpcRun %s, run %s) -> %s (exit %s%s)",
+            job_name,
+            hpc_run.database_id,
+            experiment_id,
+            status.value,
+            exit_code,
+            f"; {error_message.splitlines()[0][:160]}" if error_message else "",
+        )
+
+    async def _read_nextflow_trace(self, experiment_id: str | None) -> list[nextflow_trace.TraceRow] | None:
+        """The run's staged ``trace.csv`` rows, or ``None`` when it cannot be read
+        (no file service, no simulation record, object absent)."""
+        from pathlib import Path
+
+        from viva_api.common.storage import data_layout
+        from viva_api.common.storage.file_paths import S3FilePath
+        from viva_api.dependencies import get_file_service
+
+        file_service = get_file_service()
+        if file_service is None or not experiment_id:
+            return None
+        key = f"{data_layout.RayLayout.experiment_prefix(experiment_id)}/trace.csv"
+        try:
+            content = await file_service.get_file_contents(S3FilePath(s3_path=Path(key)))
+        except Exception:
+            logger.debug("trace.csv not readable at %s", key)
+            return None
+        if not content:
+            return None
+        return nextflow_trace.parse_trace_csv(content.decode("utf-8", errors="replace"))
+
+    async def _read_failed_task_log(
+        self, simulation: Simulation | None, experiment_id: str | None, summary: nextflow_trace.TraceSummary
+    ) -> str | None:
+        """The first never-succeeded task's ``.command.err`` tail, if reachable."""
+        from viva_api.dependencies import get_file_service
+
+        file_service = get_file_service()
+        failed = nextflow_trace.final_failed_rows(summary)
+        if file_service is None or not failed or not experiment_id:
+            return None
+        settings = get_settings()
+        if not settings.s3_work_bucket:
+            return None
+        # The WORK dir is the campaign's, which a resumed run inherits from the
+        # run it continues (see _submit_nextflow_dispatch's campaign_key).
+        campaign_key = experiment_id
+        nf_dispatch = getattr(simulation.config, "nextflow_dispatch", None) if simulation is not None else None
+        if isinstance(nf_dispatch, dict) and nf_dispatch.get("resume_from"):
+            campaign_key = str(nf_dispatch["resume_from"])
+        work_dir_uri = f"s3://{settings.s3_work_bucket}/{settings.s3_work_prefix}/{campaign_key}/work"
+        return await nextflow_trace.fetch_command_err(file_service, work_dir_uri, failed[0])
 
     async def close(self) -> None:
         await self.stop_polling()

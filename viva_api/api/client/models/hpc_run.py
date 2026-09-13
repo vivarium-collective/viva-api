@@ -32,6 +32,15 @@ class HpcRun:
         chain_parca_done (Union[None, Unset, bool]):
         multi_node_composite_id (Union[None, Unset, str]):
         external_job_ids (Union[None, Unset, list[str]]):
+        exit_code (Union[None, Unset, int]):
+        attempt (Union[None, Unset, int]):
+        error_source (Union[None, Unset, str]):
+        trace_id (Union[None, Unset, str]):
+        campaign_span_id (Union[None, Unset, str]):
+        events_s3_prefix (Union[None, Unset, str]):
+        stage (Union[None, Unset, str]):
+        generation (Union[None, Unset, int]):
+        last_event_at (Union[None, Unset, str]):
     """
 
     database_id: int
@@ -51,6 +60,15 @@ class HpcRun:
     chain_parca_done: Union[None, Unset, bool] = UNSET
     multi_node_composite_id: Union[None, Unset, str] = UNSET
     external_job_ids: Union[None, Unset, list[str]] = UNSET
+    exit_code: Union[None, Unset, int] = UNSET
+    attempt: Union[None, Unset, int] = UNSET
+    error_source: Union[None, Unset, str] = UNSET
+    trace_id: Union[None, Unset, str] = UNSET
+    campaign_span_id: Union[None, Unset, str] = UNSET
+    events_s3_prefix: Union[None, Unset, str] = UNSET
+    stage: Union[None, Unset, str] = UNSET
+    generation: Union[None, Unset, int] = UNSET
+    last_event_at: Union[None, Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -154,6 +172,60 @@ class HpcRun:
         else:
             external_job_ids = self.external_job_ids
 
+        exit_code: Union[None, Unset, int]
+        if isinstance(self.exit_code, Unset):
+            exit_code = UNSET
+        else:
+            exit_code = self.exit_code
+
+        attempt: Union[None, Unset, int]
+        if isinstance(self.attempt, Unset):
+            attempt = UNSET
+        else:
+            attempt = self.attempt
+
+        error_source: Union[None, Unset, str]
+        if isinstance(self.error_source, Unset):
+            error_source = UNSET
+        else:
+            error_source = self.error_source
+
+        trace_id: Union[None, Unset, str]
+        if isinstance(self.trace_id, Unset):
+            trace_id = UNSET
+        else:
+            trace_id = self.trace_id
+
+        campaign_span_id: Union[None, Unset, str]
+        if isinstance(self.campaign_span_id, Unset):
+            campaign_span_id = UNSET
+        else:
+            campaign_span_id = self.campaign_span_id
+
+        events_s3_prefix: Union[None, Unset, str]
+        if isinstance(self.events_s3_prefix, Unset):
+            events_s3_prefix = UNSET
+        else:
+            events_s3_prefix = self.events_s3_prefix
+
+        stage: Union[None, Unset, str]
+        if isinstance(self.stage, Unset):
+            stage = UNSET
+        else:
+            stage = self.stage
+
+        generation: Union[None, Unset, int]
+        if isinstance(self.generation, Unset):
+            generation = UNSET
+        else:
+            generation = self.generation
+
+        last_event_at: Union[None, Unset, str]
+        if isinstance(self.last_event_at, Unset):
+            last_event_at = UNSET
+        else:
+            last_event_at = self.last_event_at
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({
@@ -186,6 +258,24 @@ class HpcRun:
             field_dict["multi_node_composite_id"] = multi_node_composite_id
         if external_job_ids is not UNSET:
             field_dict["external_job_ids"] = external_job_ids
+        if exit_code is not UNSET:
+            field_dict["exit_code"] = exit_code
+        if attempt is not UNSET:
+            field_dict["attempt"] = attempt
+        if error_source is not UNSET:
+            field_dict["error_source"] = error_source
+        if trace_id is not UNSET:
+            field_dict["trace_id"] = trace_id
+        if campaign_span_id is not UNSET:
+            field_dict["campaign_span_id"] = campaign_span_id
+        if events_s3_prefix is not UNSET:
+            field_dict["events_s3_prefix"] = events_s3_prefix
+        if stage is not UNSET:
+            field_dict["stage"] = stage
+        if generation is not UNSET:
+            field_dict["generation"] = generation
+        if last_event_at is not UNSET:
+            field_dict["last_event_at"] = last_event_at
 
         return field_dict
 
@@ -369,6 +459,87 @@ class HpcRun:
 
         external_job_ids = _parse_external_job_ids(d.pop("external_job_ids", UNSET))
 
+        def _parse_exit_code(data: object) -> Union[None, Unset, int]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, int], data)
+
+        exit_code = _parse_exit_code(d.pop("exit_code", UNSET))
+
+        def _parse_attempt(data: object) -> Union[None, Unset, int]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, int], data)
+
+        attempt = _parse_attempt(d.pop("attempt", UNSET))
+
+        def _parse_error_source(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        error_source = _parse_error_source(d.pop("error_source", UNSET))
+
+        def _parse_trace_id(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        trace_id = _parse_trace_id(d.pop("trace_id", UNSET))
+
+        def _parse_campaign_span_id(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        campaign_span_id = _parse_campaign_span_id(d.pop("campaign_span_id", UNSET))
+
+        def _parse_events_s3_prefix(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        events_s3_prefix = _parse_events_s3_prefix(d.pop("events_s3_prefix", UNSET))
+
+        def _parse_stage(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        stage = _parse_stage(d.pop("stage", UNSET))
+
+        def _parse_generation(data: object) -> Union[None, Unset, int]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, int], data)
+
+        generation = _parse_generation(d.pop("generation", UNSET))
+
+        def _parse_last_event_at(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        last_event_at = _parse_last_event_at(d.pop("last_event_at", UNSET))
+
         hpc_run = cls(
             database_id=database_id,
             correlation_id=correlation_id,
@@ -387,6 +558,15 @@ class HpcRun:
             chain_parca_done=chain_parca_done,
             multi_node_composite_id=multi_node_composite_id,
             external_job_ids=external_job_ids,
+            exit_code=exit_code,
+            attempt=attempt,
+            error_source=error_source,
+            trace_id=trace_id,
+            campaign_span_id=campaign_span_id,
+            events_s3_prefix=events_s3_prefix,
+            stage=stage,
+            generation=generation,
+            last_event_at=last_event_at,
         )
 
         hpc_run.additional_properties = d

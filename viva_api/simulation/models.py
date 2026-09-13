@@ -69,6 +69,25 @@ class HpcRun(BaseModel):
     # task is watching (a DooD build's build job(s)). What a recovering process
     # resolves the row from once the task's owner pod is gone. None otherwise.
     external_job_ids: list[str] | None = None
+    # Observability (plan D4b/D4c). All optional and None on rows written before
+    # the columns existed. ``exit_code``: the head pod's / Batch container's exit
+    # code; ``attempt``: how many times the work was tried (max Nextflow task
+    # attempt, Batch attempts); ``error_source``: where ``error_message`` came
+    # from (``viva_api.common.hpc.job_service.ERROR_SOURCE_RANK``); ``trace_id``
+    # / ``campaign_span_id``: the OpenTelemetry-style identity every task's
+    # events carry (derived from ``correlation_id``, see events_env);
+    # ``events_s3_prefix``: where the tasks' events.jsonl objects land;
+    # ``stage``/``generation``/``last_event_at``: folded from the event stream by
+    # the ingester (PR-D), None until it runs.
+    exit_code: int | None = None
+    attempt: int | None = None
+    error_source: str | None = None
+    trace_id: str | None = None
+    campaign_span_id: str | None = None
+    events_s3_prefix: str | None = None
+    stage: str | None = None
+    generation: int | None = None
+    last_event_at: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -124,6 +143,9 @@ class ChainCampaignUpdate(BaseModel):
     chain_final_job_ids: list[str]
     terminal_status: JobStatus | None = None
     error_message: str | None = None
+    # Where ``error_message`` came from (``ERROR_SOURCE_RANK``); a lower-ranked
+    # message never overwrites a higher-ranked one already on the row.
+    error_source: str | None = None
 
 
 class SimulationRun(BaseModel):

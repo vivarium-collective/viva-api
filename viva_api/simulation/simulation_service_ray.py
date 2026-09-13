@@ -51,6 +51,7 @@ from pydantic import BaseModel
 
 from viva_api.common import analysis_dag
 from viva_api.common.dispatch_validation import resolve_task_env, task_env_as_batch_list, validate_nextflow_dispatch
+from viva_api.common.events_env import with_events_env
 from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.hpc.k8s_job_service import K8sJobService
 from viva_api.common.hpc.local_task_service import LocalTaskService
@@ -590,6 +591,27 @@ class ChainCampaignPollResult:
     terminal: bool
     succeeded_job_ids: list[str] = field(default_factory=list)
     failed_job_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class BatchJobDetail:
+    """What ``describe_jobs`` says about one job, for reporting a failure by
+    name and reason rather than by id (``get_batch_job_details``)."""
+
+    job_id: str
+    job_name: str
+    status: JobStatus
+    status_reason: str | None = None
+    exit_code: int | None = None
+    attempts: int = 0
+
+    def describe(self) -> str:
+        parts = [self.job_name or self.job_id, self.status.value]
+        if self.exit_code is not None:
+            parts.append(f"exit {self.exit_code}")
+        if self.status_reason:
+            parts.append(self.status_reason)
+        return ": ".join(parts[:1]) + " (" + ", ".join(parts[1:]) + ")"
 
 
 def _batch_exit_code(job: dict[str, Any]) -> str | None:
@@ -1726,7 +1748,16 @@ class SimulationServiceRay(SimulationService):
         # reachable directly, and it is the last point before a Job is created.
         validate_nextflow_dispatch(nf_dispatch)
         composite_id = nf_dispatch.get("composite_id")
-        task_env = resolve_task_env(ecoli_simulation.config, nf_dispatch)
+        # The request's env, plus the run's PBG_* identity UNDER it (observability
+        # plan D4a): every Batch task of this campaign gets the same trace id.
+        task_env = with_events_env(
+            resolve_task_env(ecoli_simulation.config, nf_dispatch),
+            correlation_id=correlation_id,
+            experiment_id=str(ecoli_simulation.experiment_id),
+            sim_id=ecoli_simulation.database_id,
+            backend="nextflow",
+            settings=get_settings(),
+        )
 
         commit = simulator.git_commit_hash
         # The RUN's own id, read from the simulation record rather than from the
@@ -2033,7 +2064,14 @@ class SimulationServiceRay(SimulationService):
         commit = simulator.git_commit_hash
         experiment_id = str(ecoli_simulation.config.experiment_id)
         cache_variant = mbp_dispatch.get("cache_variant") or None
-        task_env = resolve_task_env(ecoli_simulation.config, mbp_dispatch)
+        task_env = with_events_env(
+            resolve_task_env(ecoli_simulation.config, mbp_dispatch),
+            correlation_id=correlation_id,
+            experiment_id=experiment_id,
+            sim_id=ecoli_simulation.database_id,
+            backend="mbp",
+            settings=settings,
+        )
         cache_s3 = self.cache_s3_uri(commit, variant=cache_variant)
 
         job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
@@ -3676,7 +3714,14 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         num_nodes = int(mnp_dispatch.get("num_nodes") or 1)
         params = dict(mnp_dispatch.get("params") or {})
         _thread_injected_processes_into_params(params, ecoli_simulation.config)
-        task_env = resolve_task_env(ecoli_simulation.config, mnp_dispatch)
+        task_env = with_events_env(
+            resolve_task_env(ecoli_simulation.config, mnp_dispatch),
+            correlation_id=correlation_id,
+            experiment_id=str(ecoli_simulation.experiment_id),
+            sim_id=ecoli_simulation.database_id,
+            backend="mnp",
+            settings=get_settings(),
+        )
         steps = int(mnp_dispatch.get("steps") or 1)
         # required_run_interval (item 105/#166, the K4-canary "under-run" empty-
         # emit bug: sms-ecoli#166 comment 5579146363, eagmon): `steps` silently
@@ -4396,6 +4441,9 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         # Same generic rnaseq_source passthrough (item 106/#166 chassis-provenance
         # thread), same reasoning as new_genes/bundle_overrides above.
         rnaseq_source = getattr(config.parca_options, "rnaseq_source", None)
+        # Fixed BEFORE the ParCa job is submitted so the job's PBG_* identity env
+        # and the campaign row's correlation_id derive the same trace id.
+        campaign_correlation_id = correlation_id or f"chain-campaign-{experiment_id}-{_rand_suffix()}"
         parca_job_id = self._submit_container(
             job_name=f"ray-parca-{commit}-{_rand_suffix()}",
             job_definition=container_job_def,
@@ -4405,14 +4453,22 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
             out_s3=cache_s3,
             out_dir=PARCA_CACHE_DIR,
             tags={**base_tags, "Phase": "parca"},
-            task_env=resolve_task_env(config),
+            task_env=with_events_env(
+                resolve_task_env(config),
+                correlation_id=campaign_correlation_id,
+                experiment_id=experiment_id,
+                sim_id=ecoli_simulation.database_id,
+                backend="chain",
+                tags={"phase": "parca"},
+                settings=get_settings(),
+            ),
         )
 
         await database_service.insert_hpcrun(
             job_id=JobId.ray(parca_job_id),
             job_type=JobType.SIMULATION,
             ref_id=ecoli_simulation.database_id,
-            correlation_id=correlation_id or f"chain-campaign-{experiment_id}-{_rand_suffix()}",
+            correlation_id=campaign_correlation_id,
             chain_n_generations=n_generations,
             chain_final_job_ids=[],
             chain_current_job_ids=[None] * n_seeds,
@@ -4739,6 +4795,33 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
                 if jid is not None:
                     statuses[str(jid)] = JobStatus.from_batch_state(str(job.get("status", "")))
         return statuses
+
+    def get_batch_job_details(self, job_ids: list[str]) -> dict[str, BatchJobDetail]:
+        """``get_batch_job_statuses`` plus what a failed job SAID: Batch's
+        ``statusReason``, the container exit code and the attempt count. Used
+        where a bare job id is not an answer -- a chain campaign's failed seeds
+        (observability plan D4c). Same chunking, same missing-id semantics."""
+        if not job_ids:
+            return {}
+        batch = self._batch()
+        details: dict[str, BatchJobDetail] = {}
+        for i in range(0, len(job_ids), _DESCRIBE_JOBS_MAX_BATCH):
+            chunk = job_ids[i : i + _DESCRIBE_JOBS_MAX_BATCH]
+            response = batch.describe_jobs(jobs=chunk)
+            for job in response.get("jobs", []):
+                jid = job.get("jobId")
+                if jid is None:
+                    continue
+                exit_code = _batch_exit_code(job)
+                details[str(jid)] = BatchJobDetail(
+                    job_id=str(jid),
+                    job_name=str(job.get("jobName") or ""),
+                    status=JobStatus.from_batch_state(str(job.get("status", ""))),
+                    status_reason=job.get("statusReason"),
+                    exit_code=int(exit_code) if exit_code is not None else None,
+                    attempts=len(job.get("attempts") or []),
+                )
+        return details
 
     def get_chain_campaign_result(self, job_ids: list[str]) -> ChainCampaignPollResult:
         """Poll a chain-dispatch campaign's tracked final-generation job ids —

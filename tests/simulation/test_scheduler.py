@@ -671,6 +671,20 @@ class TestAdvanceChainCampaign:
                 terminal=True, succeeded_job_ids=["s0g1", "s1g1"], failed_job_ids=["s2g0"]
             )
         )
+        from viva_api.simulation.simulation_service_ray import BatchJobDetail
+
+        mock_ray.get_batch_job_details = MagicMock(
+            return_value={
+                "s2g0": BatchJobDetail(
+                    job_id="s2g0",
+                    job_name="chain-seed2-lineage-exp",
+                    status=JobStatus.FAILED,
+                    status_reason="Essential container in task exited",
+                    exit_code=1,
+                    attempts=1,
+                )
+            }
+        )
         scheduler = JobScheduler(
             messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
         )
@@ -681,10 +695,17 @@ class TestAdvanceChainCampaign:
         refetched = await database_service.get_hpcrun(hpcrun.database_id)
         assert refetched is not None
         assert refetched.status != JobStatus.COMPLETED
+        # Terminal and not a success: FAILED. "2 of 3 lineages are on disk" is
+        # recorded in error_message, where a reader can act on it, rather than in
+        # a status -- the campaign did not deliver what was asked of it either way.
         assert refetched.status == JobStatus.FAILED
         assert refetched.error_message is not None
         assert "2/3" in refetched.error_message
-        assert "s2g0" in refetched.error_message  # the missing/failed final job id is named
+        # The failed seed is named by what Batch said, not by a bare job id.
+        assert "chain-seed2-lineage-exp" in refetched.error_message
+        assert "exit 1" in refetched.error_message
+        assert "Essential container in task exited" in refetched.error_message
+        assert refetched.error_source == "batch_status_reason"
 
     @pytest.mark.asyncio
     async def test_all_seeds_resolved_zero_succeeded_marks_failed_no_analysis(
@@ -1372,9 +1393,10 @@ class TestReconcileLocalTasks:
             patch.object(scheduler, "update_running_jobs", new=lambda: _record("running")),
             patch.object(scheduler, "update_chain_campaigns", new=lambda: _record("chain")),
             patch.object(scheduler, "update_multi_node_jobs", new=lambda: _record("mnp")),
+            patch.object(scheduler, "update_nextflow_heads", new=lambda: _record("nf")),
         ):
             await scheduler._polling_loop(interval_seconds=0)
-        assert order == ["reconcile", "running", "chain", "mnp"]
+        assert order == ["reconcile", "running", "chain", "mnp", "nf"]
 
 
 @pytest.mark.asyncio
@@ -1800,3 +1822,349 @@ class TestReconcileCancelledNextflowCampaigns:
 
         heads = {c.args[0] for c in mock_ray.reap_cancelled_campaign.await_args_list}
         assert {"nf-sim1-a-1111-aaa111", "nf-sim2-b-2222-bbb222"} <= heads
+
+
+# --- Observability plan D4c: the Nextflow head poller ---------------------------
+
+
+async def insert_nextflow_head_job(
+    database_service: DatabaseServiceSQL, *, job_name: str, nextflow_dispatch: dict[str, Any] | None = None
+) -> tuple[Simulation, HpcRun]:
+    """Insert a Simulation + the HpcRun row a v2ecoli Nextflow dispatch writes
+    (``JobId.k8s_nextflow``, no chain/multi-node discriminators)."""
+    simulator = await database_service.insert_simulator(
+        git_commit_hash=str(uuid.uuid4()),
+        git_repo_url="https://github.com/CovertLabEcoli/sms-ecoli",
+        git_branch="main",
+    )
+    parca_dataset = await database_service.insert_parca_dataset(
+        parca_dataset_request=ParcaDatasetRequest(simulator_version=simulator, parca_config=ParcaOptions())
+    )
+    experiment_id = f"test-nf-head-{str(uuid.uuid4())[:8]!s}"
+    config = SimulationConfig(experiment_id=experiment_id)
+    if nextflow_dispatch is not None:
+        setattr(config, "nextflow_dispatch", nextflow_dispatch)  # noqa: B010
+    simulation = await database_service.insert_simulation(
+        sim_request=SimulationRequest(
+            simulation_config_filename="config_filename",
+            experiment_id=experiment_id,
+            parca_dataset_id=parca_dataset.database_id,
+            simulator_id=simulator.database_id,
+            config=config,
+        )
+    )
+    hpcrun = await database_service.insert_hpcrun(
+        job_id=JobId.k8s_nextflow(job_name),
+        job_type=JobType.SIMULATION,
+        ref_id=simulation.database_id,
+        correlation_id=f"nf-head-{experiment_id}",
+    )
+    return simulation, hpcrun
+
+
+_TRACE_HEADER = "task_id\thash\tnative_id\tname\tstatus\texit\tsubmit\n"
+
+
+def _trace(*rows: tuple[str, str, str, str]) -> bytes:
+    body = "".join(
+        f"{i}\t{h}\tnative-{i}\t{name}\t{status}\t{exit_code}\t-\n"
+        for i, (h, name, status, exit_code) in enumerate(rows, 1)
+    )
+    return (_TRACE_HEADER + body).encode()
+
+
+class _FakeS3:
+    """A FileService double serving trace.csv and a failed task's .command.err."""
+
+    def __init__(self, objects: dict[str, bytes]) -> None:
+        self.objects = objects
+
+    async def get_file_contents(self, s3_path: Any) -> bytes | None:
+        return self.objects.get(str(s3_path.s3_path))
+
+    async def get_listing(self, s3_path: Any) -> list[Any]:
+        from datetime import UTC, datetime
+
+        from viva_api.common.storage.file_service import ListingItem
+
+        prefix = str(s3_path.s3_path).rstrip("/") + "/"
+        return [
+            ListingItem(Key=k, LastModified=datetime.now(UTC), ETag="e", Size=len(v))
+            for k, v in self.objects.items()
+            if k.startswith(prefix)
+        ]
+
+
+def _nf_mock_ray(head_status: JobStatus, *, exit_code: int | None, reason: str | None = None) -> MagicMock:
+    mock_ray = _mock_ray_service()
+    mock_ray.get_job_status.return_value = JobStatusInfo(
+        job_id=JobId.k8s_nextflow("nf-x"),
+        status=head_status,
+        error_message="Job has reached the specified backoff limit" if head_status == JobStatus.FAILED else None,
+    )
+    mock_ray._k8s = MagicMock()
+    mock_ray._k8s.get_pod_exit.return_value = (reason, exit_code)
+    return mock_ray
+
+
+class TestUpdateNextflowHeads:
+    """JobScheduler.update_nextflow_heads / _advance_nextflow_head: a Nextflow
+    run's status comes from trace.csv + the head pod's exit code, and its
+    error_message from the failed task's .command.err -- not from the K8s Job
+    condition's "backoff limit" text. Real Postgres (testcontainers), like the
+    multi-node poller's own tests above."""
+
+    @pytest.fixture(autouse=True)
+    def _no_file_service(self) -> Any:
+        from viva_api.dependencies import get_file_service, set_file_service
+
+        saved = get_file_service()
+        set_file_service(None)
+        yield
+        set_file_service(saved)
+
+    @staticmethod
+    def _use_s3(objects: dict[str, bytes]) -> None:
+        from viva_api.dependencies import set_file_service
+
+        set_file_service(_FakeS3(objects))  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_noop_without_a_ray_service(self) -> None:
+        mock_database = AsyncMock()
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=mock_database, simulation_service_ray=None
+        )
+        await scheduler.update_nextflow_heads()
+        mock_database.list_active_nextflow_hpcruns.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_still_running_head_leaves_the_row_untouched(self, database_service: DatabaseServiceSQL) -> None:
+        _sim, hpcrun = await insert_nextflow_head_job(database_service, job_name="nf-running")
+        mock_ray = _nf_mock_ray(JobStatus.RUNNING, exit_code=None)
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_nextflow_head(hpcrun, mock_ray)
+
+        refetched = await database_service.get_hpcrun(hpcrun.database_id)
+        assert refetched is not None and refetched.status == JobStatus.RUNNING
+        mock_ray._k8s.get_pod_exit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_FAILED_head_with_an_UNREADABLE_exit_is_not_reported_completed(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        """S1 (eagmon, #609): the head's failure must not be discarded just because
+        its exit code could not be read.
+
+        The K8s Job says FAILED, but ``get_pod_exit`` throws (or the pod is already
+        gone), so exit_code is None. Every task in the trace COMPLETED -- a
+        stage-out/publish failure after the science ran. With exit_code None,
+        ``classify_run``'s tie-break (``not in (None, 0)``) is inert and the run
+        would come back COMPLETED, silently losing the head failure.
+        """
+        sim, hpcrun = await insert_nextflow_head_job(database_service, job_name="nf-noexit")
+        self._use_s3({
+            f"vecoli-output/{sim.experiment_id}/trace.csv": _trace(
+                ("aa/111111", "parca_v0", "COMPLETED", "0"), ("bb/222222", "runs_v0:lineage_v0_s0", "COMPLETED", "0")
+            )
+        })
+        mock_ray = _nf_mock_ray(JobStatus.FAILED, exit_code=None, reason=None)
+        mock_ray._k8s.get_pod_exit.side_effect = RuntimeError("pod is gone")
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_nextflow_head(hpcrun, mock_ray)
+
+        refetched = await database_service.get_hpcrun(hpcrun.database_id)
+        assert refetched is not None
+        assert refetched.status == JobStatus.FAILED, "the head failure must survive an unreadable exit code"
+        # The sentinel is for classification ONLY -- the row must not claim we read
+        # an exit code we never read.
+        assert refetched.exit_code is None
+
+    @pytest.mark.asyncio
+    async def test_every_task_completed_and_head_zero_is_completed(self, database_service: DatabaseServiceSQL) -> None:
+        sim, hpcrun = await insert_nextflow_head_job(database_service, job_name="nf-done")
+        self._use_s3({
+            f"vecoli-output/{sim.experiment_id}/trace.csv": _trace(
+                ("aa/111111", "parca_v0", "COMPLETED", "0"), ("bb/222222", "runs_v0:lineage_v0_s0", "COMPLETED", "0")
+            )
+        })
+        mock_ray = _nf_mock_ray(JobStatus.COMPLETED, exit_code=0, reason="Completed")
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_nextflow_head(hpcrun, mock_ray)
+
+        refetched = await database_service.get_hpcrun(hpcrun.database_id)
+        assert refetched is not None
+        assert refetched.status == JobStatus.COMPLETED
+        assert refetched.error_message is None
+        assert refetched.exit_code == 0
+        assert refetched.attempt == 1
+
+    @pytest.mark.asyncio
+    async def test_head_zero_with_a_failed_task_is_partial_with_the_tasks_own_traceback(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        """Sim 749's shape: 100/100 generations published, the per-variant gather
+        dead, head exit 0 under `errorStrategy finish`. Before: FAILED with
+        "Job has reached the specified backoff limit"."""
+        sim, hpcrun = await insert_nextflow_head_job(database_service, job_name="nf-partial")
+        exp = sim.experiment_id
+        workdir = f"nextflow/work/{exp}/work/1b/18aa5e4158926f2a6346c33ab75dd1"
+        self._use_s3({
+            f"vecoli-output/{exp}/trace.csv": _trace(
+                ("aa/111111", "parca_v0", "COMPLETED", "0"),
+                ("bb/222222", "runs_v0:lineage_v0_s0", "COMPLETED", "0"),
+                ("1b/18aa5e", "analysis_v8", "FAILED", "1"),
+            ),
+            f"{workdir}/.command.err": (
+                b"Traceback (most recent call last):\n  ...\n"
+                b"FileNotFoundError: [Errno 2] No such file or directory: 'analysis.config.json'\n"
+            ),
+        })
+        mock_ray = _nf_mock_ray(JobStatus.COMPLETED, exit_code=0, reason="Completed")
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+        with patch("viva_api.simulation.job_scheduler.get_settings") as settings:
+            settings.return_value = MagicMock(s3_work_bucket="mybucket", s3_work_prefix="nextflow/work")
+            await scheduler._advance_nextflow_head(hpcrun, mock_ray)
+
+        refetched = await database_service.get_hpcrun(hpcrun.database_id)
+        assert refetched is not None
+        assert refetched.status == JobStatus.FAILED
+        assert refetched.error_source == "command_err"
+        assert refetched.error_message is not None
+        assert refetched.error_message.startswith("Nextflow task analysis_v8 (exit 1) failed")
+        assert refetched.error_message.endswith("'analysis.config.json'")
+        assert refetched.exit_code == 0
+
+    @pytest.mark.asyncio
+    async def test_lineage_failure_after_a_completed_parca_names_the_lineage_traceback(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        """Sim 943's shape: ParCa completed, the lineage died in generation 1,
+        the head exited 1.
+
+        FAILED, because the science did not run. The value the trace adds is the
+        MESSAGE, not the label: one attempt and exit 1 are recorded, and the
+        error is the lineage's own traceback rather than Kubernetes' "backoff
+        limit" text -- which is what actually shortens the next diagnosis."""
+        sim, hpcrun = await insert_nextflow_head_job(database_service, job_name="nf-failed")
+        exp = sim.experiment_id
+        workdir = f"nextflow/work/{exp}/work/cc/33333333333333333333333333333333"
+        self._use_s3({
+            f"vecoli-output/{exp}/trace.csv": _trace(
+                ("aa/111111", "parca_v0", "COMPLETED", "0"), ("cc/333333", "runs_v0:lineage_v0_s0", "FAILED", "1")
+            ),
+            f"{workdir}/.command.err": (
+                b"NegativeCountsError: Negative value(s) in partitioned_counts:\n"
+                b"RNA0-300[c] in ecoli-polypeptide-elongation (-1)\n"
+            ),
+        })
+        mock_ray = _nf_mock_ray(JobStatus.FAILED, exit_code=1, reason="Error")
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+        with patch("viva_api.simulation.job_scheduler.get_settings") as settings:
+            settings.return_value = MagicMock(s3_work_bucket="mybucket", s3_work_prefix="nextflow/work")
+            await scheduler._advance_nextflow_head(hpcrun, mock_ray)
+
+        refetched = await database_service.get_hpcrun(hpcrun.database_id)
+        assert refetched is not None
+        assert refetched.status == JobStatus.FAILED
+        assert refetched.exit_code == 1 and refetched.attempt == 1
+        assert refetched.error_message is not None and "NegativeCountsError" in refetched.error_message
+        assert refetched.error_message.startswith("Nextflow task runs_v0:lineage_v0_s0 (exit 1) failed")
+        assert "backoff limit" not in refetched.error_message
+
+    @pytest.mark.asyncio
+    async def test_without_a_trace_the_k8s_condition_still_decides(self, database_service: DatabaseServiceSQL) -> None:
+        """A run from before the trace/observability work -- no ``trace.csv`` in
+        S3 at all -- must finalize on the Kubernetes condition alone, not raise,
+        and must leave every observability column exactly as it found it."""
+        _sim, hpcrun = await insert_nextflow_head_job(database_service, job_name="nf-notrace")
+        before = await database_service.get_hpcrun(hpcrun.database_id)
+        assert before is not None
+        mock_ray = _nf_mock_ray(JobStatus.FAILED, exit_code=1, reason="Error")
+        scheduler = JobScheduler(
+            messaging_service=MagicMock(), database_service=database_service, simulation_service_ray=mock_ray
+        )
+
+        await scheduler._advance_nextflow_head(hpcrun, mock_ray)
+
+        refetched = await database_service.get_hpcrun(hpcrun.database_id)
+        assert refetched is not None
+        assert refetched.status == JobStatus.FAILED
+        assert refetched.error_message == "Job has reached the specified backoff limit"
+        assert refetched.error_source == "k8s_condition"
+        # nothing the trace would have supplied got invented, and the row's own
+        # identity/campaign fields are untouched
+        assert refetched.stage is None
+        assert refetched.generation is None
+        assert refetched.last_event_at is None
+        assert refetched.attempt is None
+        assert refetched.database_id == before.database_id
+        assert refetched.correlation_id == before.correlation_id
+        assert refetched.job_type == before.job_type
+        assert refetched.ref_id == before.ref_id
+        assert refetched.trace_id == before.trace_id
+        assert refetched.campaign_span_id == before.campaign_span_id
+        assert refetched.chain_n_generations == before.chain_n_generations
+        assert refetched.multi_node_composite_id == before.multi_node_composite_id
+
+    @pytest.mark.asyncio
+    async def test_concurrent_finalize_only_one_tick_wins(self, database_service: DatabaseServiceSQL) -> None:
+        _sim, hpcrun = await insert_nextflow_head_job(database_service, job_name="nf-race")
+        results = await asyncio.gather(
+            database_service.finalize_nextflow_head(hpcrun.database_id, JobStatus.COMPLETED),
+            database_service.finalize_nextflow_head(hpcrun.database_id, JobStatus.COMPLETED),
+        )
+        assert sorted(results) == [False, True]
+
+    @pytest.mark.asyncio
+    async def test_nextflow_chain_and_multi_node_pollers_are_mutually_disjoint(
+        self, database_service: DatabaseServiceSQL
+    ) -> None:
+        _chain_sim, chain_hpcrun = await insert_chain_campaign_job(
+            database_service, job_id_ext="disjoint-chain-nf", chain_n_generations=2, n_seeds=1
+        )
+        _mnp_sim, mnp_hpcrun = await insert_multi_node_composite_job(database_service, job_id_ext="disjoint-mnp-nf")
+        _nf_sim, nf_hpcrun = await insert_nextflow_head_job(database_service, job_name="nf-disjoint")
+
+        nf_ids = {r.database_id for r in await database_service.list_active_nextflow_hpcruns()}
+        chain_ids = {r.database_id for r in await database_service.list_active_chain_campaigns()}
+        mnp_ids = {r.database_id for r in await database_service.list_active_multi_node_composites()}
+        assert nf_hpcrun.database_id in nf_ids
+        assert chain_hpcrun.database_id not in nf_ids and mnp_hpcrun.database_id not in nf_ids
+        assert nf_hpcrun.database_id not in chain_ids and nf_hpcrun.database_id not in mnp_ids
+
+    @pytest.mark.asyncio
+    async def test_polling_loop_runs_the_head_poller_last(self) -> None:
+        scheduler = JobScheduler(messaging_service=MagicMock(), database_service=MagicMock())
+        order: list[str] = []
+
+        async def _reconcile() -> None:
+            order.append("reconcile")
+            scheduler._stop_event.set()
+
+        async def _record(name: str) -> None:
+            order.append(name)
+
+        with (
+            patch.object(scheduler, "reconcile_local_tasks", new=_reconcile),
+            patch.object(scheduler, "reconcile_cancelled_nextflow_campaigns", new=lambda: _record("reap")),
+            patch.object(scheduler, "update_running_jobs", new=lambda: _record("running")),
+            patch.object(scheduler, "update_chain_campaigns", new=lambda: _record("chain")),
+            patch.object(scheduler, "update_multi_node_jobs", new=lambda: _record("mnp")),
+            patch.object(scheduler, "update_nextflow_heads", new=lambda: _record("nf")),
+        ):
+            await scheduler._polling_loop(interval_seconds=0)
+        assert order == ["reconcile", "reap", "running", "chain", "mnp", "nf"]

@@ -1,0 +1,4 @@
+task_id	hash	native_id	name	status	exit	submit	duration	realtime	%cpu	peak_rss	peak_vmem	rchar	wchar
+1	f3/b0ee40	23310	parca_v0	COMPLETED	0	2026-09-10 02:10:08.299	26ms	0ms	-	-	-	-	-
+2	3c/4ff1ee	23332	lineage_v0_s0	COMPLETED	0	2026-09-10 02:10:08.350	28ms	0ms	-	-	-	-	-
+3	5c/fdb081	23357	analysis_v0	FAILED	1	2026-09-10 02:10:08.391	29ms	8ms	-	-	-	-	-
