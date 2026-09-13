@@ -15,9 +15,12 @@ Four ways a run produces no events, and only one is a bug.
 
 1. **The run predates the stack.** Events need *both* halves: an image with the
    instrumented engine (**simulator ≥ 207**) and a dispatcher that injects `PBG_*`
-   (**viva-api ≥ 0.9.139**, rolled on stanford-test 2026-09-13 18:52Z). Either half
-   missing → `/events` returns `{"events":[],"trace_id":null}` and `/tasks` returns
-   `[]`. An old simulator no-ops the emitter *by design*, so this is silent.
+   (**viva-api ≥ 0.9.140**). Either half missing → `/events` returns
+   `{"events":[],...}`. An old simulator no-ops the emitter *by design*, so this is
+   silent. **0.9.139 specifically is a trap**: it injected on Nextflow/chain/MBP/MNP-
+   composite but NOT on the MNP ParCa+sim pair or the gather (#641), so a run there
+   shows a populated `trace_id` with zero events — which looks exactly like case 3.
+   A populated `trace_id` proves the API derived one, NOT that the task was told it.
 2. **Hand-dispatched job** (`aws batch submit-job` + `CONTAINER_JOB_CMD`) → bypasses
    viva-api entirely. No `HpcRun` row, no `PBG_*`, nothing in the API. Expected.
 3. **Stdout-only namespace** → events exist, in CloudWatch, but nothing ingests them
@@ -48,7 +51,9 @@ Read in this order and stop when you have the answer.
   informative** — a head that exits 0 with a dead task reads COMPLETED to
   `k8s_condition` and FAILED to `nextflow_trace`. Trust the trace.
 * **`tasks`** — the "which of the 40 things" answer. Nextflow rows come from
-  `trace.csv`, chain rows from Batch.
+  `trace.csv`, chain rows from Batch. **Empty on the MNP path by design** (one Batch
+  job with node ranges, no tracked fan-out) — verified on sim 1317, where `/events`
+  had engine events and `/tasks` was `[]`. Check the backend before calling it a bug.
 
 ## CloudWatch: the two-log-group trap
 

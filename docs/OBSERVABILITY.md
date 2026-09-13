@@ -1,8 +1,10 @@
 # Observability: turning it on, and reading it
 
-**Written 2026-09-13, against the live `sms-api-stanford-test` deployment at
-`0.9.139`** — every command and response below was run, not transcribed from the
-source. Companion to [`DEPLOY.md`](DEPLOY.md). The *design* lives in
+**Written 2026-09-13 against the live `sms-api-stanford-test` deployment, and
+verified end to end on `0.9.140` with simulation 1317** (`sim207-obs-verify3-0913-4520`,
+simulator 207) — every command and response below was run, not transcribed from the
+source. The first attempt at that verification *failed*, and found two dispatch
+paths that injected nothing (#641); do not weaken this file to a code reading. Companion to [`DEPLOY.md`](DEPLOY.md). The *design* lives in
 [`plan-observability.md`](plan-observability.md); this file is how to use it.
 
 For the **debugging procedure** — what to run, in what order, and the blind spots —
@@ -47,7 +49,15 @@ image"), and it is why a **new viva-api over an old simulator is safe but silent
 |---|---|---|
 | ≤ 206 | any | nothing. `PBG_*` present, runner no-ops |
 | ≥ 207 | < 0.9.139 | nothing. Capable engine, no identity injected |
-| ≥ 207 | ≥ 0.9.139 | **events** — stdout always, S3 when a prefix resolves |
+| ≥ 207 | 0.9.139 | events on **Nextflow, chain, MBP and the MNP composite** only |
+| ≥ 207 | ≥ 0.9.140 | **events on every path** — stdout always, S3 when a prefix resolves |
+
+The 0.9.139 row is not a footnote. Four of six dispatch methods carried the identity
+in that release; `submit_ecoli_simulation_job` (the MNP ParCa + simulation pair) and
+`_submit_analysis_job` (the gather) carried none, so a run on the default Ray path
+emitted **nothing** while its `HpcRun` row still showed a `trace_id` — an empty
+`/events` indistinguishable from the benign case below. Fixed in #641 / 0.9.140,
+with an AST test that asserts every dispatch path merges the identity.
 
 ### Which sinks, and the `S3_WORK_BUCKET` trap
 
@@ -146,6 +156,10 @@ $ uv run atlantis simulation events <id> --base-url http://localhost:8080
   `running` is the signal that a task has stopped talking.
 * **`tasks`** — one row per unit of work (Nextflow tasks from `trace.csv`, chain seed
   jobs from Batch). This is where "which of the 40 things failed" is answered.
+  **On the MNP path it is legitimately empty**: an MNP run is one Batch job with node
+  ranges, not a fan-out of tracked tasks, so there is nothing to list. Verified on sim
+  1317 — `/events` returned engine events while `/tasks` returned `[]`. Read an empty
+  `tasks` against the run's backend before treating it as a finding.
 * **`events --tree`** — the span tree: campaign → parca / lineage(variant, seed) /
   analysis → generation.
 * **`events --follow`** — poll until terminal. Useful on a live run; pointless on a
@@ -222,7 +236,10 @@ square of the event count.
 * Heartbeat is wall-clock throttled (default 30 s), so a long generation costs a
   handful of events, not one per tick.
 * `tick` events are **never** stored in Postgres; they fold into
-  `stage`/`generation`/`last_event_at` on the run's row.
+  `stage`/`generation`/`last_event_at` on the run's row. Measured on sim 1317: the
+  container log carried `tick` events (one folding **133 ticks** into a single event,
+  ~30 s apart — the wall-clock throttle working), and `/events` returned only
+  `run.start`/`run.end`. Ticks missing from the API is the design, not loss.
 * Per-invoke detail (`process.invoke`, `process.timing`) is opt-in via
   `PBG_EVENT_DETAIL` and off by default.
 * A sink that raises is disabled after one `sink.error`. **Observability never raises
