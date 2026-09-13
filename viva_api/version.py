@@ -1290,7 +1290,31 @@
 #            Job exiting 0. Run the alembic-migrate Job BEFORE rolling the app.
 #            Also carries #636's fix to d7e2f4a6c8b0 (double CREATE TYPE +
 #            non-idempotent CREATE TABLE), which no database could apply.
-__version__ = "0.9.139"
+#           0.9.140 -- fix(events): two Ray dispatch paths never injected PBG_*,
+#            so their runs emitted nothing (#641). Found by dispatching a real
+#            1-gen/1-seed campaign on simulator 207 against 0.9.139 and reading
+#            the submitted job back out of AWS Batch: 12 env vars on the sim
+#            node, 8 on ParCa, no PBG_* on either. submit_ecoli_simulation_job
+#            (MNP ParCa + sim) and _submit_analysis_job (the gather) both passed
+#            a bare resolve_task_env() with no with_events_env() wrapper; the
+#            other four dispatch methods were always correct, which is why code
+#            review never surfaced it. The gather's identity now threads
+#            correlation_id from the scheduler's campaign HpcRun so it is a
+#            sibling of its seeds rather than a trace of its own.
+#            CORRECTS TWO CLAIMS IN 0.9.139's OWN ENTRY ABOVE:
+#              * "PBG identity env on all three dispatch paths" -- it was on four
+#                of six; the MNP ParCa/sim pair and the gather had none.
+#              * "Events are OFF by default -- no sink resolves unless
+#                PBG_EVENT_SINKS is set" -- misleading. events_env ALWAYS adds
+#                the stdout sink, and events_s3_prefix() falls back to deriving
+#                s3://<S3_WORK_BUCKET>/<work_prefix>/{experiment_id}/events/ when
+#                EVENTS_S3_PREFIX is empty. S3_WORK_BUCKET is set on both
+#                Stanford sites, so the S3 sink is ON there. EVENTS_ENABLED=false
+#                is the actual off switch.
+#            Adds tests/simulation/test_dispatch_events_identity.py, an AST scan
+#            asserting every resolve_task_env() result reaches with_events_env().
+#            Code-only: NO new migration, DB stays at e3a9c1d70b62.
+__version__ = "0.9.140"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in

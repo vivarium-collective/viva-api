@@ -866,6 +866,11 @@ class JobScheduler:
             commit=commit,
             total_n_seeds=n_seeds,
             n_generations=n_generations,
+            # Keep the gather in the campaign's own trace: the events identity is
+            # derived from this correlation id, so passing the campaign HpcRun's
+            # value is what makes the analysis a sibling of its seeds rather than
+            # a run with a trace of its own.
+            correlation_id=fresh.correlation_id,
         )
         logger.info(
             "Chain dispatch %s: campaign HpcRun %s all-terminal (%d/%d chains succeeded) -> analysis job %s",

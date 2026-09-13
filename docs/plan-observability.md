@@ -807,6 +807,18 @@ chain rather than reasoned about, it behaves better than expected in one way and
    `task_env` → `shared_env` → the single `"0:"` node-property override (the CDK base job
    definition declares one node range and the entrypoint self-branches head vs worker).
    Ray worker processes are forked by that node's raylet and inherit it.
+
+   > **Correction, 2026-09-13 — the chain is right, the premise was not.** Every arrow above
+   > holds, but the whole argument starts at `with_events_env(...)`, and this plan never
+   > checked that the MNP path *calls* it. It did not. `submit_ecoli_simulation_job` (the
+   > MNP ParCa + simulation pair — i.e. the very path D5 is reasoning about) and
+   > `_submit_analysis_job` both passed a bare `resolve_task_env()`, so their jobs carried
+   > **no `PBG_*` at all** and the actors had nothing to inherit. Found by dispatching sim
+   > 1315 on simulator 207 / viva-api 0.9.139 and reading the submitted job's environment
+   > back out of AWS Batch: 12 variables on the sim node, 8 on the ParCa node, none of them
+   > `PBG_*`. Fixed in #641, with an AST test (`test_dispatch_events_identity.py`) that
+   > asserts the premise instead of assuming it. Four of six dispatch methods were always
+   > correct, which is why reading the code did not surface this — only a live dispatch did.
 3. Inside an actor, `_RayBatchActor.batch_update` calls `composite.update(...)`, and
    `Composite.update` calls `self.run(interval)` — the fully hooked path.
 
