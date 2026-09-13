@@ -1509,3 +1509,194 @@ def test_main_threads_experiment_id_through_to_run(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(run_pbg, "run", fake_run)
     run_pbg.main(["--composite-id", "x.y", "--overrides", '{"seed": 1}', "-n", "7200", "--experiment-id", "sim1-r2-ab"])
     assert seen == {"steps": 7200, "composite_id": "x.y", "overrides": {"seed": 1}, "experiment_id": "sim1-r2-ab"}
+
+
+# --- observability bootstrap: run_pbg must emit on the chain/MNP paths too (plan PR-D) ---
+#
+# Both paths run this script directly (never through process-bigraph's run_step),
+# so with the engine's silent library default they emitted nothing (sim 957: 0
+# events on the chain path vs 96 on the Nextflow path).
+
+
+class _FakeEmitter:
+    def __init__(self, sinks: list[Any] | None = None) -> None:
+        self._sinks: list[Any] = list(sinks or [])
+        self.events: list[dict[str, Any]] = []
+        self.spans: list[dict[str, Any]] = []
+        self.flushes = 0
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self._sinks)
+
+    def start_span(self, span_name: str, **attrs: Any) -> Any:
+        record: dict[str, Any] = {"name": span_name, "attrs": attrs, "status": None, "error": None}
+        self.spans.append(record)
+
+        class _Span:
+            def end(_self, status: str = "ok", error: str | None = None) -> None:
+                record["status"] = status
+                record["error"] = error
+
+        return _Span()
+
+    def event(self, event_name: str, level: str = "info", component: str = "process_bigraph", **payload: Any) -> None:
+        self.events.append({"event": event_name, "level": level, "component": component, **payload})
+
+    def flush(self) -> None:
+        self.flushes += 1
+
+
+class _FakeFileSink:
+    def __init__(self, path: str) -> None:
+        self.path = path
+
+
+def _install_fake_events(monkeypatch: pytest.MonkeyPatch, emitter: _FakeEmitter) -> types.ModuleType:
+    """A `process_bigraph.events` that hands out *emitter*; `configure` records
+    its call and enables the emitter (stdout sink) the way the real one does."""
+    fake_pbg_mod = types.ModuleType("process_bigraph")
+    fake_events = types.ModuleType("process_bigraph.events")
+    fake_events.configure_calls = []  # type: ignore[attr-defined]
+
+    def configure(spec: str | None = None, *, default: str = "none", **_: Any) -> _FakeEmitter:
+        fake_events.configure_calls.append({"spec": spec, "default": default})
+        emitter._sinks.append(f"<{default} sink>")
+        return emitter
+
+    fake_events.get_emitter = lambda: emitter  # type: ignore[attr-defined]
+    fake_events.configure = configure  # type: ignore[attr-defined]
+    fake_events.FileSink = _FakeFileSink  # type: ignore[attr-defined]
+    fake_pbg_mod.events = fake_events  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "process_bigraph", fake_pbg_mod)
+    monkeypatch.setitem(sys.modules, "process_bigraph.events", fake_events)
+    return fake_events
+
+
+def test_configure_events_is_a_noop_without_the_events_module(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake_pbg_mod = types.ModuleType("process_bigraph")  # an older engine: no `events`
+    monkeypatch.setitem(sys.modules, "process_bigraph", fake_pbg_mod)
+    monkeypatch.setitem(
+        sys.modules, "process_bigraph.events", None
+    )  # `from process_bigraph import events` -> ImportError
+    assert run_pbg._configure_events(tmp_path) is None
+    with run_pbg._task_span(None, "x") as span:
+        assert span is None
+    assert not (tmp_path / run_pbg.EVENTS_FILENAME).exists()
+
+
+def test_configure_events_defaults_to_stdout_plus_a_file_sink(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    emitter = _FakeEmitter()
+    fake_events = _install_fake_events(monkeypatch, emitter)
+    out_dir = tmp_path / "output"
+
+    got = run_pbg._configure_events(out_dir)
+
+    assert got is emitter
+    assert fake_events.configure_calls == [{"spec": None, "default": "stdout"}]
+    assert out_dir.is_dir()
+    file_sinks = [s for s in emitter._sinks if isinstance(s, _FakeFileSink)]
+    assert [s.path for s in file_sinks] == [str(out_dir / "events.jsonl")]
+    # Idempotent: a second call keeps the enabled emitter and does not add a second file sink.
+    assert run_pbg._configure_events(out_dir) is emitter
+    assert len(fake_events.configure_calls) == 1
+    assert len([s for s in emitter._sinks if isinstance(s, _FakeFileSink)]) == 1
+
+
+def test_configure_events_keeps_an_emitter_the_entrypoint_already_enabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    emitter = _FakeEmitter(sinks=["<entrypoint stdout sink>"])
+    fake_events = _install_fake_events(monkeypatch, emitter)
+    assert run_pbg._configure_events(tmp_path) is emitter
+    assert fake_events.configure_calls == []
+    assert emitter._sinks[0] == "<entrypoint stdout sink>"
+    assert [s.path for s in emitter._sinks if isinstance(s, _FakeFileSink)] == [str(tmp_path / "events.jsonl")]
+
+
+def test_configure_events_never_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake_pbg_mod = types.ModuleType("process_bigraph")
+    fake_events = types.ModuleType("process_bigraph.events")
+
+    def boom() -> None:
+        raise RuntimeError("sink resolution exploded")
+
+    fake_events.get_emitter = boom  # type: ignore[attr-defined]
+    fake_pbg_mod.events = fake_events  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "process_bigraph", fake_pbg_mod)
+    monkeypatch.setitem(sys.modules, "process_bigraph.events", fake_events)
+    assert run_pbg._configure_events(tmp_path) is None
+
+
+def test_task_span_reports_ok_and_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    emitter = _FakeEmitter(sinks=["stdout"])
+    with run_pbg._task_span(emitter, "ecoli_lineage", composite_id="ecoli_lineage", steps=3):
+        pass
+    assert emitter.spans == [
+        {
+            "name": "task",
+            "attrs": {"name": "ecoli_lineage", "composite_id": "ecoli_lineage", "steps": 3},
+            "status": "ok",
+            "error": None,
+        }
+    ]
+    assert [(e["event"], e["component"], e["level"]) for e in emitter.events] == [
+        ("task.start", run_pbg.EVENTS_COMPONENT, "info"),
+        ("task.end", run_pbg.EVENTS_COMPONENT, "info"),
+    ]
+    assert emitter.events[-1]["status"] == "ok"
+    assert emitter.flushes == 1
+
+    emitter = _FakeEmitter(sinks=["stdout"])
+    with pytest.raises(ValueError, match="no output"), run_pbg._task_span(emitter, "ecoli_lineage"):
+        raise ValueError("no output")
+    assert emitter.spans[0]["status"] == "error"
+    assert emitter.spans[0]["error"] == "ValueError: no output"
+    assert emitter.events[-1] == {
+        "event": "task.end",
+        "level": "error",
+        "component": run_pbg.EVENTS_COMPONENT,
+        "status": "error",
+        "name": "ecoli_lineage",
+        "error": "ValueError: no output",
+    }
+    assert emitter.flushes == 1
+
+
+def test_run_opens_a_task_span_named_from_the_composite_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """End to end through run(): the emitter is configured, the span is named
+    from the composite id, and the run's own output is unchanged."""
+    emitter = _FakeEmitter()
+    fake_events = _install_fake_events(monkeypatch, emitter)
+
+    class FakeComposite:
+        def __init__(self, doc: Any, core: Any = None) -> None:
+            self.n = 0
+
+        def run(self, n: int) -> None:
+            self.n = n
+
+        def serialize_state(self) -> dict[str, int]:
+            return {"ran": self.n}
+
+    fake_pbg_mod = sys.modules["process_bigraph"]
+    fake_pbg_mod.Composite = FakeComposite  # type: ignore[attr-defined]
+    fake_pbg_mod.register_types = lambda core: core  # type: ignore[attr-defined]
+    fake_schema_mod = types.ModuleType("bigraph_schema")
+    fake_schema_mod.allocate_core = FakeCore  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "bigraph_schema", fake_schema_mod)
+    _install_fake_protocol_registration(monkeypatch)
+
+    pbg = tmp_path / "toy_model.pbg"
+    pbg.write_text(json.dumps({"state": {}, "composition": {}}))
+    out = run_pbg.run(str(pbg), steps=2, results_dir=tmp_path / "output")
+
+    assert json.loads(out.read_text())["ran"] == 2
+    assert fake_events.configure_calls == [{"spec": None, "default": "stdout"}]
+    assert emitter.spans[0]["name"] == "task"
+    assert emitter.spans[0]["attrs"]["name"] == "toy_model"  # input-file stem when no --composite-id
+    assert emitter.spans[0]["attrs"]["steps"] == 2
+    assert emitter.spans[0]["status"] == "ok"
+    assert [s.path for s in emitter._sinks if isinstance(s, _FakeFileSink)] == [
+        str(tmp_path / "output" / "events.jsonl")
+    ]

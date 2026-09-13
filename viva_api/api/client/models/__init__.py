@@ -96,14 +96,23 @@ from .server_capabilities import ServerCapabilities
 from .simulation import Simulation
 from .simulation_analysis_data_response_type import SimulationAnalysisDataResponseType
 from .simulation_config import SimulationConfig
+from .simulation_event import SimulationEvent
+from .simulation_event_baggage_type_0 import SimulationEventBaggageType0
+from .simulation_event_payload_type_0 import SimulationEventPayloadType0
+from .simulation_event_tags_type_0 import SimulationEventTagsType0
+from .simulation_events import SimulationEvents
 from .simulation_observable_index import SimulationObservableIndex
 from .simulation_observable_index_store import SimulationObservableIndexStore
 from .simulation_observables import SimulationObservables
 from .simulation_observables_series import SimulationObservablesSeries
 from .simulation_observables_store import SimulationObservablesStore
 from .simulation_run import SimulationRun
+from .simulation_span import SimulationSpan
+from .simulation_span_attrs_type_0 import SimulationSpanAttrsType0
+from .simulation_task import SimulationTask
 from .simulator import Simulator
 from .simulator_version import SimulatorVersion
+from .span_tree import SpanTree
 from .state_document import StateDocument
 from .state_document_document import StateDocumentDocument
 from .stop_env_worker_response_stop_env_worker import StopEnvWorkerResponseStopEnvWorker
@@ -224,14 +233,23 @@ __all__ = (
     "Simulation",
     "SimulationAnalysisDataResponseType",
     "SimulationConfig",
+    "SimulationEvent",
+    "SimulationEventBaggageType0",
+    "SimulationEventPayloadType0",
+    "SimulationEvents",
+    "SimulationEventTagsType0",
     "SimulationObservableIndex",
     "SimulationObservableIndexStore",
     "SimulationObservables",
     "SimulationObservablesSeries",
     "SimulationObservablesStore",
     "SimulationRun",
+    "SimulationSpan",
+    "SimulationSpanAttrsType0",
+    "SimulationTask",
     "Simulator",
     "SimulatorVersion",
+    "SpanTree",
     "StateDocument",
     "StateDocumentDocument",
     "StopEnvWorkerResponseStopEnvWorker",

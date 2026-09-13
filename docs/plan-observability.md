@@ -527,8 +527,14 @@ tags; unique `(hpcrun_id, source, seq)` for idempotent re-ingest). `ORMHpcRun` g
 name, attrs, start_ts, end_ts, status, error`) upserted from `span_start`/`span_end`, with
 open spans closed as `status=unknown` when the row goes terminal; `stage` is derived as the
 list of open span names (e.g. `["lineage[seed=3]", "generation[2]"]`), not free text.
-`JobStatus`/`JobStatusDB` gain `PARTIAL`. One Alembic migration + one `LEGACY_FINGERPRINTS` marker (`db_reconcile.py`),
-`ALTER TYPE … ADD VALUE IF NOT EXISTS`. `viva_api/simulation/event_ingest.py`: per active run,
+~~`JobStatus`/`JobStatusDB` gain `PARTIAL`.~~ **Reversed in implementation (`5a960e0c`)** — the
+enum is deliberately untouched. Nothing branched on `PARTIAL` (it was a terminal-set member and a
+CLI colour), Postgres cannot drop an enum label once added, and "which tasks survived" belongs in
+the per-task rows and `error_message`, not in a status. Keeping the enum fixed also keeps the
+migration free of the deploy-ordering constraint an `ALTER TYPE … ADD VALUE` imposes. **Two**
+Alembic migrations + **two** `LEGACY_FINGERPRINTS` markers (`db_reconcile.py`): `a3b5c7d9e1f2`
+(columns + event/span tables) and `e3a9c1d70b62` (the draft `layer` → `component` rename, which
+must be its own revision — a rename inside an already-applied revision can never run). `viva_api/simulation/event_ingest.py`: per active run,
 list the prefix, Range-GET from the cursor, bulk-insert non-`tick` events (`ON CONFLICT DO
 NOTHING`), fold `tick`/`generation_*` into `stage/generation/last_event_at`; capped per tick,
 idle rows skipped. `JobScheduler._polling_loop` (`job_scheduler.py:143-167`) gains
@@ -669,7 +675,13 @@ Most of this runs on a laptop; the cluster pilots are the final rung, not the fi
 - **Ray identity**: `_stable_proc_id = id(shadow)` carries no path; H5 names class + shard until
   the runtime records the path at enqueue. MNP actors need `PBG_*` through `runtime_env`.
 - **Engine default off vs stdout**: a judgement call Eran may reverse; one line in `configure()`.
-- **Alembic**: one migration, one fingerprint marker; PARTIAL must be accepted by CLI/TUI/GUI and
-  the workbench's terminal-status buckets (`remote_run_views.py:43-44`) — flag to Alex.
+- **Alembic**: ~~one migration, one fingerprint marker; PARTIAL must be accepted by CLI/TUI/GUI
+  and the workbench's terminal-status buckets (`remote_run_views.py:43-44`) — flag to Alex.~~
+  **Settled**: `PARTIAL` was dropped, so there is nothing for the clients or the workbench to
+  accept and nothing to flag to Alex. Two migrations, two markers (above). Still open on the
+  Alembic side, and NOT introduced by this work: `alembic upgrade head` cannot run against a
+  genuinely empty database — `d3f9a1c72b84` ALTERs `analysis`, a table no migration ever creates
+  (likewise `compose_hpcrun` at `e5a7c9d10f21`), so `db_reconcile`'s FRESH path is dormant-broken
+  and would bite the first brand-new site. Tracked separately.
 - **`time_step` forwarding** changes results for any campaign that set it ≠ 1; called out in
   the PR, not silently fixed.

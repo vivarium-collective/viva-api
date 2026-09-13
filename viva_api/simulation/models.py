@@ -149,9 +149,119 @@ class ChainCampaignUpdate(BaseModel):
 
 
 class SimulationRun(BaseModel):
+    """What ``GET /simulations/{id}/status`` answers.
+
+    The first three fields are the vocabulary every client has relied on since
+    the endpoint existed. The rest (observability plan D4d) are additive and
+    optional: they are ``None`` until the scheduler has folded the run's event
+    stream / trace into the row, so an old client keeps reading the same
+    three fields and a new one gets the stage the run is in.
+    """
+
     id: int
     status: JobStatus
     error_message: str | None = None
+    stage: str | None = None  # derived: the open span names, innermost last, e.g. "lineage[seed=3] > generation[2]"
+    generation: int | None = None
+    last_event_at: str | None = None  # ISO 8601 of the newest ingested event
+    attempt: int | None = None
+    exit_code: int | None = None
+    error_source: str | None = None
+    trace_id: str | None = None
+    open_spans: list[str] | None = None
+
+
+class SimulationEvent(BaseModel):
+    """One structured event of a run (``hpcrun_event`` row; observability plan D1).
+
+    The identity block mirrors the engine's JSON-lines schema; infrastructure
+    identifiers (Batch job ids, log streams) live in ``tags``/``payload``, never
+    in the core fields.
+    """
+
+    cursor: int | None = None  # the stored row id; pass back as ``after`` to page forward across sources
+    seq: int
+    source: str
+    ts: str  # ISO 8601 UTC
+    component: str  # who emitted it: "process_bigraph", "v2ecoli.lineage", "viva_api.dispatch", ...
+    event: str
+    level: str = "info"
+    # Domain identity, promoted from the engine event's opaque ``baggage`` map
+    # (W3C baggage semantics): process-bigraph never names these keys itself;
+    # viva-api does, so its API and CLI present them first-class.
+    generation: int | None = None
+    variant: int | None = None
+    lineage_seed: int | None = None
+    baggage: dict[str, Any] | None = None  # the full baggage map as the task saw it (sim_id, experiment_id, ...)
+    global_time: float | None = None
+    wall_time: float | None = None
+    span_id: str | None = None
+    parent_span_id: str | None = None
+    payload: dict[str, Any] | None = None
+    tags: dict[str, Any] | None = None
+
+
+class SimulationSpan(BaseModel):
+    """A node of a run's trace tree (``hpcrun_span`` row), materialised from
+    ``span.start``/``span.end`` events. ``end_ts`` is ``None`` while open; a span
+    still open when the run goes terminal is closed as ``status='unknown'``."""
+
+    span_id: str
+    parent_span_id: str | None = None
+    name: str
+    attrs: dict[str, Any] | None = None
+    start_ts: str | None = None
+    end_ts: str | None = None
+    duration_s: float | None = None
+    status: str | None = None  # ok | error | unknown | None while open
+    error: str | None = None
+
+    @property
+    def label(self) -> str:
+        """``name[key=value,...]`` -- the human form used for ``stage`` and the tree."""
+        attrs = self.attrs or {}
+        shown = {k: v for k, v in attrs.items() if k in ("variant", "lineage_seed", "seed", "generation")}
+        if not shown:
+            return self.name
+        return f"{self.name}[{','.join(f'{k}={v}' for k, v in shown.items())}]"
+
+
+class SpanTree(BaseModel):
+    """``GET /simulations/{id}/events?tree=true``: the span tree with each span's
+    own events attached (events whose ``span_id`` matches; ``tick`` heartbeats are
+    never stored, so they never appear here)."""
+
+    span: SimulationSpan
+    events: list[SimulationEvent] = Field(default_factory=list)
+    children: list["SpanTree"] = Field(default_factory=list)
+
+
+class SimulationEvents(BaseModel):
+    """``GET /simulations/{id}/events``: a page of events (flat) or the span tree.
+
+    ``next`` is the cursor to pass back as ``after`` for the next page; ``None``
+    when this page was not full. ``tree`` is filled only when ``?tree=true``.
+    """
+
+    id: int
+    trace_id: str | None = None
+    events: list[SimulationEvent] = Field(default_factory=list)
+    tree: list[SpanTree] | None = None
+    next: int | None = None
+
+
+class SimulationTask(BaseModel):
+    """One unit of work of a run as the backend saw it (``GET /simulations/{id}/tasks``):
+    a Nextflow task (one ``trace.csv`` row: ``native_id`` = the Batch job id) or a
+    chain-dispatch seed job (one Batch job)."""
+
+    name: str
+    status: str
+    job_id: str | None = None  # Batch job id (Nextflow ``native_id`` / chain job id)
+    task_hash: str | None = None  # Nextflow work-dir hash, e.g. "1b/18aa5e"
+    exit_code: int | None = None
+    attempt: int | None = None
+    status_reason: str | None = None
 
 
 class ChainProgress(BaseModel):

@@ -25,7 +25,9 @@ from viva_api.simulation.models import (
     ParcaOptions,
     Simulation,
     SimulationConfig,
+    SimulationEvent,
     SimulationRequest,
+    SimulationSpan,
     SimulatorVersion,
     TaskDTO,
     WorkerEvent,
@@ -36,6 +38,8 @@ from viva_api.simulation.tables_orm import (
     JobTypeDB,
     ORMAnalysis,
     ORMHpcRun,
+    ORMHpcRunEvent,
+    ORMHpcRunSpan,
     ORMParcaDataset,
     ORMSimulation,
     ORMSimulator,
@@ -45,6 +49,11 @@ from viva_api.simulation.tables_orm import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Reserved key under ``hpcrun_event.tags`` holding an event's baggage map
+#: (``sim_id``, ``experiment_id``, ``variant``, ``lineage_seed``, ``generation``);
+#: ``generation`` is also promoted to its own column.
+_BAGGAGE_TAG = "_baggage"
 
 
 def parca_options_from_stored(stored: Any) -> ParcaOptions:
@@ -177,6 +186,89 @@ class DatabaseService(ABC):
 
     @abstractmethod
     async def list_worker_events(self, hpcrun_id: int, prev_sequence_number: int | None = None) -> list[WorkerEvent]:
+        pass
+
+    # ---- run event stream (observability plan D4b/D4d; viva_api.simulation.event_ingest) ----
+
+    @abstractmethod
+    async def insert_hpcrun_events(self, hpcrun_id: int, trace_id: str, events: list[SimulationEvent]) -> int:
+        """Insert events idempotently (``ON CONFLICT (trace_id, source, seq) DO NOTHING``);
+        returns how many rows were actually inserted."""
+        pass
+
+    @abstractmethod
+    async def list_hpcrun_events(
+        self,
+        hpcrun_id: int,
+        *,
+        level: str | None = None,
+        event: str | None = None,
+        generation: int | None = None,
+        span_id: str | None = None,
+        after: int | None = None,
+        limit: int = 1000,
+    ) -> list[SimulationEvent]:
+        """Events of a run in stored order (row id ascending == arrival order),
+        filtered; ``after`` is the ``cursor`` of the last event a client saw."""
+        pass
+
+    @abstractmethod
+    async def next_hpcrun_event_seq(self, trace_id: str, source: str) -> int:
+        """The next free ``seq`` for a writer of this trace (the API itself writes
+        dispatcher-layer events under ``source='api'``)."""
+        pass
+
+    @abstractmethod
+    async def upsert_hpcrun_spans(self, hpcrun_id: int, trace_id: str, spans: list[SimulationSpan]) -> None:
+        """Insert or update span rows by ``(trace_id, span_id)``; non-null fields win."""
+        pass
+
+    @abstractmethod
+    async def list_hpcrun_spans(
+        self, hpcrun_id: int, *, open_only: bool = False, limit: int | None = None
+    ) -> list[SimulationSpan]:
+        """Spans of one run, outermost-ish first (start_ts, then id).
+
+        ``open_only`` filters to spans with no ``end_ts`` IN SQL -- what ``/status``
+        needs for ``stage``, and inherently bounded by how many spans can be open at
+        once (campaign > lineage > generation), rather than by how many the run has
+        produced. ``limit`` caps the row count for callers that genuinely need the
+        whole set (the ``?tree=`` view); a long multiseed x multigen run has a span
+        per stage/generation/seed, so neither caller should be unbounded
+        (eagmon, #612 review S2)."""
+        pass
+
+    @abstractmethod
+    async def close_open_hpcrun_spans(self, hpcrun_id: int, status: str = "unknown") -> int:
+        """Close every span of the run that has no ``end_ts`` (a task that died
+        before its ``span_end``); returns how many were closed."""
+        pass
+
+    @abstractmethod
+    async def get_hpcrun_events_cursor(self, hpcrun_id: int) -> dict[str, int] | None:
+        pass
+
+    @abstractmethod
+    async def update_hpcrun_progress(
+        self,
+        hpcrun_id: int,
+        *,
+        stage: str | None,
+        generation: int | None,
+        last_event_at: datetime.datetime | None,
+        events_cursor: dict[str, int] | None = None,
+        events_s3_prefix: str | None = None,
+    ) -> None:
+        """Fold the ingester's view onto the row: ``stage``/``generation`` are
+        replaced (``None`` clears ``stage``), ``last_event_at`` only advances,
+        ``events_cursor``/``events_s3_prefix`` are written when given."""
+        pass
+
+    @abstractmethod
+    async def list_hpcruns_for_event_ingest(self, terminal_since: datetime.datetime) -> list[HpcRun]:
+        """Simulation runs whose event objects may still change: non-terminal
+        rows plus rows that went terminal after ``terminal_since`` (the tasks'
+        final flush lands after the head exits)."""
         pass
 
     @abstractmethod
@@ -1016,6 +1108,255 @@ class DatabaseServiceSQL(DatabaseService):
             for orm_worker_event in orm_worker_events:
                 worker_events.append(ORMWorkerEvent.from_query_results(orm_worker_event.tuple()))
             return worker_events
+
+    # ---- run event stream (observability plan D4b/D4d) ----
+
+    @staticmethod
+    def _event_row(hpcrun_id: int, trace_id: str, event: SimulationEvent) -> dict[str, Any]:
+        from viva_api.simulation.event_ingest import parse_timestamp
+
+        ts = parse_timestamp(event.ts) or datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+        # The baggage map rides inside ``tags`` under a reserved key -- additive
+        # to PR-A's table, and ``tags`` is where non-core identity belongs anyway.
+        tags: dict[str, Any] | None = dict(event.tags) if event.tags else None
+        if event.baggage:
+            tags = dict(tags or {})
+            tags[_BAGGAGE_TAG] = dict(event.baggage)
+        return {
+            "hpcrun_id": hpcrun_id,
+            "trace_id": trace_id,
+            "source": event.source,
+            "seq": event.seq,
+            "ts": ts,
+            "component": event.component,
+            "event": event.event,
+            "level": event.level,
+            "generation": event.generation,
+            "global_time": event.global_time,
+            "wall_time": event.wall_time,
+            "span_id": event.span_id,
+            "parent_span_id": event.parent_span_id,
+            "payload": event.payload,
+            "tags": tags,
+        }
+
+    @staticmethod
+    def _event_from_orm(row: ORMHpcRunEvent) -> SimulationEvent:
+        from viva_api.simulation.event_ingest import _as_int
+
+        tags = dict(row.tags) if row.tags is not None else None
+        baggage: dict[str, Any] | None = None
+        if tags and isinstance(tags.get(_BAGGAGE_TAG), dict):
+            baggage = dict(tags.pop(_BAGGAGE_TAG))
+        return SimulationEvent(
+            cursor=row.id,
+            seq=row.seq,
+            source=row.source,
+            ts=row.ts.isoformat(timespec="milliseconds") + "Z",
+            component=row.component,
+            event=row.event,
+            level=row.level,
+            generation=row.generation,
+            variant=_as_int((baggage or {}).get("variant")),
+            lineage_seed=_as_int((baggage or {}).get("lineage_seed")),
+            baggage=baggage,
+            global_time=row.global_time,
+            wall_time=row.wall_time,
+            span_id=row.span_id,
+            parent_span_id=row.parent_span_id,
+            payload=dict(row.payload) if row.payload is not None else None,
+            tags=tags or None,
+        )
+
+    @staticmethod
+    def _span_from_orm(row: ORMHpcRunSpan) -> SimulationSpan:
+        duration: float | None = None
+        if row.start_ts is not None and row.end_ts is not None:
+            duration = (row.end_ts - row.start_ts).total_seconds()
+        return SimulationSpan(
+            span_id=row.span_id,
+            parent_span_id=row.parent_span_id,
+            name=row.name,
+            attrs=dict(row.attrs) if row.attrs is not None else None,
+            start_ts=row.start_ts.isoformat(timespec="milliseconds") + "Z" if row.start_ts else None,
+            end_ts=row.end_ts.isoformat(timespec="milliseconds") + "Z" if row.end_ts else None,
+            duration_s=duration,
+            status=row.status,
+            error=row.error,
+        )
+
+    @override
+    async def insert_hpcrun_events(self, hpcrun_id: int, trace_id: str, events: list[SimulationEvent]) -> int:
+        if not events:
+            return 0
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        rows = [self._event_row(hpcrun_id, trace_id, event) for event in events]
+        # Dedupe within the batch too: a rewritten object repeats every line.
+        unique: dict[tuple[str, int], dict[str, Any]] = {}
+        for row in rows:
+            unique.setdefault((row["source"], row["seq"]), row)
+        async with self.async_sessionmaker() as session, session.begin():
+            stmt = (
+                pg_insert(ORMHpcRunEvent)
+                .values(list(unique.values()))
+                .on_conflict_do_nothing(constraint="uq_hpcrun_event_trace_source_seq")
+            )
+            result = cast(CursorResult[Any], await session.execute(stmt))
+            return int(result.rowcount or 0)
+
+    @override
+    async def list_hpcrun_events(
+        self,
+        hpcrun_id: int,
+        *,
+        level: str | None = None,
+        event: str | None = None,
+        generation: int | None = None,
+        span_id: str | None = None,
+        after: int | None = None,
+        limit: int = 1000,
+    ) -> list[SimulationEvent]:
+        async with self.async_sessionmaker() as session:
+            stmt = select(ORMHpcRunEvent).where(ORMHpcRunEvent.hpcrun_id == hpcrun_id)
+            if level:
+                stmt = stmt.where(ORMHpcRunEvent.level == level)
+            if event:
+                stmt = stmt.where(ORMHpcRunEvent.event == event)
+            if generation is not None:
+                stmt = stmt.where(ORMHpcRunEvent.generation == generation)
+            if span_id:
+                stmt = stmt.where(ORMHpcRunEvent.span_id == span_id)
+            if after is not None:
+                stmt = stmt.where(ORMHpcRunEvent.id > after)
+            stmt = stmt.order_by(ORMHpcRunEvent.id).limit(max(1, min(int(limit), 1000)))
+            result: Result[tuple[ORMHpcRunEvent]] = await session.execute(stmt)
+            return [self._event_from_orm(row) for row in result.scalars().all()]
+
+    @override
+    async def next_hpcrun_event_seq(self, trace_id: str, source: str) -> int:
+        from sqlalchemy import func
+
+        async with self.async_sessionmaker() as session:
+            stmt = select(func.max(ORMHpcRunEvent.seq)).where(
+                ORMHpcRunEvent.trace_id == trace_id, ORMHpcRunEvent.source == source
+            )
+            current = (await session.execute(stmt)).scalar()
+            return int(current or 0) + 1
+
+    @override
+    async def upsert_hpcrun_spans(self, hpcrun_id: int, trace_id: str, spans: list[SimulationSpan]) -> None:
+        if not spans:
+            return
+        from viva_api.simulation.event_ingest import parse_timestamp
+
+        async with self.async_sessionmaker() as session, session.begin():
+            stmt = select(ORMHpcRunSpan).where(
+                ORMHpcRunSpan.trace_id == trace_id, ORMHpcRunSpan.span_id.in_([s.span_id for s in spans])
+            )
+            existing = {row.span_id: row for row in (await session.execute(stmt)).scalars().all()}
+            for span in spans:
+                row = existing.get(span.span_id)
+                if row is None:
+                    row = ORMHpcRunSpan(hpcrun_id=hpcrun_id, trace_id=trace_id, span_id=span.span_id, name=span.name)
+                    session.add(row)
+                self._apply_span_fields(row, span, parse_timestamp)
+            await session.flush()
+
+    @staticmethod
+    def _apply_span_fields(row: ORMHpcRunSpan, span: SimulationSpan, parse_ts: Callable[[Any], Any]) -> None:
+        """Non-null span fields win; a start already recorded is never moved."""
+        if span.name:
+            row.name = span.name
+        if span.parent_span_id and not row.parent_span_id:
+            row.parent_span_id = span.parent_span_id
+        if span.attrs:
+            row.attrs = span.attrs
+        start = parse_ts(span.start_ts)
+        if start is not None and row.start_ts is None:
+            row.start_ts = start
+        end = parse_ts(span.end_ts)
+        if end is not None:
+            row.end_ts = end
+        if span.status:
+            row.status = span.status
+        if span.error:
+            row.error = span.error
+
+    @override
+    async def list_hpcrun_spans(
+        self, hpcrun_id: int, *, open_only: bool = False, limit: int | None = None
+    ) -> list[SimulationSpan]:
+        async with self.async_sessionmaker() as session:
+            stmt = (
+                select(ORMHpcRunSpan)
+                .where(ORMHpcRunSpan.hpcrun_id == hpcrun_id)
+                .order_by(ORMHpcRunSpan.start_ts.nulls_last(), ORMHpcRunSpan.id)
+            )
+            if open_only:
+                stmt = stmt.where(ORMHpcRunSpan.end_ts.is_(None))
+            if limit is not None:
+                stmt = stmt.limit(limit)
+            result: Result[tuple[ORMHpcRunSpan]] = await session.execute(stmt)
+            return [self._span_from_orm(row) for row in result.scalars().all()]
+
+    @override
+    async def close_open_hpcrun_spans(self, hpcrun_id: int, status: str = "unknown") -> int:
+        async with self.async_sessionmaker() as session, session.begin():
+            stmt = (
+                sa_update(ORMHpcRunSpan)
+                .where(ORMHpcRunSpan.hpcrun_id == hpcrun_id, ORMHpcRunSpan.end_ts.is_(None))
+                .values(end_ts=datetime.datetime.now(datetime.UTC).replace(tzinfo=None), status=status)
+            )
+            result = cast(CursorResult[Any], await session.execute(stmt))
+            return int(result.rowcount or 0)
+
+    @override
+    async def get_hpcrun_events_cursor(self, hpcrun_id: int) -> dict[str, int] | None:
+        async with self.async_sessionmaker() as session:
+            stmt = select(ORMHpcRun.events_cursor).where(ORMHpcRun.id == hpcrun_id)
+            value = (await session.execute(stmt)).scalar()
+            return dict(value) if value else None
+
+    @override
+    async def update_hpcrun_progress(
+        self,
+        hpcrun_id: int,
+        *,
+        stage: str | None,
+        generation: int | None,
+        last_event_at: datetime.datetime | None,
+        events_cursor: dict[str, int] | None = None,
+        events_s3_prefix: str | None = None,
+    ) -> None:
+        async with self.async_sessionmaker() as session, session.begin():
+            row = await session.get(ORMHpcRun, hpcrun_id)
+            if row is None:
+                return
+            row.stage = stage
+            if generation is not None:
+                row.generation = generation
+            if last_event_at is not None and (row.last_event_at is None or last_event_at > row.last_event_at):
+                row.last_event_at = last_event_at
+            if events_cursor is not None:
+                row.events_cursor = dict(events_cursor)
+            if events_s3_prefix and not row.events_s3_prefix:
+                row.events_s3_prefix = events_s3_prefix
+            await session.flush()
+
+    @override
+    async def list_hpcruns_for_event_ingest(self, terminal_since: datetime.datetime) -> list[HpcRun]:
+        async with self.async_sessionmaker() as session:
+            stmt = select(ORMHpcRun).where(
+                ORMHpcRun.job_type == JobTypeDB.SIMULATION,
+                ORMHpcRun.job_backend.in_([JobBackend.RAY.value, JobBackend.K8S_NEXTFLOW.value]),
+                or_(
+                    ORMHpcRun.status.in_([JobStatusDB.PENDING, JobStatusDB.RUNNING, JobStatusDB.QUEUED]),
+                    ORMHpcRun.end_time >= terminal_since,
+                ),
+            )
+            result: Result[tuple[ORMHpcRun]] = await session.execute(stmt)
+            return [row.to_hpc_run() for row in result.scalars().all()]
 
     @override
     async def insert_simulation(self, sim_request: SimulationRequest) -> Simulation:

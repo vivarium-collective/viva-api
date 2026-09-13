@@ -276,7 +276,9 @@ class ORMHpcRunEvent(Base):
     source: Mapped[str] = mapped_column(nullable=False)  # writer: batch job id / host-pid / "api"
     seq: Mapped[int] = mapped_column(nullable=False)
     ts: Mapped[datetime.datetime] = mapped_column(nullable=False)
-    layer: Mapped[str] = mapped_column(nullable=False)  # engine | runner | dispatcher | api
+    # Which component emitted it -- a free string, e.g. "process_bigraph",
+    # "v2ecoli.lineage", "viva_api.dispatch" (plan D1').
+    component: Mapped[str] = mapped_column(nullable=False)
     event: Mapped[str] = mapped_column(nullable=False)
     level: Mapped[str] = mapped_column(nullable=False, server_default="info")
     generation: Mapped[int | None] = mapped_column(nullable=True)
@@ -295,7 +297,7 @@ class ORMHpcRunEvent(Base):
 
 class ORMHpcRunSpan(Base):
     """A span of a run's trace tree (campaign > parca / lineage / analysis >
-    generation > ...), materialised from ``span_start``/``span_end`` events. An
+    generation > ...), materialised from ``span.start``/``span.end`` events. An
     open span (``end_ts`` NULL) after the row goes terminal is closed as
     ``status='unknown'`` by the ingester (PR-D).
     """

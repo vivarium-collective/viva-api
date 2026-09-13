@@ -474,6 +474,145 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/simulations/{id}/events:
+    get:
+      tags:
+      - Simulations
+      summary: Structured events of a simulation run (engine, runner and dispatch
+        components), flat or as the span tree
+      description: 'Observability plan D4d: what the run''s tasks reported, without
+        AWS
+
+        credentials. Events arrive through the scheduler''s ingester from the tasks''
+
+        ``events.jsonl`` objects plus the API''s own dispatcher-layer events; ``tick``
+
+        heartbeats are folded into ``/status`` (``last_event_at``) and never stored.
+
+        404 when the simulation or its run row does not exist.'
+      operationId: get-ecoli-simulation-events
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Id
+      - name: level
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: debug | info | warning | error
+          title: Level
+        description: debug | info | warning | error
+      - name: event
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: exact event name, e.g. process.exception, lineage.generation.end
+          title: Event
+        description: exact event name, e.g. process.exception, lineage.generation.end
+      - name: generation
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Generation
+      - name: span_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Span Id
+      - name: after
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: cursor of the last event seen (paging)
+          title: After
+        description: cursor of the last event seen (paging)
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 1000
+          title: Limit
+      - name: tree
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: also return the span tree with events attached
+          default: false
+          title: Tree
+        description: also return the span tree with events attached
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationEvents'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/simulations/{id}/tasks:
+    get:
+      tags:
+      - Simulations
+      summary: The run's units of work as the backend saw them (Nextflow trace rows
+        / chain seed jobs)
+      description: 'Observability plan D4d. Nextflow: one row per ``trace.csv`` task
+        (its
+
+        ``job_id`` is the Batch job id); chain dispatch: one row per seed job with
+
+        Batch''s status reason; other backends: an empty list. 404 when the
+
+        simulation or its run row does not exist.'
+      operationId: get-ecoli-simulation-tasks
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SimulationTask'
+                title: Response Get-Ecoli-Simulation-Tasks
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/simulations/{id}/cancel:
     delete:
       tags:
@@ -1328,7 +1467,7 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-09-13T01:39:32.801665'
+                  created_at: '2026-09-13T01:45:45.258029'
                 parca_config:
                   outdir: .
                   operons: true
@@ -4999,7 +5138,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-09-13 01:39:32.736116'
+          default: '2026-09-13 01:45:45.191017'
         job_id:
           anyOf:
           - type: string
@@ -5080,6 +5219,142 @@ components:
       required:
       - experiment_id
       title: SimulationConfig
+    SimulationEvent:
+      properties:
+        cursor:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cursor
+        seq:
+          type: integer
+          title: Seq
+        source:
+          type: string
+          title: Source
+        ts:
+          type: string
+          title: Ts
+        component:
+          type: string
+          title: Component
+        event:
+          type: string
+          title: Event
+        level:
+          type: string
+          title: Level
+          default: info
+        generation:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Generation
+        variant:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Variant
+        lineage_seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Lineage Seed
+        baggage:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Baggage
+        global_time:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Global Time
+        wall_time:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Wall Time
+        span_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Span Id
+        parent_span_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Parent Span Id
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+        tags:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Tags
+      additionalProperties: true
+      type: object
+      required:
+      - seq
+      - source
+      - ts
+      - component
+      - event
+      title: SimulationEvent
+      description: 'One structured event of a run (``hpcrun_event`` row; observability
+        plan D1).
+
+
+        The identity block mirrors the engine''s JSON-lines schema; infrastructure
+
+        identifiers (Batch job ids, log streams) live in ``tags``/``payload``, never
+
+        in the core fields.'
+    SimulationEvents:
+      properties:
+        id:
+          type: integer
+          title: Id
+        trace_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trace Id
+        events:
+          items:
+            $ref: '#/components/schemas/SimulationEvent'
+          type: array
+          title: Events
+        tree:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/SpanTree'
+            type: array
+          - type: 'null'
+          title: Tree
+        next:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Next
+      additionalProperties: true
+      type: object
+      required:
+      - id
+      title: SimulationEvents
+      description: '``GET /simulations/{id}/events``: a page of events (flat) or the
+        span tree.
+
+
+        ``next`` is the cursor to pass back as ``after`` for the next page; ``None``
+
+        when this page was not full. ``tree`` is filled only when ``?tree=true``.'
     SimulationObservableIndex:
       properties:
         simulation_id:
@@ -5164,12 +5439,167 @@ components:
           - type: string
           - type: 'null'
           title: Error Message
+        stage:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stage
+        generation:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Generation
+        last_event_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Event At
+        attempt:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Attempt
+        exit_code:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Exit Code
+        error_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Source
+        trace_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trace Id
+        open_spans:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Open Spans
       additionalProperties: true
       type: object
       required:
       - id
       - status
       title: SimulationRun
+      description: 'What ``GET /simulations/{id}/status`` answers.
+
+
+        The first three fields are the vocabulary every client has relied on since
+
+        the endpoint existed. The rest (observability plan D4d) are additive and
+
+        optional: they are ``None`` until the scheduler has folded the run''s event
+
+        stream / trace into the row, so an old client keeps reading the same
+
+        three fields and a new one gets the stage the run is in.'
+    SimulationSpan:
+      properties:
+        span_id:
+          type: string
+          title: Span Id
+        parent_span_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Parent Span Id
+        name:
+          type: string
+          title: Name
+        attrs:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Attrs
+        start_ts:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Start Ts
+        end_ts:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: End Ts
+        duration_s:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Duration S
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+      additionalProperties: true
+      type: object
+      required:
+      - span_id
+      - name
+      title: SimulationSpan
+      description: 'A node of a run''s trace tree (``hpcrun_span`` row), materialised
+        from
+
+        ``span.start``/``span.end`` events. ``end_ts`` is ``None`` while open; a span
+
+        still open when the run goes terminal is closed as ``status=''unknown''``.'
+    SimulationTask:
+      properties:
+        name:
+          type: string
+          title: Name
+        status:
+          type: string
+          title: Status
+        job_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Job Id
+        task_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Task Hash
+        exit_code:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Exit Code
+        attempt:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Attempt
+        status_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status Reason
+      additionalProperties: true
+      type: object
+      required:
+      - name
+      - status
+      title: SimulationTask
+      description: 'One unit of work of a run as the backend saw it (``GET /simulations/{id}/tasks``):
+
+        a Nextflow task (one ``trace.csv`` row: ``native_id`` = the Batch job id)
+        or a
+
+        chain-dispatch seed job (one Batch job).'
     Simulator:
       properties:
         git_commit_hash:
@@ -5216,6 +5646,32 @@ components:
       - git_branch
       - database_id
       title: SimulatorVersion
+    SpanTree:
+      properties:
+        span:
+          $ref: '#/components/schemas/SimulationSpan'
+        events:
+          items:
+            $ref: '#/components/schemas/SimulationEvent'
+          type: array
+          title: Events
+        children:
+          items:
+            $ref: '#/components/schemas/SpanTree'
+          type: array
+          title: Children
+      additionalProperties: true
+      type: object
+      required:
+      - span
+      title: SpanTree
+      description: '``GET /simulations/{id}/events?tree=true``: the span tree with
+        each span''s
+
+        own events attached (events whose ``span_id`` matches; ``tick`` heartbeats
+        are
+
+        never stored, so they never appear here).'
     StateDocument:
       properties:
         document:

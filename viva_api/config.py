@@ -227,6 +227,14 @@ class Settings(BaseSettings):
     events_s3_prefix: str = ""
     events_flush_seconds: int = 60  # how often a task rewrites its events.jsonl object
     events_heartbeat_seconds: int = 30  # engine tick heartbeat cadence (wall clock)
+    # The ingester (observability plan D4b, viva_api.simulation.event_ingest):
+    # each scheduler tick reads the events objects of active runs from S3 into
+    # ``hpcrun_event`` / ``hpcrun_span`` and folds progress onto the row.
+    # Bounded per tick so a 1,000-lineage campaign cannot starve the loop.
+    events_ingest_enabled: bool = True
+    events_ingest_max_objects_per_tick: int = 50
+    events_ingest_idle_seconds: int = 600  # skip rows whose newest event is older than this (and not new)
+    events_ingest_terminal_grace_seconds: int = 900  # keep ingesting this long after a row goes terminal
 
     # ECR settings
     ecr_account_id: str = ""  # AWS account ID for ECR registry (e.g. "476270107793")

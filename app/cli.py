@@ -1760,6 +1760,102 @@ def simulation_status(
     workflow_log(simulation_id=simulation_id, base_url=base_url)
 
 
+@simulation_cli.command("events", help="Show a simulation's structured events (engine / runner / dispatcher).")
+def simulation_events(
+    simulation_id: int = Argument(help="Simulation database ID."),
+    follow: bool = Option(default=False, help="Keep polling for new events until the run is terminal."),
+    level: str | None = Option(default=None, help="Only this level: debug, info, warning, error."),
+    generation: int | None = Option(default=None, help="Only this generation."),
+    event: str | None = Option(
+        default=None, help="Only this event name (e.g. process.exception, lineage.generation.end)."
+    ),
+    tree: bool = Option(default=False, help="Render the span tree (campaign > task > generation) instead of a table."),
+    limit: int = Option(default=200, help="Events per page (max 1000)."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    """Observability plan D4d: what the run's tasks reported, with no AWS access
+    needed. ``tick`` heartbeats are never listed; see ``simulation status`` for
+    the last heartbeat time. ``--follow`` pages forward every 10 s."""
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+    filters: dict[str, Any] = {"level": level, "event": event, "generation": generation, "limit": limit}
+    if tree and not follow:
+        _print_event_tree(console, data_service, simulation_id, filters)
+        return
+    _print_event_pages(console, data_service, simulation_id, filters, follow=follow)
+
+
+def _print_event_tree(console: Any, data_service: E2EDataService, simulation_id: int, filters: dict[str, Any]) -> None:
+    from viva_api.common.handlers.simulations import render_span_tree
+
+    try:
+        page = data_service.get_workflow_events(simulation_id=simulation_id, tree=True, **filters)
+    except Exception as e:
+        console.print(f"[memphis.error]Error: {e}[/]")
+        return
+    render_span_tree(page.tree or [], console, title=f"Trace — sim {simulation_id} ({page.trace_id or '-'})")
+    if not page.tree:
+        console.print("[memphis.hint]No spans recorded yet.[/]")
+
+
+def _print_event_pages(
+    console: Any, data_service: E2EDataService, simulation_id: int, filters: dict[str, Any], *, follow: bool
+) -> None:
+    """Print every page of events; with ``follow``, keep paging every 10 s until the run is terminal."""
+    import time
+
+    from viva_api.common.handlers.simulations import render_events
+
+    after: int | None = None
+    seen_any = False
+    while True:
+        try:
+            page = data_service.get_workflow_events(simulation_id=simulation_id, after=after, tree=False, **filters)
+        except Exception as e:
+            console.print(f"[memphis.error]Error: {e}[/]")
+            return
+        if page.events:
+            suffix = " (cont.)" if seen_any else ""
+            render_events(page.events, console, title=f"Events — sim {simulation_id}{suffix}")
+            seen_any = True
+            after = page.events[-1].cursor
+        elif not seen_any and not follow:
+            console.print("[memphis.hint]No events recorded yet (the ingester folds them in every few seconds).[/]")
+        if page.next is not None:
+            continue  # more pages available right now
+        if not follow:
+            return
+        try:
+            run = data_service.get_workflow_status(simulation_id=simulation_id)
+        except Exception as e:
+            console.print(f"[memphis.error]status error: {e}[/]")
+            return
+        if run.status.is_terminal:
+            console.print(f"[memphis.info]Run is {run.status.value}; no more events.[/]")
+            return
+        time.sleep(10)
+
+
+@simulation_cli.command("tasks", help="List a simulation's units of work (Nextflow tasks / chain seed jobs).")
+def simulation_tasks(
+    simulation_id: int = Argument(help="Simulation database ID."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    from viva_api.common.handlers.simulations import render_tasks
+
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+    try:
+        tasks = data_service.get_workflow_tasks(simulation_id=simulation_id)
+    except Exception as e:
+        console.print(f"[memphis.error]Error: {e}[/]")
+        return
+    if not tasks:
+        console.print("[memphis.hint]No tasks reported for this run (yet).[/]")
+        return
+    render_tasks(tasks, console, title=f"Tasks — sim {simulation_id}")
+
+
 @simulation_cli.command("cancel", help="Cancel a running simulation.")
 def simulation_cancel(
     simulation_id: int = Argument(help="Simulation database ID."),

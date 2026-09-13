@@ -46,9 +46,11 @@ from viva_api.simulation.models import (
     ObservableInfoModel,
     RepoDiscovery,
     Simulation,
+    SimulationEvents,
     SimulationObservableIndex,
     SimulationObservables,
     SimulationRun,
+    SimulationTask,
     VariantCacheJob,
     VariantCacheRequest,
     VecoliSource,
@@ -438,6 +440,78 @@ async def get_simulation_chain_progress(id: int = FastAPIPath(...)) -> ChainProg
         raise HTTPException(status_code=409, detail=str(e)) from e
     except Exception as e:
         logger.exception("Error getting simulation chain progress")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@config.router.get(
+    path="/simulations/{id}/events",
+    response_model=SimulationEvents,
+    operation_id="get-ecoli-simulation-events",
+    tags=["Simulations"],
+    dependencies=[Depends(get_database_service)],
+    summary="Structured events of a simulation run (engine, runner and dispatch components), flat or as the span tree",
+)
+async def get_simulation_events(
+    id: int = FastAPIPath(...),
+    level: str | None = Query(default=None, description="debug | info | warning | error"),
+    event: str | None = Query(
+        default=None, description="exact event name, e.g. process.exception, lineage.generation.end"
+    ),
+    generation: int | None = Query(default=None),
+    span_id: str | None = Query(default=None),
+    after: int | None = Query(default=None, description="cursor of the last event seen (paging)"),
+    limit: int = Query(default=1000, ge=1, le=1000),
+    tree: bool = Query(default=False, description="also return the span tree with events attached"),
+) -> SimulationEvents:
+    """Observability plan D4d: what the run's tasks reported, without AWS
+    credentials. Events arrive through the scheduler's ingester from the tasks'
+    ``events.jsonl`` objects plus the API's own dispatcher-layer events; ``tick``
+    heartbeats are folded into ``/status`` (``last_event_at``) and never stored.
+    404 when the simulation or its run row does not exist."""
+    db_service = get_database_service()
+    if db_service is None:
+        raise HTTPException(status_code=404, detail="Database not found")
+    try:
+        return await handlers.simulations.get_simulation_events(
+            db_service=db_service,
+            id=id,
+            level=level,
+            event=event,
+            generation=generation,
+            span_id=span_id,
+            after=after,
+            limit=limit,
+            tree=tree,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Error getting simulation events")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@config.router.get(
+    path="/simulations/{id}/tasks",
+    response_model=list[SimulationTask],
+    operation_id="get-ecoli-simulation-tasks",
+    tags=["Simulations"],
+    dependencies=[Depends(get_database_service)],
+    summary="The run's units of work as the backend saw them (Nextflow trace rows / chain seed jobs)",
+)
+async def get_simulation_tasks(id: int = FastAPIPath(...)) -> list[SimulationTask]:
+    """Observability plan D4d. Nextflow: one row per ``trace.csv`` task (its
+    ``job_id`` is the Batch job id); chain dispatch: one row per seed job with
+    Batch's status reason; other backends: an empty list. 404 when the
+    simulation or its run row does not exist."""
+    db_service = get_database_service()
+    if db_service is None:
+        raise HTTPException(status_code=404, detail="Database not found")
+    try:
+        return await handlers.simulations.get_simulation_tasks(db_service=db_service, id=id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Error getting simulation tasks")
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 

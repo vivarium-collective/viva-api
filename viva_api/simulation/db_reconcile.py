@@ -25,10 +25,20 @@ State                   Signal                                       Action
 ======================  ===========================================  ==============================================
 
 The ``LEGACY`` match is found by walking a small, ordered fingerprint table —
-one detectable schema marker per revision that predates Alembic adoption. That
-table is frozen at the head which existed when adoption was introduced: once a
-database is stamped it is ``alembic_version``-managed forever, so migrations
-added *after* adoption never need a new fingerprint.
+one detectable schema marker per revision, used to adopt an un-stamped database
+at the right point in the chain.
+
+**The table is NOT frozen, and every new migration needs an entry** (CLAUDE.md,
+"Fingerprint maintenance contract"). It would be frozen if a stamped database
+were the only kind we meet — but the app still bootstraps schema with
+``Base.metadata.create_all`` at startup, so a database can advance *past* the
+adoption-era head while remaining un-stamped. Adopting such a database against a
+short table stamps it stale and then silently RE-APPLIES migrations it already
+has. That is the dangerous direction: a missing marker fails quietly, while a
+wrong marker merely lands in ``INCONSISTENT`` and refuses.
+
+The list freezes only once ``create_all`` is guarded off in production. That is
+the intended end state; it has not arrived.
 
 Wire the migration Job to ``python -m viva_api.simulation.db_reconcile --apply``
 (or ``scripts/db_reconcile.py``) so it is correct for fresh installs, our own
@@ -57,11 +67,16 @@ from alembic.script import ScriptDirectory
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = REPO_ROOT / "alembic.ini"
 
-# Ordered markers, one per revision that predates Alembic adoption, used ONLY to
-# adopt un-stamped (create_all-bootstrapped) databases. Each entry is
-# ``(revision, human label, async predicate)``. FROZEN at the adoption-era head:
-# never add entries for migrations authored after adoption — those databases
-# already carry an ``alembic_version`` row and take the MANAGED path.
+# Ordered markers, oldest → newest, used ONLY to adopt un-stamped
+# (create_all-bootstrapped) databases. Each entry is ``(revision, human label)``;
+# the async predicates live in the positionally-aligned ``_LEGACY_PREDICATES``
+# below, and the two must stay in step (asserted by test_db_reconcile).
+#
+# APPEND A MARKER WHENEVER YOU ADD A MIGRATION — see the module docstring for
+# why the list is not frozen while ``create_all`` still bootstraps production.
+# The marker must be monotone and origin-agnostic: true of BOTH a
+# migration-built and a create_all-built database at that revision, and never
+# false again once true.
 
 
 async def _table_exists(conn: AsyncConnection, name: str) -> bool:
@@ -189,7 +204,18 @@ async def _marker_hpcrun_events(conn: AsyncConnection) -> bool:
     return await _table_exists(conn, "hpcrun_event")
 
 
-# (revision, human-readable marker description, async predicate)
+async def _marker_hpcrun_event_component(conn: AsyncConnection) -> bool:
+    """True once ``hpcrun_event.component`` exists (e3a9c1d70b62).
+
+    Distinguishes a database built from the DRAFT observability schema (column
+    named ``layer``) from one carrying the settled name. Satisfied for free by a
+    create_all database, whose ``ORMHpcRunEvent.component`` is the current ORM.
+    """
+    return await _column_exists(conn, "hpcrun_event", "component")
+
+
+# (revision, human-readable marker description) -- predicates are positional, in
+# _LEGACY_PREDICATES
 # One marker per revision reachable by a legacy create_all database. New entries
 # are needed ONLY while create_all still bootstraps prod DBs (see module docstring):
 # a create_all DB advanced past the top marker would stamp stale and re-apply an
@@ -210,6 +236,7 @@ LEGACY_FINGERPRINTS: list[tuple[str, str]] = [
     ("f76e43d01841", "compose_simulation.analysis_options column exists"),
     ("d7e2f4a6c8b0", "table 'task' exists"),
     ("a3b5c7d9e1f2", "table 'hpcrun_event' exists"),
+    ("e3a9c1d70b62", "hpcrun_event.component column exists (renamed from the draft 'layer')"),
 ]
 _LEGACY_PREDICATES = [
     _marker_baseline,
@@ -227,6 +254,7 @@ _LEGACY_PREDICATES = [
     _marker_compose_simulation_analysis_options,
     _marker_task_table,
     _marker_hpcrun_events,
+    _marker_hpcrun_event_component,
 ]
 
 

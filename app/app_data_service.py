@@ -21,7 +21,9 @@ from viva_api.simulation.models import (
     ParcaDataset,
     RepoDiscovery,
     Simulation,
+    SimulationEvents,
     SimulationRun,
+    SimulationTask,
     Simulator,
     SimulatorVersion,
     TaskDTO,
@@ -222,6 +224,47 @@ class E2EDataService:
 
     def get_workflow_status(self, simulation_id: int) -> SimulationRun:
         return self.submit_get_workflow_status(simulation_id=simulation_id)
+
+    def get_workflow_events(
+        self,
+        simulation_id: int,
+        *,
+        level: str | None = None,
+        event: str | None = None,
+        generation: int | None = None,
+        after: int | None = None,
+        limit: int = 1000,
+        tree: bool = False,
+    ) -> SimulationEvents:
+        params: dict[str, str] = {"limit": str(limit), "tree": str(tree).lower()}
+        if level:
+            params["level"] = level
+        if event:
+            params["event"] = event
+        if generation is not None:
+            params["generation"] = str(generation)
+        if after is not None:
+            params["after"] = str(after)
+        try:
+            response = self.client.get(url=f"/api/v1/simulations/{simulation_id}/events", params=params)
+            if response.status_code != 200:
+                raise httpx.HTTPError(f"Server returned {response.status_code}: {response.text}")  # noqa: TRY301
+            return SimulationEvents(**response.json())
+        except httpx.HTTPError:
+            raise
+        except Exception as e:
+            raise httpx.HTTPError(f"Could not load events for simulation {simulation_id}: {e}") from e
+
+    def get_workflow_tasks(self, simulation_id: int) -> list[SimulationTask]:
+        try:
+            response = self.client.get(url=f"/api/v1/simulations/{simulation_id}/tasks")
+            if response.status_code != 200:
+                raise httpx.HTTPError(f"Server returned {response.status_code}: {response.text}")  # noqa: TRY301
+            return [SimulationTask(**item) for item in response.json()]
+        except httpx.HTTPError:
+            raise
+        except Exception as e:
+            raise httpx.HTTPError(f"Could not load tasks for simulation {simulation_id}: {e}") from e
 
     def cancel_workflow(self, simulation_id: int) -> SimulationRun:
         return self.submit_cancel_workflow(simulation_id=simulation_id)

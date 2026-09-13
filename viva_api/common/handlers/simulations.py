@@ -62,9 +62,14 @@ from viva_api.simulation.models import (
     ParcaOptions,
     Simulation,
     SimulationConfig,
+    SimulationEvent,
+    SimulationEvents,
     SimulationRequest,
     SimulationRun,
+    SimulationSpan,
+    SimulationTask,
     SimulatorVersion,
+    SpanTree,
     VariantCacheJob,
     VariantCacheRequest,
     VecoliSource,
@@ -97,6 +102,12 @@ _MANIFEST_REQUIRED_COLUMNS = {"dataset_id", "file_path"}
 # Safety limits
 _MAX_TARBALL_BYTES = 500 * 1024 * 1024  # 500 MB
 _MAX_FILE_COUNT = 10_000
+# A run emits a span per stage/generation/seed, so a long multiseed x multigen
+# campaign can have thousands. The flat event list is already bounded (limit <=
+# 1000 + cursor); the span tree must be too (eagmon, #612 review S2). Generous
+# enough that a real campaign renders whole, finite enough that one status call
+# cannot pull an unbounded result set.
+_MAX_SPAN_ROWS = 5_000
 _SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules", ".tox"}
 _SKIP_EXTENSIONS = {".pyc", ".pyo", ".so", ".dylib", ".exe"}
 
@@ -1015,8 +1026,8 @@ async def get_simulation_status(db_service: DatabaseService, id: int) -> Simulat
     # done" from "campaign complete." Never write here; only the scheduler
     # may transition a campaign row's status.
     if hpc_run.chain_final_job_ids is not None:
-        return SimulationRun(
-            id=int(id), status=hpc_run.status or JobStatus.RUNNING, error_message=hpc_run.error_message
+        return await _simulation_run(
+            db_service, int(id), hpc_run.status or JobStatus.RUNNING, hpc_run.error_message, hpc_run
         )
 
     # A terminal row is the answer. The backend job may be GONE by now -- a
@@ -1026,7 +1037,7 @@ async def get_simulation_status(db_service: DatabaseService, id: int) -> Simulat
     # cancel handler itself had answered "cancelled"). The write a few lines
     # down exists precisely so this read need not hit the backend again.
     if hpc_run.status is not None and hpc_run.status.is_terminal:
-        return SimulationRun(id=int(id), status=hpc_run.status, error_message=hpc_run.error_message)
+        return await _simulation_run(db_service, int(id), hpc_run.status, hpc_run.error_message, hpc_run)
 
     # Route to the service that owns this run (by the run's backend), not the global default.
     simulation_service = get_simulation_service_for_job(hpc_run.job_id)
@@ -1069,7 +1080,179 @@ async def get_simulation_status(db_service: DatabaseService, id: int) -> Simulat
         )
         await db_service.update_hpcrun_status(hpcrun_id=hpc_run.database_id, update=update)
 
-    return SimulationRun(id=int(id), status=job_status_info.status, error_message=job_status_info.error_message)
+    return await _simulation_run(db_service, int(id), job_status_info.status, job_status_info.error_message, hpc_run)
+
+
+async def _simulation_run(
+    db_service: DatabaseService, id: int, status: JobStatus, error_message: str | None, hpc_run: HpcRun
+) -> SimulationRun:
+    """``SimulationRun`` with the observability columns the scheduler folded onto
+    the row (plan D4d): stage / generation / last heartbeat / attempt / exit code /
+    where the error came from, and the open spans. All optional; a run that
+    predates the event stream answers exactly what it always did."""
+    open_spans: list[str] | None = None
+    stage = hpc_run.stage
+    if hpc_run.trace_id:
+        try:
+            from viva_api.simulation.event_ingest import open_span_labels
+
+            # ``open_span_labels`` discards closed spans anyway, so ask SQL for the
+            # open ones: bounded by how many can be open AT ONCE (campaign > lineage >
+            # generation), not by how many the run has produced. A plain LIMIT would be
+            # wrong here -- ordered by start_ts it truncates the NEWEST spans, which are
+            # exactly the open ones ``stage`` is derived from.
+            spans = {s.span_id: s for s in await db_service.list_hpcrun_spans(hpc_run.database_id, open_only=True)}
+            if spans:
+                open_spans = open_span_labels(spans)
+                stage = " > ".join(open_spans) if open_spans else stage
+        except Exception:
+            logger.debug("open spans unavailable for HpcRun %s", hpc_run.database_id, exc_info=True)
+    return SimulationRun(
+        id=id,
+        status=status,
+        error_message=error_message,
+        stage=stage,
+        generation=hpc_run.generation,
+        last_event_at=hpc_run.last_event_at,
+        attempt=hpc_run.attempt,
+        exit_code=hpc_run.exit_code,
+        error_source=hpc_run.error_source,
+        trace_id=hpc_run.trace_id,
+        open_spans=open_spans,
+    )
+
+
+async def get_simulation_events(
+    db_service: DatabaseService,
+    id: int,
+    *,
+    level: str | None = None,
+    event: str | None = None,
+    generation: int | None = None,
+    span_id: str | None = None,
+    after: int | None = None,
+    limit: int = 1000,
+    tree: bool = False,
+) -> SimulationEvents:
+    """``GET /simulations/{id}/events`` (plan D4d): the run's stored events
+    (never ``tick`` heartbeats) in arrival order, filtered and paged by ``after``
+    (the ``cursor`` of the last event seen); with ``tree`` the span tree with each
+    span's events attached. 404 via ``ValueError`` when the simulation or its run
+    row does not exist."""
+    from viva_api.simulation.event_ingest import build_span_tree
+
+    sim_record = await db_service.get_simulation(simulation_id=id)
+    if sim_record is None:
+        raise ValueError(f"Simulation with id {id} not found.")
+    hpc_run = await db_service.get_hpcrun_by_ref(ref_id=id, job_type=JobType.SIMULATION)
+    if hpc_run is None:
+        raise ValueError(f"No HPC run found for simulation {id}.")
+    limit = max(1, min(int(limit), 1000))
+    events = await db_service.list_hpcrun_events(
+        hpc_run.database_id,
+        level=level,
+        event=event,
+        generation=generation,
+        span_id=span_id,
+        after=after,
+        limit=limit,
+    )
+    next_cursor = events[-1].cursor if len(events) >= limit and events and events[-1].cursor is not None else None
+    response = SimulationEvents(id=int(id), trace_id=hpc_run.trace_id, events=events, next=next_cursor)
+    if tree:
+        spans = await db_service.list_hpcrun_spans(hpc_run.database_id, limit=_MAX_SPAN_ROWS)
+        response.tree = build_span_tree(spans, events)
+    return response
+
+
+async def _read_trace_rows(experiment_id: str) -> list[Any] | None:
+    """The run's staged ``trace.csv`` rows, or ``None`` when unreadable (no file
+    service, object absent). Same key the scheduler's head poller reads."""
+    from viva_api.common.hpc import nextflow_trace
+
+    file_service = get_file_service()
+    if file_service is None or not experiment_id:
+        return None
+    key = f"{data_layout.RayLayout.experiment_prefix(experiment_id)}/trace.csv"
+    try:
+        content = await file_service.get_file_contents(S3FilePath(s3_path=Path(key)))
+    except Exception:
+        logger.debug("trace.csv not readable at %s", key)
+        return None
+    if not content:
+        return None
+    return nextflow_trace.parse_trace_csv(content.decode("utf-8", errors="replace"))
+
+
+def _nextflow_tasks(rows: list[Any]) -> list[SimulationTask]:
+    """One task per ``trace.csv`` row; ``attempt`` counts rows sharing a task name."""
+    attempts: dict[str, int] = {}
+    tasks: list[SimulationTask] = []
+    for row in rows:
+        attempts[row.name] = attempts.get(row.name, 0) + 1
+        tasks.append(
+            SimulationTask(
+                name=row.name,
+                status=row.status,
+                job_id=row.native_id or None,
+                task_hash=row.hash or None,
+                exit_code=row.exit,
+                attempt=attempts[row.name],
+            )
+        )
+    return tasks
+
+
+def _chain_tasks(service: SimulationServiceRay, hpc_run: HpcRun, simulation_id: int) -> list[SimulationTask]:
+    """One task per seed job of a chain campaign, with what ``describe_jobs`` said."""
+    job_ids = [j for j in (hpc_run.chain_current_job_ids or []) if j] + list(hpc_run.chain_final_job_ids or [])
+    unique_ids = list(dict.fromkeys(job_ids))
+    if not unique_ids:
+        return []
+    try:
+        details = service.get_batch_job_details(unique_ids)
+    except Exception:
+        logger.debug("describe_jobs failed for chain campaign %s", simulation_id, exc_info=True)
+        details = {}
+    tasks: list[SimulationTask] = []
+    for job_id in unique_ids:
+        detail = details.get(job_id) if isinstance(details, dict) else None
+        if detail is None:
+            tasks.append(SimulationTask(name=job_id, status="unknown", job_id=job_id))
+            continue
+        tasks.append(
+            SimulationTask(
+                name=detail.job_name or job_id,
+                status=detail.status.value,
+                job_id=job_id,
+                exit_code=detail.exit_code,
+                attempt=detail.attempts or None,
+                status_reason=detail.status_reason,
+            )
+        )
+    return tasks
+
+
+async def get_simulation_tasks(db_service: DatabaseService, id: int) -> list[SimulationTask]:
+    """``GET /simulations/{id}/tasks`` (plan D4d): the run's units of work as the
+    backend saw them -- Nextflow: one row per ``trace.csv`` task (``native_id`` is
+    the Batch job id); chain dispatch: one row per seed job (``describe_jobs``);
+    anything else: an empty list rather than an error."""
+    sim_record = await db_service.get_simulation(simulation_id=id)
+    if sim_record is None:
+        raise ValueError(f"Simulation with id {id} not found.")
+    hpc_run = await db_service.get_hpcrun_by_ref(ref_id=id, job_type=JobType.SIMULATION)
+    if hpc_run is None:
+        raise ValueError(f"No HPC run found for simulation {id}.")
+    if hpc_run.job_id.backend == JobBackend.K8S_NEXTFLOW:
+        rows = await _read_trace_rows(str(sim_record.experiment_id))
+        return _nextflow_tasks(rows) if rows else []
+    if hpc_run.chain_final_job_ids is not None:
+        service = get_simulation_service_for_job(hpc_run.job_id)
+        if not isinstance(service, SimulationServiceRay):
+            return []
+        return _chain_tasks(service, hpc_run, id)
+    return []
 
 
 async def get_simulation_chain_progress(db_service: DatabaseService, id: int) -> ChainProgress:
@@ -1762,13 +1945,171 @@ def workflow_log(simulation_id: int, base_url: str = "http://localhost:8080", ti
     from app.cli_theme import status_border, status_style
 
     error_detail = f"\n{run.error_message}" if run.error_message else ""
+    progress = _progress_lines(run)
     console.print(
         Panel(
-            f"[{status_style(status.lower())}]{status}[/]{error_detail}",
+            f"[{status_style(status.lower())}]{status}[/]{progress}{error_detail}",
             title="Simulation Status",
             border_style=status_border(status.lower()),
         )
     )
+
+
+def _progress_lines(run: SimulationRun) -> str:
+    """The observability fields of a ``SimulationRun`` as panel lines, when present
+    (plan D4d): stage, generation, last heartbeat, attempt, exit code, error source."""
+    from rich.markup import escape
+
+    parts: list[str] = []
+    if run.stage:
+        parts.append(f"stage: {escape(run.stage)}")
+    if run.generation is not None:
+        parts.append(f"generation: {run.generation}")
+    if run.last_event_at:
+        parts.append(f"last event: {run.last_event_at}")
+    if run.attempt is not None:
+        parts.append(f"attempt: {run.attempt}")
+    if run.exit_code is not None:
+        parts.append(f"exit code: {run.exit_code}")
+    if run.error_source:
+        parts.append(f"error source: {run.error_source}")
+    return ("\n" + "\n".join(parts)) if parts else ""
+
+
+def _fmt_seconds(value: float | None) -> str:
+    if value is None:
+        return "-"
+    if value < 90:
+        return f"{value:.1f}s"
+    if value < 5400:
+        return f"{value / 60:.1f}m"
+    return f"{value / 3600:.2f}h"
+
+
+def _event_summary(event: SimulationEvent, width: int = 110) -> str:
+    """One line of payload for a table cell: the keys that identify what happened."""
+    payload = event.payload or {}
+    preferred = (
+        "name",
+        "path",
+        "cls",
+        "exc_type",
+        "exc_msg",
+        "status",
+        "exit_code",
+        "duration_s",
+        "message",
+        "gen_seed",
+        "dry_mass",
+        "t_division",
+        "num_emits",
+        "job_name",
+        "reason",
+    )
+    parts = [f"{k}={payload[k]}" for k in preferred if k in payload and payload[k] not in (None, "", {})]
+    rest = [k for k in payload if k not in preferred]
+    if rest:
+        parts.append("+" + ",".join(rest[:6]) + ("…" if len(rest) > 6 else ""))
+    text = " ".join(parts)
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+def render_events(events: list[SimulationEvent], console: Any, *, title: str = "Events") -> None:
+    """Rich table of a run's events: time, layer/event, level, generation, sim time, summary."""
+    from rich.markup import escape
+    from rich.table import Table
+
+    table = Table(title=title, expand=True, border_style="memphis.border.info")
+    table.add_column("ts", style="dim", no_wrap=True)
+    table.add_column("component", no_wrap=True)
+    table.add_column("event", no_wrap=True)
+    table.add_column("lvl", no_wrap=True)
+    table.add_column("gen", justify="right", no_wrap=True)
+    table.add_column("t(s)", justify="right", no_wrap=True)
+    table.add_column("what")
+    for e in events:
+        level_style = {"error": "memphis.error", "warning": "memphis.warning"}.get(e.level, "")
+        level = f"[{level_style}]{e.level}[/]" if level_style else e.level
+        table.add_row(
+            e.ts[11:23] if len(e.ts) >= 23 else e.ts,
+            e.component,
+            e.event,
+            level,
+            "" if e.generation is None else str(e.generation),
+            "" if e.global_time is None else f"{e.global_time:.0f}",
+            escape(_event_summary(e)),
+        )
+    console.print(table)
+
+
+#: Events always shown under their span in the tree, whatever their level
+#: (settled dotted names first, the first engine draft's names after).
+_TREE_NOTABLE_EVENTS: frozenset[str] = frozenset({
+    "process.exception",
+    "lineage.failure",
+    "lineage.division",
+    "task.end",
+    "dispatch.head.exit",
+    "dispatch.task.outcome",
+    "exception",
+    "failure_record",
+    "division",
+    "task_end",
+})
+
+
+def render_span_tree(tree: list[SpanTree], console: Any, *, title: str = "Trace") -> None:
+    """Rich tree of the run's spans: label, status, duration, and the first error
+    of each span; events of a span are listed under it (heartbeats never appear)."""
+    from rich.markup import escape
+    from rich.tree import Tree
+
+    def label(span: SimulationSpan) -> str:
+        status = span.status or ("open" if span.end_ts is None else "?")
+        style = {"error": "memphis.error", "unknown": "memphis.warning", "open": "memphis.info"}.get(status, "")
+        status_text = f"[{style}]{status}[/]" if style else status
+        text = f"[bold]{escape(span.label)}[/]  {status_text}  {_fmt_seconds(span.duration_s)}"
+        if span.error:
+            first = span.error.strip().splitlines()[0][:120]
+            text += f"  [memphis.error]{escape(first)}[/]"
+        return text
+
+    def add(node: SpanTree, branch: Any) -> None:
+        sub = branch.add(label(node.span))
+        for e in node.events:
+            if e.level in ("error", "warning") or e.event in _TREE_NOTABLE_EVENTS:
+                style = "memphis.error" if e.level == "error" else ("memphis.warning" if e.level == "warning" else "")
+                text = escape(f"{e.event}  {_event_summary(e, 90)}")
+                sub.add(f"[{style}]{text}[/]" if style else text)
+        for child in node.children:
+            add(child, sub)
+
+    root = Tree(f"[bold]{escape(title)}[/]")
+    for node in tree:
+        add(node, root)
+    console.print(root)
+
+
+def render_tasks(tasks: list[SimulationTask], console: Any, *, title: str = "Tasks") -> None:
+    from rich.markup import escape
+    from rich.table import Table
+
+    table = Table(title=title, expand=True, border_style="memphis.border.info")
+    for col in ("name", "status", "attempt", "exit", "job id", "hash", "reason"):
+        table.add_column(col, no_wrap=col != "reason")
+    for t in tasks:
+        style = "memphis.error" if t.status.upper() in ("FAILED", "ABORTED") else ""
+        status = f"[{style}]{t.status}[/]" if style else t.status
+        table.add_row(
+            t.name,
+            status,
+            "" if t.attempt is None else str(t.attempt),
+            "" if t.exit_code is None else str(t.exit_code),
+            t.job_id or "",
+            t.task_hash or "",
+            escape((t.status_reason or "")[:80]),
+        )
+    console.print(table)
 
 
 # Caller-facing default for the LEGACY vEcoli/Nextflow analysis paths, which take an

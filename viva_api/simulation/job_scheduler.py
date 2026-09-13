@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import logging
+from typing import Any
 
 from viva_api.common.dispatch_validation import resolve_task_env
 from viva_api.common.events_env import with_events_env
@@ -14,11 +15,13 @@ from viva_api.config import ComputeBackend, compute_backend_for_repo, get_settin
 from viva_api.dependencies import get_ssh_session_service
 from viva_api.simulation import batch_build
 from viva_api.simulation.database_service import DatabaseService
+from viva_api.simulation.event_ingest import DISPATCH_COMPONENT
 from viva_api.simulation.models import (
     ChainCampaignUpdate,
     HpcRun,
     JobType,
     Simulation,
+    SimulationEvent,
     WorkerEvent,
     WorkerEventMessagePayload,
 )
@@ -170,6 +173,10 @@ class JobScheduler:
                 await self.update_nextflow_heads()
             except Exception:
                 logger.exception("Error during Nextflow head polling")
+            try:
+                await self.ingest_run_events()
+            except Exception:
+                logger.exception("Error during run event ingestion")
             await asyncio.sleep(interval_seconds)
 
     async def update_running_jobs(self) -> None:
@@ -280,6 +287,9 @@ class JobScheduler:
                 logger.info("Nextflow head %s still terminating; will re-check next tick", head)
             elif reaped:
                 logger.warning("Nextflow head %s left %d Batch task(s) running; terminated them", head, reaped)
+                await self._record_dispatcher_events(
+                    hpc_run, [("dispatch.reaped", "warning", {"job_name": head, "tasks_terminated": int(reaped)})]
+                )
 
     async def _reconcile_orphaned_local_run(self, hpc_run: HpcRun) -> None:
         age = _hpcrun_age_seconds(hpc_run)
@@ -837,6 +847,7 @@ class JobScheduler:
             error_message=error_message,
             error_source=error_source,
         )
+        await self._record_chain_outcomes(simulation_service_ray, fresh, terminal_status, succeeded, failed)
         if not all_succeeded:
             logger.warning(
                 "Chain dispatch %s: HpcRun %s NOT all seed chains succeeded "
@@ -1058,6 +1069,43 @@ class JobScheduler:
             exit_code,
             f"; {error_message.splitlines()[0][:160]}" if error_message else "",
         )
+        await self._record_dispatcher_events(
+            hpc_run, self._nextflow_head_events(job_name, status, exit_code, reason, trace_rows)
+        )
+
+    @staticmethod
+    def _nextflow_head_events(
+        job_name: str,
+        status: JobStatus,
+        exit_code: int | None,
+        reason: str | None,
+        trace_rows: list[nextflow_trace.TraceRow] | None,
+    ) -> list[tuple[str, str, dict[str, Any]]]:
+        """What the API itself observed, as dispatcher-layer events under the
+        campaign span (observability plan D4b): the head's exit and one outcome
+        per task the trace names as never having succeeded."""
+        events: list[tuple[str, str, dict[str, Any]]] = [
+            (
+                "dispatch.head.exit",
+                "info" if status == JobStatus.COMPLETED else "error",
+                {"job_name": job_name, "status": status.value, "exit_code": exit_code, "reason": reason},
+            )
+        ]
+        if trace_rows is None:
+            return events
+        for row in nextflow_trace.final_failed_rows(nextflow_trace.summarize(trace_rows)):
+            events.append((
+                "dispatch.task.outcome",
+                "error",
+                {
+                    "name": row.name,
+                    "status": row.status,
+                    "exit_code": row.exit,
+                    "job_id": row.native_id,
+                    "task_hash": row.hash,
+                },
+            ))
+        return events
 
     async def _read_nextflow_trace(self, experiment_id: str | None) -> list[nextflow_trace.TraceRow] | None:
         """The run's staged ``trace.csv`` rows, or ``None`` when it cannot be read
@@ -1102,6 +1150,120 @@ class JobScheduler:
             campaign_key = str(nf_dispatch["resume_from"])
         work_dir_uri = f"s3://{settings.s3_work_bucket}/{settings.s3_work_prefix}/{campaign_key}/work"
         return await nextflow_trace.fetch_command_err(file_service, work_dir_uri, failed[0])
+
+    # ---- run event stream (observability plan D4b) ----
+
+    async def ingest_run_events(self) -> None:
+        """Read every active run's task-side ``events.jsonl`` objects into
+        ``hpcrun_event`` / ``hpcrun_span`` and fold progress onto the rows.
+        Bounded per tick; every run's failure is logged and skipped so one bad
+        object cannot stall the loop. Off with ``Settings.events_ingest_enabled``."""
+        from viva_api.dependencies import get_file_service
+        from viva_api.simulation import event_ingest
+
+        settings = get_settings()
+        if not getattr(settings, "events_ingest_enabled", True):
+            return
+        file_service = get_file_service()
+        if file_service is None:
+            return
+        now = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+        grace = int(getattr(settings, "events_ingest_terminal_grace_seconds", 900) or 900)
+        rows = await self.database_service.list_hpcruns_for_event_ingest(now - datetime.timedelta(seconds=grace))
+        budget = int(getattr(settings, "events_ingest_max_objects_per_tick", 50) or 50)
+        for hpc_run in rows:
+            if budget <= 0:
+                break
+            if not event_ingest.is_ingest_candidate(hpc_run, settings, now):
+                continue
+            try:
+                simulation = await self.database_service.get_simulation(simulation_id=hpc_run.ref_id)
+                result = await event_ingest.ingest_run_events(
+                    hpc_run, simulation, file_service, self.database_service, settings, now=now
+                )
+            except Exception:
+                logger.exception("Error ingesting events for HpcRun %s", hpc_run.database_id)
+                continue
+            budget -= result.objects_read
+            if result.events_inserted or result.spans_changed:
+                logger.info(
+                    "events: HpcRun %s +%d event(s), %d span(s) changed, stage=%s generation=%s",
+                    hpc_run.database_id,
+                    result.events_inserted,
+                    result.spans_changed,
+                    result.stage,
+                    result.generation,
+                )
+
+    async def _record_chain_outcomes(
+        self,
+        simulation_service_ray: SimulationServiceRay,
+        hpc_run: HpcRun,
+        terminal_status: JobStatus,
+        succeeded: list[str],
+        failed: list[str],
+        limit: int = 20,
+    ) -> None:
+        """A chain campaign's terminal accounting as dispatcher events: one
+        ``task_outcome`` per resolved seed job (failed ones first, with Batch's
+        name/reason/exit when ``describe_jobs`` answers) and a ``campaign_end``."""
+        details: dict[str, Any] = {}
+        if failed:
+            try:
+                details = simulation_service_ray.get_batch_job_details(failed[:limit])
+            except Exception:
+                details = {}
+        events: list[tuple[str, str, dict[str, Any]]] = []
+        for job_id in failed[:limit]:
+            detail = details.get(job_id) if isinstance(details, dict) else None
+            payload: dict[str, Any] = {"job_id": job_id, "status": "failed"}
+            if detail is not None and not isinstance(detail, str):
+                payload.update({
+                    "name": getattr(detail, "job_name", None),
+                    "status_reason": getattr(detail, "status_reason", None),
+                    "exit_code": getattr(detail, "exit_code", None),
+                    "attempt": getattr(detail, "attempts", None),
+                })
+            events.append(("dispatch.task.outcome", "error", payload))
+        for job_id in succeeded[:limit]:
+            events.append(("dispatch.task.outcome", "info", {"job_id": job_id, "status": "succeeded"}))
+        events.append((
+            "dispatch.campaign.end",
+            "info" if terminal_status == JobStatus.COMPLETED else "error",
+            {"status": terminal_status.value, "seeds_succeeded": len(succeeded), "seeds_failed": len(failed)},
+        ))
+        await self._record_dispatcher_events(hpc_run, events)
+
+    async def _record_dispatcher_events(self, hpc_run: HpcRun, events: list[tuple[str, str, dict[str, Any]]]) -> None:
+        """Write the API's own events (``dispatch.head.exit``, ``dispatch.task.outcome``, ``dispatch.reaped``;
+        component ``viva_api.dispatch``) -- formerly "dispatcher-layer events" (``head_exit``, ``task_outcome``,
+        ``reaped``, ...) under the run's campaign span, ``source='api'``. These
+        never go through the engine; they are what the API itself observed.
+        Best-effort: a row without a trace id (pre-migration) records nothing."""
+        trace_id = hpc_run.trace_id
+        if not trace_id or not events:
+            return
+        try:
+            seq = await self.database_service.next_hpcrun_event_seq(trace_id, "api")
+            now = datetime.datetime.now(datetime.UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            rows = [
+                SimulationEvent(
+                    seq=seq + i,
+                    source="api",
+                    ts=now,
+                    component=DISPATCH_COMPONENT,
+                    event=name,
+                    level=level,
+                    span_id=hpc_run.campaign_span_id,
+                    parent_span_id=None,
+                    payload=payload,
+                    tags={"backend": hpc_run.job_id.backend.value},
+                )
+                for i, (name, level, payload) in enumerate(events)
+            ]
+            await self.database_service.insert_hpcrun_events(hpc_run.database_id, trace_id, rows)
+        except Exception:
+            logger.exception("Error recording dispatcher events for HpcRun %s", hpc_run.database_id)
 
     async def close(self) -> None:
         await self.stop_polling()

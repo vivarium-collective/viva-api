@@ -937,7 +937,99 @@ def _resolve_document(
     return loaded, core
 
 
+# ---------------------------------------------------------------------------
+# Observability bootstrap (docs/plan-observability.md, dispatcher/runner layer)
+# ---------------------------------------------------------------------------
+#
+# The chain and MNP paths run THIS script directly (``python /tmp/run_pbg.py``)
+# and never pass through process-bigraph's ``run_step``/``run_composite``
+# entrypoints, so with the engine's library default (silent) they emitted
+# nothing: cluster acceptance on sim 957 found zero events on the chain path
+# while the Nextflow path (``run_step``) emitted 96. Mirror what the
+# entrypoints and v2ecoli's ``LineageStep.configure_for_task`` do: a stdout
+# sink unless ``PBG_EVENT_SINKS`` says otherwise, plus ``<results_dir>/events.jsonl``,
+# and one task span around the run. Everything here is best-effort -- an
+# older process-bigraph without ``events`` (or any failure inside it) leaves the
+# run exactly as it was.
+EVENTS_COMPONENT = "viva_api.run_pbg"
+EVENTS_FILENAME = "events.jsonl"
+
+
+def _configure_events(results_dir: Path | None) -> Any:
+    """Install the process-wide emitter for this run, or return ``None`` when
+    process-bigraph does not expose ``events`` (older engine) -- every caller
+    then skips observability entirely.
+
+    An emitter that is already enabled (an entrypoint configured it, or the
+    environment did) is kept -- only the file sink is added if missing.
+    """
+    try:
+        from process_bigraph import events as _events
+    except ImportError:
+        return None
+    try:
+        emitter = _events.get_emitter()
+        if not emitter.enabled:
+            emitter = _events.configure(default="stdout")
+        if results_dir is not None:
+            path = str(Path(results_dir) / EVENTS_FILENAME)
+            sinks = getattr(emitter, "_sinks", None)
+            if isinstance(sinks, list) and not any(getattr(sink, "path", None) == path for sink in sinks):
+                Path(results_dir).mkdir(parents=True, exist_ok=True)
+                sinks.append(_events.FileSink(path))
+        return emitter
+    except Exception:  # observability must never break the run
+        return None
+
+
+@contextlib.contextmanager
+def _task_span(emitter: Any, label: str, **attrs: Any) -> Iterator[Any]:
+    """One ``task`` span (same shape as process-bigraph's ``run_step``) plus
+    ``task.start``/``task.end`` events attributed to this runner. No-op when
+    ``emitter`` is ``None``."""
+    if emitter is None:
+        yield None
+        return
+    span = emitter.start_span("task", name=label, **attrs)
+    emitter.event("task.start", component=EVENTS_COMPONENT, name=label, **attrs)
+    try:
+        yield span
+    except BaseException as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        emitter.event("task.end", level="error", component=EVENTS_COMPONENT, status="error", name=label, error=error)
+        span.end("error", error)
+        emitter.flush()
+        raise
+    else:
+        emitter.event("task.end", component=EVENTS_COMPONENT, status="ok", name=label)
+        span.end("ok")
+        emitter.flush()
+
+
 def run(
+    input_file: str | None,
+    steps: int,
+    results_dir: Path = RESULTS_DIR,
+    *,
+    composite_id: str | None = None,
+    overrides: dict[str, Any] | None = None,
+    experiment_id: str | None = None,
+) -> Path:
+    """Get a document (static file, or built from ``composite_id`` + ``overrides``),
+    run it ``steps`` times, write ``final_state.json`` -- inside one observability
+    task span (see ``_configure_events``). The actual work is ``_run``.
+    """
+    label = composite_id or (Path(input_file).stem if input_file else "run_pbg")
+    emitter = _configure_events(results_dir)
+    with _task_span(
+        emitter, label, composite_id=composite_id, input_file=input_file, steps=steps, experiment_id=experiment_id
+    ):
+        return _run(
+            input_file, steps, results_dir, composite_id=composite_id, overrides=overrides, experiment_id=experiment_id
+        )
+
+
+def _run(
     input_file: str | None,
     steps: int,
     results_dir: Path = RESULTS_DIR,
