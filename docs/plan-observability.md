@@ -1,6 +1,72 @@
 # Observability plan for whole-cell campaigns (viva-api · v2ecoli · process-bigraph)
 
-> **Status (2026-09-10 16:15Z): all four implementation PRs are complete, cluster-validated, and awaiting review. None is merged.** Approved by Jim 05:45Z, re-planned once at 06:50Z (§D1′ — the engine is general-purpose: `component`, dotted event names, opaque string baggage, no domain vocabulary in process-bigraph), extended at 15:50Z (§D5 — the Ray/multi-node path). See **§Where each piece actually is** below for heads and state. Progress rows go in `docs/plan-nextflow-act3.md`; this file is the design of record. Companion to `plan-nextflow-dispatch.md`, `plan-nextflow-act2.md`, `plan-nextflow-act3.md`.
+> ## Status: **DELIVERED 2026-09-13. Merged, tagged, NOT deployed.**
+>
+> | repo | PR | commit |
+> |---|---|---|
+> | process-bigraph | #209 engine events | `55b70676` |
+> | v2ecoli | #772 runner events, S3 sink plugin | `fc0253df` |
+> | sms-ecoli | #395 the repin (both pins, one commit) | `9f05d466` |
+> | — | simulator image | **207** |
+> | viva-api | #636 `d7e2f4a6c8b0` migration fix | `316a0bbac` |
+> | viva-api | #609 PR-A head poller | `2317adce0` |
+> | viva-api | #612 PR-D ingester + API | `f3c6a3edd` |
+> | viva-api | #638 bump 0.9.139 | `004ee1a85`, tagged **`v0.9.139`** |
+>
+> **Not built, not deployed.** stanford-test still runs 0.9.138 and its database is
+> MANAGED at `c7d1f3a9b2e4`, so **three** revisions are pending there:
+> `f76e43d01841 → d7e2f4a6c8b0 → a3b5c7d9e1f2 → e3a9c1d70b62`. Each was walked
+> against that database's actual state (no `task`, no `hpcrun_event`, no
+> `hpcrun_span`). **Run the `alembic-migrate` Job BEFORE rolling the app.**
+>
+> **Events are OFF by default** — no sink resolves unless `PBG_EVENT_SINKS` is set —
+> so this ships inert and a path is enabled deliberately.
+>
+> ### What changed between plan and implementation
+>
+> * **`PARTIAL` was dropped** (`5a960e0c`), reversing §D4b. Nothing branched on it, Postgres
+>   cannot drop an enum label, and "which tasks survived" belongs in the per-task rows
+>   and `error_message`. This also keeps the migration free of the deploy-ordering
+>   constraint an `ALTER TYPE … ADD VALUE` imposes.
+> * **TWO migrations, not "one migration + one marker"** as §D4b says. `a3b5c7d9e1f2`
+>   (columns + tables) and **`e3a9c1d70b62`** (`hpcrun_event.layer → component`). The
+>   rename MUST be its own revision: a site stamped at `a3b5c7d9e1f2` by a #609-era
+>   deploy is MANAGED, so `upgrade head` is a no-op and a rename living *inside* that
+>   revision could never run — `UndefinedColumn` on every insert, silently, with the
+>   Job exiting 0. Two fingerprint markers accordingly.
+> * **An alembic audit (Jim's ask, 2026-09-13) found three more things**, all fixed:
+>   `d7e2f4a6c8b0` on `main` could not apply to **any** database (double `CREATE TYPE`
+>   + non-idempotent `CREATE TABLE`) — split out as #636; **no test anywhere asserted a
+>   single alembic head**, though the two-heads bug had already happened once; and
+>   `diff_schemas` compares column **names** only, so nothing caught type drift — the
+>   class that shipped the VARCHAR-vs-`composejobstatusdb` defect. Both gaps now have
+>   mutation-verified tests.
+>
+> ### Known gaps, recorded rather than closed
+>
+> * **The gather is uninstrumented interior.** The ptools analyses are `Step`
+>   subclasses but never enter `Composite.run` — `analysis_runner` calls `.analyze()`
+>   directly, and `workflow_nf` deliberately does not wrap analysis. So no engine hook
+>   fires for them: no `run.start`, no `tick`, no `process.exception`, no spans. The
+>   dispatcher layer still covers the stage *boundary*. Raised on sms-ecoli#166
+>   (2026-09-13 17:56Z); **not** a defect decision yet.
+> * **viva-api#637** — `alembic upgrade head` cannot run against a genuinely empty
+>   database (`d3f9a1c72b84` ALTERs `analysis`, which no migration creates). Dormant
+>   for every existing site; live for the first new one. @eagmon chose **Option 1**
+>   (make the chain honest) with two conditions: guard the new `CREATE TABLE`s, and
+>   ship the empty-DB `upgrade head` test as a real negative control.
+> * **No user guide yet.** This file is the design of record, not instructions.
+>   `PBG_EVENT_SINKS` appears nowhere outside these plan docs. A usage guide and a
+>   debugging skill are queued for after the deploy, so each instruction can be
+>   verified against a live run rather than against the source.
+>
+> ---
+>
+> <details><summary>Superseded status line (2026-09-10 16:15Z)</summary>
+>
+> **All four implementation PRs are complete, cluster-validated, and awaiting review. None is merged.** Approved by Jim 05:45Z, re-planned once at 06:50Z (§D1′ — the engine is general-purpose: `component`, dotted event names, opaque string baggage, no domain vocabulary in process-bigraph), extended at 15:50Z (§D5 — the Ray/multi-node path). See **§Where each piece actually is** below for heads and state. Progress rows go in `docs/plan-nextflow-act3.md`; this file is the design of record. Companion to `plan-nextflow-dispatch.md`, `plan-nextflow-act2.md`, `plan-nextflow-act3.md`.
+>
+> </details>
 
 
 ## Context — why now
@@ -656,6 +722,11 @@ process-bigraph release
 ```
 
 ## Rollout order (value at every step; parallel where independent)
+
+> **All five steps are DONE as of 2026-09-13** — see the delivery table at the top of
+> this file for the merge commits. Steps 1–4 shipped; step 5 (CloudWatch enrichment)
+> was optional and was **not** built. The order below is kept as the record of how it
+> was sequenced and why each step stood alone.
 
 1. **viva-api PR-A** — head poller, `trace.csv`, `.nextflow.log` upload, `exit_code`,
    PARTIAL, error precedence, `_get_k8s_log` fix, identity env vars, the migration. No
