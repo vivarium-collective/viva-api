@@ -108,6 +108,15 @@ Learned the hard way, twice, on 2026-09-13:
   matching those patterns is discarded. A `[probe]` settings line added to prove a knob
   applied was silently eaten — and its absence looked identical to "the knob did not
   apply". **Widen the grep in the same edit.**
+* **A pipe buffers, so "not there yet" and "never" look identical while a job runs.**
+  `… | grep -E … | sed …` — both `grep` and `sed` block-buffer (4 KB) when stdout is
+  a pipe rather than a tty, so every matched line lands in CloudWatch in one burst
+  *when the driver exits*. Measured on `run1probe-c-rna`: the `status:` and `ERR`
+  lines share a single timestamp (18:24:24) at the end, while the unpiped `[spill]`
+  monitor streamed every 30 s throughout. Do not read a mid-run absence as a null
+  result. Use `grep --line-buffered` / `sed -u`, or `stdbuf -oL`, when you need the
+  diagnostic live.
+
 * Printing a setting at *connect* time proves you set it, not that it survived.
   `apply_analysis_duckdb_config` runs afterwards. Re-read settings **after** it to show
   the state the queries actually ran under. "I set it" and "it was set when the query
