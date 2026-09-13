@@ -1,0 +1,126 @@
+"""Every dispatch path must merge the events identity under the request's task_env.
+
+The observability plan's D4a says "every dispatched unit of work gets a ``PBG_*``
+block". Nothing enforced it, and two paths in ``simulation_service_ray`` shipped
+without it: ``submit_ecoli_simulation_job`` (the MNP ParCa + simulation pair) and
+``_submit_analysis_job`` (the gather). The failure was silent in the worst way --
+the API still derives a ``trace_id`` from the run's ``correlation_id`` and writes
+it to the ``HpcRun`` row, so ``/status`` showed an identity while the submitted
+AWS Batch job carried no ``PBG_*`` at all and the run emitted nothing. It was
+found by dispatching a real 1-generation campaign and reading the job's
+environment back out of Batch, which is not a thing a test suite does.
+
+So this is a STATIC check, deliberately: it reads the dispatch module's AST and
+asserts the invariant at the seam where it is actually expressible -- a
+``resolve_task_env(...)`` result must reach ``with_events_env(...)``, either
+nested directly or by way of a local name. It cannot verify that the env
+survives to Batch (only a live dispatch does that, see the module docstring of
+``viva_api/common/events_env.py``), but it does catch the exact regression that
+happened: a new dispatch method that resolves the caller's env and forgets the
+identity.
+"""
+
+from __future__ import annotations
+
+import ast
+import pathlib
+
+import pytest
+
+DISPATCH_MODULES = [
+    "viva_api/simulation/simulation_service_ray.py",
+    "viva_api/simulation/job_scheduler.py",
+]
+
+# Methods that resolve a task env but deliberately do NOT carry an events identity.
+# Keep this empty if you can: an entry here is a dispatch whose events are invisible.
+EXEMPT: set[str] = set()
+
+
+def _functions(tree: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    return [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)]
+
+
+def _calls_named(node: ast.AST, name: str) -> list[ast.Call]:
+    out = []
+    for n in ast.walk(node):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == name:
+            out.append(n)
+    return out
+
+
+def _covered_resolve_calls(fn: ast.AST) -> set[int]:
+    """ids() of ``resolve_task_env`` calls whose value reaches ``with_events_env``.
+
+    Two shapes count, because both are used in the tree:
+
+      * nested directly -- ``with_events_env(resolve_task_env(cfg), ...)``
+      * via a local name -- ``env = resolve_task_env(cfg)`` then
+        ``with_events_env(env, ...)``, which is how a method that submits more
+        than one job (ParCa *and* simulation) shares one resolved env.
+    """
+    covered: set[int] = set()
+    wrapped_names: set[str] = set()
+
+    for wrap in _calls_named(fn, "with_events_env"):
+        for inner in _calls_named(wrap, "resolve_task_env"):
+            covered.add(id(inner))
+        for arg in wrap.args:
+            if isinstance(arg, ast.Name):
+                wrapped_names.add(arg.id)
+
+    if wrapped_names:
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Assign):
+                continue
+            targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
+            if targets & wrapped_names:
+                for inner in _calls_named(node.value, "resolve_task_env"):
+                    covered.add(id(inner))
+    return covered
+
+
+@pytest.mark.parametrize("module_path", DISPATCH_MODULES)
+def test_every_resolved_task_env_carries_the_events_identity(module_path: str) -> None:
+    source = pathlib.Path(module_path).read_text()
+    tree = ast.parse(source)
+
+    offenders: list[str] = []
+    for fn in _functions(tree):
+        if fn.name in EXEMPT:
+            continue
+        resolves = _calls_named(fn, "resolve_task_env")
+        if not resolves:
+            continue
+        covered = _covered_resolve_calls(fn)
+        for call in resolves:
+            if id(call) not in covered:
+                offenders.append(f"{module_path}:{call.lineno} in {fn.name}()")
+
+    assert not offenders, (
+        "These dispatch paths resolve the caller's task_env but never merge the events "
+        "identity under it, so the job they submit carries no PBG_* and emits nothing "
+        "while its HpcRun row still shows a trace_id:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_known_dispatch_paths_are_all_still_covered() -> None:
+    """A companion to the scan above: name the methods, so deleting one is visible.
+
+    The scan passes vacuously if a method stops calling ``resolve_task_env``
+    altogether (e.g. someone inlines it). This pins the list that must keep
+    carrying an identity.
+    """
+    source = pathlib.Path("viva_api/simulation/simulation_service_ray.py").read_text()
+    tree = ast.parse(source)
+    with_identity = {fn.name for fn in _functions(tree) if _calls_named(fn, "with_events_env")}
+    expected = {
+        "_submit_nextflow_dispatch",
+        "_submit_mbp_tracked_dispatch",
+        "_submit_multi_node_composite",
+        "submit_chain_dispatch_job",
+        "submit_ecoli_simulation_job",
+        "_submit_analysis_job",
+    }
+    missing = expected - with_identity
+    assert not missing, f"dispatch methods that lost their events identity: {sorted(missing)}"
