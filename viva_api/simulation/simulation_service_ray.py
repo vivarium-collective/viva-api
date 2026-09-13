@@ -2613,6 +2613,7 @@ class SimulationServiceRay(SimulationService):
         depends_type: str | None,
         tags: dict[str, str],
         cache_variant: str | None = None,
+        correlation_id: str | None = None,
     ) -> str | None:
         """Submit the analysis DAG node and record it, returning its Batch job id.
 
@@ -2676,10 +2677,22 @@ class SimulationServiceRay(SimulationService):
             sim_data_uri=sim_data_uri,
             result_out_dir=result_uri,
             v2ecoli_dir=V2ECOLI_DIR,
-            # task_env (sms-ecoli#166): the campaign's own env reaches its gather too.
+            # task_env (sms-ecoli#166): the campaign's own env reaches its gather too,
+            # WITH the events identity (D4a) merged under it so the gather lands in the
+            # campaign's trace rather than a trace of its own. ``correlation_id`` is
+            # threaded from the scheduler's HpcRun row; when it is None ``events_env``
+            # seeds from experiment_id instead, which still groups the run's own tasks.
             submit_container=functools.partial(
                 self._submit_container,
-                task_env=resolve_task_env(simulation.config),
+                task_env=with_events_env(
+                    resolve_task_env(simulation.config),
+                    correlation_id=correlation_id,
+                    experiment_id=str(experiment_id),
+                    sim_id=simulation.database_id,
+                    backend="analysis",
+                    tags={"phase": "analysis"},
+                    settings=get_settings(),
+                ),
                 memory_class=memory_class,
             ),
             job_definition=job_definition,
@@ -3425,7 +3438,26 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         }
 
         # 1. ParCa job (1 node) → cache to S3.
-        task_env = resolve_task_env(config)
+        #
+        # The events identity (D4a) is merged UNDER the request's own task_env on
+        # BOTH submits, per phase. Omitting it here was a live gap: the HpcRun row
+        # got a trace_id (the API derives it from correlation_id) while the Batch
+        # job carried no PBG_* at all, so the run recorded an identity no task was
+        # ever told about and emitted nothing. Caught by running a 1-gen/1-seed
+        # verification campaign and reading the submitted job's environment.
+        request_env = resolve_task_env(config)
+
+        def _events_env(phase: str) -> dict[str, str]:
+            return with_events_env(
+                request_env,
+                correlation_id=correlation_id,
+                experiment_id=str(experiment_id),
+                sim_id=ecoli_simulation.database_id,
+                backend="mnp",
+                tags={"phase": phase},
+                settings=settings,
+            )
+
         parca_job_id = self._submit_mnp(
             job_name=f"ray-parca-{commit}-{_rand_suffix()}",
             job_definition=job_def,
@@ -3434,7 +3466,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
             out_s3=cache_s3,
             out_dir=PARCA_CACHE_DIR,
             tags={**base_tags, "Phase": "parca"},
-            task_env=task_env,
+            task_env=_events_env("parca"),
         )
 
         # 2. Simulation ensemble (N-node Ray cluster), gated on ParCa, staging the
@@ -3480,7 +3512,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
             stage_dir=PARCA_CACHE_DIR,
             depends_on=[parca_job_id],
             tags={**base_tags, "Phase": "sim"},
-            task_env=task_env,
+            task_env=_events_env("sim"),
             # Wrong-strain guard (sms-ecoli#210 / #215): tell the entrypoint which
             # strain this run staged so it rejects a cache built for a different one.
             # off/None (wild-type) emits nothing, so this is inert for non-strain runs.
@@ -4493,6 +4525,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         commit: str,
         total_n_seeds: int,
         n_generations: int,
+        correlation_id: str | None = None,
     ) -> str | None:
         """Submit the analysis DAG node for a chain-dispatch campaign that the
         analysis-fan-in poller (``JobScheduler._advance_chain_campaign``) has
@@ -4530,6 +4563,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
             depends_type=None,
             tags={**base_tags, "Phase": "analysis"},
             cache_variant=cache_variant,
+            correlation_id=correlation_id,
         )
 
     def _multi_node_analysis_command(
