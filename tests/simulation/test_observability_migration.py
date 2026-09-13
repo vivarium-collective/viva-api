@@ -402,3 +402,76 @@ def test_the_revision_chain_has_exactly_one_head() -> None:
     script = ScriptDirectory.from_config(_alembic_config("postgresql+asyncpg://unused/unused"))
     heads = script.get_heads()
     assert len(heads) == 1, f"expected a single alembic head, found {len(heads)}: {heads}"
+
+
+@pytest.mark.asyncio
+async def test_create_all_and_the_migration_build_the_same_types_not_just_the_same_names(
+    fresh_postgres_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Build these tables BOTH ways in one Postgres and compare column types,
+    nullability and defaults -- not just the column names.
+
+    ``test_migrated_schema_agrees_with_the_orm_for_what_this_migration_owns``
+    uses the shipped ``diff_schemas``, whose ``DbSchema.tables`` is
+    ``dict[str, set[str]]`` -- a set of column NAMES. It cannot see a type
+    disagreement. That is not a hypothetical gap: viva-api has already shipped a
+    migration whose ``status`` column was VARCHAR while the ORM declared a PG
+    enum, which agreed on a ``create_all`` database and failed on an
+    Alembic-managed one with::
+
+        operator does not exist: character varying <> composejobstatusdb
+
+    and the agreement test of the day passed throughout, because it compared
+    names. Two mechanisms build these tables -- ``create_all`` at app startup
+    and this migration -- so the only way to know they agree is to run both.
+    """
+    monkeypatch.setenv("SQLALCHEMY_DATABASE_URL", fresh_postgres_url)
+    columns_sql = text(
+        "SELECT table_name, column_name, data_type, is_nullable, column_default "
+        "FROM information_schema.columns WHERE table_name = ANY(:t) "
+        "ORDER BY table_name, column_name"
+    )
+
+    async def _snapshot() -> dict[tuple[str, str], tuple[str, str, str | None]]:
+        engine = create_async_engine(fresh_postgres_url)
+        try:
+            async with engine.connect() as conn:
+                rows = (await conn.execute(columns_sql, {"t": list(_OWNED_TABLES)})).all()
+            return {(r[0], r[1]): (r[2], r[3], r[4]) for r in rows}
+        finally:
+            await engine.dispose()
+
+    # Path A: the app's own bootstrap.
+    engine = create_async_engine(fresh_postgres_url)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    finally:
+        await engine.dispose()
+    by_create_all = await _snapshot()
+    assert by_create_all, "create_all built nothing -- the comparison would be vacuous"
+
+    # Path B: drop just this migration's tables and let the migration rebuild
+    # them, in the same database, on the same Postgres.
+    engine = create_async_engine(fresh_postgres_url)
+    try:
+        async with engine.begin() as conn:
+            for table in _OWNED_TABLES:
+                await conn.execute(text(f"DROP TABLE {table} CASCADE"))
+    finally:
+        await engine.dispose()
+
+    cfg = _alembic_config(fresh_postgres_url)
+    await asyncio.to_thread(command.stamp, cfg, "d7e2f4a6c8b0")
+    await asyncio.to_thread(command.upgrade, cfg, "head")
+    by_migration = await _snapshot()
+
+    assert set(by_migration) == set(by_create_all), (
+        "the two build paths disagree on which columns exist: "
+        f"only create_all={sorted(set(by_create_all) - set(by_migration))}, "
+        f"only migration={sorted(set(by_migration) - set(by_create_all))}"
+    )
+    mismatched = {
+        key: (by_create_all[key], by_migration[key]) for key in by_create_all if by_create_all[key] != by_migration[key]
+    }
+    assert not mismatched, f"(data_type, is_nullable, column_default) differ by build path: {mismatched}"
