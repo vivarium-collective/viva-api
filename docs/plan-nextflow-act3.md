@@ -1,6 +1,31 @@
 # Nextflow dispatch, act 3: all four CD2 workloads on the Nextflow path
 
-**Status (2026-09-09 13:20Z): 683's analysis flushed (sim 742): 8/11 with a serial 64 GB gather — `cd1_metabolomics` and `cd1_higher_order_properties` still exceed ~45 GiB alone at 10 × 8 and are the SQL-refactor targets, gated on a golden equivalence harness (reference = 739, materialising now). v2ecoli#751/#752 merged; simulator 183 building (sms-ecoli#305); the 739-shape verification run and Run 1 10 × 10 fire on it automatically.** Act 2 closed gates 4 and 1b and
+**Status (2026-09-13 18:40Z): the observability stack is merged and tagged
+(`v0.9.139`, viva-api `004ee1a85`) across four repos — process-bigraph `55b70676`
+→ v2ecoli `fc0253df` → sms-ecoli `9f05d466` → **simulator 207**. Nothing is built
+or deployed; stanford-test still runs 0.9.138 with three alembic revisions pending.
+Events are OFF by default. See [`plan-observability.md`](plan-observability.md) for
+the delivery table, the plan-vs-implementation deltas and the two recorded gaps
+(the gather is uninstrumented interior; viva-api#637's FRESH path).**
+
+**Run 1 remains the open campaign problem.** Seed 0's ptools gather still dies at
+166.8 GiB of DuckDB spill on a 5.83 GB dataset (~28×), `rc=0`, Batch `SUCCEEDED`,
+0/5 TSVs — identically before and after v2ecoli#795. **Two hypotheses are measured
+and eliminated**, and should not be re-raised without new evidence: (1) "the #795
+streamed path was never reached" — false, the pin contains it and `per_generation`
+threads intact; (2) "the `cumulative_time_history` recursive-CTE rewrite defeats
+partition pruning" — only half true, and the failing half projects two narrow
+columns, which cannot make 166.8 GiB. @eagmon green-lit three probes (2026-09-13
+17:09Z); five Batch jobs fired 17:41Z, with probe (b) substituted — the ceiling
+already IS the disk (200 GB gp3 root, DuckDB defaults to ~90 % of it), so a spill
+*sampler* reads bounded-vs-unbounded off the growth curve instead. Seeds 1–9 remain
+unfired pending a cause.
+
+<details><summary>Superseded status (2026-09-09 13:20Z)</summary>
+
+** 683's analysis flushed (sim 742): 8/11 with a serial 64 GB gather — `cd1_metabolomics` and `cd1_higher_order_properties` still exceed ~45 GiB alone at 10 × 8 and are the SQL-refactor targets, gated on a golden equivalence harness (reference = 739, materialising now). v2ecoli#751/#752 merged; simulator 183 building (sms-ecoli#305); the 739-shape verification run and Run 1 10 × 10 fire on it automatically.**
+
+</details> Act 2 closed gates 4 and 1b and
 put the real Run 2 shape on the path (sim 683, 10 × 8, independent founders, gather
 in-campaign — still running). This act takes the other three workloads across, in
 the order that risks least and proves most, **without touching any other dispatch
