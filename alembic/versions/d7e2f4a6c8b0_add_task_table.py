@@ -13,6 +13,7 @@ uses member names).
 
 from collections.abc import Sequence
 
+import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 from alembic import op
@@ -35,36 +36,47 @@ _task_status = postgresql.ENUM("COMPUTING", "READY", "FAILED", name="taskstatusd
 
 
 def upgrade() -> None:
-    # Every statement guarded, matching b4d7e9c02a15's reasoning: a create_all
-    # database ALREADY has this table -- ORMTask is a Base table, so create_db makes
-    # it at startup, which this migration's own fingerprint-marker docstring relies
-    # on. An unguarded op.create_table therefore fails with
-    # DuplicateTableError: relation "task" already exists on exactly the databases
-    # db_reconcile's LEGACY path produces (stamp, then upgrade head) -- which is the
-    # normal production shape.
-    _task_status.create(op.get_bind(), checkfirst=True)
-    op.execute("""
-        CREATE TABLE IF NOT EXISTS task (
-            id SERIAL PRIMARY KEY,
-            name VARCHAR NOT NULL,
-            script VARCHAR NOT NULL,
-            args JSONB NOT NULL DEFAULT '[]',
-            sim_data_refs JSONB,
-            memory_class VARCHAR DEFAULT 'standard',
-            status taskstatusdb,
-            job_name VARCHAR,
-            job_id_ext VARCHAR,
-            out_uri VARCHAR,
-            result_uri VARCHAR,
-            error_message VARCHAR,
-            created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT now(),
-            updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT now()
+    # Guarded with the inspector rather than raw ``CREATE TABLE IF NOT EXISTS`` so the
+    # column definitions stay in ONE place, typed, next to the ORM -- hand-written DDL
+    # here would be a second definition free to drift from ORMTask.
+    #
+    # The guard is needed because a create_all database ALREADY has this table:
+    # ORMTask is a Base table, so create_db makes it at startup, which this revision's
+    # own fingerprint marker relies on. An unguarded create_table fails with
+    # DuplicateTableError on exactly the databases db_reconcile's LEGACY path produces
+    # (stamp, then upgrade head) -- the normal production shape.
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+
+    # checkfirst on the explicit create, and create_type=False on the column type:
+    # otherwise create_table emits a SECOND, unguarded CREATE TYPE and the migration
+    # dies with DuplicateObjectError on every run, fresh databases included.
+    _task_status.create(bind, checkfirst=True)
+
+    if not inspector.has_table("task"):
+        op.create_table(
+            "task",
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("name", sa.String(), nullable=False),
+            sa.Column("script", sa.String(), nullable=False),
+            sa.Column("args", postgresql.JSONB(), nullable=False, server_default=sa.text("'[]'")),
+            sa.Column("sim_data_refs", postgresql.JSONB(), nullable=True),
+            sa.Column("memory_class", sa.String(), nullable=True, server_default="standard"),
+            sa.Column("status", _task_status, nullable=True),
+            sa.Column("job_name", sa.String(), nullable=True),
+            sa.Column("job_id_ext", sa.String(), nullable=True),
+            sa.Column("out_uri", sa.String(), nullable=True),
+            sa.Column("result_uri", sa.String(), nullable=True),
+            sa.Column("error_message", sa.String(), nullable=True),
+            sa.Column("created_at", sa.DateTime(), nullable=True, server_default=sa.func.now()),
+            sa.Column("updated_at", sa.DateTime(), nullable=True, server_default=sa.func.now()),
         )
-    """)
-    op.execute("CREATE INDEX IF NOT EXISTS ix_task_job_id_ext ON task (job_id_ext)")
+
+    if not any(ix["name"] == "ix_task_job_id_ext" for ix in inspector.get_indexes("task")):
+        op.create_index("ix_task_job_id_ext", "task", ["job_id_ext"])
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX IF EXISTS ix_task_job_id_ext")
-    op.execute("DROP TABLE IF EXISTS task")
+    op.drop_index("ix_task_job_id_ext", table_name="task", if_exists=True)
+    op.drop_table("task", if_exists=True)
     _task_status.drop(op.get_bind(), checkfirst=True)
