@@ -1272,7 +1272,25 @@
 #            Emitted only when aeration_schedule is also set, mirroring the
 #            local script's coupling. Deployed for the coupled Run 1 re-fire on
 #            simulator 199 (sms-ecoli#166).
-__version__ = "0.9.138"
+#           0.9.139 -- feat(observability): the engine/runner/dispatcher event
+#            stack lands (plan PR-A #609 + PR-D #612). Nextflow head poller with
+#            trace-decides-status, error-source precedence, PBG identity env on
+#            all three dispatch paths, the hpcrun_event/hpcrun_span tables and
+#            their ingester, GET /simulations/{id}/events and /tasks, richer
+#            /status (stage, generation, last_event_at, attempt, exit_code), and
+#            `atlantis simulation events|tasks`. Events are OFF by default -- no
+#            sink resolves unless PBG_EVENT_SINKS is set -- so this deploys inert
+#            and a path is enabled deliberately.
+#            TWO migrations, not one: a3b5c7d9e1f2 (observability columns +
+#            event/span tables) and e3a9c1d70b62 (hpcrun_event.layer ->
+#            component). The rename MUST be its own revision: a site stamped at
+#            a3b5c7d9e1f2 by a #609-era deploy is MANAGED, so `upgrade head` is a
+#            no-op and a rename living inside that revision could never run --
+#            UndefinedColumn on every event insert, silently, with the migration
+#            Job exiting 0. Run the alembic-migrate Job BEFORE rolling the app.
+#            Also carries #636's fix to d7e2f4a6c8b0 (double CREATE TYPE +
+#            non-idempotent CREATE TABLE), which no database could apply.
+__version__ = "0.9.139"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in
