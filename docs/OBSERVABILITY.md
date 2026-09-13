@@ -5,6 +5,10 @@
 source. Companion to [`DEPLOY.md`](DEPLOY.md). The *design* lives in
 [`plan-observability.md`](plan-observability.md); this file is how to use it.
 
+For the **debugging procedure** — what to run, in what order, and the blind spots —
+use the `diagnose-run` skill (`.claude/skills/diagnose-run/`), which carries the
+step-by-step that a reference document conveys badly.
+
 ---
 
 ## 1. The one thing to know first
