@@ -13,48 +13,94 @@ step-by-step that a reference document conveys badly.
 
 ## 1. The one thing to know first
 
-**Events are off by default, and "off" has two different meanings.**
+**Nothing about a run is opt-in at request time.** Whether a run emits events is
+decided by two *independent* halves, neither of which is a flag on the submission:
 
-| what | default | how to turn on |
+| half | lives in | what decides it |
 |---|---|---|
-| events to **stdout → CloudWatch** | **already on** for every dispatched run | nothing to do |
-| events to **S3**, which is what `/events` and the CLI read | **off** | set `EVENTS_S3_PREFIX` |
+| **capability** — can this process emit at all | the **simulator image** | is the instrumented engine in it (process-bigraph ≥ #209 + the v2ecoli runner) |
+| **activation** — is it told who it is | **viva-api at dispatch** | `with_events_env` injects `PBG_*`, gated only by `EVENTS_ENABLED` (default `true`) |
 
-`viva_api/common/events_env.py` builds the sink list as `sinks = ["stdout"]` plus an
-S3 sink *only* when a prefix resolves. `Settings.events_s3_prefix` defaults to `""`,
-and its docstring is explicit: *"No bucket configured means no S3 sink (stdout only)
-— never a half-formed URI."*
+Both are satisfied on `sms-api-stanford-test` today: **simulator 207** (sms-ecoli
+`9f05d466`, the re-pin onto v2ecoli `fc0253df` + process-bigraph `55b70676`) is the
+first image with the capability, and **viva-api 0.9.139** is the first release that
+injects. Any run dispatched after 2026-09-13 18:52Z on that namespace with simulator
+≥ 207 emits. There is no per-request switch, and adding one was never the design.
 
-So on a deployment with no prefix configured — **which is stanford-test today** — the
-engine and runner really are emitting events, into the task's CloudWatch log. The
-database tables stay empty, and this is what you get:
+### The capability half degrades silently, on purpose
+
+`v2ecoli/workflow/events.py` imports the engine's events module under a guard:
+
+```python
+try:  # process-bigraph >= 1.9 (feat/events, #209)
+    from process_bigraph import events as _pbg_events
+except Exception:  # pragma: no cover - exercised only on a pre-#209 pin
+    _pbg_events = None
+```
+
+so on an older simulator every emit resolves to a null emitter and does nothing —
+`PBG_*` is injected, read by nobody, and the run is exactly as observable as it was
+before. That is deliberate ("degrades to a no-op emitter, so the pin can lag one
+image"), and it is why a **new viva-api over an old simulator is safe but silent**.
+
+| simulator | viva-api | result |
+|---|---|---|
+| ≤ 206 | any | nothing. `PBG_*` present, runner no-ops |
+| ≥ 207 | < 0.9.139 | nothing. Capable engine, no identity injected |
+| ≥ 207 | ≥ 0.9.139 | **events** — stdout always, S3 when a prefix resolves |
+
+### Which sinks, and the `S3_WORK_BUCKET` trap
+
+`events_env.py` builds `sinks = ["stdout"]` unconditionally, then appends an S3 sink
+when `events_s3_prefix()` resolves. **That function has two ways to resolve, and the
+second is easy to miss:**
+
+```python
+template = settings.events_s3_prefix          # explicit, default ""
+if template: return template.format(experiment_id=...)
+bucket = settings.s3_work_bucket              # <- the derive path
+if not bucket: return None
+return f"s3://{bucket}/{work_prefix}/{experiment_id}/events/"
+```
+
+So **`EVENTS_S3_PREFIX` being unset does not mean S3 events are off.** On
+stanford-test it is unset and `S3_WORK_BUCKET` *is* set (verified on the live pod,
+0.9.139), so the prefix derives to
+
+```
+s3://smsvpctest-shared-sharedbucket60d199d6-abfvwv0day91/nextflow/work/{experiment_id}/events/
+```
+
+and the S3 sink is **on**. Set `EVENTS_S3_PREFIX` only to send events somewhere other
+than the work bucket; set `EVENTS_ENABLED=false` to turn the whole thing off.
+
+### So why is `/events` empty on an older run?
 
 ```console
 $ curl -s .../api/v1/simulations/1314/events
 {"id":1314,"trace_id":null,"events":[],"tree":null,"next":null}
-
-$ curl -s .../api/v1/simulations/1314/tasks
-[]
 ```
 
-**An empty array is not an error and not a bug.** It means no S3 sink was configured
-for that run, so the ingester had nothing to read. Check `EVENTS_S3_PREFIX` before
-concluding anything is broken.
+Because sim 1314 was dispatched **before 0.9.139 rolled**, so nothing injected
+`PBG_*`. It is not a misconfiguration and not a bug — it is a run from before the
+activation half existed, and no amount of config will backfill it. The three reasons
+an array comes back empty, in the order worth checking:
 
-### Turning the S3 path on
+1. the run predates viva-api 0.9.139, or ran on simulator ≤ 206;
+2. the job was **hand-dispatched** (`aws batch submit-job`), which bypasses viva-api
+   entirely — see §4;
+3. `EVENTS_ENABLED=false`, or a namespace with neither `EVENTS_S3_PREFIX` nor
+   `S3_WORK_BUCKET` (stdout-only: the events exist, in CloudWatch, but nothing
+   ingests them).
 
-Set in the namespace's `shared.env` (see `DEPLOY.md` for how config reaches the pod):
+### The related knobs
 
-```
-EVENTS_S3_PREFIX=s3://<work-bucket>/<work-prefix>/{experiment_id}/events/
-```
-
-`{experiment_id}` is a template slot filled per run. Related knobs, all with working
-defaults (`viva_api/config.py:219-237`):
+All have working defaults (`viva_api/config.py:215-237`):
 
 | setting | default | meaning |
 |---|---|---|
 | `EVENTS_ENABLED` | `true` | master switch for injecting `PBG_*` at dispatch |
+| `EVENTS_S3_PREFIX` | `""` | explicit override; empty **derives** from `S3_WORK_BUCKET` |
 | `EVENTS_FLUSH_SECONDS` | `60` | how often a task rewrites its `events.jsonl` object |
 | `EVENTS_HEARTBEAT_SECONDS` | `30` | engine tick heartbeat, wall clock |
 | `EVENTS_INGEST_ENABLED` | `true` | scheduler-side ingest into `hpcrun_event` |

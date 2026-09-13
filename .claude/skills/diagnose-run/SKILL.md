@@ -11,16 +11,23 @@ exists because that shape has bitten us. Reference: [`docs/OBSERVABILITY.md`](..
 
 ## Before anything: is it even instrumented?
 
-Three ways a run produces no events, and only one is a bug.
+Four ways a run produces no events, and only one is a bug.
 
-1. **`EVENTS_S3_PREFIX` is unset** → `/events` returns `{"events":[],"trace_id":null}`
-   and `/tasks` returns `[]`. Events still went to **stdout → CloudWatch**. This is
-   the default on stanford-test. **An empty array here is not a finding.**
+1. **The run predates the stack.** Events need *both* halves: an image with the
+   instrumented engine (**simulator ≥ 207**) and a dispatcher that injects `PBG_*`
+   (**viva-api ≥ 0.9.139**, rolled on stanford-test 2026-09-13 18:52Z). Either half
+   missing → `/events` returns `{"events":[],"trace_id":null}` and `/tasks` returns
+   `[]`. An old simulator no-ops the emitter *by design*, so this is silent.
 2. **Hand-dispatched job** (`aws batch submit-job` + `CONTAINER_JOB_CMD`) → bypasses
    viva-api entirely. No `HpcRun` row, no `PBG_*`, nothing in the API. Expected.
-3. **The analysis/gather interior** → never instrumented on any path (see Blind spots).
+3. **Stdout-only namespace** → events exist, in CloudWatch, but nothing ingests them
+   so the API stays empty. **Do not check `EVENTS_S3_PREFIX` alone**: it is unset on
+   stanford-test and the S3 sink is still on, because `events_s3_prefix()` derives
+   from `S3_WORK_BUCKET` when the explicit template is empty.
+4. **The analysis/gather interior** → never instrumented on any path (see Blind spots).
 
-Check 1 first. Do not debug a missing-events mystery that is a missing config.
+Check 1 first — `atlantis simulation status <id>` gives you the simulator. **An empty
+array on an old run is not a finding.**
 
 ## The ladder
 
