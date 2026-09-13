@@ -1,7 +1,7 @@
 """add observability columns and the event/span tables
 
 Revision ID: a3b5c7d9e1f2
-Revises: f76e43d01841
+Revises: d7e2f4a6c8b0
 Create Date: 2026-09-10
 
 Observability plan (docs/plan-observability.md), viva-api part A/B storage:
@@ -22,11 +22,24 @@ Observability plan (docs/plan-observability.md), viva-api part A/B storage:
   rows and ``error_message``, not in a status. Keeping the enum fixed also keeps
   this migration free of the deploy-ordering constraint an ``ADD VALUE`` imposes.
 
-Idempotent throughout (``IF NOT EXISTS``) so it is a no-op on a fresh
-``create_all`` database that already has every object.
+**Typed DDL, guarded by the inspector** rather than raw ``CREATE TABLE IF NOT
+EXISTS`` strings. Both forms are idempotent; this one is type-checked and states
+each column once in the same vocabulary the ORM uses, which is the shape
+``d7e2f4a6c8b0`` was corrected to for the same reason. Idempotency is required,
+not stylistic: ``create_db``'s ``Base.metadata.create_all`` bootstraps these
+tables at app startup, so on any database the app has touched they ALREADY EXIST
+by the time Alembic runs -- the normal production shape that ``db_reconcile``'s
+LEGACY path produces (stamp, then upgrade head).
+
+A draft of this revision named the event column ``layer``; the rename to
+``component`` lives in ``e3a9c1d70b62``, NOT here -- see that revision's
+docstring for why a rename inside an already-applied revision can never run.
 """
 
 from collections.abc import Sequence
+
+import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
@@ -36,101 +49,117 @@ down_revision: str | Sequence[str] | None = "d7e2f4a6c8b0"
 # Re-pointed from f76e43d01841 when this branch merged main: viva-api#631 landed
 # d7e2f4a6c8b0 (the `task` table) on the SAME parent, so leaving this as-is gave
 # TWO alembic heads and `alembic upgrade head` fails outright on a multi-head
-# chain. The revision chain must stay linear.
+# chain. The revision chain must stay linear -- pinned by
+# tests/simulation/test_observability_migration.py.
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
-_HPCRUN_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("exit_code", "INTEGER"),
-    ("attempt", "INTEGER"),
-    ("error_source", "VARCHAR"),
-    ("trace_id", "VARCHAR"),
-    ("campaign_span_id", "VARCHAR"),
-    ("events_s3_prefix", "VARCHAR"),
-    ("events_cursor", "JSONB"),
-    ("stage", "VARCHAR"),
-    ("generation", "INTEGER"),
-    ("last_event_at", "TIMESTAMP WITHOUT TIME ZONE"),
+#: The columns this revision adds to the existing ``hpcrun`` table, in
+#: ``ORMHpcRun`` order. All nullable: existing rows predate observability.
+_HPCRUN_COLUMNS: tuple[sa.Column, ...] = (
+    sa.Column("exit_code", sa.Integer(), nullable=True),
+    sa.Column("attempt", sa.Integer(), nullable=True),
+    sa.Column("error_source", sa.String(), nullable=True),
+    sa.Column("trace_id", sa.String(), nullable=True),
+    sa.Column("campaign_span_id", sa.String(), nullable=True),
+    sa.Column("events_s3_prefix", sa.String(), nullable=True),
+    sa.Column("events_cursor", postgresql.JSONB(), nullable=True),
+    sa.Column("stage", sa.String(), nullable=True),
+    sa.Column("generation", sa.Integer(), nullable=True),
+    sa.Column("last_event_at", sa.DateTime(), nullable=True),
 )
 
 
+def _existing_columns(inspector: sa.Inspector, table: str) -> set[str]:
+    if not inspector.has_table(table):
+        return set()
+    return {c["name"] for c in inspector.get_columns(table)}
+
+
+def _existing_indexes(inspector: sa.Inspector, table: str) -> set[str]:
+    if not inspector.has_table(table):
+        return set()
+    return {ix["name"] for ix in inspector.get_indexes(table) if ix.get("name")}
+
+
 def upgrade() -> None:
-    for name, sql_type in _HPCRUN_COLUMNS:
-        op.execute(f"ALTER TABLE hpcrun ADD COLUMN IF NOT EXISTS {name} {sql_type}")
-    op.execute("CREATE INDEX IF NOT EXISTS ix_hpcrun_trace_id ON hpcrun (trace_id)")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
 
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS hpcrun_event (
-            id SERIAL PRIMARY KEY,
-            hpcrun_id INTEGER NOT NULL REFERENCES hpcrun (id),
-            trace_id VARCHAR NOT NULL,
-            source VARCHAR NOT NULL,
-            seq INTEGER NOT NULL,
-            ts TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-            component VARCHAR NOT NULL,
-            event VARCHAR NOT NULL,
-            level VARCHAR NOT NULL DEFAULT 'info',
-            generation INTEGER,
-            global_time DOUBLE PRECISION,
-            wall_time DOUBLE PRECISION,
-            span_id VARCHAR,
-            parent_span_id VARCHAR,
-            payload JSONB,
-            tags JSONB,
-            CONSTRAINT uq_hpcrun_event_trace_source_seq UNIQUE (trace_id, source, seq)
-        )
-        """
-    )
-    # An earlier draft of this revision named the column ``layer``; the settled
-    # schema (plan D1') calls it ``component`` (a free string such as
-    # "process_bigraph", "v2ecoli.lineage", "viva_api.dispatch"). Rename in
-    # place where that draft was applied; a no-op everywhere else.
-    op.execute(
-        """
-        DO $$
-        BEGIN
-            IF EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name = 'hpcrun_event' AND column_name = 'layer')
-               AND NOT EXISTS (SELECT 1 FROM information_schema.columns
-                               WHERE table_name = 'hpcrun_event' AND column_name = 'component') THEN
-                ALTER TABLE hpcrun_event RENAME COLUMN layer TO component;
-            END IF;
-        END $$
-        """
-    )
-    op.execute("CREATE INDEX IF NOT EXISTS ix_hpcrun_event_hpcrun_id ON hpcrun_event (hpcrun_id)")
-    op.execute("CREATE INDEX IF NOT EXISTS ix_hpcrun_event_trace_id ON hpcrun_event (trace_id)")
-    op.execute("CREATE INDEX IF NOT EXISTS ix_hpcrun_event_trace_span ON hpcrun_event (trace_id, span_id)")
+    present = _existing_columns(inspector, "hpcrun")
+    for column in _HPCRUN_COLUMNS:
+        if column.name not in present:
+            # A fresh Column object per add: SQLAlchemy binds a Column to the
+            # table it is appended to, so the module-level tuple cannot be
+            # reused directly across upgrade() calls.
+            op.add_column("hpcrun", column.copy())
+    if "ix_hpcrun_trace_id" not in _existing_indexes(inspector, "hpcrun"):
+        op.create_index("ix_hpcrun_trace_id", "hpcrun", ["trace_id"])
 
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS hpcrun_span (
-            id SERIAL PRIMARY KEY,
-            hpcrun_id INTEGER NOT NULL REFERENCES hpcrun (id),
-            trace_id VARCHAR NOT NULL,
-            span_id VARCHAR NOT NULL,
-            parent_span_id VARCHAR,
-            name VARCHAR NOT NULL,
-            attrs JSONB,
-            start_ts TIMESTAMP WITHOUT TIME ZONE,
-            end_ts TIMESTAMP WITHOUT TIME ZONE,
-            status VARCHAR,
-            error VARCHAR,
-            CONSTRAINT uq_hpcrun_span_trace_span UNIQUE (trace_id, span_id)
+    if not inspector.has_table("hpcrun_event"):
+        op.create_table(
+            "hpcrun_event",
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("hpcrun_id", sa.Integer(), sa.ForeignKey("hpcrun.id"), nullable=False),
+            sa.Column("trace_id", sa.String(), nullable=False),
+            # The writer: a Batch job id, a host-pid, or "api".
+            sa.Column("source", sa.String(), nullable=False),
+            sa.Column("seq", sa.Integer(), nullable=False),
+            sa.Column("ts", sa.DateTime(), nullable=False),
+            # Free string -- "process_bigraph", "v2ecoli.lineage", ... (plan D1').
+            sa.Column("component", sa.String(), nullable=False),
+            sa.Column("event", sa.String(), nullable=False),
+            sa.Column("level", sa.String(), nullable=False, server_default="info"),
+            sa.Column("generation", sa.Integer(), nullable=True),
+            sa.Column("global_time", sa.Float(), nullable=True),
+            sa.Column("wall_time", sa.Float(), nullable=True),
+            sa.Column("span_id", sa.String(), nullable=True),
+            sa.Column("parent_span_id", sa.String(), nullable=True),
+            sa.Column("payload", postgresql.JSONB(), nullable=True),
+            sa.Column("tags", postgresql.JSONB(), nullable=True),
+            sa.UniqueConstraint("trace_id", "source", "seq", name="uq_hpcrun_event_trace_source_seq"),
         )
-        """
-    )
-    op.execute("CREATE INDEX IF NOT EXISTS ix_hpcrun_span_hpcrun_id ON hpcrun_span (hpcrun_id)")
-    op.execute("CREATE INDEX IF NOT EXISTS ix_hpcrun_span_trace_id ON hpcrun_span (trace_id)")
+    event_indexes = _existing_indexes(inspector, "hpcrun_event")
+    for name, columns in (
+        ("ix_hpcrun_event_hpcrun_id", ["hpcrun_id"]),
+        ("ix_hpcrun_event_trace_id", ["trace_id"]),
+        ("ix_hpcrun_event_trace_span", ["trace_id", "span_id"]),
+    ):
+        if name not in event_indexes:
+            op.create_index(name, "hpcrun_event", columns)
+
+    if not inspector.has_table("hpcrun_span"):
+        op.create_table(
+            "hpcrun_span",
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("hpcrun_id", sa.Integer(), sa.ForeignKey("hpcrun.id"), nullable=False),
+            sa.Column("trace_id", sa.String(), nullable=False),
+            sa.Column("span_id", sa.String(), nullable=False),
+            sa.Column("parent_span_id", sa.String(), nullable=True),
+            sa.Column("name", sa.String(), nullable=False),
+            sa.Column("attrs", postgresql.JSONB(), nullable=True),
+            sa.Column("start_ts", sa.DateTime(), nullable=True),
+            sa.Column("end_ts", sa.DateTime(), nullable=True),
+            # ok | error | unknown
+            sa.Column("status", sa.String(), nullable=True),
+            sa.Column("error", sa.String(), nullable=True),
+            sa.UniqueConstraint("trace_id", "span_id", name="uq_hpcrun_span_trace_span"),
+        )
+    span_indexes = _existing_indexes(inspector, "hpcrun_span")
+    for name, columns in (
+        ("ix_hpcrun_span_hpcrun_id", ["hpcrun_id"]),
+        ("ix_hpcrun_span_trace_id", ["trace_id"]),
+    ):
+        if name not in span_indexes:
+            op.create_index(name, "hpcrun_span", columns)
 
 
 def downgrade() -> None:
     """Drop the tables and columns. The enum label stays: Postgres has no DROP
     VALUE (see 44335812e447's downgrade for the same reasoning)."""
-    op.execute("DROP TABLE IF EXISTS hpcrun_span")
-    op.execute("DROP TABLE IF EXISTS hpcrun_event")
-    op.execute("DROP INDEX IF EXISTS ix_hpcrun_trace_id")
-    for name, _ in _HPCRUN_COLUMNS:
-        op.execute(f"ALTER TABLE hpcrun DROP COLUMN IF EXISTS {name}")
+    op.drop_table("hpcrun_span", if_exists=True)
+    op.drop_table("hpcrun_event", if_exists=True)
+    op.drop_index("ix_hpcrun_trace_id", table_name="hpcrun", if_exists=True)
+    for column in _HPCRUN_COLUMNS:
+        op.drop_column("hpcrun", column.name, if_exists=True)

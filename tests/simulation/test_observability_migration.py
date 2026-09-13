@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
 from alembic import command
+from alembic.script import ScriptDirectory
 from tests.docker_utils import SKIP_DOCKER_REASON, SKIP_DOCKER_TESTS
 from tests.simulation.test_jobstatusdb_cancel_migration import (  # reuse the precedent's machinery verbatim
     _migrate_to,
@@ -329,14 +330,24 @@ async def test_migration_can_be_re_applied_after_a_downgrade(
 
 
 @pytest.mark.asyncio
-async def test_migration_renames_the_draft_layer_column_to_component(
+async def test_a_database_stamped_by_the_draft_is_carried_across_by_upgrade_head(
     fresh_postgres_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An earlier draft of this same revision named the event column ``layer``;
-    the settled schema calls it ``component``. A database that received the
-    draft (dev, before the rename landed) must be carried across in place,
-    keeping its rows. The rename is a no-op everywhere else -- which every
-    other test here already covers by never having a ``layer`` column at all.
+    """An earlier draft of the observability schema named the event column
+    ``layer``; the settled schema (plan D1') calls it ``component``.
+
+    THE POINT OF THIS TEST is the *mechanism*, not the rename. A database that
+    received the draft is **stamped**, and ``db_reconcile`` classifies a stamped
+    database as MANAGED and runs exactly one thing: ``alembic upgrade head``. It
+    never stamps backward, and it never re-runs a revision the database already
+    has. So the carry-across only happens if it lives in a revision the database
+    has NOT yet applied.
+
+    The previous version of this test stamped backward to ``PRE_OBS_REVISION``
+    and re-ran the revision, which made a rename living *inside* the already-
+    applied revision look like it worked. Production never does that. This one
+    does what the migration Job does -- ``upgrade head``, nothing else -- so it
+    fails if the rename is ever folded back into an applied revision.
     """
     await _migrate_to(fresh_postgres_url, OBS_REVISION, monkeypatch)
     cfg = _alembic_config(fresh_postgres_url)
@@ -347,7 +358,8 @@ async def test_migration_renames_the_draft_layer_column_to_component(
         db = DatabaseServiceSQL(async_engine=engine)
         await _shim_missing_hpcrun_columns(engine)
         _ref_id, hpcrun_id = await _a_run(db)
-        # Put the database back into the draft shape, with a row in it.
+        # Put the database into the draft shape, with a row in it, and LEAVE IT
+        # STAMPED where it is -- exactly what a site that deployed the draft has.
         async with engine.begin() as conn:
             await conn.execute(text("ALTER TABLE hpcrun_event RENAME COLUMN component TO layer"))
             await conn.execute(
@@ -360,14 +372,14 @@ async def test_migration_renames_the_draft_layer_column_to_component(
     finally:
         await engine.dispose()
 
-    # Re-run the revision against that draft-shaped database: stamp back one
-    # revision and upgrade again. The tables are NOT dropped, so this is
-    # exactly the IF NOT EXISTS + rename path a real dev database would take.
-    await asyncio.to_thread(command.stamp, cfg, PRE_OBS_REVISION)
-    await asyncio.to_thread(command.upgrade, cfg, OBS_REVISION)
+    # The migration Job's ONLY action on a MANAGED database.
+    await asyncio.to_thread(command.upgrade, cfg, "head")
 
     actual = await _reflect(fresh_postgres_url)
-    assert "component" in actual.tables["hpcrun_event"]
+    assert "component" in actual.tables["hpcrun_event"], (
+        "upgrade head must carry a draft-stamped database onto the settled column name; "
+        "a rename inside an already-applied revision can never run"
+    )
     assert "layer" not in actual.tables["hpcrun_event"]
 
     engine = create_async_engine(fresh_postgres_url)
@@ -377,3 +389,16 @@ async def test_migration_renames_the_draft_layer_column_to_component(
         assert rows == [("dispatcher", "submitted")], "the draft row must survive the rename"
     finally:
         await engine.dispose()
+
+
+def test_the_revision_chain_has_exactly_one_head() -> None:
+    """A second head makes ``alembic upgrade head`` fail outright, and nothing
+    else in this repo checks for it.
+
+    This is not hypothetical: ``a3b5c7d9e1f2`` and ``d7e2f4a6c8b0`` were both
+    authored against ``f76e43d01841`` and had to be re-pointed by hand. Needs no
+    database -- it reads the script directory only.
+    """
+    script = ScriptDirectory.from_config(_alembic_config("postgresql+asyncpg://unused/unused"))
+    heads = script.get_heads()
+    assert len(heads) == 1, f"expected a single alembic head, found {len(heads)}: {heads}"
