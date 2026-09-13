@@ -256,7 +256,14 @@ tui/
 .results_cache/
 .DS_Store
 
-.claude/
+# Personal Claude Code state (settings.local.json, session scratch) stays local,
+# but SKILLS are team artifacts and belong in the repo.
+#
+# NOTE the trailing `*`: `.claude/` would ignore the DIRECTORY, and git never
+# descends into an ignored directory -- so a negation for anything inside it can
+# never match. Ignoring the CONTENTS instead lets the negation work.
+.claude/*
+!.claude/skills/
 
 assets/info/
 
