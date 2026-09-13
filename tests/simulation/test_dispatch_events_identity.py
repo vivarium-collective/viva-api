@@ -113,11 +113,7 @@ def test_the_known_dispatch_paths_are_all_still_covered() -> None:
     """
     source = pathlib.Path("viva_api/simulation/simulation_service_ray.py").read_text()
     tree = ast.parse(source)
-    with_identity = {
-        fn.name
-        for fn in _functions(tree)
-        if _calls_named(fn, "with_events_env")
-    }
+    with_identity = {fn.name for fn in _functions(tree) if _calls_named(fn, "with_events_env")}
     expected = {
         "_submit_nextflow_dispatch",
         "_submit_mbp_tracked_dispatch",
