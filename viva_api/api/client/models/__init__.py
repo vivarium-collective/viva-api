@@ -2,6 +2,8 @@
 
 from .analysis_config import AnalysisConfig
 from .analysis_config_options import AnalysisConfigOptions
+from .analysis_figure_file import AnalysisFigureFile
+from .analysis_figure_group import AnalysisFigureGroup
 from .analysis_module_config import AnalysisModuleConfig
 from .analysis_options import AnalysisOptions
 from .analysis_run import AnalysisRun
@@ -95,6 +97,7 @@ from .run_ecoli_simulation_new_vecoli_source_type_0 import RunEcoliSimulationNew
 from .server_capabilities import ServerCapabilities
 from .simulation import Simulation
 from .simulation_analysis_data_response_type import SimulationAnalysisDataResponseType
+from .simulation_analysis_figures import SimulationAnalysisFigures
 from .simulation_config import SimulationConfig
 from .simulation_event import SimulationEvent
 from .simulation_event_baggage_type_0 import SimulationEventBaggageType0
@@ -143,6 +146,8 @@ from .viz_preview_investigation_inputs_store_type_0 import VizPreviewInvestigati
 __all__ = (
     "AnalysisConfig",
     "AnalysisConfigOptions",
+    "AnalysisFigureFile",
+    "AnalysisFigureGroup",
     "AnalysisModuleConfig",
     "AnalysisOptions",
     "AnalysisRun",
@@ -232,6 +237,7 @@ __all__ = (
     "ServerCapabilities",
     "Simulation",
     "SimulationAnalysisDataResponseType",
+    "SimulationAnalysisFigures",
     "SimulationConfig",
     "SimulationEvent",
     "SimulationEventBaggageType0",

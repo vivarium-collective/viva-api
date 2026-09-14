@@ -25,6 +25,7 @@ from viva_api.analysis.models import (
     ExperimentAnalysisRequest,
     OutputFile,
     OutputFileMetadata,
+    SimulationAnalysisFigures,
     TsvOutputFile,
 )
 from viva_api.api import request_examples
@@ -1060,3 +1061,67 @@ async def get_analysis_data(
     except Exception as e:
         logger.exception("Error retrieving analysis data")
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@config.router.get(
+    path="/simulations/{id}/analysis-figures",
+    tags=["Analyses"],
+    operation_id="list-simulation-analysis-figures",
+    dependencies=[Depends(get_database_service)],
+    summary="List every analysis's rendered figures + ptools for a simulation (metadata only).",
+)
+async def list_simulation_analysis_figures(
+    id: int = FastAPIPath(..., description="Database ID of the simulation"),
+) -> SimulationAnalysisFigures:
+    """List (never inline) the rendered ``viz/`` figures and ``ptools/`` tables of
+    every analysis on a simulation, unioning DB analysis records with a direct S3
+    walk so hand-dispatched "fill" analyses that created no DB record still surface
+    (viva-api#648). The API reads S3 with its own credentials, so a credential-less
+    client can then fetch each artifact via ``/simulations/{id}/analysis-figure``.
+    """
+    db_service = get_database_service()
+    if db_service is None:
+        raise HTTPException(status_code=404, detail="Database not found")
+    try:
+        return await handlers.analyses.list_simulation_analysis_figures(db_service=db_service, simulation_id=id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Error listing simulation analysis figures")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@config.router.get(
+    path="/simulations/{id}/analysis-figure",
+    tags=["Analyses"],
+    operation_id="get-simulation-analysis-figure",
+    dependencies=[Depends(get_database_service)],
+    summary="Fetch one rendered analysis artifact (a viz/ figure or ptools/ table) by relative path.",
+)
+async def get_simulation_analysis_figure(
+    id: int = FastAPIPath(..., description="Database ID of the simulation"),
+    analysis: str = Query(..., description="Analysis directory name (e.g. analysis-ptools-multiseed)"),
+    path: str = Query(..., description="Artifact path relative to the analysis dir, e.g. viz/foo.html"),
+) -> Response:
+    """Return a single rendered artifact's bytes with a content-type by extension.
+
+    ``path`` is confined to the analysis prefix (must start with ``viz/`` or
+    ``ptools/``; no ``..``); its S3 location is resolved server-side, so the caller
+    never handles a raw S3 uri. 400 on a bad path, 404 on an unknown
+    simulation/analysis or missing object.
+    """
+    db_service = get_database_service()
+    if db_service is None:
+        raise HTTPException(status_code=404, detail="Database not found")
+    try:
+        content, content_type = await handlers.analyses.fetch_simulation_analysis_figure(
+            db_service=db_service, simulation_id=id, analysis_name=analysis, relpath=path
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Error fetching simulation analysis figure")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return Response(content=content, media_type=content_type)
