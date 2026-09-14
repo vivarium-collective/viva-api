@@ -535,3 +535,53 @@ async def test_an_older_emitter_shape_still_parses_and_stores(
     assert start.generation == 0 and start.variant == 1 and start.lineage_seed == 2
     refetched = await database_service.get_hpcrun(hpcrun.database_id)
     assert refetched is not None and refetched.generation == 0
+
+
+@pytest.mark.asyncio
+async def test_insert_hpcrun_events_chunks_past_the_asyncpg_parameter_ceiling(
+    database_service: DatabaseServiceSQL,
+) -> None:
+    """A single object's worth of events must insert regardless of how many there are.
+
+    Regression for the live failure on sim 1318 (2026-09-14). ``hpcrun_event``
+    has 15 columns and a multi-row ``VALUES`` binds one parameter per column per
+    row, so an unchunked insert dies at 2,185 rows with asyncpg's
+    "the number of query arguments cannot exceed 32767". In a POLLING ingester
+    that is not a one-off error: the same rewritten object fails on every pass,
+    so ingest stops for the rest of the run while ``/status`` still reads
+    ``running`` and only ``last_event_at`` quietly stops advancing.
+
+    3,000 rows is deliberately past the 2,184-row ceiling and would have raised
+    before the fix.
+    """
+    from viva_api.simulation.models import SimulationEvent
+
+    simulation, hpcrun = await _insert_run(database_service, correlation_id=f"c-{uuid.uuid4().hex[:6]}")
+    trace_id = uuid.uuid4().hex
+    count = 3000
+    events = [
+        SimulationEvent(
+            source="chunk-test",
+            seq=i,
+            ts="2026-09-14T00:40:00.000Z",
+            component="v2ecoli.lineage",
+            event="lineage.debug",
+            level="debug",
+            payload={"t": float(i), "dry_mass": 379.0 + i},
+        )
+        for i in range(1, count + 1)
+    ]
+
+    inserted = await database_service.insert_hpcrun_events(hpcrun.database_id, trace_id, events)
+    assert inserted == count
+
+    # list_hpcrun_events is page-capped at 1000 by design (min(limit, 1000)), so a
+    # full page is the read-back evidence; `inserted` above is what proves all
+    # 3,000 rows crossed the parameter ceiling.
+    stored = await database_service.list_hpcrun_events(hpcrun.database_id, limit=count + 10)
+    assert len(stored) == 1000
+
+    # Re-inserting the same object (the writer rewrites it whole) must be a no-op,
+    # not a duplicate -- the conflict clause has to survive chunking too.
+    again = await database_service.insert_hpcrun_events(hpcrun.database_id, trace_id, events)
+    assert again == 0
