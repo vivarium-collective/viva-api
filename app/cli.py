@@ -1770,6 +1770,11 @@ def simulation_events(
         default=None, help="Only this event name (e.g. process.exception, lineage.generation.end)."
     ),
     tree: bool = Option(default=False, help="Render the span tree (campaign > task > generation) instead of a table."),
+    chrome_trace: str | None = Option(
+        default=None,
+        help="Write a Chrome Trace Event JSON here instead of printing. Open it at "
+        "ui.perfetto.dev (client-side, nothing is uploaded), speedscope, or chrome://tracing.",
+    ),
     limit: int = Option(default=200, help="Events per page (max 1000)."),
     base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
 ) -> None:
@@ -1779,10 +1784,54 @@ def simulation_events(
     console = get_console()
     data_service = get_data_service(base_url=base_url)
     filters: dict[str, Any] = {"level": level, "event": event, "generation": generation, "limit": limit}
+    if chrome_trace:
+        _write_chrome_trace(console, data_service, simulation_id, filters, chrome_trace)
+        return
     if tree and not follow:
         _print_event_tree(console, data_service, simulation_id, filters)
         return
     _print_event_pages(console, data_service, simulation_id, filters, follow=follow)
+
+
+def _write_chrome_trace(
+    console: Any,
+    data_service: E2EDataService,
+    simulation_id: int,
+    filters: dict[str, Any],
+    path: str,
+) -> None:
+    """Export the run's trace as a file any browser can open, with no service.
+
+    Deliberately a FILE and not a hosted view: ui.perfetto.dev runs entirely
+    client-side, so the trace never leaves the machine -- which is what makes
+    this usable on GovCloud, where the SaaS trace viewers are non-starters.
+    """
+    from viva_api.simulation.chrome_trace import chrome_trace_document, write_chrome_trace
+
+    try:
+        page = data_service.get_workflow_events(simulation_id=simulation_id, tree=True, **filters)
+    except Exception as e:
+        console.print(f"[memphis.error]Error: {e}[/]")
+        return
+
+    spans: list[Any] = []
+    events: list[Any] = []
+
+    def _walk(nodes: list[Any]) -> None:
+        for node in nodes or []:
+            spans.append(node.span)
+            events.extend(node.events or [])
+            _walk(node.children or [])
+
+    _walk(page.tree or [])
+    if not spans:
+        console.print("[memphis.hint]No spans recorded yet — nothing to export.[/]")
+        return
+
+    document = chrome_trace_document(spans, events, trace_id=page.trace_id, simulation_id=simulation_id)
+    write_chrome_trace(path, document)
+    console.print(f"[memphis.ok]Wrote {len(document['traceEvents'])} trace events to {path}[/]")
+    console.print("[memphis.hint]Open it at https://ui.perfetto.dev (client-side — nothing is uploaded).[/]")
 
 
 def _print_event_tree(console: Any, data_service: E2EDataService, simulation_id: int, filters: dict[str, Any]) -> None:
