@@ -493,7 +493,18 @@ env var was the only documented surface; `_trace_invoke`/`_TRACE_FH` are undersc
 
 #### Decision
 
-**B — integrate as a compatible alias.** Rationale: the env var was documented and is the
+**Superseded 2026-09-12 (Jim): C — drop the legacy format.** The env vars stay as
+aliases exactly as the branch has them (`PROCESS_BIGRAPH_TRACE_FILE` → new-envelope
+`file:` sink + `detail=invoke`; `PROCESS_BIGRAPH_PROFILE_PROCESSES` → `detail=timing`,
+behaviour-identical). No `LegacyTraceSink`. What settled it: the flat format arrived on
+2026-05-05 in a direct commit to main (`e18eb06`, "process partition", no PR); it is
+documented only by the comment block in `composite.py`; it appears in no release note,
+no docs page (the repo renders none) and no sibling repo; GitHub-wide issue, PR and code
+search find only #209 and this document. With no reader on record, a byte-compatible
+shim would preserve a format for nobody. Recorded on #209 (comment, 2026-09-12); the
+branch is unchanged from `e5d0759`. The B rationale below is kept for the record.
+
+**B — integrate as a compatible alias (proposed 2026-09-11, superseded).** Rationale: the env var was documented and is the
 kind of thing a diagnostic script hard-codes; it costs thirty lines to keep the file
 byte-compatible for one release, and a `DeprecationWarning` is the only way an unknown client
 learns the new spelling. A keeps two hot-path branches and two summarisers alive with no end
@@ -519,8 +530,9 @@ Concretely for #209, before merge:
 5. Not doing: a `_trace_invoke` shim. Private name, no importer found; if one surfaces the
    forwarding function is two lines.
 
-Status: **proposed on #209 (comment, 2026-09-11); awaiting Jim/Eran confirmation before code
-changes on `feat/events`.**
+Status: **decided — C. No code change on `feat/events`; #209 stands as approved by Eran
+(2026-09-12), plus the review fixes in `e5d0759` (`add_sink`/`remove_sink`, baggage
+value-type docs, vestigial `fetch-depth` removed).**
 
 ### D3. Runner (v2ecoli PR; pins `process-bigraph>=1.9.0`)
 
