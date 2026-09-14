@@ -1314,7 +1314,34 @@
 #            Adds tests/simulation/test_dispatch_events_identity.py, an AST scan
 #            asserting every resolve_task_env() result reaches with_events_env().
 #            Code-only: NO new migration, DB stays at e3a9c1d70b62.
-__version__ = "0.9.140"
+#           0.9.141 -- fix(events): the observability stack stopped observing.
+#            Two independent ingest defects, both found by running a real
+#            campaign (sim 1318) rather than by reading code (#642).
+#            1. INGEST STOPPED DEAD. insert_hpcrun_events built ONE multi-row
+#               VALUES for every event in an object; 15 columns x 4,044 rows =
+#               60,005 bound parameters against asyncpg's hard 32,767 ceiling,
+#               so the insert raised InterfaceError. The writer rewrites the
+#               same S3 object whole on every flush, so the identical oversized
+#               statement was retried every ~8 s and failed every time: ingest
+#               froze 10 minutes into the run while /status still read
+#               `running` and the ONLY symptom was last_event_at ceasing to
+#               advance. Now chunked, with the size DERIVED from the table's
+#               column count (2,184 rows = 32,760 params) so adding a column
+#               cannot silently re-breach it.
+#            2. lineage.debug flooded the store -- one event per SIMULATED
+#               TIMESTEP, 946 of the first 1000 rows, 3.6 rows/s for ONE
+#               lineage. Debug-level events are now stream-only (stdout/S3) and
+#               never hpcrun_event rows; EVENTS_INGEST_STORE_DEBUG re-enables
+#               them for debugging the ingester itself. Filtering by LEVEL
+#               rather than by name makes the bound structural. The source is
+#               fixed separately in v2ecoli#803 (the emit had escaped its own
+#               LINEAGE_DEBUG_DIVISION gate); this is defence in depth for the
+#               next per-tick event anyone adds.
+#            NOTE the debug filter ALONE would have masked (1) -- it pushes the
+#            parameter ceiling hours out and makes ingest look healthy. Both
+#            were needed.
+#            Code-only: NO new migration, DB stays at e3a9c1d70b62.
+__version__ = "0.9.141"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in
