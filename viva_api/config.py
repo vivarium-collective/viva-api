@@ -235,6 +235,14 @@ class Settings(BaseSettings):
     events_ingest_max_objects_per_tick: int = 50
     events_ingest_idle_seconds: int = 600  # skip rows whose newest event is older than this (and not new)
     events_ingest_terminal_grace_seconds: int = 900  # keep ingesting this long after a row goes terminal
+    # Debug-level events are the diagnostic FIREHOSE -- they belong in the stream
+    # (stdout/CloudWatch and the S3 objects, where they can be grepped) and not in
+    # Postgres. Measured on sim 1318: `lineage.debug` fires once per SIMULATED
+    # TIMESTEP, 946 of the first 1000 stored rows, 3.6 rows/s for ONE lineage
+    # (~13k rows/hour/lineage). A 10x10 campaign would write hundreds of
+    # thousands of rows of telemetry nobody queries. Set true only to debug the
+    # ingester itself.
+    events_ingest_store_debug: bool = False
 
     # ECR settings
     ecr_account_id: str = ""  # AWS account ID for ECR registry (e.g. "476270107793")

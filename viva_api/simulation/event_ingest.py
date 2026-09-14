@@ -50,6 +50,15 @@ logger = logging.getLogger(__name__)
 #: Events folded into the row's progress columns but never stored as rows.
 UNSTORED_EVENTS: frozenset[str] = frozenset({"tick"})
 
+#: Level whose events are folded and spanned but not stored (see
+#: ``Settings.events_ingest_store_debug``). Excluding by NAME was not enough:
+#: ``UNSTORED_EVENTS`` caught ``tick`` and nothing else, so ``lineage.debug`` --
+#: one event per simulated timestep -- went straight into Postgres and was 946 of
+#: the first 1000 rows on sim 1318. Level is the durable contract: ``debug`` means
+#: "stream only", so the next per-tick event added anywhere is bounded by default
+#: instead of reintroducing the same flood under a new name.
+UNSTORED_LEVELS: frozenset[str] = frozenset({"debug"})
+
 #: Span boundaries (plan D1'): the settled dotted names, plus the underscore
 #: names the first engine draft emitted, so an older stream still folds.
 SPAN_START_EVENTS: frozenset[str] = frozenset({"span.start", "span_start"})
@@ -379,6 +388,31 @@ class _Pass:
     cursor_changed: bool = False
 
 
+def storable_events(events: list[Any], settings: Any) -> list[Any]:
+    """The subset of ``events`` that becomes ``hpcrun_event`` rows.
+
+    Two independent exclusions, and the second exists because the first was not
+    enough: ``UNSTORED_EVENTS`` names ``tick``, but ``lineage.debug`` fires once
+    per simulated timestep under a different name and was 946 of the first 1000
+    rows on sim 1318 (3.6 rows/s for a single lineage). Filtering on LEVEL makes
+    the bound structural -- a new per-tick event added anywhere is stream-only by
+    default rather than silently reintroducing the flood.
+
+    Everything excluded here has already been folded into the row's progress
+    columns and applied to the span tree by the caller; this only decides what is
+    kept as a queryable row.
+    """
+    store_debug = bool(getattr(settings, "events_ingest_store_debug", False))
+    keep = []
+    for event in events:
+        if event.event in UNSTORED_EVENTS:
+            continue
+        if not store_debug and str(getattr(event, "level", "") or "").lower() in UNSTORED_LEVELS:
+            continue
+        keep.append(event)
+    return keep
+
+
 async def _ingest_object(
     item: ListingItem,
     *,
@@ -390,6 +424,7 @@ async def _ingest_object(
     spans: dict[str, SimulationSpan],
     result: IngestResult,
     state: _Pass,
+    settings: Any,
 ) -> None:
     """Read one events object in full (the writer rewrites whole objects), store
     what is new (idempotent), fold the rest into progress/spans."""
@@ -408,7 +443,7 @@ async def _ingest_object(
     result.events_parsed += len(events)
     result.bad_lines += bad
     state.progress = fold_progress(events, state.progress)
-    storable = [e for e in events if e.event not in UNSTORED_EVENTS]
+    storable = storable_events(events, settings)
     if storable:
         result.events_inserted += await db.insert_hpcrun_events(hpc_run.database_id, trace_id, storable)
     state.changed_spans |= apply_span_events(spans, events)
@@ -483,6 +518,7 @@ async def ingest_run_events(
             spans=spans,
             result=result,
             state=state,
+            settings=settings,
         )
 
     if state.changed_spans:
