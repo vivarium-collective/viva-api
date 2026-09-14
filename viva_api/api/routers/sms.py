@@ -680,6 +680,18 @@ async def list_simulations(
         "Tags are free-form data on each simulation; an unknown tag simply matches "
         "nothing. Use GET /api/v1/simulations/tags to list tags present in the database.",
     ),
+    limit: int | None = Query(
+        default=None,
+        ge=1,
+        description="Maximum number of simulations to return, most-recent first (by id). "
+        "Bounds the database query itself, not just the response; omit to return all. "
+        "Applies to the unfiltered listing (not combined with experiment_id/tag).",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        description="Number of simulations to skip before returning results (pagination, with limit).",
+    ),
 ) -> list[Simulation]:
     db_service = get_database_service()
     if db_service is None:
@@ -692,7 +704,7 @@ async def list_simulations(
                 experiment_id=experiment_id,
                 tag=tag,
             )
-        return await handlers.simulations.list_simulations(db_service=db_service)
+        return await handlers.simulations.list_simulations(db_service=db_service, limit=limit, offset=offset)
     except Exception as e:
         logger.exception("Error fetching the uploaded analyses")
         raise HTTPException(status_code=500, detail=str(e)) from e

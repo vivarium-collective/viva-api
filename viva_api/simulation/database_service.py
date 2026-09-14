@@ -385,7 +385,9 @@ class DatabaseService(ABC):
         pass
 
     @abstractmethod
-    async def list_simulations(self) -> list[Simulation]:
+    async def list_simulations(self, limit: int | None = None, offset: int = 0) -> list[Simulation]:
+        """List simulations most-recent first (by id). ``limit`` bounds the query
+        itself (not just the response); ``None`` returns all rows."""
         pass
 
     @abstractmethod
@@ -1491,9 +1493,17 @@ class DatabaseServiceSQL(DatabaseService):
             await session.delete(orm_simulation)
 
     @override
-    async def list_simulations(self) -> list[Simulation]:
+    async def list_simulations(self, limit: int | None = None, offset: int = 0) -> list[Simulation]:
+        # Order by id desc so a ``limit`` returns the most recent rows and
+        # pagination is deterministic. Without a limit this is an unbounded scan
+        # that materializes AND validates every row's config (viva-api#653): the
+        # list endpoint ignored ``limit`` entirely, so a 1000+ row table cost the
+        # same ~13s on every call and stalled the workbench Runs page. Apply the
+        # bound in SQL so only the requested page is fetched and built.
         async with self.async_sessionmaker() as session:
-            stmt = select(ORMSimulation)
+            stmt = select(ORMSimulation).order_by(ORMSimulation.id.desc())
+            if limit is not None:
+                stmt = stmt.limit(limit).offset(offset)
             result: Result[tuple[ORMSimulation]] = await session.execute(stmt)
             orm_simulations = list(result.scalars().all())
             return self._build_simulations(orm_simulations)

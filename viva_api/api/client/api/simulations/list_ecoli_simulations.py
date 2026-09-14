@@ -14,6 +14,8 @@ def _get_kwargs(
     *,
     experiment_id: Union[None, Unset, str] = UNSET,
     tag: Union[None, Unset, str] = UNSET,
+    limit: Union[None, Unset, int] = UNSET,
+    offset: Union[Unset, int] = 0,
 ) -> dict[str, Any]:
     params: dict[str, Any] = {}
 
@@ -30,6 +32,15 @@ def _get_kwargs(
     else:
         json_tag = tag
     params["tag"] = json_tag
+
+    json_limit: Union[None, Unset, int]
+    if isinstance(limit, Unset):
+        json_limit = UNSET
+    else:
+        json_limit = limit
+    params["limit"] = json_limit
+
+    params["offset"] = offset
 
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
@@ -80,6 +91,8 @@ def sync_detailed(
     client: Union[AuthenticatedClient, Client],
     experiment_id: Union[None, Unset, str] = UNSET,
     tag: Union[None, Unset, str] = UNSET,
+    limit: Union[None, Unset, int] = UNSET,
+    offset: Union[Unset, int] = 0,
 ) -> Response[Union[HTTPValidationError, list["Simulation"]]]:
     """List all simulation specs uploaded to the database
 
@@ -89,6 +102,11 @@ def sync_detailed(
         tag (Union[None, Unset, str]): Comma-separated list of tags to filter by (e.g. 'cd1').
             Tags are free-form data on each simulation; an unknown tag simply matches nothing. Use GET
             /api/v1/simulations/tags to list tags present in the database.
+        limit (Union[None, Unset, int]): Maximum number of simulations to return, most-recent
+            first (by id). Bounds the database query itself, not just the response; omit to return
+            all. Applies to the unfiltered listing (not combined with experiment_id/tag).
+        offset (Union[Unset, int]): Number of simulations to skip before returning results
+            (pagination, with limit). Default: 0.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -101,6 +119,8 @@ def sync_detailed(
     kwargs = _get_kwargs(
         experiment_id=experiment_id,
         tag=tag,
+        limit=limit,
+        offset=offset,
     )
 
     response = client.get_httpx_client().request(
@@ -115,6 +135,8 @@ def sync(
     client: Union[AuthenticatedClient, Client],
     experiment_id: Union[None, Unset, str] = UNSET,
     tag: Union[None, Unset, str] = UNSET,
+    limit: Union[None, Unset, int] = UNSET,
+    offset: Union[Unset, int] = 0,
 ) -> Optional[Union[HTTPValidationError, list["Simulation"]]]:
     """List all simulation specs uploaded to the database
 
@@ -124,6 +146,11 @@ def sync(
         tag (Union[None, Unset, str]): Comma-separated list of tags to filter by (e.g. 'cd1').
             Tags are free-form data on each simulation; an unknown tag simply matches nothing. Use GET
             /api/v1/simulations/tags to list tags present in the database.
+        limit (Union[None, Unset, int]): Maximum number of simulations to return, most-recent
+            first (by id). Bounds the database query itself, not just the response; omit to return
+            all. Applies to the unfiltered listing (not combined with experiment_id/tag).
+        offset (Union[Unset, int]): Number of simulations to skip before returning results
+            (pagination, with limit). Default: 0.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -137,6 +164,8 @@ def sync(
         client=client,
         experiment_id=experiment_id,
         tag=tag,
+        limit=limit,
+        offset=offset,
     ).parsed
 
 
@@ -145,6 +174,8 @@ async def asyncio_detailed(
     client: Union[AuthenticatedClient, Client],
     experiment_id: Union[None, Unset, str] = UNSET,
     tag: Union[None, Unset, str] = UNSET,
+    limit: Union[None, Unset, int] = UNSET,
+    offset: Union[Unset, int] = 0,
 ) -> Response[Union[HTTPValidationError, list["Simulation"]]]:
     """List all simulation specs uploaded to the database
 
@@ -154,6 +185,11 @@ async def asyncio_detailed(
         tag (Union[None, Unset, str]): Comma-separated list of tags to filter by (e.g. 'cd1').
             Tags are free-form data on each simulation; an unknown tag simply matches nothing. Use GET
             /api/v1/simulations/tags to list tags present in the database.
+        limit (Union[None, Unset, int]): Maximum number of simulations to return, most-recent
+            first (by id). Bounds the database query itself, not just the response; omit to return
+            all. Applies to the unfiltered listing (not combined with experiment_id/tag).
+        offset (Union[Unset, int]): Number of simulations to skip before returning results
+            (pagination, with limit). Default: 0.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -166,6 +202,8 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         experiment_id=experiment_id,
         tag=tag,
+        limit=limit,
+        offset=offset,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -178,6 +216,8 @@ async def asyncio(
     client: Union[AuthenticatedClient, Client],
     experiment_id: Union[None, Unset, str] = UNSET,
     tag: Union[None, Unset, str] = UNSET,
+    limit: Union[None, Unset, int] = UNSET,
+    offset: Union[Unset, int] = 0,
 ) -> Optional[Union[HTTPValidationError, list["Simulation"]]]:
     """List all simulation specs uploaded to the database
 
@@ -187,6 +227,11 @@ async def asyncio(
         tag (Union[None, Unset, str]): Comma-separated list of tags to filter by (e.g. 'cd1').
             Tags are free-form data on each simulation; an unknown tag simply matches nothing. Use GET
             /api/v1/simulations/tags to list tags present in the database.
+        limit (Union[None, Unset, int]): Maximum number of simulations to return, most-recent
+            first (by id). Bounds the database query itself, not just the response; omit to return
+            all. Applies to the unfiltered listing (not combined with experiment_id/tag).
+        offset (Union[Unset, int]): Number of simulations to skip before returning results
+            (pagination, with limit). Default: 0.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -201,5 +246,7 @@ async def asyncio(
             client=client,
             experiment_id=experiment_id,
             tag=tag,
+            limit=limit,
+            offset=offset,
         )
     ).parsed

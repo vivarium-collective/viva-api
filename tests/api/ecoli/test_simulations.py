@@ -72,6 +72,36 @@ async def test_list_simulations(
 
 
 @pytest.mark.asyncio
+async def test_list_simulations_limit_offset_pagination(
+    experiment_request: SimulationRequest,
+    database_service: DatabaseServiceSQL,
+) -> None:
+    """``limit`` bounds the query to the most-recent rows (by id); ``offset`` pages.
+
+    Regression for viva-api#653: the list endpoint ignored ``limit`` and always
+    materialized + validated every row, so a 1000+ row table stalled the workbench
+    Runs page. ``limit`` must return only that many rows, newest first.
+    """
+    ids: list[int] = []
+    for i in range(5):
+        experiment_request.experiment_id = f"page-{i}"
+        experiment_request.config.experiment_id = f"page-{i}"
+        sim = await database_service.insert_simulation(experiment_request)
+        ids.append(sim.database_id)
+    newest_first = sorted(ids, reverse=True)
+
+    page1 = await database_service.list_simulations(limit=2)
+    assert [s.database_id for s in page1] == newest_first[:2]
+
+    page2 = await database_service.list_simulations(limit=2, offset=2)
+    assert [s.database_id for s in page2] == newest_first[2:4]
+
+    # No limit still returns every row, newest first.
+    all_ids = [s.database_id for s in await database_service.list_simulations()]
+    assert all_ids[:5] == newest_first
+
+
+@pytest.mark.asyncio
 async def test_get_simulation(database_service: DatabaseServiceSQL, experiment_request: SimulationRequest) -> None:
     """Test getting a single simulation from the database."""
     sim_i = await database_service.insert_simulation(experiment_request)
