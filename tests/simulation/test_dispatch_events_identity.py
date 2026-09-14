@@ -30,6 +30,10 @@ import pytest
 DISPATCH_MODULES = [
     "viva_api/simulation/simulation_service_ray.py",
     "viva_api/simulation/job_scheduler.py",
+    # Added after this guard MISSED submit_standalone_analysis, which injected no
+    # PBG_* at all: the module was simply not scanned. See the identity test below
+    # for the other half of that miss.
+    "viva_api/simulation/simulation_service_k8s.py",
 ]
 
 # Methods that resolve a task env but deliberately do NOT carry an events identity.
@@ -124,3 +128,33 @@ def test_the_known_dispatch_paths_are_all_still_covered() -> None:
     }
     missing = expected - with_identity
     assert not missing, f"dispatch methods that lost their events identity: {sorted(missing)}"
+
+
+#: Dispatch methods that build a job's environment BY HAND rather than through
+#: ``resolve_task_env``. The scan above keys on ``resolve_task_env``, so it is
+#: structurally blind to these -- a test that pins the right pattern still misses
+#: a caller using a different one. ``submit_standalone_analysis`` proved it: it
+#: shipped with no ``PBG_*`` at all and the guard stayed green.
+HAND_BUILT_ENV_DISPATCHES = {
+    "viva_api/simulation/simulation_service_k8s.py": {"submit_standalone_analysis"},
+}
+
+
+@pytest.mark.parametrize("module_path", sorted(HAND_BUILT_ENV_DISPATCHES))
+def test_hand_built_dispatch_envs_still_inject_the_identity(module_path: str) -> None:
+    """Cover the dispatches the resolve_task_env scan cannot see.
+
+    ``submit_standalone_analysis`` constructs a K8s Job env as a literal list of
+    ``V1EnvVar``. It never calls ``resolve_task_env``, so the scan above reports
+    it as clean whether or not it injects anything. It did not -- ``atlantis
+    simulation analysis`` produced runs with no identity and therefore no events,
+    which looked exactly like the benign "no sink configured" case.
+    """
+    tree = ast.parse(pathlib.Path(module_path).read_text())
+    for fn in _functions(tree):
+        if fn.name not in HAND_BUILT_ENV_DISPATCHES[module_path]:
+            continue
+        assert _calls_named(fn, "events_env") or _calls_named(fn, "with_events_env"), (
+            f"{module_path}:{fn.lineno} {fn.name}() builds a dispatch environment by hand "
+            "and never adds the PBG_* identity, so its jobs emit nothing"
+        )
