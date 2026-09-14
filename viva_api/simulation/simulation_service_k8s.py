@@ -11,6 +11,7 @@ from typing import override
 
 from kubernetes import client as k8s_client
 
+from viva_api.common.events_env import events_env
 from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.hpc.k8s_job_service import K8sJobService
 from viva_api.common.hpc.local_task_service import LocalTaskService
@@ -397,6 +398,31 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ecr_repository}:{image_tag}-s
                                     k8s_client.V1EnvVar(name="AWS_REGION", value=settings.batch_region),
                                     k8s_client.V1EnvVar(name="AWS_STS_REGIONAL_ENDPOINTS", value="regional"),
                                     k8s_client.V1EnvVar(name="USER", value="sms-api"),
+                                    # Observability identity (plan D4a). This path hand-builds its
+                                    # env and never calls resolve_task_env, so it was the one
+                                    # dispatch left injecting NO PBG_* after #641 fixed the two Ray
+                                    # paths -- and #641's AST guard cannot see it twice over: the
+                                    # scan does not cover this module, and it keys on
+                                    # resolve_task_env, which this function never calls. A test
+                                    # that pins the RIGHT pattern still misses a caller using a
+                                    # DIFFERENT one.
+                                    #
+                                    # There is no campaign correlation_id here (a standalone
+                                    # re-analysis is its own action, dispatched long after the run),
+                                    # so events_env seeds the trace from experiment_id -- its
+                                    # documented fallback. Every analysis of one experiment then
+                                    # shares a trace, which is the useful grouping for "show me
+                                    # what this experiment's analyses did".
+                                    *[
+                                        k8s_client.V1EnvVar(name=name, value=value)
+                                        for name, value in events_env(
+                                            correlation_id=None,
+                                            experiment_id=experiment_id,
+                                            backend="k8s_standalone_analysis",
+                                            settings=settings,
+                                            tags={"phase": "analysis"},
+                                        ).items()
+                                    ],
                                 ],
                                 volume_mounts=[
                                     k8s_client.V1VolumeMount(name="config", mount_path="/config"),
