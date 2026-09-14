@@ -15,11 +15,14 @@ from starlette.requests import Request
 
 from viva_api.analysis.analysis_service import AnalysisServiceSlurm, RequestPayload, parse_partition_metadata
 from viva_api.analysis.models import (
+    AnalysisFigureFile,
+    AnalysisFigureGroup,
     AnalysisRun,
     ExperimentAnalysisDTO,
     ExperimentAnalysisRequest,
     OutputFile,
     OutputFileMetadata,
+    SimulationAnalysisFigures,
     TsvOutputFile,
 )
 from viva_api.common.hpc.job_service import JobStatusInfo
@@ -108,6 +111,210 @@ async def _list_analysis_result_files(
     prefix = data_layout.key_from_uri(result_uri)
     listing = await file_service.get_listing(S3FilePath(s3_path=Path(prefix)))
     return [item for item in listing if item.Key.lower().endswith(extensions)]
+
+
+# Rendered-artifact suffixes the simulation analysis-figure endpoints serve. Kept
+# small on purpose: these paths must never invite a bulk parquet/native-store pull
+# (that is what /analyses/{id}/data and /simulations/{id}/data are for).
+_FIGURE_SUFFIXES = (".html", ".svg", ".png")
+_PTOOLS_SUFFIXES = (".tsv", ".csv", ".json")
+
+
+def _analysis_dir_name(result_uri: str) -> str:
+    """Last path segment of a ``.../analyses/<name>`` result_uri -> ``<name>``."""
+    return result_uri.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _analyses_root_from_result_uri(result_uri: str) -> str | None:
+    """``s3://.../<exp>/analyses/<name>`` -> ``s3://.../<exp>/analyses``.
+
+    None when the uri carries no ``/analyses/`` segment. This is the authoritative
+    way to recover a simulation's analyses root: a fill's result_uri names the
+    exact bucket+prefix its siblings live under, which the simulation's own
+    ``out_uri`` may not (Run-1 lives in a sub-store; see viva-api#648 §3b)."""
+    trimmed = result_uri.rstrip("/")
+    marker = "/analyses/"
+    idx = trimmed.rfind(marker)
+    if idx < 0:
+        return None
+    return trimmed[: idx + len(marker) - 1]  # keep ".../analyses" (no trailing slash)
+
+
+def _status_str(status: object) -> str:
+    """Stringify a DB status (JobStatus enum or plain) to its wire value."""
+    return str(getattr(status, "value", None) or status or "unknown")
+
+
+def _figure_content_type(path: str) -> str:
+    p = path.lower()
+    if p.endswith(".html"):
+        return "text/html; charset=utf-8"
+    if p.endswith(".svg"):
+        return "image/svg+xml"
+    if p.endswith(".png"):
+        return "image/png"
+    if p.endswith(".json"):
+        return "application/json"
+    if p.endswith((".tsv", ".csv")):
+        return "text/plain; charset=utf-8"
+    return "application/octet-stream"
+
+
+async def _resolve_analyses_root(
+    db_service: DatabaseService, simulation_id: int, records: Sequence[ExperimentAnalysisDTO]
+) -> str | None:
+    """The ``s3://.../analyses`` prefix a simulation's analyses live under.
+
+    Prefer a record's result_uri grandparent (it names the real bucket+prefix);
+    fall back to the simulation's own ``out_uri`` + ``/analyses``."""
+    for record in records:
+        if record.result_uri:
+            root = _analyses_root_from_result_uri(record.result_uri)
+            if root:
+                return root
+    # No record to anchor on: fall back to the run's own single-nested output base
+    # (``<s3_output_prefix>/<experiment_id>``), which every fill writes ``analyses/``
+    # under. This surfaces pure-fill sims that never registered any analysis row.
+    simulation = await db_service.get_simulation(simulation_id=simulation_id)
+    if simulation is not None:
+        base = data_layout.RayLayout.experiment_prefix(simulation.experiment_id)
+        return data_layout.s3_uri(f"{base}/analyses")
+    return None
+
+
+async def _walk_analysis_figure_dirs(
+    file_service: FileService, root: str
+) -> dict[str, dict[str, list[AnalysisFigureFile]]]:
+    """Group every rendered artifact under ``<root>/`` (an ``s3://.../analyses``
+    prefix) by analysis-dir name -> ``{name: {"figures": [...], "ptools": [...]}}``.
+
+    One recursive listing covers record-backed and record-less ("fill") dirs alike
+    -- cheaper than a per-dir CommonPrefixes walk. Only ``viz/`` figures and
+    ``ptools/`` tables with a served suffix are kept; ``analysis.json`` and any
+    other object is ignored."""
+    groups: dict[str, dict[str, list[AnalysisFigureFile]]] = {}
+    analyses_key = data_layout.key_from_uri(root).rstrip("/") + "/"
+    listing = await file_service.get_listing(S3FilePath(s3_path=Path(analyses_key)))
+    for item in listing:
+        if not item.Key.startswith(analyses_key):
+            continue
+        parts = item.Key[len(analyses_key) :].split("/", 2)
+        if len(parts) < 3 or not parts[2]:
+            continue
+        name, subdir, filename = parts
+        low = filename.lower()
+        bucket = groups.setdefault(name, {"figures": [], "ptools": []})
+        if subdir == "viz" and low.endswith(_FIGURE_SUFFIXES):
+            bucket["figures"].append(AnalysisFigureFile(path=f"viz/{filename}", size=item.Size))
+        elif subdir == "ptools" and low.endswith(_PTOOLS_SUFFIXES):
+            bucket["ptools"].append(AnalysisFigureFile(path=f"ptools/{filename}", size=item.Size))
+    return groups
+
+
+async def list_simulation_analysis_figures(
+    db_service: DatabaseService, simulation_id: int
+) -> SimulationAnalysisFigures:
+    """Every analysis's rendered ``viz/`` figures + ``ptools/`` tables for a
+    simulation, unioning DB ``analysis`` records with a direct S3 walk of
+    ``<out_uri>/analyses/*`` so hand-dispatched "fills" that never created a DB
+    record still surface (viva-api#648). Serves with the API's own S3 creds so a
+    credential-less client (the hosted workbench pod) can reach the figures.
+    """
+    file_service = get_file_service()
+    if file_service is None:
+        return SimulationAnalysisFigures(available=False, reason="file-service-unavailable", analyses=[])
+
+    simulation = await db_service.get_simulation(simulation_id=simulation_id)
+    if simulation is None:
+        raise ValueError(f"Simulation {simulation_id} not found")
+    try:
+        records = await db_service.list_analyses(experiment_id=simulation.experiment_id)
+    except Exception:
+        logging.getLogger(__name__).debug("list_simulation_analysis_figures: DB list_analyses failed", exc_info=True)
+        records = []
+
+    record_by_dir: dict[str, ExperimentAnalysisDTO] = {
+        _analysis_dir_name(r.result_uri): r for r in records if r.result_uri
+    }
+
+    # One recursive listing of <root>/analyses/ covers record-backed dirs and
+    # record-less fills alike (see _walk_analysis_figure_dirs).
+    root = await _resolve_analyses_root(db_service, simulation_id, records)
+    groups = await _walk_analysis_figure_dirs(file_service, root) if root is not None else {}
+
+    rows: list[AnalysisFigureGroup] = []
+    for name in sorted(set(groups) | set(record_by_dir)):
+        found = groups.get(name, {"figures": [], "ptools": []})
+        record = record_by_dir.get(name)
+        rows.append(
+            AnalysisFigureGroup(
+                name=name,
+                status=_status_str(record.status) if record else "s3-only",
+                source="record" if record else "s3",
+                result_uri=record.result_uri if record else (f"{root}/{name}" if root else None),
+                figures=found["figures"],
+                ptools=found["ptools"],
+            )
+        )
+    # Surface completed-but-null-result_uri records too: objects may still exist on
+    # S3 but the row can't be addressed until the write-side registers a result_uri.
+    for record in records:
+        if not record.result_uri:
+            rows.append(
+                AnalysisFigureGroup(
+                    name=record.name, status=_status_str(record.status), source="record", result_uri=None
+                )
+            )
+
+    available = any(row.figures or row.ptools for row in rows)
+    reason = "ok" if available else ("no-analyses" if not rows else "no-figures")
+    return SimulationAnalysisFigures(available=available, reason=reason, analyses=rows)
+
+
+async def fetch_simulation_analysis_figure(
+    db_service: DatabaseService, simulation_id: int, analysis_name: str, relpath: str
+) -> tuple[bytes, str]:
+    """Fetch one rendered artifact (``viz/<f>.html`` / ``ptools/<f>.tsv``) of a
+    simulation's analysis, resolving its S3 location server-side so the caller
+    passes only ``(analysis_name, relpath)`` -- never a raw S3 uri.
+
+    ``relpath`` is confined to the analysis prefix: no ``..`` traversal, no
+    absolute keys, and it must start with ``viz/`` or ``ptools/``. Raises
+    ``ValueError`` for a bad path (-> 400) and ``FileNotFoundError`` for an unknown
+    simulation/analysis or missing object (-> 404)."""
+    rel = (relpath or "").lstrip("/")
+    parts = rel.split("/")
+    if not rel or ".." in parts or parts[0] not in ("viz", "ptools"):
+        raise ValueError(f"invalid analysis-figure path: {relpath!r}")
+
+    file_service = get_file_service()
+    if file_service is None:
+        raise RuntimeError("File service is not initialized")
+
+    simulation = await db_service.get_simulation(simulation_id=simulation_id)
+    if simulation is None:
+        raise FileNotFoundError(f"Simulation {simulation_id} not found")
+    try:
+        records = await db_service.list_analyses(experiment_id=simulation.experiment_id)
+    except Exception:
+        records = []
+
+    result_uri: str | None = None
+    for record in records:
+        if record.result_uri and _analysis_dir_name(record.result_uri) == analysis_name:
+            result_uri = record.result_uri
+            break
+    if result_uri is None:
+        root = await _resolve_analyses_root(db_service, simulation_id, records)
+        if root is None:
+            raise FileNotFoundError(f"No analyses root for simulation {simulation_id}")
+        result_uri = f"{root}/{analysis_name}"
+
+    key = data_layout.key_from_uri(result_uri).rstrip("/") + "/" + rel
+    content = await file_service.get_file_contents(S3FilePath(s3_path=Path(key)))
+    if content is None:
+        raise FileNotFoundError(f"analysis artifact not found: {analysis_name}/{rel}")
+    return content, _figure_content_type(rel)
 
 
 async def fetch_analysis_data(db_service: DatabaseService, analysis_id: int) -> list[TsvOutputFile]:

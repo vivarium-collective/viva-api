@@ -303,6 +303,47 @@ class AnalysisRun(BaseModel):
     error_log: str | None = None
 
 
+class AnalysisFigureFile(BaseModel):
+    """One rendered artifact under an analysis's ``viz/`` or ``ptools/`` subdir.
+
+    ``path`` is relative to ``<out_uri>/analyses/<name>/`` (e.g.
+    ``"viz/chromosome_state_view__variant=0_seed=0_gen=0_agent=0.html"``), so it
+    round-trips straight back to the fetch endpoint's ``path`` query param.
+    """
+
+    path: str
+    size: int
+
+
+class AnalysisFigureGroup(BaseModel):
+    """A single analysis directory's rendered figures + ptools tables.
+
+    ``source`` distinguishes a row backed by a DB ``analysis`` record
+    (``"record"``) from one discovered only by walking S3 (``"s3"``) -- the
+    latter is a hand-dispatched ("fill") analysis that never created a record.
+    """
+
+    name: str
+    status: str
+    source: str
+    result_uri: str | None = None
+    figures: list[AnalysisFigureFile] = []
+    ptools: list[AnalysisFigureFile] = []
+
+
+class SimulationAnalysisFigures(BaseModel):
+    """Every analysis's rendered figures+ptools for a simulation, unioning DB
+    records with an S3-prefix walk so hand-dispatched fills (no DB row) surface.
+
+    ``available`` is False (with a ``reason``) when nothing renderable was found,
+    so a caller can fall back rather than show an empty tab.
+    """
+
+    available: bool
+    reason: str
+    analyses: list[AnalysisFigureGroup] = []
+
+
 class AnalysisJobFailedException(Exception):
     """Exception raised when an analysis SLURM job fails."""
 
