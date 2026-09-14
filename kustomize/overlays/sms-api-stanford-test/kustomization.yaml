@@ -339,8 +339,31 @@ images:
   # is bumped in lockstep (same image is both the workbench and the image a
   # worker Job stages its worker module from -- drift means a workbench
   # speaking a protocol its own workers do not).
+  # 0.3.83 was built from main @e73f96e1 but never deployed -- workbench#1077
+  # merged 20 minutes later, so 0.3.84 supersedes it and 0.3.83 is skipped here
+  # deliberately (the tag exists on ghcr; nothing points at it).
+  # 0.3.84 (2026-09-14): main @a8ffaae3 -- adds the two follow-ups to the 0.3.82
+  # set. workbench#1078 is the one that matters for CD2: #1072's figure listing
+  # enumerated a sim's analyses via sms-api DB records, but the in-region ptools
+  # toolkit re-fires write to `<out_uri>/analyses/analysis-ptools-<scale>/{viz,
+  # ptools}/` via raw `aws s3 cp` and create NO DB record, so those figures never
+  # surfaced. #1078 unions the DB-record path with a direct S3 walk of
+  # `<out_uri>/analyses/*/`, making S3 the source of truth -- which is what makes
+  # the fills currently running (sms-ecoli#166) visible at all. Note the prefix
+  # names those fanouts actually write are NOT uniform: analysis-ptools-<scale>/,
+  # analysis-percell-run3/, analysis-percellfill/, and an APPEND into an existing
+  # analysis-mnp-*/ptools/ -- the `*` glob covers them, the append case is the one
+  # reachable by both code paths at once (its dedupe).
+  # workbench#1077 replaces a raw traceback on remote composite run with a clean
+  # git preflight. UI-only.
+  # STILL NOT LIVE IN-CLUSTER: the workbench pod has no AWS identity (SA `default`,
+  # no IRSA annotation, no projected aws-iam-token, IMDS unreachable -- re-measured
+  # on the running 0.3.82 pod), so #1078's S3 walk works from a laptop holding
+  # GovCloud SSO creds and NOT from the pod until IRSA is granted to the workbench
+  # service account. See viva-api#648 for the alternative (serve the artifacts
+  # through sms-api, which already holds S3 creds via the batch-submit IRSA role).
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.82
+    newTag: 0.3.84
 
 replicas:
   - count: 1
