@@ -312,8 +312,35 @@ images:
   # regression tests (tests/test_dispatch_confirm_modal.py); live-verified in
   # a real browser (screenshot succeeds while the modal is open, a real click
   # on OK resolves the confirmation) before merging.
+  # 0.3.82 (2026-09-14): built from vivarium-workbench main @6ab4632d -- 23
+  # commits, the first workbench build since 0.3.81 (2026-09-12). The headline
+  # is workbench#1072: a completed remote analysis's viz/*.html + ptools/*.tsv
+  # are served straight from its S3 result_uri, via the workbench's own
+  # /api/remote-analysis-figures (list) + /api/remote-analysis-figure (fetch
+  # one). That list+fetch-one shape exists because sms-api's
+  # /analyses/{id}/plots and /analyses/{id}/data download EVERY artifact into a
+  # single JSON body (handle_get_ray_analysis_plots), which times out on a real
+  # CD2 gather (~256 figures x ~108 KB behind the 600 s ALB idle ceiling) --
+  # see sms-ecoli#166. NOTE the deployed pod has no AWS identity (SA `default`,
+  # no IRSA annotation, no projected aws-iam-token, IMDS unreachable), so the
+  # S3 read works from a laptop with GovCloud SSO creds but NOT in-cluster
+  # until IRSA is granted to the workbench SA; shipping it now is still correct
+  # (it is the laptop path today) but the in-region promise is not yet live.
+  # The rest of the batch is the loom/composite sprint: the interactive
+  # bigraph-loom embedded as the report Model view with standard graph
+  # navigation and a bounded trajectory on whole-cell runs (#1063/#1064/#1065/
+  # #1068/#1071/#1073/#1075/#1076), one loom-owned run/outputs surface on the
+  # composite card (#1066/#1070), registry fixes for multi-package and
+  # workspace-owned processes (#1057/#1058/#1060/#1061/#1062), figure
+  # discovery/dedupe/dynamic-import rendering (#1056/#1059/#1069/#1074), and
+  # studies-index fills that stop blocking on sms-api (#1054/#1055/#1067).
+  # Workbench-only image bump: no sms-api code change, so viva-api stays
+  # 0.9.141. ENV_WORKER_MODULE_IMAGE in config/sms-api-stanford-test/shared.env
+  # is bumped in lockstep (same image is both the workbench and the image a
+  # worker Job stages its worker module from -- drift means a workbench
+  # speaking a protocol its own workers do not).
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.81
+    newTag: 0.3.82
 
 replicas:
   - count: 1
