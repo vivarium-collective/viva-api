@@ -258,11 +258,40 @@ def _span_depth(spans: dict[str, SimulationSpan], span: SimulationSpan) -> int:
 
 
 def open_span_labels(spans: dict[str, SimulationSpan]) -> list[str]:
-    """Labels of the spans still open, outermost first (by depth, then start
-    time), with the campaign span itself left out -- this is the run's ``stage``."""
+    """One label per open DEPTH, outermost first -- the run's ``stage``.
+
+    This used to emit one label per open SPAN, which silently assumed the open
+    spans form a single nested chain. They do not the moment anything runs in
+    parallel: ParCa fits its conditions concurrently, so sim 1319 reported
+
+        parca.step > parca.fit_condition > parca.fit_condition > ... (x7)
+
+    -- seven levels of apparent nesting for what is one level with seven
+    siblings, all correctly carrying the same parent span. The spans were right;
+    the rendering was not, and ``stage`` is the first thing anyone reads off
+    ``/status``.
+
+    Same-depth spans are now grouped: a lone span shows its full label, and N>1
+    siblings of the same name collapse to ``name xN`` -- which says both what is
+    running and how wide it is, instead of implying a depth that does not exist.
+    Distinct names at one depth stay listed, comma-separated.
+    """
     open_spans = [s for s in spans.values() if s.end_ts is None and s.name not in _STAGE_HIDDEN_SPANS]
-    open_spans.sort(key=lambda s: (_span_depth(spans, s), s.start_ts or ""))
-    return [s.label for s in open_spans]
+    by_depth: dict[int, list[SimulationSpan]] = {}
+    for span in open_spans:
+        by_depth.setdefault(_span_depth(spans, span), []).append(span)
+
+    labels: list[str] = []
+    for depth in sorted(by_depth):
+        siblings = sorted(by_depth[depth], key=lambda s: s.start_ts or "")
+        counts: dict[str, int] = {}
+        first_label: dict[str, str] = {}
+        for span in siblings:
+            counts[span.name] = counts.get(span.name, 0) + 1
+            first_label.setdefault(span.name, span.label)
+        parts = [first_label[name] if count == 1 else f"{name} x{count}" for name, count in counts.items()]
+        labels.append(", ".join(parts))
+    return labels
 
 
 def stage_from_spans(spans: dict[str, SimulationSpan]) -> str | None:
