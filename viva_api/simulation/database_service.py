@@ -50,6 +50,13 @@ from viva_api.simulation.tables_orm import (
 
 logger = logging.getLogger(__name__)
 
+#: asyncpg's hard ceiling on bound parameters in ONE statement. A multi-row
+#: ``VALUES`` binds columns x rows, so any unchunked bulk insert has a row limit
+#: of ``32767 / len(columns)`` -- 2,184 rows for ``hpcrun_event``'s 15 columns.
+#: Exceeding it raises InterfaceError and, in a polling ingester, fails the same
+#: object forever (sim 1318).
+_ASYNCPG_MAX_QUERY_ARGS = 32767
+
 #: Reserved key under ``hpcrun_event.tags`` holding an event's baggage map
 #: (``sim_id``, ``experiment_id``, ``variant``, ``lineage_seed``, ``generation``);
 #: ``generation`` is also promoted to its own column.
@@ -1196,14 +1203,28 @@ class DatabaseServiceSQL(DatabaseService):
         unique: dict[tuple[str, int], dict[str, Any]] = {}
         for row in rows:
             unique.setdefault((row["source"], row["seq"]), row)
+        # CHUNKED, because a multi-row VALUES binds one parameter PER COLUMN PER
+        # ROW and asyncpg refuses a statement over 32,767 of them. Hit live on
+        # sim 1318 (2026-09-14): a rewritten object carrying 4,044 events tried
+        # 60,005 parameters and every ingest pass failed with
+        # "the number of query arguments cannot exceed 32767" -- so ingest simply
+        # STOPPED partway through the run while /status still read `running` and
+        # the only symptom was last_event_at ceasing to advance. The chunk size is
+        # derived from the table's real column count rather than hard-coded, so
+        # adding a column cannot silently re-breach the ceiling.
+        rows_to_insert = list(unique.values())
+        chunk_size = max(1, _ASYNCPG_MAX_QUERY_ARGS // max(1, len(ORMHpcRunEvent.__table__.columns)))
+        inserted = 0
         async with self.async_sessionmaker() as session, session.begin():
-            stmt = (
-                pg_insert(ORMHpcRunEvent)
-                .values(list(unique.values()))
-                .on_conflict_do_nothing(constraint="uq_hpcrun_event_trace_source_seq")
-            )
-            result = cast(CursorResult[Any], await session.execute(stmt))
-            return int(result.rowcount or 0)
+            for start in range(0, len(rows_to_insert), chunk_size):
+                stmt = (
+                    pg_insert(ORMHpcRunEvent)
+                    .values(rows_to_insert[start : start + chunk_size])
+                    .on_conflict_do_nothing(constraint="uq_hpcrun_event_trace_source_seq")
+                )
+                result = cast(CursorResult[Any], await session.execute(stmt))
+                inserted += int(result.rowcount or 0)
+        return inserted
 
     @override
     async def list_hpcrun_events(
