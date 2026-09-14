@@ -1371,8 +1371,8 @@ async def cancel_simulation(
     return SimulationRun(id=simulation_id, status=JobStatus.CANCELLED)
 
 
-async def list_simulations(db_service: DatabaseService) -> list[Simulation]:
-    return await db_service.list_simulations()
+async def list_simulations(db_service: DatabaseService, limit: int | None = None, offset: int = 0) -> list[Simulation]:
+    return await db_service.list_simulations(limit=limit, offset=offset)
 
 
 async def list_simulations_filtered(

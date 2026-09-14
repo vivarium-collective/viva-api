@@ -368,6 +368,33 @@ paths:
         description: Comma-separated list of tags to filter by (e.g. 'cd1'). Tags
           are free-form data on each simulation; an unknown tag simply matches nothing.
           Use GET /api/v1/simulations/tags to list tags present in the database.
+      - name: limit
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          description: Maximum number of simulations to return, most-recent first
+            (by id). Bounds the database query itself, not just the response; omit
+            to return all. Applies to the unfiltered listing (not combined with experiment_id/tag).
+          title: Limit
+        description: Maximum number of simulations to return, most-recent first (by
+          id). Bounds the database query itself, not just the response; omit to return
+          all. Applies to the unfiltered listing (not combined with experiment_id/tag).
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Number of simulations to skip before returning results (pagination,
+            with limit).
+          default: 0
+          title: Offset
+        description: Number of simulations to skip before returning results (pagination,
+          with limit).
       responses:
         '200':
           description: Successful Response
@@ -1562,7 +1589,7 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-09-14T08:48:16.730461'
+                  created_at: '2026-09-14T11:36:51.910355'
                 parca_config:
                   outdir: .
                   operons: true
@@ -5298,7 +5325,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-09-14 08:48:16.669568'
+          default: '2026-09-14 11:36:50.585396'
         job_id:
           anyOf:
           - type: string
