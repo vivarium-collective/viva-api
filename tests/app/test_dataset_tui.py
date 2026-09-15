@@ -239,3 +239,15 @@ async def test_fetch_streams_into_a_temp_dir_and_opens_the_file_browser(monkeypa
     svc.fetch_dataset.assert_called_once()
     assert "Saved dataset 41" in harness.log_text()
     assert not fetched[0].exists(), "the temp copy is removed when the TUI exits"
+
+
+@pytest.mark.asyncio
+async def test_the_banner_timer_survives_the_banner_being_gone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CI on #661: ``NoMatches: No nodes match '#banner' on Screen(id='_default')``. The banner
+    timer ticks every 0.1 s; at teardown the default screen's widgets go before the timer does,
+    and the lookup escaped the timer and failed the test. Removing the banner reproduces it."""
+    harness = _Harness(_service(), monkeypatch)
+    async with harness.app.run_test(size=(220, 60)) as pilot:
+        await harness.app.query_one("#banner").remove()
+        await pilot.pause(0.3)  # several banner ticks with no banner to update
+    assert harness.app.return_code in (None, 0)

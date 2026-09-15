@@ -659,7 +659,11 @@ class AtlantisTUI(App[None]):
 
     def _animate_banner(self) -> None:
         self._banner_phase += 0.15
-        self.query_one("#banner", Static).update(_animated_banner(self._banner_phase))
+        # The timer outlives the banner at teardown (the default screen's widgets go first), so
+        # a missing banner skips the tick rather than raising NoMatches out of the timer.
+        banner = self.query_one_optional("#banner", Static)
+        if banner is not None:
+            banner.update(_animated_banner(self._banner_phase))
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
