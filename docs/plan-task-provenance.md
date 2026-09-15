@@ -1,15 +1,20 @@
-# viva-api#655 — task provenance, tasks as HpcRuns, and a tracing-fed dataset registry
+# viva-api#655 — task provenance and tasks as HpcRuns — slice 2
 
-**Status (2026-09-14): plan, not started.** Designed with Jim in plan mode from the
-evidence brief at `assets/ptools/HANDOFF_tools_runs_655.md` (the brief predates the
-finding that #631 is already built — see Context). Reviewed once against the code;
-the review's findings are folded in. Scope widened the same evening, in three steps:
-analysis-first registration (§2c, #648's registration half), dataset records as the
-consumer unit (§2c), and tracing as the primary artifact feed with tasks becoming
-HpcRuns (§2c Feeders, §2d). The emit side of the artifact contract lives in other repos
-and follows (decision 10).
-Branch off `main` @ `70edd4a0` (0.9.142).
-Issues: #655 (this), #631 (the task verb this extends), #648 (artifact registration).
+**Status (2026-09-14): plan, not started. This is slice 2 of two.** Slice 1 is
+[`plan-data-provenance.md`](plan-data-provenance.md): the `dataset` registry, the
+`artifact.written` ingest hook, `analysis.source`/`tags`, the `/datasets` API, the walk
+reconciliation and the bundle importer — delivered **without touching the task endpoints**.
+This slice makes a task a first-class traced run (content-addressed script capture, toolkit
+snapshots, best-effort inputs, an HpcRun row with `task_id` in its baggage) and thereby
+**inherits** the registry: no new dataset code here beyond the `task_id` producer FK.
+Sequencing decided by Jim on 2026-09-14. The ptools consumer is
+[`plan-ptools-datasets.md`](plan-ptools-datasets.md).
+
+Designed in plan mode from the evidence brief at `assets/ptools/HANDOFF_tools_runs_655.md`
+(the brief predates the finding that #631 is already built — see Context). Reviewed once
+against the code; the review's findings are folded in. Branch off `main` @ `70edd4a0`
+(0.9.142) **after slice 1's revision**. Issues: #655 (this), #631 (the task verb this
+extends), #648 (artifact registration — closed by slice 1 + this).
 
 ## Context
 
@@ -39,20 +44,20 @@ content hash; `job_name` exists on the row but is never written. Uploaded script
 4. ~~HpcRun linkage deferred~~ **Reversed later the same evening (decision 9): every task gets
    an HpcRun row + `PBG_*` identity in this PR**, because tracing is now the primary artifact
    feed and tasks must be traceable (§2d).
-5. **Analysis-first registration is in this PR** (§2c): a finished task's output bundles are
+5. **Analysis-first registration** — *moved to slice 1* (`plan-data-provenance.md`); §2c here keeps only the task-specific part: a finished task's output bundles are
    registered as `analysis` rows; the analysis record is the consumer handle and points to
    its source (task, simulation + coordinate, or another analysis) through the same
    reference type `task.inputs` uses. The ptools consumer lists analyses, not simulations.
-6. **Dataset records** (§2c): the ptools page consumes a list of already-available
-   datasets and launches nothing. Each consumable file set is its own `analysis_result`
+6. **Dataset records** — *moved to slice 1; table renamed `dataset`* (§2c): the ptools page consumes a list of already-available
+   datasets and launches nothing. Each consumable file set is its own `dataset`
    row, produced by exactly one run (simulation / analysis / task, by FK), described by an
    extensible `attributes` map (variant, seed, generation, protocol, n_tp, display name,
    …) plus `tags`, and fetched by its own id. The page is patched to call `GET /datasets`
    and `GET /datasets/{id}/content` instead of walking simulation → analyses → data.
-8. **Tracing-first artifact registry** (§2c "Feeders"): producers record every file they
+8. **Tracing-first artifact registry** — *moved to slice 1* (`plan-data-provenance.md` §5): producers record every file they
    write as an `artifact.written` event inside the current span — composites (parquet),
    analysis runs (ptools TSVs, figures, other tables) and tasks alike — and viva-api's event
-   ingester turns those into `analysis_result` rows. The S3 walk remains for the one-time
+   ingester turns those into `dataset` rows. The S3 walk remains for the one-time
    backfill and as a periodic reconciliation (sets `available`, catches lost events).
 9. **HpcRun row per task, in this PR** (§2d): `JobTypeDB.TASK`, `hpcrun.jobref_task_id`,
    `PBG_*` injected by `_dispatch_task`. Tasks then appear in the observability views too.
@@ -61,7 +66,13 @@ content hash; `job_name` exists on the row but is never written. Uploaded script
    backfill so datasets exist immediately. The emit-side PRs (process-bigraph helper,
    v2ecoli call sites, sms-ecoli pin, simulator rebuild) follow; post the contract on #655
    for Eran/Alex before they start.
-7. The revision creates `analysis` if absent before adding columns to it. **Correction:**
+11. **Sequencing (Jim, later that evening): data provenance first, without the task
+   endpoints; then this slice.** Every producer except tasks is already a traced run, so
+   slice 1 lights up for composites and analysis jobs on its own; this slice only has to
+   make a task a traced run and it inherits registration through baggage `task_id`.
+   Two records, two birth times (`plan-data-provenance.md` §2a): the run row at submit,
+   the dataset row only when the trace is scraped or the walk finds the object.
+7. *(slice 1)* The revision creates `analysis` if absent before adding columns to it. **Correction:**
    this does not fix #637 — an empty DB fails earlier, at `d3f9a1c72b84`'s unguarded
    `add_column("analysis", …)`. #637's real fix (guard that older revision) stays separate.
 
@@ -74,13 +85,18 @@ moving the toolkit into a repo (follow-up).
 
 ## Design
 
-### 1. Schema — two Alembic revisions off `e3a9c1d70b62` (current head)
+### 1. Schema — two Alembic revisions off slice 1's head
 
 Revision A (`<idA>_add_task_jobtype`): `ALTER TYPE jobtypedb ADD VALUE IF NOT EXISTS 'TASK'`
-in an autocommit block (§2d). Revision B (`<idB>_add_task_provenance`, `down_revision =
-<idA>`): everything below. One fingerprint marker each.
+in an autocommit block (§2d), `down_revision = <id1>` (slice 1's `dataset` revision).
+Revision B (`<idB>_add_task_provenance`, `down_revision = <idA>`): everything below. One
+fingerprint marker each.
 
 **New column on `hpcrun`:** `jobref_task_id` INTEGER FK → `task.id`, nullable, indexed (§2d).
+**New column on `dataset`:** `task_id` INTEGER FK → `task.id`, nullable, indexed — the
+fourth producer (the CHECK constraint from slice 1 is widened to include it).
+**New column on `analysis`:** `task_id` INTEGER FK → `task.id`, nullable, indexed — the task
+that produced an analysis run's bundle (NULL for K8s/SLURM-dispatched analyses).
 
 **New table `task_script`** — content-addressed; identity is the hash.
 
@@ -117,25 +133,6 @@ in an autocommit block (§2d). Revision B (`<idB>_add_task_provenance`, `down_re
 | `dest_prefixes` | JSONB | caller-declared S3 prefixes the run writes (feeds #648; not verified) |
 | `source` | TEXT default `'api'` | `api` \| `backfill` |
 
-**New columns on `analysis`** (nullable; legacy rows unaffected):
-
-| column | type | what |
-|---|---|---|
-| `task_id` | INTEGER FK → `task.id`, indexed | the task that produced this bundle (NULL for K8s/SLURM-dispatched analyses) |
-| `source` | JSONB | one `ProvenanceRef` (§2b): what this analysis is *of* — `{kind: simulation, ref, resolved_id, uri, coordinate: {variant, seed, generation, agent, scale}}`, or a `task` / `analysis` / `s3` ref. `simulation_id` stays as the indexed fast path when `kind = simulation`. |
-| `tags` | JSONB NOT NULL default `[]`, GIN index `ix_analysis_tags` | consumer-facing selection tags (`cd2`, `run3`, …); same declaration as `simulation.tags` (`tables_orm.py:351`) |
-| `n_tp` (existing) | — | now populated at registration from the TSV header (timepoint columns), since the ptools page labels and sizes by it |
-
-**New table `analysis_result`** — the consumer-facing dataset record, one row per
-consumable file set; full column list in §2c. Three nullable producer FKs (`simulation_id`,
-`analysis_id`, `task_id`) with a CHECK that at least one is set, `uri` unique, GIN indexes
-on `attributes` and `tags`, plain indexes on each FK and on `(kind, view)`.
-
-The revision guards `analysis` with `inspector.has_table("analysis")` and, when absent,
-creates it from the ORM (`ORMAnalysis.__table__.create(bind, checkfirst=True)` after an
-explicit `analysisstatusdb` `create(checkfirst=True)` — the `d3f9a1c72b84` enum pattern);
-then guarded `add_column` for the two columns and a guarded `ix_analysis_task_id`.
-
 Also start writing the existing `job_name` column from `_dispatch_task` (bug: never set —
 the string is built inline at the `_submit_container` call; capture it first). `script`
 (NOT NULL today) holds the entry's relative path in toolkit mode.
@@ -150,14 +147,12 @@ No new enum. Column types must match the ORM exactly (naive `sa.DateTime()` for 
 timestamps) or the types-parity test fails. Downgrade drops in reverse.
 
 **Fingerprint contract** (`viva_api/simulation/db_reconcile.py`): two markers, in chain
-order — `("<idA>", "jobtypedb has value 'TASK'")` with `_enum_has_value(conn, "jobtypedb",
-"TASK")`, then `("<idB>", "table 'task_script' exists")` with `_table_exists(conn,
-"task_script")` — appended to `LEGACY_FINGERPRINTS` and `_LEGACY_PREDICATES` (positionally
-aligned). In `tests/simulation/test_db_reconcile.py`: `HEAD` → `<idB>`; `REVS` is currently
-15 entries and is missing `e3a9c1d70b62` — append it and both new ids; every hand-written
-vector 16 → 18. Both single-head tests
-(`test_db_reconcile.py:594-600`, `test_observability_migration.py:395-405`) then cover the
-new head for free.
+order after slice 1's — `("<idA>", "jobtypedb has value 'TASK'")` with
+`_enum_has_value(conn, "jobtypedb", "TASK")`, then `("<idB>", "table 'task_script' exists")`
+with `_table_exists(conn, "task_script")` — appended to `LEGACY_FINGERPRINTS` and
+`_LEGACY_PREDICATES` (positionally aligned). `tests/simulation/test_db_reconcile.py`: `HEAD`
+→ `<idB>`; `REVS` gains both ids; every vector 17 → 19. Both single-head tests then cover
+the new head for free.
 
 **Types-parity test: write a separate one for this revision.** Do not add `task`/`task_script`
 to `_OWNED_TABLES` in `test_observability_migration.py` — that harness drops the owned
@@ -273,196 +268,35 @@ Backfill: the importer populates `inputs` best-effort from each harvested comman
 `s3://` URI in the string becomes an `s3` input; store names that match a
 `simulation.experiment_id` at import time become `simulation` inputs. `verified_at` NULL.
 
-### 2c. Analysis-first registration (Jim, 2026-09-14)
+### 2c. What a task registers (the task-specific part of slice 1's model)
 
-The `analysis` row is the consumer-facing handle; it is **not** assumed one-to-one with a
-simulation. It points out to its source via `analysis.source` (a `ProvenanceRef`) and back
-to the run that made it via `analysis.task_id`.
+The dataset registry, `ProvenanceRef`, the `artifact.written` contract, the two feeders and
+the `/datasets` API are all **slice 1** (`plan-data-provenance.md` §2–§7). This slice adds:
 
-**Registration at completion.** In the `update_tasks` tick (§3), when a task reaches a
-terminal state, for each `dest_prefix` shaped `<store>/analyses/<name>/`:
-- upsert an `analysis` row keyed on `result_uri` (new `get_analysis_by_result_uri`): `name`
-  = `<name>`, `experiment_id` = `<store>` (the path segment before `/analyses/`),
-  `simulation_id` = `get_simulation_by_experiment_id(store)` when it resolves,
-  `backend = "task"`, `job_id_ext` = the Batch id, `task_id`, `source` = the task's first
-  `simulation` input if any (with its coordinate) else `{kind: task, ref: <task id>}`,
-  `config = {"task_id", "views": [...], "scales": [...]}` parsed from the bundle's filenames;
-- `status = READY` only if the prefix lists at least one TSV/HTML (**effect, not exit 0**;
-  the presence-vs-effect lesson), else `FAILED` with `error_message = "bundle empty"`.
-  A dest prefix that does not match the `analyses/<name>/` shape is recorded on the task
-  only (it is still provenance) and registers nothing.
-- The same registration runs for the **already-landed bundles** in the backfill importer
-  (§6), from `assets/ptools/cd2_ptools_manifest.json` `stores[].fill_bundles` (store →
-  simulation row verified: every CD2 store is its own `simulation` row).
+- **`task_id` in the baggage** (§2d), so slice 1's producer resolution attributes a task's
+  `artifact.written` events to the task with no new ingest code; `dataset.task_id` and
+  `analysis.task_id` are the FKs it lands on.
+- **Analysis run rows from `dest_prefixes`.** In the `update_tasks` tick (§3), when a task
+  reaches a terminal state, for each `dest_prefix` shaped `<store>/analyses/<name>/`: upsert
+  an `analysis` run row keyed on `result_uri` (`get_analysis_by_result_uri`): `name` =
+  `<name>`, `experiment_id` = `<store>`, `simulation_id` via `get_simulation_by_experiment_id`
+  when it resolves, `backend = "task"`, `job_id_ext` = the Batch id, `task_id`, `source` =
+  the task's first `simulation` input (with coordinate) else `{kind: task, ref: <task id>}`,
+  `tags` = the task's tags ∪ the source simulation's. `status = READY` only if the prefix
+  holds at least one object (**effect, not exit 0**), else `FAILED` with `error_message =
+  "bundle empty"`. This is the *run* record (§2a of slice 1); the dataset rows come from the
+  trace, or from slice 1's reconciliation walk over that `result_uri`.
+- **The sidecar for bash toolkits.** `ptools_flush.py` (Python) calls the v2ecoli helper;
+  the fanout shell scripts append the same JSON lines to `$CONTAINER_OUT_DIR/artifacts.jsonl`
+  (schema in slice 1 §3). This slice adds the ingester's read of that file under a task's
+  out prefix (`_events_key_prefix` task branch, §2d) — the only task-specific ingest code.
+- **`TaskRunRequest.tags: list[str]`** seeds the tags of everything a task registers.
+- **Backfill, second pass** (§6): the 46 harvested jobs become `task` rows; idempotent on
+  `uri`, the importer back-fills `dataset.task_id` / `analysis.task_id` on the bundles those
+  jobs produced (matched through `cd2_ptools_manifest.json` `fill_jobs`).
 
-**Dataset coordinates.** Fill files carry their coordinates in the filename
-(`ptools_rna__variant=0_seed=3_gen=12_agent=….tsv`, `ptools_rna_multiseed__variant=0.tsv`);
-vEcoli's own output carries them in partition directories. Extend `parse_partition_metadata`
-(`viva_api/analysis/analysis_service.py:377`, currently anchored `match` on path parts, so it
-sees nothing in a fill filename) to also scan the stem for `key=value` pairs, mapping
-`seed`→`lineage_seed`, `gen`→`generation`, `agent`→`agent_id`, and derive `scale` from the
-view suffix (`_multiseed`, `_multigeneration`, else `single`). `OutputFileMetadata` gains
-`scale` and `view`. **Rule for omitted axes:** a listing returns every file with its
-coordinates; a single-file fetch with an omitted axis is implied when exactly one value
-exists for that axis and is **409 listing the values** when several do.
-
-**Read side (what the ptools consumer calls):**
-
-| route | change |
-|---|---|
-| `GET /api/v1/analyses` | filters `status`, `backend`, `task_id`, `source` (`sim:1002`, `task:12`), `since` (ISO); `limit` ≤ 200 / `offset`; ordered `updated_at` desc. Replaces the "exhaustive; filtering/paging to come" note. |
-| `GET /api/v1/analyses/{id}` | DTO gains `task_id`, `source`, `result_uri` (already), `n_files` |
-| `GET /api/v1/analyses/{id}/files` | **new** — metadata + coordinates per file; filters `view`, `scale`, `variant`, `seed`, `generation`, `agent` |
-| `GET /api/v1/analyses/{id}/files/{name}` | **new** — one file, streamed (`StreamingResponse`, content-type by suffix), `{name}` validated against the row's own `result_uri` listing (no traversal, no caller-supplied URI) |
-| `GET /api/v1/analyses/{id}/data` | unchanged shape, now carries the parsed coordinates for fills too |
-
-CLI: `atlantis analysis list [--status --since --source sim:1002 --task]`,
-`atlantis analysis files <id> [--view --scale --variant --seed --generation]`,
-`atlantis analysis fetch <id> <name> --out FILE`. (Existing verbs `get/status/log/plots`
-untouched.)
-
-**The real ptools consumer (verified 2026-09-14 from the extracted 30.0 web tree,
-`htdocs/sms/sms.js`, SRI-maintained; base URL from the generated `/sms/env.js` =
-`SMS_API_HOST` + `SMS_API_PATH`):**
-1. `GET /api/v1/simulations` → simulation picker, with a **tag** filter on `sim.tags`.
-2. `GET /api/v1/analyses?experiment_id=<id>` → "Analysis Configuration" picker, labelled
-   only by `n_tp`; no status filter (failed rows show).
-3. `GET /api/v1/analyses/{id}/data` → takes the entry whose **filename stem equals the
-   value type** (`ptools_rna` / `ptools_proteins` / `ptools_rxns`), POSTs its text to
-   PTools `/register-omics-dataset` with `datacolumns = "1-<n_tp>"`. Later matches
-   overwrite earlier ones (a per-cell bundle would silently show the last cell).
-
-So registration alone is not enough: fill rows need `n_tp` (derive at registration from
-the TSV header column count, sampling one file per view) and the data call must be able
-to return one file per view with a stem the page recognises.
-
-**Consumer compatibility (no JS change).** `GET /analyses/{id}/data` gains the same
-coordinate filters as `/files` (`view`, `scale`, `variant`, `seed`, `generation`); when the
-selection yields exactly one file per view, the response `filename` is aliased to
-`<view>.tsv` and the real key is returned in a new `path` field. Multiseed fill bundles then
-work in today's page unchanged; per-cell bundles are (correctly) not servable unfiltered.
-
-**Dataset records — the consumer unit (Jim, 2026-09-14).** The Stanford ptools page does
-not launch anything; it consumes a list of *already available* datasets. So the consumer
-unit is materialized as its own row, **one per consumable file set** (for ptools: one TSV),
-produced by exactly one run and described by an extensible attribute map:
-
-**New table `analysis_result`** (name chosen to read as "a result of an analysis"; the API
-calls them datasets):
-
-| column | type | what |
-|---|---|---|
-| `id` | PK | the stable id the page fetches by |
-| `simulation_id` | FK → `simulation.id`, nullable, indexed | producer, when a simulation run wrote it (sim-time `analysis-mnp-*` bundles) |
-| `analysis_id` | FK → `analysis.id`, nullable, indexed | producer, when an analysis run wrote it |
-| `task_id` | FK → `task.id`, nullable, indexed | producer, when a task run wrote it |
-| | CHECK | at least one producer FK non-null (`ck_analysis_result_producer`) |
-| `kind` | TEXT NOT NULL | `ptools-analysis` \| `figure` \| `table` … (what a consumer can do with it) |
-| `view` | TEXT | `ptools_rna`, `ptools_rxns`, `ptools_proteins`, `ptools_metabolites`, `ptools_overview`, … |
-| `display_name` | TEXT | what the picker shows |
-| `uri` | TEXT NOT NULL, unique | the S3 object (or prefix for multi-file kinds) |
-| `size_bytes`, `sha256` | INTEGER / TEXT NULL | sha only when cheap (small text) |
-| `attributes` | JSONB NOT NULL default `{}`, GIN | extensible: `variant`, `seed`, `generation`, `agent`, `protocol` (`single`/`multiseed`/`multigeneration`), `n_tp`, `experiment_id`, `family`, … — any key, filterable |
-| `tags` | JSONB NOT NULL default `[]`, GIN | selection tags (`cd2`, `run3`, …) |
-| `source` | JSONB | `ProvenanceRef` with coordinate — what it is *of* (usually the simulation + coordinate; kept even when `simulation_id` is set, for sub-stores) |
-| `available` | BOOLEAN NOT NULL default true | flipped by a probe when the object is gone (lifecycle); rows are never deleted |
-| `created_at`, `updated_at` | DateTime | |
-
-The `analysis` row (§2c above) remains the *analysis run* record (one per bundle dir /
-job) and gains only `task_id`, `source`, `tags`; datasets hang off it. `analysis.n_tp`
-stays populated for the compatibility path.
-
-**Registration by the walk feeder** (task completion tick, the reconciliation tick, and the
-importer, §6; `origin = walk`, skipped where an `origin = event` row already holds the
-`uri`): for every `ptools/*.tsv` under a registered bundle → one `analysis_result` row,
-`kind = ptools-analysis` (`figure` for `viz/*.html`), `view` and
-`attributes` parsed from the filename (`ptools_rna_multiseed__variant=0.tsv` →
-`view=ptools_rna, protocol=multiseed, variant=0`; `ptools_rna__variant=0_seed=3_gen=12_agent=…`
-→ `protocol=single, seed=3, generation=12, agent=…`), `n_tp` from the header of that
-file (one small ranged GET), `display_name` = `<experiment_id> · <view> · <protocol>[ · s3 g12]`,
-`tags` = task tags ∪ source simulation tags, `source` = the analysis's source + coordinate,
-producer FKs = `analysis_id` + `task_id`. Idempotent on `uri`. The importer also registers
-the sim-time `analysis-mnp-*/ptools/*.tsv` files (producer `simulation_id`), tagged from
-the manifest family. A per-cell bundle yields 400 rows — that is the point: each is a
-file set the page can load by id.
-
-**Consumer API (what the patched page calls; generic, `kind` selects ptools):**
-
-| route | returns |
-|---|---|
-| `GET /api/v1/datasets?kind=ptools-analysis&tag=cd2&view=ptools_rna&attr.protocol=multiseed&attr.variant=0&simulation_id=&task_id=&analysis_id=&available=true&since=&limit=&offset=` | rows ordered `updated_at` desc; `attr.<key>=<value>` filters map to JSONB containment on `attributes` (GIN) |
-| `GET /api/v1/datasets/{id}` | one row |
-| `GET /api/v1/datasets/{id}/content` | the object, streamed, content-type by kind (`text/tab-separated-values`) |
-| `GET /api/v1/datasets/attributes` | distinct keys and values present (for building pickers), and `/datasets/tags` |
-| `POST /api/v1/datasets/{id}/tags` | union-merge tags (mirror of `/simulations/{id}/tags`) |
-
-The page then: `GET /datasets?kind=ptools-analysis&tag=cd2` → picker rows (display_name +
-attributes) → `GET /datasets/{id}/content` → PTools `/register-omics-dataset` with
-`datacolumns = "1-<attributes.n_tp>"` and `class` from `view`. Three calls become two, no
-simulation hop, and per-cell datasets are addressable one at a time.
-
-`TaskRunRequest.tags: list[str]` (new) seeds the tags of everything a task registers.
-
-**Feeders — tracing is primary (Jim, decision 8).** `register_datasets` is one seam with
-two feeders, both idempotent on `uri`, each stamping `attributes.origin`; `origin = event`
-wins over `origin = walk` on conflict.
-
-*Feeder 1 — the `artifact.written` event (primary, steady state).* The contract, to be
-posted on #655 and implemented on the emit side (decision 10):
-
-```
-event:     "artifact.written"            # one per file (or per partition prefix, see kind)
-component: "v2ecoli.analysis" | "v2ecoli.emitter" | "task" | ...
-span:      the current span (analysis.group / lineage generation / task root)
-payload: {
-  "uri":        "s3://…/analyses/analysis-ptools-multiseed/ptools/ptools_rna_multiseed__variant=0.tsv",
-  "kind":       "ptools-analysis" | "analysis" | "figure" | "parquet" | "report" | "other",
-  "name":       "ptools_rna_multiseed__variant=0.tsv",
-  "view":       "ptools_rna",                          # optional
-  "bytes":      12345, "sha256": "…",                  # optional (sha only when cheap)
-  "attributes": {"protocol": "multiseed", "variant": 0, "seed": 3, "generation": 12,
-                 "agent": "…", "n_tp": 8, "display_name": "…"}   # extensible
-}
-baggage (already promoted by viva-api): sim_id / experiment_id, analysis_id or
-           analysis_name, task_id  → producer resolution
-```
-Parquet: one event per **partition prefix** at emitter finalize (`kind = parquet`,
-`uri` = the prefix), not per shard. Bash toolkits that cannot call the Python helper
-write the same JSON lines to `$CONTAINER_OUT_DIR/artifacts.jsonl`; the entrypoint's
-existing output sync ships it and viva-api ingests it as events (same schema, `origin =
-event`, `component = task`).
-
-viva-api side (this PR): in `event_ingest._ingest_object`, collect `artifact.written`
-events per pass; after the pass, `register_datasets` upserts `analysis_result` rows —
-producer FK from baggage (`task_id`, `analysis_id`) else the HpcRun's job reference
-(`simulation_id`, or `jobref_task_id`, §2d); `kind`, `view`, `attributes`, `tags` (task tags
-∪ source simulation tags ∪ event `attributes.tags`), `source` = simulation + coordinate.
-Tested with synthetic `.jsonl` objects; nothing on the emit side exists yet, so the live
-feed lights up only when the emit-side PRs ship.
-
-Why it is the design center: the runner already scopes each write inside an
-`analysis.group` span whose `group` attr *is* the coordinate
-(`v2ecoli/workflow/analysis_runner.py:1015-1047`), so the event is ground truth — no
-filename parsing — and it can record a coordinate whose view **failed**
-(`payload.error`, row `available = false`), which a walk can only infer by absence.
-
-*Feeder 2 — the S3 walk (backfill + reconciliation).* The importer (§6) registers
-everything historical with `origin = walk`, attributes parsed from filenames. A periodic
-`reconcile_datasets` scheduler tick (hourly, cheap) lists the dest prefixes of READY
-analyses/tasks and (a) registers files with no row yet (events lost or emit side not
-deployed), (b) flips `available` for rows whose object is gone. Events are best-effort by
-design (opt-in sink, size-skip, never raised), so the walk is the safety net, never the
-source of truth when an event exists.
-
-The JS patch itself is not in this repo: `sms.js` ships inside SRI's export. Either
-coordinate with SRI (Paley) or overlay a patched copy in `Dockerfile-ptools`. Free config
-fix regardless: `SMS_API_HOST=` (set, empty) makes `simBaseUrl` relative (`/api/v1/`) —
-verified by the other session against the Lisp image's `~A~A` format; do not delete the
-key (a NIL would print as the literal `NIL`).
-
-**Not in this PR (follow-ups, §8):** routing `POST /simulations/{id}/analysis` through the
-task verb; a cached `GET /simulations/{id}/datasets` summary; filters on the #650
-`analysis-figures` pair; the `sms.js` patch and `ptools.env` change (deploy-side).
+**The ptools consumer** is `plan-ptools-datasets.md`; the compatibility path for the
+unpatched page (`/analyses/{id}/data` coordinate filters + filename aliasing) is slice 1 §7.
 
 ### 2d. Tasks become HpcRuns (decision 9)
 
@@ -616,34 +450,19 @@ port-forward). Not run by CI, not run by the app.
 | file | change |
 |---|---|
 | `alembic/versions/<idA>_add_task_jobtype.py` | **new** — `jobtypedb` ADD VALUE `TASK` (autocommit block; pattern `a1c3e5f7b9d2`) |
-| `alembic/versions/<idB>_add_task_provenance.py` | **new** — `task_script`, `analysis_result`, `task`/`analysis`/`hpcrun` columns, all guarded |
+| `alembic/versions/<idB>_add_task_provenance.py` | **new** — `task_script`, `task` columns, `hpcrun.jobref_task_id`, `dataset.task_id`, `analysis.task_id`, all guarded |
 | `viva_api/common/models.py` (`JobType`) + `tables_orm.py` (`JobTypeDB`, `ORMHpcRun.jobref_task_id`, `to_hpc_run`) | `TASK` job type and the fourth job reference |
 | `viva_api/simulation/database_service.py` (`insert_hpcrun`, `get_hpcrun_by_ref`) | route `job_type = TASK` → `jobref_task_id` |
-| `viva_api/simulation/event_ingest.py` | collect `artifact.written` events per pass (`_ingest_object`), sidecar `artifacts.jsonl` read, `register_datasets` call after the pass; `_events_key_prefix` task branch (uses `hpcrun.events_s3_prefix`) |
+| `viva_api/simulation/event_ingest.py` | `_events_key_prefix` task branch (uses `hpcrun.events_s3_prefix`); sidecar `artifacts.jsonl` read under a task's out prefix — the ingest hook itself is slice 1 |
 | `viva_api/simulation/job_scheduler.py` | `update_tasks` also finishes the task's HpcRun; `reconcile_datasets` hourly tick; `job_type != TASK` filters on the simulation-only ticks |
 | `docs/OBSERVABILITY.md` | the `artifact.written` contract (payload schema above), the sidecar fallback, producer resolution from baggage |
-| `tests/simulation/test_event_ingest_artifacts.py` | **new** — synthetic `.jsonl` with `artifact.written` → dataset rows (producer from baggage, from jobref; failed group → `available=false`); idempotent re-ingest; sidecar file; malformed payload skipped and logged |
 | `tests/simulation/test_task_jobtype_migration.py` | **new** — revision A adds the label; a create_all DB matches its marker; `insert_hpcrun(job_type=TASK)` round-trips; single head |
 | `tests/simulation/test_task_hpcrun.py` | **new** — `_dispatch_task` inserts the HpcRun and injects `PBG_*` (trace seeded from the correlation id; `events_s3_prefix` under the task out_uri); simulation-only ticks skip TASK rows |
-| `viva_api/simulation/tables_orm.py` | `ORMTaskScript`; new `ORMTask` columns; `to_dto` |
+| `viva_api/simulation/tables_orm.py` | `ORMTaskScript`; new `ORMTask` columns; `ORMDataset.task_id`, `ORMAnalysis.task_id`; `to_dto` |
 | `viva_api/simulation/db_reconcile.py` | marker + fingerprint + predicate |
 | `viva_api/simulation/models.py` | `TaskRunRequest` sources/env/inputs/dest/dry_run/allow_duplicate + validator; `TaskDTO` growth + `warnings`; `TaskStagedFile`, `ProvenanceRef` |
 | `viva_api/simulation/task_inputs.py` | **new** — `ProvenanceRef` parse/resolve/probe (DB lookups via the existing `DatabaseService.get_simulation`, `get_simulation_by_experiment_id`, `get_task`, `get_analysis`) |
-| `viva_api/simulation/tables_orm.py` (`ORMAnalysis`) | `task_id`, `source`; `to_dto` |
-| `viva_api/analysis/models.py` | `ExperimentAnalysisDTO` + `task_id`/`source`/`n_files`; `OutputFileMetadata` + `scale`/`view`; `AnalysisFileList` |
-| `viva_api/analysis/analysis_service.py` | `parse_partition_metadata` filename-aware + `scale` |
-| `viva_api/common/handlers/analyses.py` | `register_task_bundles` (§2c, called by the tick and the importer); `list_analysis_files` / `fetch_analysis_file` (streamed); list filters |
-| `viva_api/api/routers/sms.py` | `GET /analyses` filters+paging; `GET /analyses/{id}/files`, `/files/{name}`; `/analyses/{id}/data` coordinate filters + filename aliasing |
-| `viva_api/simulation/tables_orm.py` (`ORMAnalysisResult`) | **new** — the dataset table (§2c), GIN on `attributes`/`tags`, producer CHECK |
-| `viva_api/analysis/models.py` (`DatasetDTO`, `DatasetListDTO`) | **new** — id, producer ids, kind, view, display_name, uri, attributes, tags, source, available |
-| `viva_api/common/handlers/datasets.py` | **new** — `register_bundle_datasets` (filename → view/attributes, `n_tp` from header), list with `attr.*` filters, streamed content, attributes/tags summaries |
-| `viva_api/api/routers/datasets.py` + `viva_api/api/main.py` (`APP_ROUTERS` += `"datasets"`) | **new** — `GET /datasets`, `/datasets/{id}`, `/datasets/{id}/content`, `/datasets/attributes`, `/datasets/tags`, `POST /datasets/{id}/tags` (`get_router_config(prefix="api", version_major=False)`) |
-| `viva_api/simulation/database_service.py` (datasets) | `upsert_analysis_result(uri)`, `list_analysis_results(filters, paging)`, `get_analysis_result`, `add_analysis_result_tags`, `distinct_attributes` |
 | `viva_api/simulation/models.py` (`TaskRunRequest`) | `tags: list[str]` (validated like `simulation` tags) |
-| `app/cli.py`, `app/app_data_service.py` | `atlantis dataset list [--kind --tag --view --attr k=v --since]`, `dataset get <id>`, `dataset fetch <id> --out FILE` |
-| `tests/api/test_datasets_router.py` | **new** — list filters (tag, view, `attr.*`, producer ids), content streams with the right content-type, tags merge; unknown id 404 |
-| `tests/common/handlers/test_datasets_registration.py` | **new** — filename → view/attributes for both naming conventions; `n_tp` from header; idempotent on `uri`; per-cell bundle → one row per file; sim-time bundle → `simulation_id` producer |
-| `viva_api/simulation/database_service.py` (analyses) | `list_analyses` filters/paging; `get_analysis_by_result_uri`; `record_analysis` + `task_id`/`source`; `update_analysis` |
 | `viva_api/simulation/task_snapshot.py` | **new** — list/hash/copy/manifest; `sha256_bytes` helper |
 | `viva_api/simulation/simulation_service_ray.py` | `_dispatch_task` full record (incl. `job_name`); `_container_queue` extracted + log fix at `:1195`; `submit_task` routes by source; `get_task_status` via details; `BatchJobDetail` +started/stopped; snapshot writer under `to_thread` |
 | `viva_api/simulation/database_service.py` | `record_task` widened (+`created_at`); `update_task_status` widened; `list_tasks`; `upsert_task_script`; `get_task_script`; `get_task_script_by_source_version`; `find_inflight_duplicate(dedupe_key)` |
@@ -660,8 +479,6 @@ port-forward). Not run by CI, not run by the app.
 | `tests/simulation/test_task_provenance_migration.py` | **new** — real `upgrade head` through the new revision; create_all vs migration types parity for `task_script` + new `task` columns; create_all DB stamps at head (do NOT widen `test_observability_migration.py`'s `_OWNED_TABLES`) |
 | `tests/simulation/test_job_scheduler_tasks.py` | **new** — `update_tasks` persists exit code/timestamps; unknown-to-Batch → FAILED after 7 days; no Ray service → no-op |
 | `tests/api/test_tasks_router.py` | **new** — GETs via `ASGITransport`, DI getters patched (pattern: `tests/api/test_dispatch_validation_status.py`) |
-| `tests/common/handlers/test_analyses_registration.py` | **new** — `register_task_bundles`: dest prefix → row, empty bundle → FAILED, non-`analyses/` prefix registers nothing, idempotent on `result_uri`; filename coordinate parser (both conventions); omitted-axis rule (implied vs 409) |
-| `tests/api/test_analyses_files.py` | **new** — list filters/paging; `/files` filters; `/files/{name}` streams and rejects a name not in the listing |
 | `tests/scripts/test_import_cd2_tool_runs.py` | **new** — mapping on a 2-job fixture slice; redaction; idempotence |
 | `viva_api/version.py`, `pyproject.toml` | bump 0.9.142 → 0.9.143 (a migration ships; the db-migration overlay tag must move with the app tag at deploy time) |
 
@@ -717,29 +534,10 @@ Reuse, do not rewrite: `_ensure_container_job_def`, `_submit_container`, `_stage
    version of `fanout_multi.sh`.
 5. `make check` **twice** (first pass reformats and exits 1), then `uv run pytest`
    (full, minus `tests/api/app/test_cli_e2e.py`).
-5b. **Registration, on dev after the importer:** `GET /analyses?source=sim:1002` returns the
-   two fill bundles (`analysis-percell-run3` READY with 400 files, `analysis-ptools-multiseed`
-   READY with 5) plus the pre-existing failed row; `GET /analyses/{id}/files?view=ptools_rna
-   &scale=multiseed` returns exactly one file with `variant=0`; `GET /analyses/{id}/files/
-   ptools_rna_multiseed__variant=0.tsv` streams it; the per-cell bundle's `/files?seed=3
-   &generation=12` returns 5 files (one per view). Through `atlantis analysis list/files/
-   fetch`, not curl.
-5d. **Tracing feed, offline:** feed a synthetic events object carrying `artifact.written`
-   events (one per view, one with `error`) through `ingest_run_events` for a TASK HpcRun;
-   expect one `analysis_result` row per event with `origin = event`, producer `task_id`
-   from baggage, the failed one `available = false`; re-ingest is a no-op; a later walk
-   over the same prefix adds nothing and does not downgrade `origin`.
-5e. **Task trace, on dev (after deploy):** `atlantis task run … --dry-run` then a real
+5b. **Task trace, on dev (after deploy):** `atlantis task run … --dry-run` then a real
    `fanout_probe.sh` run; `GET /tasks/{id}` shows `hpcrun_id` + `trace_id`;
    `GET /tasks/{id}/spans` shows the task root span; `artifact.written` rows appear only
-   once the emit-side PRs ship — until then §5b's walk-registered rows carry `origin = walk`.
-5c. **ptools compatibility, on dev:** with the tunnel up, open the ptools page
-   (`/sms/sms.html` via the ALB), pick sim 1002 (tag `cd2`), pick the registered
-   `analysis-ptools-multiseed` row (label shows its `n_tp`), display RNA + reactions — the
-   overlay renders from the fill TSVs with no JS change. Then `atlantis dataset list --kind
-   ptools-analysis --tag cd2 --view ptools_rna --attr protocol=multiseed` lists one row per
-   filled store (expect 20 for Run-3 + 1 for Run-2 after the importer), and `atlantis
-   dataset fetch <id>` byte-equals the S3 object.
+   once the emit-side PRs ship — until then slice 1's walk-registered rows carry `origin = walk`, and this slice's importer has stamped `task_id` on them (`atlantis dataset list --task <id>`).
 6. **Live E2E on `sms-api-stanford-test`, only after Jim says deploy** — through the CLI,
    not curl: `atlantis task run --toolkit s3://…/tools/ --entry fanout_probe.sh
    --interpreter bash --env PTOOLS_SKIP_N_GENS=1 --dry-run` (no writes), then a real
