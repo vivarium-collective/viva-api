@@ -2,9 +2,16 @@
 # `-f Dockerfile-ptools` (it does not merge with it), so this is a standalone
 # allowlist rather than a copy of the root ignore file.
 #
-# Dockerfile-ptools consumes exactly one path from the context -- the aic-export
-# archive it ADDs -- so ignore everything and opt that single file back in.
-# Keep the filename below in sync with the ADD line in Dockerfile-ptools when
+# Dockerfile-ptools consumes exactly two paths from the context -- the aic-export
+# archive it ADDs, and the vendor overlay it COPYs on top -- so ignore everything
+# and opt those back in. Keep the archive filename in sync with the ADD line when
 # upgrading Pathway Tools; the older archives in assets/ptools/ stay excluded.
+#
+# NOTE: every COPY/ADD source in Dockerfile-ptools must be opted in here or the
+# build fails with "failed to calculate checksum ... not found". No CI job builds
+# this image (CI builds sms-api only; ptools is hand-built via
+# kustomize/scripts/build_and_push.sh), so an omission here is invisible until
+# someone builds by hand.
 *
 !assets/ptools/aic-export-30.0.tar.gz
+!assets/ptools/overrides/htdocs/sms/sms.js

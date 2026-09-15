@@ -7,10 +7,17 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV DISPLAY=:1
 
 # Fix GPG keys and update package lists
+# APT::Sandbox::User=root -- without it apt fails EVERY repo with "At least one
+# invalid signature was encountered" on Docker Desktop for macOS. It is not the
+# network (InRelease arrives byte-identical to the host), not the clock (container
+# and host agree), not emulation (it fails on native arm64 too) and not the keys:
+# the unprivileged _apt sandbox user cannot read what it needs under this storage
+# driver, so gpgv never gets a valid input. Verified 2026-09-15: the same
+# apt-get update goes from failing on every repo to "Fetched 47.6 MB in 4s".
 RUN rm -rf /var/lib/apt/lists/* && \
     apt-get clean && \
-    apt-get update --allow-releaseinfo-change && \
-    apt-get install -y --no-install-recommends \
+    apt-get -o APT::Sandbox::User=root update --allow-releaseinfo-change && \
+    apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
     build-essential \
     xvfb \
     libxpm4 \
