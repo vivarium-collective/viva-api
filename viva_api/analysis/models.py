@@ -3,7 +3,7 @@ import pathlib
 import random
 from typing import Any, ParamSpec, TypeVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from viva_api.common import StrEnumBase
 from viva_api.common.models import DataId, JobStatus
@@ -394,3 +394,60 @@ class JobId(int):
     def new(cls) -> "JobId":
         value = random.randint(JobId.start, JobId.end)
         return JobId(value)
+
+
+# --- datasets (docs/plan-data-provenance.md §2a, §3, §6) ---
+
+#: What a consumer can do with a dataset. Mirrors the ``artifact.written`` contract's
+#: ``kind`` vocabulary; the registry rejects anything else.
+DATASET_KINDS: tuple[str, ...] = ("parquet", "parca-cache", "ptools-analysis", "analysis", "figure", "report", "other")
+
+#: How a dataset row came to exist, recorded as ``attributes["origin"]``: scraped
+#: from a run's trace, or found by the reconciliation walk. A walk never overwrites
+#: an event-sourced row.
+DATASET_ORIGIN_EVENT = "event"
+DATASET_ORIGIN_WALK = "walk"
+DATASET_ORIGINS: tuple[str, ...] = (DATASET_ORIGIN_EVENT, DATASET_ORIGIN_WALK)
+
+#: Page-size ceiling for dataset listings.
+DATASET_LIST_MAX_LIMIT = 200
+
+
+class DatasetDTO(BaseModel):
+    """One consumable file set a run actually wrote (a ``dataset`` row).
+
+    Never pre-created: it exists only once a run's trace was scraped or the walk found
+    the object. Exactly one producer id is set by the registry. ``available`` is false
+    once the object is gone; the row itself is kept so provenance never dangles.
+    """
+
+    database_id: int
+    kind: str
+    uri: str
+    simulation_id: int | None = None
+    parca_dataset_id: int | None = None
+    analysis_id: int | None = None
+    view: str | None = None
+    display_name: str | None = None
+    size_bytes: int | None = None
+    sha256: str | None = None
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+    source: dict[str, Any] | None = None
+    available: bool = True
+    created_at: str | None = None
+    updated_at: str | None = None
+
+    @property
+    def origin(self) -> str | None:
+        value = self.attributes.get("origin")
+        return value if isinstance(value, str) else None
+
+
+class DatasetListDTO(BaseModel):
+    """A page of datasets. ``next_offset`` is ``None`` on the last page."""
+
+    datasets: list[DatasetDTO]
+    limit: int
+    offset: int
+    next_offset: int | None = None

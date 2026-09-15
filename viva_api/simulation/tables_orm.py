@@ -8,7 +8,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs, AsyncEngine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from viva_api.analysis.models import AnalysisConfig, AnalysisConfigOptions, ExperimentAnalysisDTO
+from viva_api.analysis.models import AnalysisConfig, AnalysisConfigOptions, DatasetDTO, ExperimentAnalysisDTO
 from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.simulation.models import (
     HpcRun,
@@ -527,6 +527,26 @@ class ORMDataset(Base):
         Index("ix_dataset_attributes", "attributes", postgresql_using="gin"),
         Index("ix_dataset_tags", "tags", postgresql_using="gin"),
     )
+
+    def to_dto(self) -> DatasetDTO:
+        return DatasetDTO(
+            database_id=self.id,
+            kind=self.kind,
+            uri=self.uri,
+            simulation_id=self.simulation_id,
+            parca_dataset_id=self.parca_dataset_id,
+            analysis_id=self.analysis_id,
+            view=self.view,
+            display_name=self.display_name,
+            size_bytes=self.size_bytes,
+            sha256=self.sha256,
+            attributes=dict(self.attributes or {}),
+            tags=list(self.tags or []),
+            source=dict(self.source) if self.source is not None else None,
+            available=bool(self.available),
+            created_at=str(self.created_at) if self.created_at else None,
+            updated_at=str(self.updated_at) if self.updated_at else None,
+        )
 
 
 class ORMTask(Base):

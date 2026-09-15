@@ -4,15 +4,25 @@ import datetime
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from typing import Any, cast, override
+from typing import Any, Literal, cast, override
 
 from pydantic import ValidationError
-from sqlalchemy import ColumnElement, CursorResult, Result, and_, or_, select, text
+from sqlalchemy import ColumnElement, CursorResult, Result, and_, func, or_, select, text
 from sqlalchemy import update as sa_update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import InstrumentedAttribute
 
-from viva_api.analysis.models import AnalysisConfig, ExperimentAnalysisDTO
+from viva_api.analysis.models import (
+    DATASET_KINDS,
+    DATASET_LIST_MAX_LIMIT,
+    DATASET_ORIGIN_EVENT,
+    DATASET_ORIGIN_WALK,
+    DATASET_ORIGINS,
+    AnalysisConfig,
+    DatasetDTO,
+    ExperimentAnalysisDTO,
+)
 from viva_api.common.events_env import campaign_span_id, trace_id_from_correlation
 from viva_api.common.hpc.job_service import JobStatusUpdate, error_source_rank
 from viva_api.common.models import JobBackend, JobId, JobStatus
@@ -37,6 +47,7 @@ from viva_api.simulation.tables_orm import (
     JobStatusDB,
     JobTypeDB,
     ORMAnalysis,
+    ORMDataset,
     ORMHpcRun,
     ORMHpcRunEvent,
     ORMHpcRunSpan,
@@ -49,6 +60,92 @@ from viva_api.simulation.tables_orm import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: What ``upsert_dataset`` did: a new row; changed fields on an existing row; nothing
+#: to change; or refused because a walk may not overwrite an event-sourced row.
+DatasetUpsertAction = Literal["inserted", "updated", "unchanged", "skipped"]
+
+
+def _merge_tags(existing: list[str] | None, incoming: list[str] | None) -> list[str]:
+    """Union-merge preserving existing order, then appending new non-empty tags."""
+    merged = list(existing or [])
+    for tag in incoming or []:
+        if tag and tag not in merged:
+            merged.append(tag)
+    return merged
+
+
+def _analysis_filter_clauses(
+    *,
+    experiment_id: str | None,
+    simulation_id: int | None,
+    status: "AnalysisStatusDB | None",
+    backend: str | None,
+    tags: list[str] | None,
+    source: dict[str, Any] | None,
+    since: datetime.datetime | None,
+) -> list[ColumnElement[bool]]:
+    """WHERE clauses for ``list_analyses``; unset filters contribute nothing."""
+    candidates: list[tuple[object, ColumnElement[bool] | None]] = [
+        (experiment_id, ORMAnalysis.experiment_id == experiment_id if experiment_id is not None else None),
+        (simulation_id, ORMAnalysis.simulation_id == simulation_id if simulation_id is not None else None),
+        (status, ORMAnalysis.status == status if status is not None else None),
+        (backend, ORMAnalysis.backend == backend if backend is not None else None),
+        (tags, ORMAnalysis.tags.contains(list(tags)) if tags else None),
+        (source, ORMAnalysis.source.contains(dict(source)) if source else None),
+        (since, ORMAnalysis.updated_at >= since if since is not None else None),
+    ]
+    return [clause for _, clause in candidates if clause is not None]
+
+
+def _dataset_filter_clauses(
+    *,
+    kind: str | None = None,
+    view: str | None = None,
+    tags: list[str] | None = None,
+    attributes: dict[str, Any] | None = None,
+    simulation_id: int | None = None,
+    parca_dataset_id: int | None = None,
+    analysis_id: int | None = None,
+    available: bool | None = None,
+    since: datetime.datetime | None = None,
+) -> list[ColumnElement[bool]]:
+    """WHERE clauses shared by ``list_datasets`` and ``count_datasets``."""
+    candidates: list[ColumnElement[bool] | None] = [
+        ORMDataset.kind == kind if kind is not None else None,
+        ORMDataset.view == view if view is not None else None,
+        ORMDataset.tags.contains(list(tags)) if tags else None,
+        ORMDataset.attributes.contains(dict(attributes)) if attributes else None,
+        ORMDataset.simulation_id == simulation_id if simulation_id is not None else None,
+        ORMDataset.parca_dataset_id == parca_dataset_id if parca_dataset_id is not None else None,
+        ORMDataset.analysis_id == analysis_id if analysis_id is not None else None,
+        ORMDataset.available.is_(available) if available is not None else None,
+        ORMDataset.updated_at >= since if since is not None else None,
+    ]
+    return [clause for clause in candidates if clause is not None]
+
+
+def _validate_dataset_write(uri: str, kind: str, origin: str) -> None:
+    if not uri:
+        raise ValueError("a dataset needs a uri")
+    if kind not in DATASET_KINDS:
+        raise ValueError(f"unknown dataset kind {kind!r}; expected one of {', '.join(DATASET_KINDS)}")
+    if origin not in DATASET_ORIGINS:
+        raise ValueError(f"unknown dataset origin {origin!r}; expected one of {', '.join(DATASET_ORIGINS)}")
+
+
+def _dataset_changes(existing: "ORMDataset", incoming: dict[str, Any], tags: list[str] | None) -> dict[str, Any]:
+    """The column values an upsert would change on an existing row.
+
+    ``incoming`` holds the write's non-None scalar fields plus ``kind``, ``attributes``
+    (already carrying ``origin``) and ``available``. Attributes merge with incoming keys
+    winning; tags union-merge. Only values that differ are returned, so an identical
+    rewrite changes nothing -- including ``updated_at``."""
+    updates = dict(incoming)
+    updates["attributes"] = {**(existing.attributes or {}), **incoming["attributes"]}
+    updates["tags"] = _merge_tags(existing.tags, tags)
+    return {k: v for k, v in updates.items() if getattr(existing, k) != v}
+
 
 #: asyncpg's hard ceiling on bound parameters in ONE statement. A multi-row
 #: ``VALUES`` binds columns x rows, so any unchunked bulk insert has a row limit
@@ -106,9 +203,25 @@ class DatabaseService(ABC):
 
     @abstractmethod
     async def list_analyses(
-        self, *, experiment_id: str | None = None, simulation_id: int | None = None
+        self,
+        *,
+        experiment_id: str | None = None,
+        simulation_id: int | None = None,
+        status: AnalysisStatusDB | None = None,
+        backend: str | None = None,
+        tags: list[str] | None = None,
+        source: dict[str, Any] | None = None,
+        since: datetime.datetime | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        newest_first: bool = False,
     ) -> list[ExperimentAnalysisDTO]:
-        """List analyses, optionally filtered by experiment_id and/or simulation_id."""
+        """List analyses. Every filter is optional and they AND together.
+
+        ``tags``: the row carries ALL of them (JSONB containment). ``source``: the row's
+        ``source`` contains this partial ProvenanceRef (e.g. ``{"kind": "simulation",
+        "ref": "1002"}``). ``since``: ``updated_at >= since``. Ordering is by id unless
+        ``newest_first`` (``updated_at`` desc, then id desc)."""
         pass
 
     @abstractmethod
@@ -126,8 +239,12 @@ class DatabaseService(ABC):
         job_id_ext: str | None = None,
         result_uri: str | None = None,
         error_message: str | None = None,
+        source: dict[str, Any] | None = None,
+        tags: list[str] | None = None,
     ) -> ExperimentAnalysisDTO:
-        """Insert an analysis-result row (dedup-updating an existing ``(experiment_id, n_tp)`` when n_tp is set)."""
+        """Insert an analysis-result row (dedup-updating an existing ``(experiment_id, n_tp)`` when n_tp is set).
+
+        ``source`` is a ProvenanceRef (as a dict); ``tags`` are union-merged on the dedup-update path."""
         pass
 
     @abstractmethod
@@ -144,6 +261,112 @@ class DatabaseService(ABC):
         error_message: str | None = None,
     ) -> ExperimentAnalysisDTO:
         """Update an analysis row's status (and optionally result_uri/error) by id."""
+        pass
+
+    @abstractmethod
+    async def update_analysis_dispatch(self, analysis_id: int, job_id_ext: str) -> ExperimentAnalysisDTO:
+        """Record the external job id of an analysis run whose row was created BEFORE submit
+        (the run record exists first so its id can ride in the job's trace baggage)."""
+        pass
+
+    @abstractmethod
+    async def get_analysis_by_result_uri(self, result_uri: str) -> ExperimentAnalysisDTO | None:
+        """The newest analysis row whose ``result_uri`` is this prefix (trailing slash ignored)."""
+        pass
+
+    # ---- datasets (docs/plan-data-provenance.md §2a, §6) ----
+
+    @abstractmethod
+    async def upsert_dataset(
+        self,
+        *,
+        uri: str,
+        kind: str,
+        origin: str,
+        simulation_id: int | None = None,
+        parca_dataset_id: int | None = None,
+        analysis_id: int | None = None,
+        view: str | None = None,
+        display_name: str | None = None,
+        size_bytes: int | None = None,
+        sha256: str | None = None,
+        attributes: dict[str, Any] | None = None,
+        tags: list[str] | None = None,
+        source: dict[str, Any] | None = None,
+        available: bool = True,
+    ) -> tuple[DatasetDTO, DatasetUpsertAction]:
+        """Register a file set a run wrote, keyed on ``uri``.
+
+        A new row needs at least one producer id (``ValueError`` otherwise). On an existing
+        row, a ``walk`` write never touches an ``event``-sourced row (``"skipped"``); any
+        other write sets the fields it provides, merges ``attributes`` (incoming keys win,
+        ``origin`` recorded) and union-merges ``tags``. Only real changes are written, so
+        ``updated_at`` means "changed", not "seen" (``"unchanged"``). Safe under concurrent
+        writers: a lost insert race is retried as an update."""
+        pass
+
+    @abstractmethod
+    async def get_dataset(self, dataset_id: int) -> DatasetDTO | None:
+        pass
+
+    @abstractmethod
+    async def get_dataset_by_uri(self, uri: str) -> DatasetDTO | None:
+        pass
+
+    @abstractmethod
+    async def list_datasets(
+        self,
+        *,
+        kind: str | None = None,
+        view: str | None = None,
+        tags: list[str] | None = None,
+        attributes: dict[str, Any] | None = None,
+        simulation_id: int | None = None,
+        parca_dataset_id: int | None = None,
+        analysis_id: int | None = None,
+        available: bool | None = True,
+        since: datetime.datetime | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[DatasetDTO]:
+        """Datasets matching every given filter, newest change first (``updated_at`` desc, id desc).
+
+        ``tags``: carries ALL of them. ``attributes``: JSONB containment, so values must match
+        in type (``{"variant": 0}`` does not match ``"0"``). ``available=None`` includes gone
+        objects. ``limit`` is clamped to ``1..DATASET_LIST_MAX_LIMIT``."""
+        pass
+
+    @abstractmethod
+    async def count_datasets(
+        self,
+        *,
+        simulation_id: int | None = None,
+        parca_dataset_id: int | None = None,
+        analysis_id: int | None = None,
+        available: bool | None = None,
+    ) -> int:
+        pass
+
+    @abstractmethod
+    async def set_dataset_available(self, dataset_id: int, available: bool) -> DatasetDTO | None:
+        """Flip ``available`` (the walk does this when an object is gone). No write when unchanged."""
+        pass
+
+    @abstractmethod
+    async def add_dataset_tags(self, dataset_id: int, tags: list[str]) -> DatasetDTO:
+        """Union-merge tags into a dataset. ``RuntimeError`` when the id is unknown."""
+        pass
+
+    @abstractmethod
+    async def list_dataset_tags(self, kind: str | None = None) -> dict[str, int]:
+        """Every tag present on datasets (optionally of one kind) with its row count."""
+        pass
+
+    @abstractmethod
+    async def list_dataset_attribute_values(
+        self, kind: str | None = None, max_values_per_key: int = 200
+    ) -> dict[str, list[Any]]:
+        """Distinct values per attribute key (for building pickers), capped per key."""
         pass
 
     ####################################
@@ -315,7 +538,8 @@ class DatabaseService(ABC):
         """
         :param job_id: Backend-tagged job identifier.
         :param job_type: (`JobType`) job type to be run. Choose one of the following:
-            `JobType.SIMULATION`(/vecoli/run), `JobType.PARCA`(/vecoli/parca), `JobType.BUILD_IMAGE`(/simulator/new)
+            `JobType.SIMULATION`(/vecoli/run), `JobType.PARCA`(/vecoli/parca), `JobType.BUILD_IMAGE`(/simulator/new),
+            `JobType.ANALYSIS` (a standalone analysis run; ``ref_id`` is the analysis id)
         :param ref_id: primary key of the object this HPC run is associated with (sim, parca, etc.).
         :param chain_n_generations: total generation count G for a chain-dispatch campaign (backlog item
             33). Omit for every non-campaign HpcRun.
@@ -600,6 +824,8 @@ class DatabaseServiceSQL(DatabaseService):
                 return ORMHpcRun.jobref_parca_dataset_id
             case JobType.SIMULATION:
                 return ORMHpcRun.jobref_simulation_id
+            case JobType.ANALYSIS:
+                return ORMHpcRun.jobref_analysis_id
         return None
 
     async def _get_orm_hpcrun_by_ref(self, session: AsyncSession, ref_id: int, job_type: JobType) -> ORMHpcRun | None:
@@ -642,18 +868,39 @@ class DatabaseServiceSQL(DatabaseService):
 
     @override
     async def list_analyses(
-        self, *, experiment_id: str | None = None, simulation_id: int | None = None
+        self,
+        *,
+        experiment_id: str | None = None,
+        simulation_id: int | None = None,
+        status: AnalysisStatusDB | None = None,
+        backend: str | None = None,
+        tags: list[str] | None = None,
+        source: dict[str, Any] | None = None,
+        since: datetime.datetime | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        newest_first: bool = False,
     ) -> list[ExperimentAnalysisDTO]:
+        clauses = _analysis_filter_clauses(
+            experiment_id=experiment_id,
+            simulation_id=simulation_id,
+            status=status,
+            backend=backend,
+            tags=tags,
+            source=source,
+            since=since,
+        )
         async with self.async_sessionmaker() as session:
-            clauses: list[ColumnElement[bool]] = []
-            if experiment_id is not None:
-                clauses.append(ORMAnalysis.experiment_id == experiment_id)
-            if simulation_id is not None:
-                clauses.append(ORMAnalysis.simulation_id == simulation_id)
             stmt = select(ORMAnalysis)
             if clauses:
                 stmt = stmt.where(and_(*clauses))
-            stmt = stmt.order_by(ORMAnalysis.id)
+            if newest_first:
+                stmt = stmt.order_by(ORMAnalysis.updated_at.desc().nulls_last(), ORMAnalysis.id.desc())
+            else:
+                stmt = stmt.order_by(ORMAnalysis.id)
+            stmt = stmt.offset(max(0, offset))
+            if limit is not None:
+                stmt = stmt.limit(max(1, limit))
             result: Result[tuple[ORMAnalysis]] = await session.execute(stmt)
             return [orm_analysis.to_dto() for orm_analysis in result.scalars().all()]
 
@@ -672,6 +919,8 @@ class DatabaseServiceSQL(DatabaseService):
         job_id_ext: str | None = None,
         result_uri: str | None = None,
         error_message: str | None = None,
+        source: dict[str, Any] | None = None,
+        tags: list[str] | None = None,
     ) -> ExperimentAnalysisDTO:
         async with self.async_sessionmaker() as session, session.begin():
             # Idempotency: update the existing row for (experiment_id, n_tp) if present.
@@ -696,6 +945,10 @@ class DatabaseServiceSQL(DatabaseService):
                 existing.job_id_ext = job_id_ext
                 existing.result_uri = result_uri
                 existing.error_message = error_message
+                if source is not None:
+                    existing.source = source
+                if tags:
+                    existing.tags = _merge_tags(existing.tags, tags)
                 existing.last_updated = str(datetime.datetime.now())
                 await session.flush()
                 return existing.to_dto()
@@ -712,6 +965,8 @@ class DatabaseServiceSQL(DatabaseService):
                 job_id_ext=job_id_ext,
                 result_uri=result_uri,
                 error_message=error_message,
+                source=source,
+                tags=_merge_tags(None, tags),
             )
             session.add(orm_analysis)
             await session.flush()
@@ -749,6 +1004,237 @@ class DatabaseServiceSQL(DatabaseService):
             orm_analysis.last_updated = str(datetime.datetime.now())
             await session.flush()
             return orm_analysis.to_dto()
+
+    @override
+    async def update_analysis_dispatch(self, analysis_id: int, job_id_ext: str) -> ExperimentAnalysisDTO:
+        async with self.async_sessionmaker() as session, session.begin():
+            orm_analysis = await self._get_orm_analysis(session, database_id=analysis_id)
+            if orm_analysis is None:
+                raise RuntimeError(f"Analysis {analysis_id} not found")
+            orm_analysis.job_id_ext = job_id_ext
+            orm_analysis.last_updated = str(datetime.datetime.now())
+            await session.flush()
+            return orm_analysis.to_dto()
+
+    @override
+    async def get_analysis_by_result_uri(self, result_uri: str) -> ExperimentAnalysisDTO | None:
+        base = result_uri.rstrip("/")
+        async with self.async_sessionmaker() as session:
+            stmt = (
+                select(ORMAnalysis)
+                .where(ORMAnalysis.result_uri.in_([base, f"{base}/"]))
+                .order_by(ORMAnalysis.id.desc())
+                .limit(1)
+            )
+            orm_analysis = (await session.execute(stmt)).scalars().first()
+            return orm_analysis.to_dto() if orm_analysis is not None else None
+
+    # ---- datasets ----
+
+    @override
+    async def upsert_dataset(
+        self,
+        *,
+        uri: str,
+        kind: str,
+        origin: str,
+        simulation_id: int | None = None,
+        parca_dataset_id: int | None = None,
+        analysis_id: int | None = None,
+        view: str | None = None,
+        display_name: str | None = None,
+        size_bytes: int | None = None,
+        sha256: str | None = None,
+        attributes: dict[str, Any] | None = None,
+        tags: list[str] | None = None,
+        source: dict[str, Any] | None = None,
+        available: bool = True,
+    ) -> tuple[DatasetDTO, DatasetUpsertAction]:
+        _validate_dataset_write(uri, kind, origin)
+        incoming_attributes = {**(attributes or {}), "origin": origin}
+        producers: dict[str, int | None] = {
+            "simulation_id": simulation_id,
+            "parca_dataset_id": parca_dataset_id,
+            "analysis_id": analysis_id,
+        }
+        optional_fields: dict[str, Any] = {
+            "view": view,
+            "display_name": display_name,
+            "size_bytes": size_bytes,
+            "sha256": sha256,
+        }
+
+        for attempt in (1, 2):
+            try:
+                async with self.async_sessionmaker() as session, session.begin():
+                    stmt = select(ORMDataset).where(ORMDataset.uri == uri).with_for_update().limit(1)
+                    existing = (await session.execute(stmt)).scalars().first()
+                    if existing is None:
+                        if all(value is None for value in producers.values()):
+                            raise ValueError(f"dataset {uri} needs a producer (simulation, ParCa dataset or analysis)")
+                        row = ORMDataset(
+                            uri=uri,
+                            kind=kind,
+                            **producers,
+                            **optional_fields,
+                            attributes=incoming_attributes,
+                            tags=_merge_tags(None, tags),
+                            source=source,
+                            available=available,
+                        )
+                        session.add(row)
+                        await session.flush()
+                        await session.refresh(row)
+                        return row.to_dto(), "inserted"
+
+                    existing_origin = (existing.attributes or {}).get("origin")
+                    if origin == DATASET_ORIGIN_WALK and existing_origin == DATASET_ORIGIN_EVENT:
+                        return existing.to_dto(), "skipped"
+
+                    given = {
+                        k: v for k, v in {**producers, **optional_fields, "source": source}.items() if v is not None
+                    }
+                    incoming = {**given, "kind": kind, "attributes": incoming_attributes, "available": available}
+                    changed = _dataset_changes(existing, incoming, tags)
+                    if not changed:
+                        return existing.to_dto(), "unchanged"
+                    for attr, value in changed.items():
+                        setattr(existing, attr, value)
+                    await session.flush()
+                    await session.refresh(existing)
+                    return existing.to_dto(), "updated"
+            except IntegrityError:
+                # Another writer inserted this uri between our SELECT and INSERT (FOR UPDATE
+                # cannot lock a row that does not exist yet). Retry once; it is now an update.
+                if attempt == 2:
+                    raise
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    @override
+    async def get_dataset(self, dataset_id: int) -> DatasetDTO | None:
+        async with self.async_sessionmaker() as session:
+            row = (await session.execute(select(ORMDataset).where(ORMDataset.id == dataset_id))).scalars().first()
+            return row.to_dto() if row is not None else None
+
+    @override
+    async def get_dataset_by_uri(self, uri: str) -> DatasetDTO | None:
+        async with self.async_sessionmaker() as session:
+            row = (await session.execute(select(ORMDataset).where(ORMDataset.uri == uri))).scalars().first()
+            return row.to_dto() if row is not None else None
+
+    @override
+    async def list_datasets(
+        self,
+        *,
+        kind: str | None = None,
+        view: str | None = None,
+        tags: list[str] | None = None,
+        attributes: dict[str, Any] | None = None,
+        simulation_id: int | None = None,
+        parca_dataset_id: int | None = None,
+        analysis_id: int | None = None,
+        available: bool | None = True,
+        since: datetime.datetime | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[DatasetDTO]:
+        clauses = _dataset_filter_clauses(
+            kind=kind,
+            view=view,
+            tags=tags,
+            attributes=attributes,
+            simulation_id=simulation_id,
+            parca_dataset_id=parca_dataset_id,
+            analysis_id=analysis_id,
+            available=available,
+            since=since,
+        )
+        stmt = select(ORMDataset)
+        if clauses:
+            stmt = stmt.where(and_(*clauses))
+        stmt = (
+            stmt.order_by(ORMDataset.updated_at.desc().nulls_last(), ORMDataset.id.desc())
+            .offset(max(0, offset))
+            .limit(max(1, min(limit, DATASET_LIST_MAX_LIMIT)))
+        )
+        async with self.async_sessionmaker() as session:
+            return [row.to_dto() for row in (await session.execute(stmt)).scalars().all()]
+
+    @override
+    async def count_datasets(
+        self,
+        *,
+        simulation_id: int | None = None,
+        parca_dataset_id: int | None = None,
+        analysis_id: int | None = None,
+        available: bool | None = None,
+    ) -> int:
+        clauses = _dataset_filter_clauses(
+            simulation_id=simulation_id,
+            parca_dataset_id=parca_dataset_id,
+            analysis_id=analysis_id,
+            available=available,
+        )
+        stmt = select(func.count(ORMDataset.id))
+        if clauses:
+            stmt = stmt.where(and_(*clauses))
+        async with self.async_sessionmaker() as session:
+            return int((await session.execute(stmt)).scalar_one())
+
+    @override
+    async def set_dataset_available(self, dataset_id: int, available: bool) -> DatasetDTO | None:
+        async with self.async_sessionmaker() as session, session.begin():
+            row = (await session.execute(select(ORMDataset).where(ORMDataset.id == dataset_id))).scalars().first()
+            if row is None:
+                return None
+            if row.available != available:
+                row.available = available
+                await session.flush()
+                await session.refresh(row)
+            return row.to_dto()
+
+    @override
+    async def add_dataset_tags(self, dataset_id: int, tags: list[str]) -> DatasetDTO:
+        async with self.async_sessionmaker() as session, session.begin():
+            row = (await session.execute(select(ORMDataset).where(ORMDataset.id == dataset_id))).scalars().first()
+            if row is None:
+                raise RuntimeError(f"Dataset {dataset_id} not found")
+            merged = _merge_tags(row.tags, tags)
+            if merged != list(row.tags or []):
+                row.tags = merged
+                await session.flush()
+                await session.refresh(row)
+            return row.to_dto()
+
+    @override
+    async def list_dataset_tags(self, kind: str | None = None) -> dict[str, int]:
+        sql = "SELECT t.tag, count(*) FROM dataset d, jsonb_array_elements_text(d.tags) AS t(tag)"
+        params: dict[str, Any] = {}
+        if kind is not None:
+            sql += " WHERE d.kind = :kind"
+            params["kind"] = kind
+        sql += " GROUP BY t.tag ORDER BY t.tag"
+        async with self.async_sessionmaker() as session:
+            rows = (await session.execute(text(sql), params)).all()
+            return {str(tag): int(count) for tag, count in rows}
+
+    @override
+    async def list_dataset_attribute_values(
+        self, kind: str | None = None, max_values_per_key: int = 200
+    ) -> dict[str, list[Any]]:
+        sql = "SELECT e.key, jsonb_agg(DISTINCT e.value) FROM dataset d, jsonb_each(d.attributes) AS e(key, value)"
+        params: dict[str, Any] = {}
+        if kind is not None:
+            sql += " WHERE d.kind = :kind"
+            params["kind"] = kind
+        sql += " GROUP BY e.key ORDER BY e.key"
+        async with self.async_sessionmaker() as session:
+            rows = (await session.execute(text(sql), params)).all()
+        values: dict[str, list[Any]] = {}
+        for key, distinct in rows:
+            ordered = sorted(distinct or [], key=lambda v: (type(v).__name__, str(v)))
+            values[str(key)] = ordered[: max(0, max_values_per_key)]
+        return values
 
     ##################################
 
@@ -912,6 +1398,7 @@ class DatabaseServiceSQL(DatabaseService):
         jobref_simulation_id = ref_id if job_type == JobType.SIMULATION else None
         jobref_parca_dataset_id = ref_id if job_type == JobType.PARCA else None
         jobref_simulator_id = ref_id if job_type == JobType.BUILD_IMAGE else None
+        jobref_analysis_id = ref_id if job_type == JobType.ANALYSIS else None
 
         async with self.async_sessionmaker() as session, session.begin():
             orm_hpc_run = ORMHpcRun(
@@ -922,6 +1409,7 @@ class DatabaseServiceSQL(DatabaseService):
                 jobref_simulator_id=jobref_simulator_id,
                 jobref_simulation_id=jobref_simulation_id,
                 jobref_parca_dataset_id=jobref_parca_dataset_id,
+                jobref_analysis_id=jobref_analysis_id,
                 start_time=datetime.datetime.now(),
                 correlation_id=correlation_id,
                 chain_n_generations=chain_n_generations,
