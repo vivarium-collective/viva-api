@@ -356,14 +356,22 @@ images:
   # reachable by both code paths at once (its dedupe).
   # workbench#1077 replaces a raw traceback on remote composite run with a clean
   # git preflight. UI-only.
-  # STILL NOT LIVE IN-CLUSTER: the workbench pod has no AWS identity (SA `default`,
-  # no IRSA annotation, no projected aws-iam-token, IMDS unreachable -- re-measured
-  # on the running 0.3.82 pod), so #1078's S3 walk works from a laptop holding
-  # GovCloud SSO creds and NOT from the pod until IRSA is granted to the workbench
-  # service account. See viva-api#648 for the alternative (serve the artifacts
-  # through sms-api, which already holds S3 creds via the batch-submit IRSA role).
+  # IN-CLUSTER S3 READ (2026-09-15): the workbench pod had no AWS identity (SA
+  # `default`, no IRSA annotation, no projected aws-iam-token, IMDS unreachable --
+  # measured on the running 0.3.82 pod), so #1078's S3 walk worked only from a laptop
+  # holding GovCloud SSO creds. It now runs as SA `workbench`
+  # (workbench-serviceaccount.yaml) with the read-only IRSA role sms-cdk's BatchStack
+  # creates (smsvpctest-workbench-s3-read). Requires that sms-cdk change deployed
+  # first. The longer-term alternative stays viva-api#648 (serve the artifacts through
+  # sms-api, which already holds S3 creds via the batch-submit IRSA role).
+  # 0.3.85 (2026-09-15): main @577c3d1a -- workbench#1103 declares boto3. 0.3.84's
+  # image had none (`uv sync --frozen --no-dev` never installed it), so even with the
+  # IRSA role above its remote analysis figures answered `s3-unavailable`; boto3 was
+  # hand-installed into the running pod as a stopgap for the 2026-09-15 CD2 dry run.
+  # Also carries everything merged since 0.3.84 (workbench#1080-#1102), including an
+  # additive env_worker.py registry change, hence ENV_WORKER_MODULE_IMAGE in lockstep.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.84
+    newTag: 0.3.85
 
 replicas:
   - count: 1
@@ -390,10 +398,23 @@ resources:
   # its EBS PVC. Its TargetGroupBinding is in target-group-binding.yaml above.
   - ../../base/workbench
   - workbench-pvc.yaml
+  # The workbench's own ServiceAccount, carrying the read-only S3 IRSA role (see the
+  # file header and the workbench serviceAccountName patch below).
+  - workbench-serviceaccount.yaml
   - ../../config/sms-api-stanford-test
   - ../../base
 
 patches:
+  # Run the workbench as SA `workbench` (workbench-serviceaccount.yaml) instead of the
+  # namespace `default`, so it can assume the read-only S3 IRSA role for its remote
+  # analysis figures. Dev only; base/workbench stays SA-less for the prod overlay.
+  - patch: |-
+      - op: add
+        path: /spec/template/spec/serviceAccountName
+        value: workbench
+    target:
+      kind: Deployment
+      name: workbench
   - patch: |-
       - op: add
         path: /metadata/annotations/eks.amazonaws.com~1role-arn
