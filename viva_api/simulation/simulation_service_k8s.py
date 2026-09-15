@@ -452,8 +452,18 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ecr_repository}:{image_tag}-s
         experiment_id: str,
         params: dict,  # type: ignore[type-arg]
         commit: str,
+        *,
+        correlation_id: str | None = None,
+        sim_id: int | None = None,
+        analysis_id: int | None = None,
     ) -> JobId:
         """Create a K8s Job running v2ecoli's standalone analysis entrypoint.
+
+        The Job carries the ``PBG_*`` events identity of its analysis RUN (data
+        provenance slice 1): the trace is seeded from ``correlation_id``
+        (``analysis-<id>``) and the baggage names ``sim_id`` and ``analysis_id``.
+        Before this, this path injected no identity at all -- the #646 fix landed on
+        the legacy ``submit_standalone_analysis`` -- so these jobs emitted nothing.
 
         For simulations dispatched via the Ray/xarray pipeline (v2ecoli/sms-ecoli):
         submit_standalone_analysis above targets the legacy vEcoli-private/Nextflow
@@ -520,6 +530,21 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ecr_repository}:{image_tag}-s
                                         name="V2ECOLI_SIM_DATA",
                                         value=f"{data_layout.RayLayout.parca_cache_uri(commit)}simData.cPickle",
                                     ),
+                                    # The analysis run's own trace and identity. Without a
+                                    # correlation_id (a direct service call) events_env seeds
+                                    # the trace from experiment_id, its documented fallback.
+                                    *[
+                                        k8s_client.V1EnvVar(name=name, value=value)
+                                        for name, value in events_env(
+                                            correlation_id=correlation_id,
+                                            experiment_id=experiment_id,
+                                            backend="k8s_ray_native_analysis",
+                                            settings=settings,
+                                            sim_id=sim_id,
+                                            analysis_id=analysis_id,
+                                            tags={"phase": "analysis"},
+                                        ).items()
+                                    ],
                                 ],
                                 volume_mounts=[
                                     k8s_client.V1VolumeMount(name="config", mount_path="/config"),

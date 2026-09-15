@@ -150,8 +150,13 @@ def events_env(
     settings: Any,
     sim_id: int | str | None = None,
     tags: dict[str, Any] | None = None,
+    analysis_id: int | str | None = None,
 ) -> dict[str, str]:
     """The ``PBG_*`` identity env for one dispatch. Empty when events are disabled.
+
+    ``analysis_id`` (data provenance slice 1) rides in the baggage of a standalone
+    analysis run, so the ingester can attribute the files that run writes to its
+    analysis record. Omitted from the baggage when ``None``.
 
     ``correlation_id`` may be ``None`` on service-level entry points reachable
     without the API handler; the run's ``experiment_id`` then seeds the trace so
@@ -168,7 +173,7 @@ def events_env(
         sinks.append(prefix)
     env = {
         PBG_TRACEPARENT: traceparent(trace_id, span_id),
-        PBG_TRACE_BAGGAGE: baggage({"sim_id": sim_id, "experiment_id": experiment_id}),
+        PBG_TRACE_BAGGAGE: baggage({"sim_id": sim_id, "experiment_id": experiment_id, "analysis_id": analysis_id}),
         PBG_EVENT_TAGS: baggage({"backend": backend, **(tags or {})}),
         PBG_EVENT_SINKS: ",".join(sinks),
         PBG_EVENT_FLUSH_S: str(_int_setting(settings, "events_flush_seconds", 60)),

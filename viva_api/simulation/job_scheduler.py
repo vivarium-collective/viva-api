@@ -174,6 +174,10 @@ class JobScheduler:
             except Exception:
                 logger.exception("Error during Nextflow head polling")
             try:
+                await self.update_analysis_runs()
+            except Exception:
+                logger.exception("Error during standalone analysis run polling")
+            try:
                 await self.ingest_run_events()
             except Exception:
                 logger.exception("Error during run event ingestion")
@@ -1182,7 +1186,7 @@ class JobScheduler:
             if not event_ingest.is_ingest_candidate(hpc_run, settings, now):
                 continue
             try:
-                simulation = await self.database_service.get_simulation(simulation_id=hpc_run.ref_id)
+                simulation = await self._simulation_for_ingest(hpc_run)
                 result = await event_ingest.ingest_run_events(
                     hpc_run, simulation, file_service, self.database_service, settings, now=now
                 )
@@ -1199,6 +1203,47 @@ class JobScheduler:
                     result.stage,
                     result.generation,
                 )
+
+    async def _simulation_for_ingest(self, hpc_run: HpcRun) -> Simulation | None:
+        """The simulation whose events prefix a run's objects land under. A SIMULATION
+        row references it directly; an ANALYSIS row references its analysis record, which
+        references the simulation it analysed (the job writes under that experiment)."""
+        if hpc_run.job_type == JobType.ANALYSIS:
+            analysis = await self.database_service.get_analysis(database_id=hpc_run.ref_id)
+            if analysis.simulation_id is None:
+                return None
+            return await self.database_service.get_simulation(simulation_id=analysis.simulation_id)
+        return await self.database_service.get_simulation(simulation_id=hpc_run.ref_id)
+
+    async def update_analysis_runs(self) -> None:
+        """End a standalone analysis run's HpcRun when its analysis record resolves.
+
+        The record's status is resolved exactly as the API resolves it
+        (``handle_get_ray_analysis_status``: ``analysis.json`` in S3, else a live job
+        check). The event ingester's grace window keys on ``end_time``, so without this a
+        finished analysis would keep being listed until it went idle, not until it ended.
+        """
+        from viva_api.common.handlers.analyses import handle_get_ray_analysis_status
+
+        for hpc_run in await self.database_service.list_active_analysis_hpcruns():
+            try:
+                record = await self.database_service.get_analysis(database_id=hpc_run.ref_id)
+                resolved = await handle_get_ray_analysis_status(self.database_service, record)
+            except Exception:
+                logger.exception("analysis run %s: status resolution failed", hpc_run.database_id)
+                continue
+            if not resolved.status.is_terminal:
+                continue
+            await self.database_service.update_hpcrun_status(
+                hpcrun_id=hpc_run.database_id,
+                update=JobStatusUpdate(
+                    job_id=hpc_run.job_id,
+                    status=resolved.status,
+                    end_time=datetime.datetime.now().isoformat(),
+                    error_message=resolved.error_log,
+                ),
+            )
+            logger.info("analysis run %s (analysis %s) -> %s", hpc_run.database_id, hpc_run.ref_id, resolved.status)
 
     async def _record_chain_outcomes(
         self,

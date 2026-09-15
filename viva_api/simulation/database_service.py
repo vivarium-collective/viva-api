@@ -502,6 +502,11 @@ class DatabaseService(ABC):
         pass
 
     @abstractmethod
+    async def list_active_analysis_hpcruns(self) -> list[HpcRun]:
+        """Active (PENDING / QUEUED / RUNNING) ``JobType.ANALYSIS`` runs."""
+        pass
+
+    @abstractmethod
     async def insert_simulator(self, git_commit_hash: str, git_repo_url: str, git_branch: str) -> SimulatorVersion:
         pass
 
@@ -1309,6 +1314,16 @@ class DatabaseServiceSQL(DatabaseService):
     ##################################
 
     @override
+    async def list_active_analysis_hpcruns(self) -> list[HpcRun]:
+        async with self.async_sessionmaker() as session:
+            stmt = select(ORMHpcRun).where(
+                ORMHpcRun.job_type == JobTypeDB.ANALYSIS,
+                ORMHpcRun.status.in_([JobStatusDB.PENDING, JobStatusDB.QUEUED, JobStatusDB.RUNNING]),
+            )
+            result: Result[tuple[ORMHpcRun]] = await session.execute(stmt)
+            return [row.to_hpc_run() for row in result.scalars().all()]
+
+    @override
     async def insert_simulator(self, git_commit_hash: str, git_repo_url: str, git_branch: str) -> SimulatorVersion:
         async with self.async_sessionmaker() as session, session.begin():
             stmt1 = (
@@ -1859,8 +1874,17 @@ class DatabaseServiceSQL(DatabaseService):
     async def list_hpcruns_for_event_ingest(self, terminal_since: datetime.datetime) -> list[HpcRun]:
         async with self.async_sessionmaker() as session:
             stmt = select(ORMHpcRun).where(
-                ORMHpcRun.job_type == JobTypeDB.SIMULATION,
-                ORMHpcRun.job_backend.in_([JobBackend.RAY.value, JobBackend.K8S_NEXTFLOW.value]),
+                or_(
+                    and_(
+                        ORMHpcRun.job_type == JobTypeDB.SIMULATION,
+                        ORMHpcRun.job_backend.in_([JobBackend.RAY.value, JobBackend.K8S_NEXTFLOW.value]),
+                    ),
+                    # A standalone analysis run (data provenance slice 1): a K8s Job today.
+                    and_(
+                        ORMHpcRun.job_type == JobTypeDB.ANALYSIS,
+                        ORMHpcRun.job_backend.in_([JobBackend.K8S.value, JobBackend.RAY.value]),
+                    ),
+                ),
                 or_(
                     ORMHpcRun.status.in_([JobStatusDB.PENDING, JobStatusDB.RUNNING, JobStatusDB.QUEUED]),
                     ORMHpcRun.end_time >= terminal_since,

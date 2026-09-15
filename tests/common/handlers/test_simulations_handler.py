@@ -328,7 +328,22 @@ async def test_run_standalone_analysis_ray_native_routes_to_v2ecoli_job() -> Non
     assert record_kwargs["experiment_id"] == "exp123"
     assert record_kwargs["simulation_id"] == 115
     assert record_kwargs["backend"] == "ray"
-    assert record_kwargs["job_id_ext"] == "ana-exp123"
+    # Recorded BEFORE submit (the run's id rides in the job's baggage), so no job id yet.
+    assert record_kwargs.get("job_id_ext") is None
+    assert record_kwargs["source"] == {
+        "kind": "simulation",
+        "ref": "115",
+        "resolved_id": 115,
+        "uri": "s3://bucket/vecoli-output/exp123",
+    }
+    assert call_kwargs["correlation_id"] == "analysis-42"
+    assert call_kwargs["sim_id"] == 115
+    assert call_kwargs["analysis_id"] == 42
+    mock_db_service.update_analysis_dispatch.assert_awaited_once_with(42, "ana-exp123")
+    hpcrun_kwargs = mock_db_service.insert_hpcrun.call_args.kwargs
+    assert hpcrun_kwargs["job_type"] == JobType.ANALYSIS
+    assert hpcrun_kwargs["ref_id"] == 42
+    assert hpcrun_kwargs["correlation_id"] == "analysis-42"
     assert record_kwargs["result_uri"].startswith("s3://bucket/vecoli-output/exp123/analyses/")
     # The actual reported bug: to_dto() must not raise on this producer's config shape.
     orm_row = ORMAnalysis(
@@ -342,6 +357,93 @@ async def test_run_standalone_analysis_ray_native_routes_to_v2ecoli_job() -> Non
     )
     dto = orm_row.to_dto()
     assert dto.config.analysis_options.experiment_id == ["exp123"]
+
+
+def _ray_simulator() -> SimulatorVersion:
+    return SimulatorVersion(
+        database_id=53, git_commit_hash="deadbeef", git_repo_url=RepoUrl.SMS_ECOLI_REPO_URL, git_branch="main"
+    )
+
+
+@pytest.mark.asyncio
+async def test_standalone_analysis_records_the_run_before_it_submits() -> None:
+    """Order is the contract: the record (and so its id) must exist before the job is
+    created, or the job's baggage cannot name the analysis."""
+    order: list[str] = []
+    mock_k8s_service = AsyncMock(spec=SimulationServiceK8s)
+
+    async def _submit(**_kwargs: Any) -> str:
+        order.append("submit")
+        return "ana-exp123"
+
+    async def _record(**_kwargs: Any) -> SimpleNamespace:
+        order.append("record")
+        return SimpleNamespace(database_id=42)
+
+    mock_k8s_service.submit_ray_native_analysis.side_effect = _submit
+    mock_db_service = AsyncMock()
+    mock_db_service.record_analysis.side_effect = _record
+    mock_db_service.insert_hpcrun.return_value = SimpleNamespace(database_id=7)
+
+    with patch("viva_api.common.handlers.simulations.get_simulation_service", return_value=mock_k8s_service):
+        result = await _run_standalone_analysis_ray_native(
+            database_service=mock_db_service,
+            simulation=_make_ray_simulation(),
+            simulator=_ray_simulator(),
+            modules={"multiseed": {"doubling_time_distribution": {}}},
+        )
+
+    assert order == ["record", "submit"]
+    assert result["hpcrun_id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_a_failed_submit_marks_the_analysis_failed_and_records_no_run() -> None:
+    mock_k8s_service = AsyncMock(spec=SimulationServiceK8s)
+    mock_k8s_service.submit_ray_native_analysis.side_effect = RuntimeError("quota exceeded")
+    mock_db_service = AsyncMock()
+    mock_db_service.record_analysis.return_value = SimpleNamespace(database_id=42)
+
+    with (
+        patch("viva_api.common.handlers.simulations.get_simulation_service", return_value=mock_k8s_service),
+        pytest.raises(RuntimeError, match="quota exceeded"),
+    ):
+        await _run_standalone_analysis_ray_native(
+            database_service=mock_db_service,
+            simulation=_make_ray_simulation(),
+            simulator=_ray_simulator(),
+            modules={"multiseed": {"doubling_time_distribution": {}}},
+        )
+
+    status_call = mock_db_service.update_analysis_status.call_args
+    assert status_call.args[0] == 42
+    assert "quota exceeded" in status_call.kwargs["error_message"]
+    mock_db_service.update_analysis_dispatch.assert_not_awaited()
+    mock_db_service.insert_hpcrun.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_run_insert_after_submit_still_returns_the_analysis() -> None:
+    """The job is already running; the request must not fail (that invites a duplicate
+    trigger), and the missing run is reported rather than hidden."""
+    mock_k8s_service = AsyncMock(spec=SimulationServiceK8s)
+    mock_k8s_service.submit_ray_native_analysis.return_value = "ana-exp123"
+    mock_db_service = AsyncMock()
+    mock_db_service.record_analysis.return_value = SimpleNamespace(database_id=42)
+    mock_db_service.insert_hpcrun.side_effect = RuntimeError("db hiccup")
+
+    with patch("viva_api.common.handlers.simulations.get_simulation_service", return_value=mock_k8s_service):
+        result = await _run_standalone_analysis_ray_native(
+            database_service=mock_db_service,
+            simulation=_make_ray_simulation(),
+            simulator=_ray_simulator(),
+            modules={"multiseed": {"doubling_time_distribution": {}}},
+        )
+
+    assert result["database_id"] == 42
+    assert result["job_id"] == "ana-exp123"
+    assert result["hpcrun_id"] is None
+    mock_db_service.update_analysis_dispatch.assert_awaited_once_with(42, "ana-exp123")
 
 
 async def _run_default_modules_ray_native(simulation: Simulation) -> dict[str, Any]:

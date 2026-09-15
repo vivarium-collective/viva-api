@@ -634,3 +634,28 @@ class TestSimulationServiceK8s:
         assert mock_k8s_job_service.create_job.call_count == 2
         names = [c.args[0].metadata.name for c in mock_k8s_job_service.create_job.call_args_list]
         assert len(set(names)) == 2
+
+    async def test_submit_ray_native_analysis_carries_the_analysis_run_identity(
+        self,
+        simulation_service_k8s_mock: SimulationServiceK8s,
+        mock_k8s_job_service: MagicMock,
+    ) -> None:
+        """This Job used to carry no PBG_* at all (the #646 fix covered only the legacy
+        path). Its events must be on the analysis run's own trace, seeded from its
+        correlation id, with the analysis id in baggage so the ingester can attribute
+        the files it writes."""
+        from viva_api.common.events_env import PBG_TRACE_BAGGAGE, PBG_TRACEPARENT, trace_id_from_correlation
+
+        await simulation_service_k8s_mock.submit_ray_native_analysis(
+            experiment_id="exp123",
+            params={"out_uri": "s3://bucket/exp", "n_seeds": 1, "modules": {}, "analysis_name": "analysis-exp123-id"},
+            commit="deadbeef",
+            correlation_id="analysis-42",
+            sim_id=115,
+            analysis_id=42,
+        )
+
+        container = mock_k8s_job_service.create_job.call_args[0][0].spec.template.spec.containers[0]
+        env_by_name = {e.name: e.value for e in container.env}
+        assert trace_id_from_correlation("analysis-42") in env_by_name[PBG_TRACEPARENT]
+        assert env_by_name[PBG_TRACE_BAGGAGE] == "sim_id=115,experiment_id=exp123,analysis_id=42"
