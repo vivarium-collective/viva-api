@@ -94,7 +94,8 @@ Keep the public entry points (`ptoolsGoBtnHandler`, `celovBtnHandler`, `dashboar
 
 **Feature detection, so one page works against old and new APIs during rollout:** on load
 `GET ${simBaseUrl}datasets/tags`; a 404 falls back to the current simulation flow — which,
-with #658 merged, already resolves multiseed fills once slice 1 has registered them.
+with #658 merged, already resolves multiseed fills once slice 1 has registered them
+(and that fallback is what #658 buys until this page lands).
 
 **Same-origin stays true:** the ALB path-routes `/api/*` to sms-api and everything else to
 PTools, and the laptop tunnel reproduces that; no CORS is needed. Set `SMS_API_HOST=`
@@ -107,13 +108,21 @@ PTools, and the laptop tunnel reproduces that; no CORS is needed. Set `SMS_API_H
 `sms.js` is SRI's file, inside their CVS-tracked tree in the export. Two tracks, in
 parallel:
 
-- **Overlay now (ours) — already established by PR #658:** `assets/ptools/overrides/htdocs/sms/sms.js`
-  is `COPY`d over `/app/aic-export/pathway-tools/ptools/30.0/install/htdocs/sms/sms.js` after
-  the archive `ADD` in `Dockerfile-ptools`, keeping the 1 GB vendor tarball byte-identical and
-  the patch a normal diffable file. This plan **extends that same file** (and adds `sms.html`
-  next to it) rather than opening a second overlay location; keep a `sms.js.patch` against
-  the pristine 30.0 copy so a future export sync is a rebase. ptools images are hand-built
-  (never by CI) — `kustomize/scripts/build_and_push.sh`.
+- **Overlay now (ours).** PR #658 uses the same mechanism — `assets/ptools/overrides/htdocs/sms/sms.js`
+  `COPY`d over the archive's file after the `ADD` in `Dockerfile-ptools` — but a **different
+  approach**: it keeps the old endpoints and filters filenames client-side. The edits in this
+  plan replace the discovery/fetch layer, so they **supersede #658's resolver** (content is
+  fetched by dataset id; there is no stem to resolve) and **will conflict** with it in that
+  file. Expected handling: this work lives on its own branch and is rebased onto whatever
+  merged first; keep a `sms.js.patch` against the pristine 30.0 copy so both a #658 rebase and
+  a future export sync are mechanical. ptools images are hand-built (never by CI) —
+  `kustomize/scripts/build_and_push.sh`.
+- **Sequencing (Jim, 2026-09-14): this is the last part of the data-provenance work** and can
+  wait. Until then it is exercised without any deploy: with the SSM tunnel up, the page at
+  `http://localhost:8080/sms/sms.html` is served by the ptools pod behind the same path-routed
+  ALB as `/api/*`, so a **browser DevTools local override** of `/sms/sms.js` (Chrome: Sources →
+  Overrides) runs the patched script against live sms-api and live PTools with no CORS and no
+  image rebuild. A dev-only `sms-ptools` tag pinned in the dev overlay is the next step up.
 - **Upstream (SRI):** hand this document plus the patch to SRI (Paley) so the next export
   carries it and the overlay can be dropped. Their `displayMassFractionSummary` stub
   (:427, never wired) suggests they intended sms-api-side data services; `/datasets` is that
