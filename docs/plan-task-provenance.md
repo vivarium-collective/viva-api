@@ -1,7 +1,8 @@
 # viva-api#655 — task provenance and tasks as HpcRuns — slice 2
 
-**Status (2026-09-14): plan, not started. This is slice 2 of two.** Slice 1 is
-[`plan-data-provenance.md`](plan-data-provenance.md): the `dataset` registry, the
+**Status (updated 2026-09-15): plan, not started. This is slice 2 of two.** Slice 1's plan is
+**merged to `main`** ([`plan-data-provenance.md`](plan-data-provenance.md), #657) and its
+implementation is **draft #661**: the `dataset` registry, the
 `artifact.written` ingest hook, `analysis.source`/`tags`, the `/datasets` API, the walk
 reconciliation and the bundle importer — delivered **without touching the task endpoints**.
 This slice makes a task a first-class traced run (content-addressed script capture, toolkit
@@ -12,8 +13,9 @@ Sequencing decided by Jim on 2026-09-14. The ptools consumer is
 
 Designed in plan mode from the evidence brief at `assets/ptools/HANDOFF_tools_runs_655.md`
 (the brief predates the finding that #631 is already built — see Context). Reviewed once
-against the code; the review's findings are folded in. Branch off `main` @ `70edd4a0`
-(0.9.142) **after slice 1's revision**. Issues: #655 (this), #631 (the task verb this
+against the code; the review's findings are folded in. This branch is rebased on `main`
+(2026-09-15), which carries slice 1's plan; the code this builds on is #661's, so build it
+after #661 lands. Issues: #655 (this), #631 (the task verb this
 extends), #648 (artifact registration — closed by slice 1 + this).
 
 ## Context
@@ -88,7 +90,9 @@ moving the toolkit into a repo (follow-up).
 ### 1. Schema — two Alembic revisions off slice 1's head
 
 Revision A (`<idA>_add_task_jobtype`): `ALTER TYPE jobtypedb ADD VALUE IF NOT EXISTS 'TASK'`
-in an autocommit block (§2d), `down_revision = <id1>` (slice 1's `dataset` revision).
+in an autocommit block (§2d), `down_revision = c9a1e3f5b7d2` (slice 1's `dataset` revision in
+#661; `b2f6d8e0a4c7` before it adds `ANALYSIS` to `jobtypedb` the same way, and is the pattern
+to copy).
 Revision B (`<idB>_add_task_provenance`, `down_revision = <idA>`): everything below. One
 fingerprint marker each.
 
@@ -276,16 +280,18 @@ the `/datasets` API are all **slice 1** (`plan-data-provenance.md` §2–§7). T
 - **`task_id` in the baggage** (§2d), so slice 1's producer resolution attributes a task's
   `artifact.written` events to the task with no new ingest code; `dataset.task_id` and
   `analysis.task_id` are the FKs it lands on.
-- **Analysis run rows from `dest_prefixes`.** In the `update_tasks` tick (§3), when a task
-  reaches a terminal state, for each `dest_prefix` shaped `<store>/analyses/<name>/`: upsert
-  an `analysis` run row keyed on `result_uri` (`get_analysis_by_result_uri`): `name` =
-  `<name>`, `experiment_id` = `<store>`, `simulation_id` via `get_simulation_by_experiment_id`
-  when it resolves, `backend = "task"`, `job_id_ext` = the Batch id, `task_id`, `source` =
-  the task's first `simulation` input (with coordinate) else `{kind: task, ref: <task id>}`,
-  `tags` = the task's tags ∪ the source simulation's. `status = READY` only if the prefix
-  holds at least one object (**effect, not exit 0**), else `FAILED` with `error_message =
-  "bundle empty"`. This is the *run* record (§2a of slice 1); the dataset rows come from the
-  trace, or from slice 1's reconciliation walk over that `result_uri`.
+- **The task itself is the run record — no `analysis` rows.** *(SUPERSEDED 2026-09-15: this
+  bullet used to upsert an `analysis` row per `dest_prefix`.)* Jim decided slice 1 fabricates
+  no analysis rows, and `plan-data-provenance.md` §4c settles where a fill's files belong: a
+  task's `task` row plus its HpcRun **is** the run record, and its bundles carry
+  `dataset.task_id`. So in the `update_tasks` tick (§3), when a task reaches a terminal state,
+  each `dest_prefix` shaped `<store>/analyses/<name>/` is registered through slice 1's walk
+  (`register_prefix` over that prefix) with producer `task_id`, `tags` = the task's tags ∪ the
+  source simulation's, and `source` = the task's first `simulation` input (with coordinate)
+  else `{kind: task, ref: <task id>}`. An empty bundle is recorded on the **task**
+  (`status_reason = "bundle empty"` when no object landed — **effect, not exit 0**), not on a
+  synthetic analysis. `analysis.task_id` stays for the other direction: an analysis run that a
+  task dispatched. Dataset rows still come from the trace, or from the walk over that prefix.
 - **The sidecar for bash toolkits.** `ptools_flush.py` (Python) calls the v2ecoli helper;
   the fanout shell scripts append the same JSON lines to `$CONTAINER_OUT_DIR/artifacts.jsonl`
   (schema in slice 1 §3). This slice adds the ingester's read of that file under a task's
@@ -387,8 +393,11 @@ today catches only `HTTPException`, then `Exception` → 500; copy the clause fr
   (repeatable), `--dry-run`, `--allow-duplicate`. The XOR check extends to the four sources.
 - `atlantis task list [--name --status --limit]`, `atlantis task show <id>` (full provenance,
   manifest as a table), `atlantis task script <id> [--sha <sha256>] [--out FILE]`.
-- TUI/GUI parity: **not in this PR** (the #631 slices shipped CLI only); listed under
-  follow-ups so the EUTE rule is not silently dropped.
+- TUI/GUI parity for the **task** verb: **not in this PR** (the #631 slices shipped CLI only);
+  listed under follow-ups so the EUTE rule is not silently dropped. Datasets already have it:
+  #661 (`26d0f5b7`) gave the TUI a Datasets domain and the GUI a Datasets & Analyses panel,
+  with the shared wording in `app/dataset_views.py`, so a task's bundles show up there as soon
+  as `task_id` lands.
 
 Regenerate spec + client (`make spec` with `SIMULATION_OUTDIR`/`HPC_SIM_BASE_PATH`
 overridden — it leaks `.dev_env`; grep the diff — then `make api_client`).
@@ -432,9 +441,12 @@ present (1 job lacks a stream → NULL), `source = "backfill"`, `snapshot_uri = 
 staged the mutable prefix — the row says so honestly), `inputs` per §2b, `dest_prefixes`
 = the bundle URIs `cd2_ptools_manifest.json` attributes to that job (`fill_jobs[].job_name`
 ↔ `stores[].fill_jobs`). Then the importer runs the §2c registration for every
-`stores[].fill_bundles` entry: `analysis` rows with `task_id` (when the producing job was
-harvested), `source = {kind: simulation, ref: <store>}` resolved to the simulation row,
-`status` from a live TSV count, `config.views` from `view_types`. Idempotent on `result_uri`.
+`stores[].fill_bundles` entry: the bundle's `dataset` rows — registered already by slice 1's
+`scripts/import_cd2_datasets.py` or by its walk — get `task_id` stamped on them when the
+producing job was harvested, with `source = {kind: simulation, ref: <store>}` resolved to the
+simulation row. **No `analysis` rows are created** *(SUPERSEDED 2026-09-15; see §2c)*; a write
+naming a producer replaces the row's producer, which is exactly how slice 1 intends these
+bundles to move from the simulation to their task. Idempotent on `uri`.
 
 **Mid-flight rows (blocker found in review):** 11 jobs were harvested `RUNNING` and 12 have
 no exit code. On `--apply` the importer calls `describe_jobs` for every non-terminal id
@@ -480,7 +492,7 @@ port-forward). Not run by CI, not run by the app.
 | `tests/simulation/test_job_scheduler_tasks.py` | **new** — `update_tasks` persists exit code/timestamps; unknown-to-Batch → FAILED after 7 days; no Ray service → no-op |
 | `tests/api/test_tasks_router.py` | **new** — GETs via `ASGITransport`, DI getters patched (pattern: `tests/api/test_dispatch_validation_status.py`) |
 | `tests/scripts/test_import_cd2_tool_runs.py` | **new** — mapping on a 2-job fixture slice; redaction; idempotence |
-| `viva_api/version.py`, `pyproject.toml` | bump 0.9.142 → 0.9.143 (a migration ships; the db-migration overlay tag must move with the app tag at deploy time) |
+| `viva_api/version.py`, `pyproject.toml` | bump to the next free version (0.9.143 is #660, 0.9.144 is #663, and #661 takes one before this) — a migration ships, so the db-migration overlay tag must move with the app tag at deploy time |
 
 Reuse, do not rewrite: `_ensure_container_job_def`, `_submit_container`, `_stage_out_env`,
 `task_env_as_batch_list`, `validate_task_env`, `get_batch_job_details`, `_safe_task_name`,
