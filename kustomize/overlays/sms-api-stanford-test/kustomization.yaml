@@ -364,8 +364,14 @@ images:
   # creates (smsvpctest-workbench-s3-read). Requires that sms-cdk change deployed
   # first. The longer-term alternative stays viva-api#648 (serve the artifacts through
   # sms-api, which already holds S3 creds via the batch-submit IRSA role).
+  # 0.3.85 (2026-09-15): main @577c3d1a -- workbench#1103 declares boto3. 0.3.84's
+  # image had none (`uv sync --frozen --no-dev` never installed it), so even with the
+  # IRSA role above its remote analysis figures answered `s3-unavailable`; boto3 was
+  # hand-installed into the running pod as a stopgap for the 2026-09-15 CD2 dry run.
+  # Also carries everything merged since 0.3.84 (workbench#1080-#1102), including an
+  # additive env_worker.py registry change, hence ENV_WORKER_MODULE_IMAGE in lockstep.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.84
+    newTag: 0.3.85
 
 replicas:
   - count: 1
