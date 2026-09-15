@@ -15,3 +15,14 @@ strings on the wire -- viva-api's ingester promotes what it wants into columns.
   events `lineage.generation.start` / `lineage.division` / `lineage.chunk.flushed` /
   `lineage.generation.end` / `lineage.failure`; one deliberately bad line.
 - `lineage_running_gen1.jsonl` -- the same task still running generation 1 (open spans, heartbeats).
+
+- `real_sim1319_lineage_thinned.jsonl` and `real_sim1319_gather_thinned.jsonl` -- **real** objects from dev (`sms-api-stanford-test`),
+  simulation 1319 (`sim209-obs-verify5-gather-146e`, trace `b87bb2477553ee5a0c98ca6588eebec7`,
+  2026-09-14): one chain-dispatch lineage task and the run's in-run analysis gather. Kept lines are
+  verbatim -- trace and span ids, `seq`, payloads and baggage value TYPES -- thinned for size (a few of
+  each high-volume event; the gather's first 8 spans with their ends and 3 samples). The only edit:
+  the internal EC2 hostname in `source` is replaced with `batch-node`, keeping the per-process suffix.
+  Used by `tests/simulation/test_real_trace_fixture.py` to prove the ingester and the dataset registry
+  on a real stream, not only on hand-written ones. **Note:** this real lineage stream carries `variant`,
+  `lineage_seed` and `generation` baggage as JSON **numbers**, not strings -- "strings on the wire"
+  above holds for the hand-written fixtures, not for every emitter, so readers must accept both.
