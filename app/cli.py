@@ -33,6 +33,22 @@ from typer import Argument, Option
 
 from app.app_data_service import READ_CAPABILITIES, E2EDataService, get_data_service
 from app.cli_theme import display_json, get_console, print_banner, status_border, status_style
+from app.dataset_views import (
+    ANALYSIS_COLUMNS,
+    DATASET_COLUMNS,
+    NO_DATASETS_HINT,
+    NO_PRODUCER_HINT,
+    NO_TRACE_HINT,
+    UNCLAIMED_HINT,
+    analysis_status_label,
+    coordinate_label,
+    dataset_name,
+    format_bytes,
+    is_unclaimed,
+    origin_label,
+    producer_label,
+    producer_relation,
+)
 from app.tui import AtlantisTUI
 
 
@@ -2155,35 +2171,6 @@ def analysis_plots(
 # -- Dataset commands (data provenance, docs/plan-data-provenance.md §7) --
 
 
-def _coordinate_label(attributes: dict[str, Any]) -> str:
-    """``multiseed v=0`` / ``single v=0 s=3 g=12 a=000`` from a dataset's attributes."""
-    parts = [str(attributes["protocol"])] if attributes.get("protocol") else []
-    for key, short in (("variant", "v"), ("seed", "s"), ("generation", "g"), ("agent", "a")):
-        if attributes.get(key) is not None:
-            parts.append(f"{short}={attributes[key]}")
-    return " ".join(parts)
-
-
-def _format_bytes(size: int | None) -> str:
-    if size is None:
-        return "—"
-    for unit, scale in (("GB", 1024**3), ("MB", 1024**2), ("KB", 1024)):
-        if size >= scale:
-            return f"{size / scale:.1f} {unit}"
-    return f"{size} B"
-
-
-def _producer_label(dataset: DatasetDTO) -> str:
-    for label, value in (
-        ("analysis", dataset.analysis_id),
-        ("sim", dataset.simulation_id),
-        ("parca", dataset.parca_dataset_id),
-    ):
-        if value is not None:
-            return f"{label} {value}"
-    return "—"
-
-
 def _render_datasets(page: DatasetListDTO, console: Console, *, title: str, as_json: bool) -> None:
     from rich.markup import escape
     from rich.table import Table
@@ -2192,25 +2179,22 @@ def _render_datasets(page: DatasetListDTO, console: Console, *, title: str, as_j
         display_json(page.model_dump(), console)
         return
     if not page.datasets:
-        console.print(
-            "[memphis.hint]No datasets match. Rows appear as a run's trace is ingested or the S3 walk finds them.[/]"
-        )
+        console.print(f"[memphis.hint]{escape(NO_DATASETS_HINT)}[/]")
         return
     table = Table(title=title, border_style="magenta")
-    for col in ("ID", "Kind", "View", "Coordinate", "Producer", "Size", "Origin", "Updated"):
+    for col in DATASET_COLUMNS:
         table.add_column(col)
     for dataset in page.datasets:
-        name = dataset.view or str(dataset.attributes.get("name") or dataset.uri.rstrip("/").rsplit("/", 1)[-1])
-        origin = dataset.origin or "—"
+        origin = origin_label(dataset)
         if not dataset.available:
             origin += " [memphis.error]gone[/]"
         table.add_row(
             str(dataset.database_id),
             escape(dataset.kind),
-            escape(name),
-            escape(_coordinate_label(dataset.attributes)),
-            _producer_label(dataset),
-            _format_bytes(dataset.size_bytes),
+            escape(dataset_name(dataset)),
+            escape(coordinate_label(dataset.attributes)),
+            producer_label(dataset),
+            format_bytes(dataset.size_bytes),
             origin,
             (dataset.updated_at or "")[:19],
         )
@@ -2230,10 +2214,10 @@ def _render_analyses(analyses: list[ExperimentAnalysisDTO], console: Console, *,
         console.print("[memphis.hint]No analyses match.[/]")
         return
     table = Table(title=f"Analyses ({len(analyses)})", border_style="magenta")
-    for col in ("ID", "Name", "Status", "Backend", "Sim", "Experiment", "Tags", "Updated"):
+    for col in ANALYSIS_COLUMNS:
         table.add_column(col)
     for analysis in analyses:
-        status = analysis.status.value if analysis.status is not None else "unknown"
+        status = analysis_status_label(analysis)
         table.add_row(
             str(analysis.database_id),
             escape(analysis.name),
@@ -2251,23 +2235,23 @@ def _add_producer(root: Any, producer: DatasetProducerDTO | None, dataset: Datas
     from rich.markup import escape
 
     if producer is None:
-        root.add("[memphis.hint]no producer run recorded[/]")
+        root.add(f"[memphis.hint]{NO_PRODUCER_HINT}[/]")
         return
     # The walk attributes a bundle no analysis run claims to the simulation it sits under: the
     # simulation's output holds it, but nothing says its run wrote it.
-    unclaimed = dataset.origin == "walk" and producer.kind == "simulation"
-    label = "found under" if unclaimed else "written by"
+    unclaimed = is_unclaimed(dataset, producer)
+    label = producer_relation(dataset, producer)
     status = producer.status or "unknown"
     node = root.add(
         f"[memphis.label]{label}[/] {producer.kind} {producer.id}  {escape(producer.name or '')}  "
         f"[{status_style(status)}]{status}[/]"
     )
     if unclaimed:
-        node.add("[memphis.hint]found by the S3 walk; no analysis run claims this bundle[/]")
+        node.add(f"[memphis.hint]{UNCLAIMED_HINT}[/]")
     if producer.trace_id:
         node.add(f"trace {producer.trace_id}  (hpcrun {producer.hpcrun_id})")
     else:
-        node.add("[memphis.hint]no traced run row[/]")
+        node.add(f"[memphis.hint]{NO_TRACE_HINT}[/]")
     if producer.source:
         node.add(f"of {escape(_json_mod.dumps(producer.source, sort_keys=True))}")
     if producer.tags:
@@ -2358,7 +2342,7 @@ def dataset_fetch(
     console = get_console()
     data_service = get_data_service(base_url=base_url)
     path = data_service.fetch_dataset(dataset_id, dest)
-    console.print(f"[memphis.success]Saved dataset {dataset_id}[/] to {path} ({_format_bytes(path.stat().st_size)})")
+    console.print(f"[memphis.success]Saved dataset {dataset_id}[/] to {path} ({format_bytes(path.stat().st_size)})")
 
 
 @dataset_cli.command("provenance", help="Show what wrote a dataset: its run, trace, span and inputs.")

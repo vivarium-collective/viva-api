@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from rich.markup import escape
 from rich.syntax import Syntax
 from rich.text import Text
 from textual import work
@@ -38,6 +39,22 @@ from textual.widgets import (
 )
 
 from app.app_data_service import BaseUrl, E2EDataService, get_data_service
+from app.dataset_views import (
+    ANALYSIS_COLUMNS,
+    DATASET_COLUMNS,
+    NO_DATASETS_HINT,
+    NO_PRODUCER_HINT,
+    NO_TRACE_HINT,
+    UNCLAIMED_HINT,
+    analysis_row,
+    dataset_row,
+    format_bytes,
+    is_unclaimed,
+    parse_analysis_filter,
+    parse_dataset_filter,
+    producer_relation,
+)
+from viva_api.analysis.models import DatasetListDTO
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -552,6 +569,9 @@ class AtlantisTUI(App[None]):
         self._task_ids: list[int] = []
         self._worker_job: str = ""
         self._identity: str = ""
+        # Which listing the table holds ("datasets", "analyses", ...), so selecting a row
+        # knows what its first column is the id of. _populate_table resets it.
+        self._listing: str = ""
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -561,6 +581,7 @@ class AtlantisTUI(App[None]):
                 yield Button("Simulations", id="nav-simulations", variant="primary")
                 yield Button("Simulators", id="nav-simulators", variant="primary")
                 yield Button("Analyses", id="nav-analyses", variant="primary")
+                yield Button("Datasets", id="nav-datasets", variant="primary")
                 yield Button("Env Workers", id="nav-workers", variant="primary")
 
                 yield Label("UTILITIES", classes="nav-section-label")
@@ -582,14 +603,25 @@ class AtlantisTUI(App[None]):
                     yield Button("Configs", id="sim-configs")
                     yield Button("Analyses", id="sim-analyses-discover")
                     yield Button("Run Analysis", id="sim-analysis")
+                    yield Button("Datasets", id="sim-datasets")
                 with Horizontal(id="actions-simulators", classes="action-bar"):
                     yield Button("Build Latest", id="ver-latest", variant="success")
                     yield Button("Check Build", id="ver-status")
                 with Horizontal(id="actions-analyses", classes="action-bar"):
+                    yield Button("List", id="ana-list", variant="success")
                     yield Button("Get Spec", id="ana-get")
                     yield Button("Status", id="ana-status")
                     yield Button("View Log", id="ana-log")
                     yield Button("Plots", id="ana-plots")
+                    yield Button("Datasets", id="ana-datasets")
+                with Horizontal(id="actions-datasets", classes="action-bar"):
+                    yield Button("List", id="ds-list", variant="success")
+                    yield Button("Get", id="ds-get")
+                    yield Button("Provenance", id="ds-provenance")
+                    yield Button("Fetch", id="ds-fetch")
+                    yield Button("Tags", id="ds-tags")
+                    yield Button("Add Tag", id="ds-tag")
+                    yield Button("Attributes", id="ds-attributes")
                 with Horizontal(id="actions-workers", classes="action-bar"):
                     yield Button("Start Worker", id="wrk-start", variant="success")
                     yield Button("Submit Task", id="wrk-submit", variant="success")
@@ -612,7 +644,7 @@ class AtlantisTUI(App[None]):
         self._animate_banner()
         self.set_interval(0.1, self._animate_banner)
         # Hide all action bars initially
-        for domain in ("simulations", "simulators", "analyses", "workers"):
+        for domain in ("simulations", "simulators", "analyses", "datasets", "workers"):
             self.query_one(f"#actions-{domain}").display = False
         self.write_log("[dim]Simulating Microbial Systems — Interactive Terminal[/dim]")
         self.write_log(f"[dim]Server: {self.base_url.name} ({self.base_url.value})[/dim]")
@@ -622,7 +654,7 @@ class AtlantisTUI(App[None]):
     def _show_domain(self, domain: str) -> None:
         """Show the action bar for *domain* and hide the others."""
         self._active_domain = domain
-        for d in ("simulations", "simulators", "analyses", "workers"):
+        for d in ("simulations", "simulators", "analyses", "datasets", "workers"):
             self.query_one(f"#actions-{d}").display = d == domain
 
     def _animate_banner(self) -> None:
@@ -644,6 +676,7 @@ class AtlantisTUI(App[None]):
         self.write_log("")
 
     def _populate_table(self, columns: list[str], rows: list[list[str]]) -> None:
+        self._listing = ""
         table = self.query_one("#data-table", DataTable)
         table.clear(columns=True)
         for col in columns:
@@ -673,6 +706,9 @@ class AtlantisTUI(App[None]):
         elif bid == "nav-analyses":
             self._show_domain("analyses")
             self._do_ana_list()
+        elif bid == "nav-datasets":
+            self._show_domain("datasets")
+            self._do_ds_list("")
         elif bid == "nav-workers":
             self._show_domain("workers")
             self._do_wrk_refresh()
@@ -695,6 +731,8 @@ class AtlantisTUI(App[None]):
             self._ask_id_then("Simulator ID", self._do_sim_analyses_discover)
         elif bid == "sim-analysis":
             self._ask_id_then("Simulation ID", self._do_sim_standalone_analysis)
+        elif bid == "sim-datasets":
+            self._ask_id_then("Simulation ID", self._do_sim_datasets)
         # ── Simulator actions ──
         elif bid == "ver-status":
             self._ask_id_then("Simulator ID", self._do_ver_status)
@@ -709,6 +747,33 @@ class AtlantisTUI(App[None]):
             self._ask_id_then("Analysis ID", self._do_ana_log)
         elif bid == "ana-plots":
             self._ask_id_then("Analysis ID", self._do_ana_plots)
+        elif bid == "ana-list":
+            self._ask_text_then(
+                "Analysis filter (blank = newest 50)",
+                self._do_ana_list,
+                placeholder="experiment=… simulation=1002 status=completed tag=cd2",
+            )
+        elif bid == "ana-datasets":
+            self._ask_id_then("Analysis ID", self._do_ana_datasets)
+        # ── Dataset actions ──
+        elif bid == "ds-list":
+            self._ask_text_then(
+                "Dataset filter (blank = everything available)",
+                self._do_ds_list,
+                placeholder="kind=ptools-analysis tag=cd2 view=ptools_rna protocol=multiseed",
+            )
+        elif bid == "ds-get":
+            self._ask_id_then("Dataset ID", self._do_ds_get)
+        elif bid == "ds-provenance":
+            self._ask_id_then("Dataset ID", self._do_ds_provenance)
+        elif bid == "ds-fetch":
+            self._ask_id_then("Dataset ID", self._do_ds_fetch)
+        elif bid == "ds-tags":
+            self._do_ds_tags()
+        elif bid == "ds-tag":
+            self._ask_id_then("Dataset ID to tag", self._ask_tags_for)
+        elif bid == "ds-attributes":
+            self._do_ds_attributes()
         # ── Env worker actions ──
         elif bid == "wrk-start":
             self._ask_text_then("Simulator commit (image tag)", self._do_wrk_start, placeholder="e.g. f78672f")
@@ -733,7 +798,11 @@ class AtlantisTUI(App[None]):
     # ── Table row selection (double-click) ──────────────────────────────
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        """Double-click a completed simulation row → download outputs and open file explorer."""
+        """Select a dataset row → its provenance; an analysis row → the datasets it wrote; a
+        completed simulation row → download outputs and open file explorer."""
+        if self._listing in ("datasets", "analyses"):
+            self._open_listing_row(event)
+            return
         if self._active_domain != "simulations":
             return
         table = self.query_one("#data-table", DataTable)
@@ -1253,13 +1322,46 @@ class AtlantisTUI(App[None]):
     # ── Analyses ──────────────────────────────────────────────────────────
 
     @work(thread=True)
-    def _do_ana_list(self) -> None:
+    def _do_ana_list(self, filter_text: str = "") -> None:
+        """Analyses across all simulations, newest change first (``atlantis analysis list``)."""
         self._clear_log()
-        self.write_log("[cyan]Analyses — use the action buttons to inspect by ID.[/]")
-        self.write_log("[dim]No listing endpoint available; enter an analysis ID below.[/dim]\n")
-        # Clear the table since there's no list endpoint
-        table = self.query_one("#data-table", DataTable)
-        table.clear(columns=True)
+        try:
+            kwargs = parse_analysis_filter(filter_text)
+        except ValueError as e:
+            self.write_log(f"[red]Filter: {escape(str(e))}[/red]\n")
+            return
+        kwargs.setdefault("limit", 50)
+        where = f" where {escape(filter_text.strip())}" if filter_text.strip() else ""
+        self.write_log(f"[cyan]Loading analyses{where}...[/]")
+        try:
+            analyses = self.svc.list_analyses(**kwargs)
+        except Exception as e:
+            self.write_log(f"[red]Error: {escape(str(e))}[/red]\n")
+            return
+        rows = []
+        for analysis in analyses:
+            row = [escape(cell) for cell in analysis_row(analysis)]
+            color = _status_color(row[2])
+            row[2] = f"[{color}]{row[2]}[/{color}]"
+            rows.append(row)
+        self.call_from_thread(self._set_listing, "analyses", list(ANALYSIS_COLUMNS), rows)
+        if not analyses:
+            self.write_log("[yellow]No analyses match.[/yellow]\n")
+            return
+        self.write_log(f"[green]Loaded {len(analyses)} analyses[/green]")
+        if len(analyses) == kwargs["limit"]:
+            self.write_log(f"[dim]More: add offset={kwargs.get('offset', 0) + kwargs['limit']} to the filter[/dim]")
+        self.write_log("[dim]Select a row for the datasets that analysis wrote.[/dim]\n")
+
+    @work(thread=True)
+    def _do_ana_datasets(self, aid: int) -> None:
+        self.write_log(f"[cyan]Loading datasets written by analysis {aid}...[/]")
+        try:
+            page = self.svc.list_analysis_datasets(aid)
+        except Exception as e:
+            self.write_log(f"[red]Error: {escape(str(e))}[/red]\n")
+            return
+        self._show_dataset_page(page, f"Analysis {aid}")
 
     @work(thread=True)
     def _do_ana_get(self, aid: int) -> None:
@@ -1309,6 +1411,186 @@ class AtlantisTUI(App[None]):
             self.write_log("")
         except Exception as e:
             self.write_log(f"[red]Error: {e}[/red]\n")
+
+    # ── Datasets (data provenance slice 1) ────────────────────────────────
+    #
+    # Parity with `atlantis dataset`, `atlantis analysis datasets` and `atlantis
+    # simulation datasets`. The words come from app.dataset_views, so all three clients
+    # draw the same line between a file its run WROTE and one the S3 walk only FOUND
+    # UNDER a simulation's output that no analysis run claims.
+
+    def _set_listing(self, listing: str, columns: list[str], rows: list[list[str]]) -> None:
+        self._populate_table(columns, rows)
+        self._listing = listing
+
+    def _open_listing_row(self, event: DataTable.RowSelected) -> None:
+        row = self.query_one("#data-table", DataTable).get_row(event.row_key)
+        try:
+            row_id = int(str(row[0]))
+        except (ValueError, IndexError):
+            return
+        if self._listing == "datasets":
+            self._do_ds_provenance(row_id)
+        else:
+            self._do_ana_datasets(row_id)
+
+    def _show_dataset_page(self, page: DatasetListDTO, title: str) -> None:
+        rows = [[escape(cell) for cell in dataset_row(dataset)] for dataset in page.datasets]
+        self.call_from_thread(self._set_listing, "datasets", list(DATASET_COLUMNS), rows)
+        if not page.datasets:
+            self.write_log(f"[yellow]{escape(NO_DATASETS_HINT)}[/yellow]\n")
+            return
+        gone = sum(1 for dataset in page.datasets if not dataset.available)
+        suffix = f"  [red]{gone} gone[/red]" if gone else ""
+        self.write_log(f"[green]{escape(title)}: {len(page.datasets)} dataset(s)[/green]{suffix}")
+        if page.next_offset is not None:
+            self.write_log(f"[dim]More: add offset={page.next_offset} to the filter[/dim]")
+        self.write_log("[dim]Select a row for its provenance.[/dim]\n")
+
+    @work(thread=True)
+    def _do_ds_list(self, filter_text: str) -> None:
+        self._clear_log()
+        try:
+            kwargs = parse_dataset_filter(filter_text)
+        except ValueError as e:
+            self.write_log(f"[red]Filter: {escape(str(e))}[/red]\n")
+            return
+        where = f" where {escape(filter_text.strip())}" if filter_text.strip() else ""
+        self.write_log(f"[cyan]Loading datasets{where}...[/]")
+        try:
+            page = self.svc.list_datasets(**kwargs)
+        except Exception as e:
+            self.write_log(f"[red]Error: {escape(str(e))}[/red]\n")
+            return
+        self._show_dataset_page(page, "Datasets")
+
+    @work(thread=True)
+    def _do_sim_datasets(self, sid: int) -> None:
+        self.write_log(f"[cyan]Loading datasets of simulation {sid}...[/]")
+        try:
+            page = self.svc.list_simulation_datasets(sid)
+        except Exception as e:
+            self.write_log(f"[red]Error: {escape(str(e))}[/red]\n")
+            return
+        self._show_dataset_page(page, f"Simulation {sid}")
+        self.write_log("[dim]Its analyses' datasets: Analyses → List simulation=<id>, then select a row.[/dim]\n")
+
+    @work(thread=True)
+    def _do_ds_get(self, dataset_id: int) -> None:
+        try:
+            dataset = self.svc.get_dataset(dataset_id)
+        except Exception as e:
+            self.write_log(f"[red]Error: {escape(str(e))}[/red]\n")
+            return
+        self._show_json(dataset.model_dump(), title=f"Dataset {dataset_id}")
+
+    @work(thread=True)
+    def _do_ds_provenance(self, dataset_id: int) -> None:
+        try:
+            provenance = self.svc.get_dataset_provenance(dataset_id)
+        except Exception as e:
+            self.write_log(f"[red]Error: {escape(str(e))}[/red]\n")
+            return
+        dataset = provenance.dataset
+        gone = "" if dataset.available else "  [red]object gone[/red]"
+        self.write_log(f"[bold]Dataset {dataset.database_id}[/]  {escape(dataset.kind)}  {escape(dataset.uri)}{gone}")
+        producer = provenance.producer
+        if producer is None:
+            self.write_log(f"  [dim]{NO_PRODUCER_HINT}[/dim]")
+        else:
+            status = producer.status or "unknown"
+            color = _status_color(status)
+            self.write_log(
+                f"  [bold]{producer_relation(dataset, producer)}[/] {producer.kind} {producer.id}  "
+                f"{escape(producer.name or '')}  [{color}]{status}[/{color}]"
+            )
+            if is_unclaimed(dataset, producer):
+                self.write_log(f"    [dim]{UNCLAIMED_HINT}[/dim]")
+            if producer.trace_id:
+                self.write_log(f"    trace {producer.trace_id}  (hpcrun {producer.hpcrun_id})")
+            else:
+                self.write_log(f"    [dim]{NO_TRACE_HINT}[/dim]")
+            if producer.source:
+                self.write_log(f"    of {escape(json.dumps(producer.source, sort_keys=True))}")
+            if producer.tags:
+                self.write_log(f"    tags {escape(', '.join(producer.tags))}")
+        span = provenance.span
+        if span is not None:
+            self.write_log(f"  [bold]span[/] {escape(span.label)}  {span.span_id}  {span.status or 'open'}")
+        self.write_log(f"  [bold]read[/] {len(provenance.inputs)} registered dataset(s)")
+        for item in provenance.inputs:
+            self.write_log(f"    {item.database_id}  {escape(item.kind)}  {escape(item.uri)}")
+        self.write_log("")
+
+    @work(thread=True)
+    def _do_ds_fetch(self, dataset_id: int) -> None:
+        """Stream one dataset through the API into a temp dir and open it in the file browser."""
+        self.write_log(f"[cyan]Fetching dataset {dataset_id}...[/]")
+        try:
+            tmp = tempfile.TemporaryDirectory(prefix=f"atlantis_dataset{dataset_id}_")
+            self._temp_dirs.append(tmp)
+            path = self.svc.fetch_dataset(dataset_id, tmp.name + os.sep)
+        except Exception as e:
+            self.write_log(f"[red]Error: {escape(str(e))}[/red]\n")
+            return
+        self.write_log(
+            f"[green]Saved dataset {dataset_id}[/green] to {escape(str(path))} "
+            f"({format_bytes(path.stat().st_size)}) [dim]— removed when the TUI exits; "
+            "`atlantis dataset fetch` keeps a copy[/dim]\n"
+        )
+        self.call_from_thread(self.push_screen, FileBrowserScreen(path.parent))
+
+    @work(thread=True)
+    def _do_ds_tags(self) -> None:
+        try:
+            tags = self.svc.list_dataset_tags()
+        except Exception as e:
+            self.write_log(f"[red]Error: {escape(str(e))}[/red]\n")
+            return
+        rows = [[escape(name), str(count)] for name, count in tags.items()]
+        self.call_from_thread(self._set_listing, "tags", ["Tag", "Datasets"], rows)
+        self.write_log(
+            f"[green]{len(tags)} dataset tag(s)[/green]\n" if tags else "[dim]No dataset tags defined.[/dim]\n"
+        )
+
+    def _ask_tags_for(self, dataset_id: int) -> None:
+        self._ask_text_then(
+            f"Tags to add to dataset {dataset_id}",
+            lambda text: self._do_ds_tag(dataset_id, text),
+            placeholder="cd2 demo  (space- or comma-separated)",
+        )
+
+    @work(thread=True)
+    def _do_ds_tag(self, dataset_id: int, text: str) -> None:
+        tags = text.replace(",", " ").split()
+        if not tags:
+            self.write_log("[yellow]No tags given.[/yellow]\n")
+            return
+        try:
+            dataset = self.svc.tag_dataset(dataset_id, tags)
+        except Exception as e:
+            self.write_log(f"[red]Error: {escape(str(e))}[/red]\n")
+            return
+        self.write_log(f"[green]Tagged dataset {dataset_id}[/green]  tags: {escape(', '.join(dataset.tags))}\n")
+
+    @work(thread=True)
+    def _do_ds_attributes(self) -> None:
+        try:
+            values = self.svc.list_dataset_attributes()
+        except Exception as e:
+            self.write_log(f"[red]Error: {escape(str(e))}[/red]\n")
+            return
+        rows = []
+        for key, distinct in values.items():
+            shown = ", ".join(str(value) for value in distinct[:20])
+            more = f"  (+{len(distinct) - 20} more)" if len(distinct) > 20 else ""
+            rows.append([escape(key), escape(shown + more)])
+        self.call_from_thread(self._set_listing, "attributes", ["Attribute", "Values"], rows)
+        self.write_log(
+            f"[green]{len(values)} attribute(s)[/green] [dim]— filter on any: List → variant=0[/dim]\n"
+            if values
+            else "[dim]No dataset attributes recorded.[/dim]\n"
+        )
 
     # ── Demo S3 Download ──────────────────────────────────────────────────
 
