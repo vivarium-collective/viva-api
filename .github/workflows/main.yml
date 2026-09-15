@@ -25,6 +25,23 @@ jobs:
       - name: Run checks
         run: make check
 
+      # The vendored PTools viewer patch (assets/ptools/overrides/) is JavaScript, so
+      # neither `make check` (pre-commit/ruff) nor the pytest job exercises it. Uses the
+      # node preinstalled on ubuntu-latest -- the tests import only `fs` and `path`, so a
+      # setup-node action would add supply-chain surface for no benefit.
+      - name: Test vendored ptools overrides (JavaScript)
+        run: |
+          node --version
+          shopt -s nullglob
+          tests=(assets/ptools/overrides/test_*.js)
+          if [ ${#tests[@]} -eq 0 ]; then
+            echo "no override tests found -- expected at least one"; exit 1
+          fi
+          for t in "${tests[@]}"; do
+            echo "--- $t"
+            node "$t"
+          done
+
   tests-and-type-check:
     runs-on: ubuntu-latest
     strategy:
