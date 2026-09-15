@@ -3,7 +3,7 @@ import enum
 import logging
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import ForeignKey, Index, UniqueConstraint, func
+from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs, AsyncEngine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -101,6 +101,9 @@ class JobTypeDB(enum.Enum):
     SIMULATION = "simulation"
     PARCA = "parca"
     BUILD_IMAGE = "build_image"
+    # A standalone analysis run (POST /simulations/{id}/analysis) as its own traced run
+    # (docs/plan-data-provenance.md §4b). DB label is the member NAME, as create_all stores.
+    ANALYSIS = "analysis"
 
     def to_job_type(self) -> JobType:
         return JobType(self.value)
@@ -152,6 +155,10 @@ class ORMHpcRun(Base):
         ForeignKey("parca_dataset.id"), nullable=True, index=True
     )
     jobref_simulator_id: Mapped[int | None] = mapped_column(ForeignKey("simulator.id"), nullable=True, index=True)
+    # Data provenance slice 1: set only on a JobTypeDB.ANALYSIS row -- a standalone
+    # analysis run, whose events are ingested against this row and whose files are
+    # attributed to the analysis via the ``analysis_id`` in its trace baggage.
+    jobref_analysis_id: Mapped[int | None] = mapped_column(ForeignKey("analysis.id"), nullable=True, index=True)
     # Chain-dispatch campaign fields (backlog item 33: per-generation task
     # decomposition via individual per-seed AWS Batch job chains, each generation
     # its own job chained natively via dependsOn). NULL for every non-campaign
@@ -225,7 +232,12 @@ class ORMHpcRun(Base):
         return JobId(value=self.job_id_ext, backend=JobBackend(self.job_backend))
 
     def to_hpc_run(self) -> HpcRun:
-        ref_id = self.jobref_simulation_id or self.jobref_parca_dataset_id or self.jobref_simulator_id
+        ref_id = (
+            self.jobref_simulation_id
+            or self.jobref_parca_dataset_id
+            or self.jobref_simulator_id
+            or self.jobref_analysis_id
+        )
         if ref_id is None:
             raise RuntimeError("ORMHpcRun must have at least one job reference set.")
         return HpcRun(
@@ -433,6 +445,15 @@ class ORMAnalysis(Base):
     updated_at: Mapped[datetime.datetime | None] = mapped_column(
         nullable=True, server_default=func.now(), onupdate=func.now()
     )
+    # --- data provenance (docs/plan-data-provenance.md §6) ---
+    # ``source``: a ProvenanceRef -- what this analysis run is OF (a simulation plus
+    # coordinate, or an S3 store it read). ``tags``: selection tags, same shape and GIN
+    # index as ``simulation.tags``. The run row is created at submit; the files it
+    # writes are ``dataset`` rows, which are never pre-created (§2a).
+    source: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    tags: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default="[]")
+
+    __table_args__ = (Index("ix_analysis_tags", "tags", postgresql_using="gin"),)
 
     def to_dto(self) -> ExperimentAnalysisDTO:
         options = AnalysisConfigOptions(**self.config["analysis_options"])
@@ -457,6 +478,55 @@ class ORMAnalysis(Base):
             error_message=self.error_message,
             job_id_ext=self.job_id_ext,
         )
+
+
+class ORMDataset(Base):
+    """A consumable file set a run actually WROTE (docs/plan-data-provenance.md §2a, §6).
+
+    Never pre-created. A row is born when the event ingester scrapes an
+    ``artifact.written`` event out of a run's trace (``attributes.origin = "event"``),
+    or when the reconciliation walk finds an object no event registered
+    (``origin = "walk"``). "Expected but missing" is the producing run's status or an
+    ``error`` event -- never a placeholder row.
+
+    ``uri`` is the identity (a single object, or a prefix for multi-file kinds such as
+    a parquet partition). The producer is a foreign key to the run that wrote it; the
+    registry sets exactly one, the CHECK guarantees at least one. Rows are never
+    deleted: ``available`` flips false when the object is gone, so provenance never
+    dangles. ``attributes`` is deliberately open (variant, seed, generation, protocol,
+    n_tp, ...) and GIN-indexed for containment filters.
+    """
+
+    __tablename__ = "dataset"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    simulation_id: Mapped[int | None] = mapped_column(ForeignKey("simulation.id"), nullable=True, index=True)
+    parca_dataset_id: Mapped[int | None] = mapped_column(ForeignKey("parca_dataset.id"), nullable=True, index=True)
+    analysis_id: Mapped[int | None] = mapped_column(ForeignKey("analysis.id"), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(nullable=False)
+    view: Mapped[str | None] = mapped_column(nullable=True)
+    display_name: Mapped[str | None] = mapped_column(nullable=True)
+    uri: Mapped[str] = mapped_column(nullable=False, unique=True)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    sha256: Mapped[str | None] = mapped_column(nullable=True)
+    attributes: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default="{}")
+    tags: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default="[]")
+    source: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    available: Mapped[bool] = mapped_column(nullable=False, server_default=text("true"))
+    created_at: Mapped[datetime.datetime | None] = mapped_column(nullable=True, server_default=func.now())
+    updated_at: Mapped[datetime.datetime | None] = mapped_column(
+        nullable=True, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "simulation_id IS NOT NULL OR parca_dataset_id IS NOT NULL OR analysis_id IS NOT NULL",
+            name="ck_dataset_producer",
+        ),
+        Index("ix_dataset_kind_view", "kind", "view"),
+        Index("ix_dataset_attributes", "attributes", postgresql_using="gin"),
+        Index("ix_dataset_tags", "tags", postgresql_using="gin"),
+    )
 
 
 class ORMTask(Base):
