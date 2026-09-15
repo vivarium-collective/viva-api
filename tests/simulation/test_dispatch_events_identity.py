@@ -136,7 +136,10 @@ def test_the_known_dispatch_paths_are_all_still_covered() -> None:
 #: a caller using a different one. ``submit_standalone_analysis`` proved it: it
 #: shipped with no ``PBG_*`` at all and the guard stayed green.
 HAND_BUILT_ENV_DISPATCHES = {
-    "viva_api/simulation/simulation_service_k8s.py": {"submit_standalone_analysis"},
+    # submit_ray_native_analysis: the path standalone analyses of sms-ecoli/v2ecoli
+    # simulations actually take. It too shipped with no PBG_* while the guard was green
+    # (found in data provenance slice 1); the #646 fix had covered only the legacy path.
+    "viva_api/simulation/simulation_service_k8s.py": {"submit_standalone_analysis", "submit_ray_native_analysis"},
 }
 
 

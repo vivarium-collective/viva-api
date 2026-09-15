@@ -9,6 +9,11 @@ number and response below was read off the running system or the merged source,
 not transcribed from a design doc. Companion to [`DEPLOY.md`](DEPLOY.md); the
 *design* lives in [`plan-observability.md`](plan-observability.md).
 
+**One exception to "read off the running system":** [§4, "Artifacts become `dataset`
+rows"](#artifacts-become-dataset-rows-data-provenance-slice-1) arrived with data provenance
+slice 1 and was checked against its source and local tests only, not against a deployment.
+Its design is [`plan-data-provenance.md`](plan-data-provenance.md) (viva-api#657).
+
 For the **debugging procedure** — what to run, in what order, the blind spots, and
 the measured DuckDB / OOM / `rc=0` facts — use the `diagnose-run` skill
 (`.claude/skills/diagnose-run/SKILL.md`, in this repo). It carries the step-by-step
@@ -338,6 +343,10 @@ fetch is one small object, so neither hits the all-or-nothing cost of
 **Merged, not deployed** — verified 2026-09-14: `/analysis-figures` returns **404**
 on the 0.9.141 pod. Issue viva-api#648 (the motivating gap) is still open.
 
+The same files are also rows in the dataset registry (§4, "Artifacts become `dataset`
+rows"), which is the queryable form: `GET /api/v1/datasets?kind=ptools-analysis&view=ptools_rna`
+filters by attribute and tag, and `GET /api/v1/datasets/{id}/content` streams one file.
+
 ---
 
 ## 4. Ingest: what makes it into Postgres, and how it stopped
@@ -371,6 +380,113 @@ merely have pushed the parameter ceiling further out and made it look solved.
 > v2ecoli#803 (simulator ≥ 209): `lineage.py` emitted the event *outside* the
 > `LINEAGE_DEBUG_DIVISION` gate its own mirror-print respects. The ingest filter is
 > defence in depth either way.
+
+### Artifacts become `dataset` rows (data provenance slice 1)
+
+The ingester also turns the files a run reports writing into `dataset` rows: one row per
+thing a consumer fetches as a unit, with exactly one producer (a simulation, a ParCa
+dataset or an analysis run), attributes, tags and an `available` flag. **A dataset row is
+never pre-created.** It is born when an event says the file was written, or when the S3
+walk below finds the file. Design: [`plan-data-provenance.md`](plan-data-provenance.md).
+
+> **No producer emits `artifact.written` yet.** The emit side is a separate v2ecoli PR
+> (plan §9). Until it deploys, every row on a live system comes from the S3 walk, with
+> `attributes.origin = "walk"`.
+
+**The contract.** Emit it at `info` level (debug is stream-only, §3) inside the span that
+wrote the file:
+
+```
+event:    artifact.written
+payload:  uri         s3://bucket/key   an object, or a prefix for multi-file kinds
+          kind        parquet | parca-cache | ptools-analysis | analysis | figure | report | other
+          name, view  optional (view: ptools_rna, mass_fraction, ...)
+          bytes       optional -> size_bytes
+          sha256      optional
+          attributes  {} open map: variant, seed, generation, agent, protocol, n_tp, ...
+                      "tags": [...] adds tags; "display_name" overrides the generated one
+          error       optional: the file was NOT produced, and why -> available = false
+baggage:  sim_id, experiment_id, variant, lineage_seed, generation, analysis_id
+```
+
+One event per consumable unit: a parquet **partition prefix** (never a shard), one ptools
+TSV, one figure, one ParCa cache bundle prefix. An event whose `uri` is not `s3://` or whose
+`kind` is outside the vocabulary is **skipped and counted** (`IngestResult.artifacts_skipped`
+and a warning naming the first few reasons), never raised: one bad event must not stop the
+run's other files from registering.
+
+**What a row records.** `attributes.origin = "event"`, plus `hpcrun_id` and `span_id` (the
+way back to the span, which `GET /api/v1/datasets/{id}/provenance` follows) and `error` when
+given. `tags` = the simulation's tags ∪ `attributes.tags`. `source` = the simulation plus the
+coordinate: `variant` / `seed` / `generation` / `agent` / `protocol` from `attributes`, with
+`variant`, `seed` (baggage `lineage_seed`) and `generation` falling back to the baggage.
+
+**Producer resolution uses baggage and the run row, never span parentage** — worker spans
+can orphan to the trace root (§5):
+
+| the event | producer |
+|---|---|
+| `kind = parca-cache` | the run's simulation's `parca_dataset_id` (skipped if there is none) |
+| baggage `analysis_id` naming a real analysis row | that analysis |
+| on an `ANALYSIS` run | the run's own analysis |
+| on a `SIMULATION` run | that simulation |
+| anything else | skipped and counted |
+
+**A database failure withholds the events cursor**, so the next tick re-reads the same
+objects. Event inserts are idempotent on `(trace_id, source, seq)` and registration is an
+upsert on `uri`, so the retry is safe.
+
+**Standalone analyses are traced runs.** `POST /simulations/{id}/analysis` records the
+`analysis` row *before* submitting, injects its id as `analysis_id` in
+`PBG_TRACE_BAGGAGE` (correlation id `analysis-<id>`), and records an `HpcRun` with
+`job_type = ANALYSIS`. The ingester reads `ANALYSIS` runs on the `k8s` and `ray` backends
+as well as simulations, and the scheduler's `update_analysis_runs` tick ends the run's
+`HpcRun` when its analysis resolves, so the ingest grace window keys on a real `end_time`.
+An in-run gather still rides its simulation's trace, so its files resolve to the simulation
+unless the gather's baggage carries `analysis_id`.
+
+**The S3 walk (backfill and reconciliation).** Events are best-effort by design, so a
+scheduler tick, `reconcile_datasets`, walks the next `datasets_reconcile_batch_size` (25)
+simulations by id every `datasets_reconcile_batch_interval_seconds` (60 s), wrapping around;
+`datasets_reconcile_enabled` turns it off. One LIST of `<out_uri>/analyses/` per simulation,
+so a full cycle over N simulations costs N (paginated) listings. In each bundle directory it
+registers, with `origin = "walk"`:
+
+| path under the bundle | kind | notes |
+|---|---|---|
+| `ptools/*.tsv` | `ptools-analysis` | `n_tp` from a ranged read of the header, re-read only when the size changes |
+| `viz/*.html`, `*.svg`, `*.png` | `figure` | |
+| `analysis.json` | `report` | listed, never read (240 MB seen) |
+| anything else (`driver.log`, …) | — | not a dataset |
+
+View, protocol and coordinate come from v2ecoli's `<name>__<group>` file names
+(`ptools_rna_multiseed__variant=0.tsv`, `ptools_rna__variant=0_seed=3_gen=12_agent=000.tsv`).
+
+**The walk never creates run rows.** A bundle belongs to the analysis run whose `result_uri`
+is the bundle directory; a bundle no run claims (a hand-dispatched fill, say) is attributed
+to the **simulation** it sits under, and `origin = "walk"` says nothing claimed it. When a real
+producer is recorded later, the next walk moves the rows: a write that names a producer
+replaces the row's producer. The walk never rewrites an event-sourced row, but availability
+is a fact about the object, so it marks any row whose object (or whole bundle directory) is
+gone `available = false`, and back when the object returns. The CD2 backfill,
+`scripts/import_cd2_datasets.py --manifest … [--apply]`, registers and tags the campaign's
+bundles through the same code.
+
+**Reading it.**
+
+```console
+$ uv run atlantis dataset list --kind ptools-analysis --tag cd2 --attr variant=0
+$ uv run atlantis dataset provenance <id>          # producer run, trace, span, inputs
+$ uv run atlantis dataset fetch <id> --dest ./debug/
+$ uv run atlantis simulation datasets <id> [--include-analyses]
+$ uv run atlantis analysis list --status completed --source sim:<id>
+```
+
+`GET /api/v1/datasets` takes `kind`, `view`, `tag`, `attr=<key>=<value>` (a JSON value keeps
+its type: `variant=0` is the integer, `agent=000` a string), producer ids, `source=sim:<id>`,
+`available=true|false|any`, `since` and `limit` ≤ 200 / `offset`. `GET /api/v1/analyses/{id}`
+reports `status` and `n_datasets` separately: rows lag ingestion, so "running, 0 datasets"
+and "done, 0 datasets" mean different things.
 
 ---
 
@@ -435,6 +551,14 @@ property of bypassing the dispatcher, not a gap in the engine.
 
 **The standalone analysis path, until #646 deploys.** Covered in code, absent from
 0.9.141. See the merged-vs-live table at the top.
+
+### Open: a standalone analysis run's events are stored but have no read route
+
+Its `hpcrun_event` / `hpcrun_span` rows are ingested (§4), but `GET
+/simulations/{id}/events` reads the *simulation's* run, and there is no
+`/analyses/{id}/events`. Today the way in is a dataset's
+`GET /api/v1/datasets/{id}/provenance`, which names the analysis run's `hpcrun_id` and
+`trace_id`, and the database itself.
 
 ---
 

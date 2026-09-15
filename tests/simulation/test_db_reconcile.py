@@ -9,7 +9,8 @@ The fingerprint vectors below are the same length as LEGACY_FINGERPRINTS:
      compose_hpcrun.job_id_ext, hpcrun.chain_final_job_ids,
      jobstatusdb-pending-and-cancelled-uppercase, hpcrun.chain_current_job_ids,
      hpcrun.multi_node_composite_id, env_worker_task, hpcrun.external_job_ids,
-     compose_simulation.analysis_options, task-table, hpcrun_event]
+     compose_simulation.analysis_options, task-table, hpcrun_event,
+     hpcrun_event.component, jobtypedb-ANALYSIS, dataset-table]
 
 These vectors have to grow with every migration -- that is the fingerprint
 maintenance contract in CLAUDE.md making itself felt, and it is deliberate: a
@@ -19,7 +20,7 @@ stamped stale.
 
 from viva_api.simulation.db_reconcile import LEGACY_FINGERPRINTS, DbState, classify
 
-HEAD = "e3a9c1d70b62"
+HEAD = "c9a1e3f5b7d2"
 # Mirrors LEGACY_FINGERPRINTS ordering.
 REVS = [
     "fb7621a73e24",
@@ -37,6 +38,9 @@ REVS = [
     "f76e43d01841",
     "d7e2f4a6c8b0",
     "a3b5c7d9e1f2",
+    "e3a9c1d70b62",
+    "b2f6d8e0a4c7",
+    "c9a1e3f5b7d2",
 ]
 
 
@@ -46,6 +50,8 @@ def test_managed_database_takes_upgrade_path() -> None:
         fingerprint=[
             True,
             True,
+            False,
+            False,
             False,
             False,
             False,
@@ -90,6 +96,8 @@ def test_managed_takes_precedence_even_with_odd_fingerprint() -> None:
             False,
             False,
             False,
+            False,
+            False,
         ],
         head_revision=HEAD,
     )
@@ -100,6 +108,8 @@ def test_fresh_database_when_no_tables_and_no_version() -> None:
     diag = classify(
         alembic_revision=None,
         fingerprint=[
+            False,
+            False,
             False,
             False,
             False,
@@ -144,6 +154,8 @@ def test_legacy_matches_baseline_only() -> None:
             False,
             False,
             False,
+            False,
+            False,
         ],
         head_revision=HEAD,
     )
@@ -157,6 +169,8 @@ def test_legacy_matches_middle_revision() -> None:
         fingerprint=[
             True,
             True,
+            False,
+            False,
             False,
             False,
             False,
@@ -198,6 +212,8 @@ def test_legacy_matches_cancelled_revision() -> None:
             False,
             False,
             False,
+            False,
+            False,
         ],
         head_revision=HEAD,
     )
@@ -213,6 +229,8 @@ def test_legacy_matches_tags_revision() -> None:
             True,
             True,
             True,
+            False,
+            False,
             False,
             False,
             False,
@@ -252,6 +270,8 @@ def test_legacy_matches_analysis_revision() -> None:
             False,
             False,
             False,
+            False,
+            False,
         ],
         head_revision=HEAD,
     )
@@ -269,6 +289,8 @@ def test_legacy_matches_compose_hpcrun_revision() -> None:
             True,
             True,
             True,
+            False,
+            False,
             False,
             False,
             False,
@@ -306,6 +328,8 @@ def test_legacy_matches_chain_dispatch_revision() -> None:
             False,
             False,
             False,
+            False,
+            False,
         ],
         head_revision=HEAD,
     )
@@ -325,6 +349,8 @@ def test_legacy_matches_pending_and_cancelled_uppercase_revision() -> None:
             True,
             True,
             True,
+            False,
+            False,
             False,
             False,
             False,
@@ -353,6 +379,8 @@ def test_legacy_matches_chain_current_revision() -> None:
             True,
             True,
             True,
+            False,
+            False,
             False,
             False,
             False,
@@ -389,6 +417,8 @@ def test_legacy_matches_analysis_options_revision() -> None:
             False,
             False,
             False,
+            False,
+            False,
         ],
         head_revision=HEAD,
     )
@@ -401,17 +431,81 @@ def test_legacy_matches_task_one_short_of_head() -> None:
     the second-to-last revision f76e43d01841, not head."""
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True, True, True, True, True, True, True, True, True, True, True, True, True, False, False, False],
+        fingerprint=[
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            False,
+            False,
+            False,
+            False,
+            False,
+        ],
         head_revision=HEAD,
     )
     assert diag.state is DbState.LEGACY
     assert diag.matched_revision == "f76e43d01841"
 
 
+def test_legacy_pre_provenance_create_all_database_matches_the_component_rename() -> None:
+    """A create_all database built before data provenance: every marker up to
+    e3a9c1d70b62, neither the ANALYSIS label nor the dataset table. It must stamp
+    at e3a9c1d70b62 so ``upgrade head`` runs BOTH new revisions -- the real shape
+    of a site whose app bootstrapped its schema on the previous release."""
+    diag = classify(
+        alembic_revision=None,
+        fingerprint=[True] * 16 + [False, False],
+        head_revision=HEAD,
+    )
+    assert diag.state is DbState.LEGACY
+    assert diag.matched_revision == "e3a9c1d70b62"
+
+
+def test_legacy_matches_the_analysis_jobtype_one_short_of_head() -> None:
+    """ANALYSIS label present, dataset table absent -- stamps at b2f6d8e0a4c7, so
+    only the dataset revision runs."""
+    diag = classify(
+        alembic_revision=None,
+        fingerprint=[True] * 17 + [False],
+        head_revision=HEAD,
+    )
+    assert diag.state is DbState.LEGACY
+    assert diag.matched_revision == "b2f6d8e0a4c7"
+
+
 def test_legacy_matches_head_when_all_markers_present() -> None:
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True],
+        fingerprint=[
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+        ],
         head_revision=HEAD,
     )
     assert diag.state is DbState.LEGACY
@@ -434,7 +528,26 @@ def test_legacy_matches_fresh_create_all_database() -> None:
     """
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True],
+        fingerprint=[
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+        ],
         head_revision=HEAD,
     )
     assert diag.state is DbState.LEGACY
@@ -448,6 +561,8 @@ def test_inconsistent_when_later_marker_present_but_earlier_missing() -> None:
             True,
             False,
             True,
+            False,
+            False,
             False,
             False,
             False,
@@ -489,6 +604,8 @@ def test_inconsistent_when_baseline_missing_but_later_present() -> None:
             False,
             False,
             False,
+            False,
+            False,
         ],
         head_revision=HEAD,
     )
@@ -502,6 +619,8 @@ def test_markers_are_reported_with_labels() -> None:
         fingerprint=[
             True,
             True,
+            False,
+            False,
             False,
             False,
             False,
@@ -538,6 +657,8 @@ def test_markers_are_reported_with_labels() -> None:
         False,
         False,
         False,
+        False,
+        False,
     ]
     assert any("analysis.n_tp" in label for label in labels)
     assert any("chain_final_job_ids" in label for label in labels)
@@ -548,6 +669,8 @@ def test_markers_are_reported_with_labels() -> None:
     assert any("analysis_options" in label for label in labels)
     assert any("task" in label for label in labels)
     assert any("hpcrun_event" in label for label in labels)
+    assert any("ANALYSIS" in label for label in labels)
+    assert any("dataset" in label for label in labels)
 
 
 def test_the_fingerprint_table_and_its_predicates_stay_aligned() -> None:

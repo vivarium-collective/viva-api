@@ -3,11 +3,12 @@ import pathlib
 import random
 from typing import Any, ParamSpec, TypeVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from viva_api.common import StrEnumBase
 from viva_api.common.models import DataId, JobStatus
 from viva_api.config import Settings, get_settings
+from viva_api.simulation.models import SimulationSpan
 
 MAX_ANALYSIS_CPUS = 3
 
@@ -57,7 +58,9 @@ class OutputFileMetadata(BaseModel):
 
 
 class TsvOutputFile(OutputFileMetadata):
-    pass
+    # GET /analyses/{id}/data: the file's key relative to the analysis result prefix. Set when
+    # ``filename`` is aliased to ``<view>.tsv`` so the real name is never lost.
+    path: str | None = None
 
 
 class OutputFile(BaseModel):
@@ -294,6 +297,12 @@ class ExperimentAnalysisDTO(BaseModel):
     backend: str | None = None
     error_message: str | None = None
     job_id_ext: str | None = None  # K8s job name (Ray-native standalone analysis)
+    # --- provenance (docs/plan-data-provenance.md §2a) ---
+    source: dict[str, Any] | None = None  # a ProvenanceRef: what this analysis run is OF
+    tags: list[str] = Field(default_factory=list)
+    # Set by GET /analyses/{id} only: how many available datasets the run has written so far.
+    # Reported apart from ``status`` so "running, 0 datasets" and "done, 0 datasets" differ.
+    n_datasets: int | None = None
 
 
 class AnalysisRun(BaseModel):
@@ -394,3 +403,86 @@ class JobId(int):
     def new(cls) -> "JobId":
         value = random.randint(JobId.start, JobId.end)
         return JobId(value)
+
+
+# --- datasets (docs/plan-data-provenance.md §2a, §3, §6) ---
+
+#: What a consumer can do with a dataset. Mirrors the ``artifact.written`` contract's
+#: ``kind`` vocabulary; the registry rejects anything else.
+DATASET_KINDS: tuple[str, ...] = ("parquet", "parca-cache", "ptools-analysis", "analysis", "figure", "report", "other")
+
+#: How a dataset row came to exist, recorded as ``attributes["origin"]``: scraped
+#: from a run's trace, or found by the reconciliation walk. A walk never overwrites
+#: an event-sourced row.
+DATASET_ORIGIN_EVENT = "event"
+DATASET_ORIGIN_WALK = "walk"
+DATASET_ORIGINS: tuple[str, ...] = (DATASET_ORIGIN_EVENT, DATASET_ORIGIN_WALK)
+
+#: Page-size ceiling for dataset listings.
+DATASET_LIST_MAX_LIMIT = 200
+
+
+class DatasetDTO(BaseModel):
+    """One consumable file set a run actually wrote (a ``dataset`` row).
+
+    Never pre-created: it exists only once a run's trace was scraped or the walk found
+    the object. Exactly one producer id is set by the registry. ``available`` is false
+    once the object is gone; the row itself is kept so provenance never dangles.
+    """
+
+    database_id: int
+    kind: str
+    uri: str
+    simulation_id: int | None = None
+    parca_dataset_id: int | None = None
+    analysis_id: int | None = None
+    view: str | None = None
+    display_name: str | None = None
+    size_bytes: int | None = None
+    sha256: str | None = None
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+    source: dict[str, Any] | None = None
+    available: bool = True
+    created_at: str | None = None
+    updated_at: str | None = None
+
+    @property
+    def origin(self) -> str | None:
+        value = self.attributes.get("origin")
+        return value if isinstance(value, str) else None
+
+
+class DatasetListDTO(BaseModel):
+    """A page of datasets. ``next_offset`` is ``None`` on the last page."""
+
+    datasets: list[DatasetDTO]
+    limit: int
+    offset: int
+    next_offset: int | None = None
+
+
+class DatasetProducerDTO(BaseModel):
+    """The run that wrote a dataset. ``kind`` is ``simulation``, ``analysis`` or ``parca``;
+    ``hpcrun_id``/``trace_id``/``correlation_id`` are set when the run has a run row (an
+    analysis row recorded by a backfill has none). A dataset the S3 walk found under a
+    simulation's output that no analysis run claims names the simulation."""
+
+    kind: str
+    id: int
+    name: str | None = None
+    status: str | None = None
+    source: dict[str, Any] | None = None
+    tags: list[str] = Field(default_factory=list)
+    hpcrun_id: int | None = None
+    trace_id: str | None = None
+    correlation_id: str | None = None
+
+
+class DatasetProvenanceDTO(BaseModel):
+    """``GET /datasets/{id}/provenance``: one hop back from a dataset."""
+
+    dataset: DatasetDTO
+    producer: DatasetProducerDTO | None = None
+    span: SimulationSpan | None = None  # the span the artifact.written event came from
+    inputs: list[DatasetDTO] = Field(default_factory=list)  # registered datasets the producer's source names

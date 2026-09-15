@@ -128,3 +128,24 @@ def test_settings_doubles_without_real_strings_fall_back_safely() -> None:
 def test_a_request_cannot_set_pbg_env_itself() -> None:
     with pytest.raises(DispatchValidationError, match="PBG_"):
         validate_task_env({"PBG_TRACEPARENT": "00-abc-def-01"})
+
+
+def test_events_env_names_the_analysis_in_baggage_only_when_given() -> None:
+    """Data provenance slice 1: a standalone analysis run's baggage carries its
+    analysis id; every other dispatch's baggage is unchanged."""
+    from unittest.mock import MagicMock
+
+    from viva_api.common.events_env import PBG_TRACE_BAGGAGE, events_env
+
+    settings = MagicMock()
+    settings.events_enabled = True
+    settings.events_s3_prefix = ""
+    settings.s3_work_bucket = ""
+
+    without = events_env(correlation_id="c", experiment_id="exp", backend="k8s", settings=settings, sim_id=7)
+    assert without[PBG_TRACE_BAGGAGE] == "sim_id=7,experiment_id=exp"
+
+    named = events_env(
+        correlation_id="analysis-42", experiment_id="exp", backend="k8s", settings=settings, sim_id=7, analysis_id=42
+    )
+    assert named[PBG_TRACE_BAGGAGE] == "sim_id=7,experiment_id=exp,analysis_id=42"

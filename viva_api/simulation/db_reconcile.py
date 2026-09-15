@@ -214,6 +214,21 @@ async def _marker_hpcrun_event_component(conn: AsyncConnection) -> bool:
     return await _column_exists(conn, "hpcrun_event", "component")
 
 
+async def _marker_jobtype_analysis(conn: AsyncConnection) -> bool:
+    """True once ``jobtypedb`` has the ``ANALYSIS`` label (b2f6d8e0a4c7, data provenance).
+
+    Upper-case only: the label is the member NAME, which is what both b2f6d8e0a4c7
+    and ``create_all`` write -- no lower-case spelling ever existed to accept."""
+    return await _enum_has_value(conn, "jobtypedb", "ANALYSIS")
+
+
+async def _marker_dataset_table(conn: AsyncConnection) -> bool:
+    """True once the ``dataset`` table exists (c9a1e3f5b7d2, data provenance).
+
+    Satisfied for free by a create_all database -- ORMDataset is a Base table."""
+    return await _table_exists(conn, "dataset")
+
+
 # (revision, human-readable marker description) -- predicates are positional, in
 # _LEGACY_PREDICATES
 # One marker per revision reachable by a legacy create_all database. New entries
@@ -237,6 +252,8 @@ LEGACY_FINGERPRINTS: list[tuple[str, str]] = [
     ("d7e2f4a6c8b0", "table 'task' exists"),
     ("a3b5c7d9e1f2", "table 'hpcrun_event' exists"),
     ("e3a9c1d70b62", "hpcrun_event.component column exists (renamed from the draft 'layer')"),
+    ("b2f6d8e0a4c7", "enum jobtypedb has value 'ANALYSIS'"),
+    ("c9a1e3f5b7d2", "table 'dataset' exists"),
 ]
 _LEGACY_PREDICATES = [
     _marker_baseline,
@@ -255,6 +272,8 @@ _LEGACY_PREDICATES = [
     _marker_task_table,
     _marker_hpcrun_events,
     _marker_hpcrun_event_component,
+    _marker_jobtype_analysis,
+    _marker_dataset_table,
 ]
 
 

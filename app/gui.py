@@ -1292,5 +1292,293 @@ def _():
     return
 
 
+@app.cell
+def _(mo):
+    # ── Datasets and analyses (data provenance slice 1) ─────────────────────
+    #
+    # Parity with `atlantis dataset`, `atlantis analysis list|datasets`, `atlantis
+    # simulation datasets` and the TUI's Datasets panel. The words come from
+    # app.dataset_views, so all three clients draw the same line between a file its run
+    # WROTE and a bundle the S3 walk only FOUND UNDER a simulation's output that no
+    # analysis run claims.
+    from viva_api.analysis.models import DATASET_KINDS as _DATASET_KINDS
+
+    ds_kind = mo.ui.dropdown(options=["any", *_DATASET_KINDS], value="any", label="Kind")
+    ds_filter = mo.ui.text(
+        label="Filter", placeholder="tag=cd2 view=ptools_rna simulation=1002 protocol=multiseed", full_width=True
+    )
+    ds_list_button = mo.ui.run_button(label="\U0001f50d List datasets", kind="success")
+    ds_vocab_button = mo.ui.run_button(label="\U0001f3f7 Tags & attributes")
+    ds_id = mo.ui.number(label="Dataset ID", start=1, stop=999999999, value=1)
+    ds_get_button = mo.ui.run_button(label="Record")
+    ds_provenance_button = mo.ui.run_button(label="\U0001f9ec Provenance")
+    ds_dest = mo.ui.text(label="Save to", placeholder="blank = current directory")
+    ds_fetch_button = mo.ui.run_button(label="\u2b07 Fetch")
+    ds_tags = mo.ui.text(label="Tags", placeholder="cd2 demo")
+    ds_tag_button = mo.ui.run_button(label="\u2795 Add tags")
+    ds_analysis_filter = mo.ui.text(
+        label="Analysis filter", placeholder="experiment=… simulation=1002 status=completed tag=cd2", full_width=True
+    )
+    ds_analyses_button = mo.ui.run_button(label="\U0001f4ca List analyses", kind="success")
+    ds_owner_id = mo.ui.number(label="Simulation or analysis ID", start=1, stop=999999999, value=1)
+    ds_simulation_button = mo.ui.run_button(label="Simulation's datasets")
+    ds_analysis_button = mo.ui.run_button(label="Analysis's datasets")
+    return (
+        ds_analyses_button,
+        ds_analysis_button,
+        ds_analysis_filter,
+        ds_dest,
+        ds_fetch_button,
+        ds_filter,
+        ds_get_button,
+        ds_id,
+        ds_kind,
+        ds_list_button,
+        ds_owner_id,
+        ds_provenance_button,
+        ds_simulation_button,
+        ds_tag_button,
+        ds_tags,
+        ds_vocab_button,
+    )
+
+
+@app.cell
+def _(  # noqa: C901
+    card,
+    ds_analyses_button,
+    ds_analysis_button,
+    ds_analysis_filter,
+    ds_dest,
+    ds_fetch_button,
+    ds_filter,
+    ds_get_button,
+    ds_id,
+    ds_kind,
+    ds_list_button,
+    ds_owner_id,
+    ds_provenance_button,
+    ds_simulation_button,
+    ds_tag_button,
+    ds_tags,
+    ds_vocab_button,
+    get_svc,
+    json,
+    mo,
+    traceback,
+):
+    # One rendered cell for the controls AND the result: the notebook is laid out as a
+    # grid, and a result in a cell of its own would need a grid slot of its own to show.
+    import html as _html
+
+    from app.dataset_views import (
+        ANALYSIS_COLUMNS as _ANALYSIS_COLUMNS,
+    )
+    from app.dataset_views import (
+        DATASET_COLUMNS as _DATASET_COLUMNS,
+    )
+    from app.dataset_views import (
+        NO_DATASETS_HINT as _NO_DATASETS_HINT,
+    )
+    from app.dataset_views import (
+        NO_PRODUCER_HINT as _NO_PRODUCER_HINT,
+    )
+    from app.dataset_views import (
+        NO_TRACE_HINT as _NO_TRACE_HINT,
+    )
+    from app.dataset_views import (
+        UNCLAIMED_HINT as _UNCLAIMED_HINT,
+    )
+    from app.dataset_views import (
+        analysis_row as _analysis_row,
+    )
+    from app.dataset_views import (
+        dataset_row as _dataset_row,
+    )
+    from app.dataset_views import (
+        format_bytes as _format_bytes,
+    )
+    from app.dataset_views import (
+        is_unclaimed as _is_unclaimed,
+    )
+    from app.dataset_views import (
+        parse_analysis_filter as _parse_analysis_filter,
+    )
+    from app.dataset_views import (
+        parse_dataset_filter as _parse_dataset_filter,
+    )
+    from app.dataset_views import (
+        producer_relation as _producer_relation,
+    )
+
+    def _bad_filter(error):
+        return mo.Html(card("Filter", "\u26a0\ufe0f", f"<code>{_html.escape(str(error))}</code>", color="yellow"))
+
+    def _dataset_table(page, title):
+        if not page.datasets:
+            return mo.md(f"_{_NO_DATASETS_HINT}_")
+        gone = sum(1 for dataset in page.datasets if not dataset.available)
+        note = f"**{_html.escape(title)}**: {len(page.datasets)} dataset(s)"
+        if gone:
+            note += f" · {gone} gone"
+        if page.next_offset is not None:
+            note += f" · more: add `offset={page.next_offset}` to the filter"
+        rows = [dict(zip(_DATASET_COLUMNS, _dataset_row(dataset), strict=False)) for dataset in page.datasets]
+        return mo.vstack([mo.md(note), mo.ui.table(data=rows, selection=None, label=title)])
+
+    def _provenance_card(provenance):
+        dataset = provenance.dataset
+        gone = "" if dataset.available else " <span class='memphis-status-failed'>object gone</span>"
+        lines = [f"<strong>{_html.escape(dataset.kind)}</strong> <code>{_html.escape(dataset.uri)}</code>{gone}"]
+        producer = provenance.producer
+        if producer is None:
+            lines.append(f"<em>{_NO_PRODUCER_HINT}</em>")
+        else:
+            lines.append(
+                f"<strong>{_producer_relation(dataset, producer)}</strong> {_html.escape(producer.kind)} "
+                f"{producer.id} {_html.escape(producer.name or '')} "
+                f"<em>{_html.escape(producer.status or 'unknown')}</em>"
+            )
+            if _is_unclaimed(dataset, producer):
+                lines.append(f"<em>{_UNCLAIMED_HINT}</em>")
+            if producer.trace_id:
+                lines.append(f"trace <code>{producer.trace_id}</code> (hpcrun {producer.hpcrun_id})")
+            else:
+                lines.append(f"<em>{_NO_TRACE_HINT}</em>")
+            if producer.source:
+                lines.append(f"of <code>{_html.escape(json.dumps(producer.source, sort_keys=True))}</code>")
+            if producer.tags:
+                lines.append(f"tags {_html.escape(', '.join(producer.tags))}")
+        span = provenance.span
+        if span is not None:
+            lines.append(f"span {_html.escape(span.label)} <code>{span.span_id}</code> {span.status or 'open'}")
+        lines.append(f"read {len(provenance.inputs)} registered dataset(s)")
+        lines.extend(
+            f"&nbsp;&nbsp;{item.database_id} {_html.escape(item.kind)} <code>{_html.escape(item.uri)}</code>"
+            for item in provenance.inputs
+        )
+        return mo.Html(card(f"Dataset {dataset.database_id}", "\U0001f9ec", "<br>".join(lines), color="cyan"))
+
+    _result = mo.md("")
+    _svc = get_svc()
+    try:
+        if ds_list_button.value:
+            _text = ds_filter.value if ds_kind.value == "any" else f"kind={ds_kind.value} {ds_filter.value}"
+            try:
+                _kwargs = _parse_dataset_filter(_text)
+            except ValueError as _error:
+                _result = _bad_filter(_error)
+            else:
+                _result = _dataset_table(_svc.list_datasets(**_kwargs), "Datasets")
+        elif ds_vocab_button.value:
+            _tags = _svc.list_dataset_tags()
+            _values = _svc.list_dataset_attributes()
+            _tag_rows = [{"Tag": name, "Datasets": count} for name, count in _tags.items()]
+            _value_rows = [
+                {
+                    "Attribute": key,
+                    "Values": ", ".join(str(v) for v in values[:20])
+                    + (f" (+{len(values) - 20} more)" if len(values) > 20 else ""),
+                }
+                for key, values in _values.items()
+            ]
+            _result = mo.hstack(
+                [
+                    mo.ui.table(data=_tag_rows, selection=None, label="Tags")
+                    if _tag_rows
+                    else mo.md("_No dataset tags defined._"),
+                    mo.ui.table(data=_value_rows, selection=None, label="Attributes")
+                    if _value_rows
+                    else mo.md("_No dataset attributes recorded._"),
+                ],
+                align="start",
+            )
+        elif ds_get_button.value:
+            _dataset = _svc.get_dataset(int(ds_id.value))
+            _record = _html.escape(json.dumps(_dataset.model_dump(), indent=2, default=str))
+            _result = mo.Html(
+                card(
+                    f"Dataset {_dataset.database_id}",
+                    "\U0001f4c4",
+                    f"<pre style='font-size:0.75rem;'>{_record}</pre>",
+                    color="cyan",
+                )
+            )
+        elif ds_provenance_button.value:
+            _result = _provenance_card(_svc.get_dataset_provenance(int(ds_id.value)))
+        elif ds_fetch_button.value:
+            _path = _svc.fetch_dataset(int(ds_id.value), ds_dest.value.strip() or None)
+            _result = mo.Html(
+                card(
+                    "Saved",
+                    "\u2b07",
+                    f"<code>{_html.escape(str(_path))}</code> ({_format_bytes(_path.stat().st_size)})",
+                    color="green",
+                )
+            )
+        elif ds_tag_button.value:
+            _new_tags = ds_tags.value.replace(",", " ").split()
+            if _new_tags:
+                _tagged = _svc.tag_dataset(int(ds_id.value), _new_tags)
+                _result = mo.Html(
+                    card(
+                        f"Tagged dataset {_tagged.database_id}",
+                        "\u2795",
+                        _html.escape(", ".join(_tagged.tags)),
+                        color="green",
+                    )
+                )
+            else:
+                _result = mo.md("_No tags given._")
+        elif ds_analyses_button.value:
+            try:
+                _filters = _parse_analysis_filter(ds_analysis_filter.value)
+            except ValueError as _error:
+                _result = _bad_filter(_error)
+            else:
+                _filters.setdefault("limit", 50)
+                _analyses = _svc.list_analyses(**_filters)
+                _analysis_rows = [dict(zip(_ANALYSIS_COLUMNS, _analysis_row(a), strict=False)) for a in _analyses]
+                _result = (
+                    mo.ui.table(data=_analysis_rows, selection=None, label=f"Analyses ({len(_analyses)})")
+                    if _analyses
+                    else mo.md("_No analyses match._")
+                )
+        elif ds_simulation_button.value:
+            _owner = int(ds_owner_id.value)
+            _result = _dataset_table(_svc.list_simulation_datasets(_owner), f"Simulation {_owner}")
+        elif ds_analysis_button.value:
+            _owner = int(ds_owner_id.value)
+            _result = _dataset_table(_svc.list_analysis_datasets(_owner), f"Analysis {_owner}")
+    except Exception:
+        _result = mo.Html(
+            card(
+                "Error",
+                "\u26a0\ufe0f",
+                f"<pre style='font-size:0.75rem;'>{_html.escape(traceback.format_exc())}</pre>",
+                color="magenta",
+            )
+        )
+
+    ds_panel = mo.vstack([
+        mo.md("### Datasets"),
+        mo.md(
+            "_The files runs wrote, each with its producer. A bundle the S3 walk found under a "
+            "simulation's output that no analysis run claims reads **found under**, never **written by**._"
+        ),
+        mo.hstack([ds_kind, ds_list_button, ds_vocab_button], justify="start"),
+        ds_filter,
+        mo.hstack([ds_id, ds_get_button, ds_provenance_button, ds_dest, ds_fetch_button], justify="start"),
+        mo.hstack([ds_tags, ds_tag_button], justify="start"),
+        mo.md("### Analyses"),
+        mo.hstack([ds_analyses_button], justify="start"),
+        ds_analysis_filter,
+        mo.hstack([ds_owner_id, ds_simulation_button, ds_analysis_button], justify="start"),
+        _result,
+    ])
+    ds_panel
+    return
+
+
 if __name__ == "__main__":
     app.run()

@@ -11,12 +11,20 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from viva_api.common import StrEnumBase
+from viva_api.common.models import JobStatus
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from rich.console import Console
 
+    from viva_api.analysis.models import (
+        DatasetDTO,
+        DatasetListDTO,
+        DatasetProducerDTO,
+        DatasetProvenanceDTO,
+        ExperimentAnalysisDTO,
+    )
     from viva_api.common.storage.file_service_s3 import FileServiceS3
 
 import httpx
@@ -25,6 +33,22 @@ from typer import Argument, Option
 
 from app.app_data_service import READ_CAPABILITIES, E2EDataService, get_data_service
 from app.cli_theme import display_json, get_console, print_banner, status_border, status_style
+from app.dataset_views import (
+    ANALYSIS_COLUMNS,
+    DATASET_COLUMNS,
+    NO_DATASETS_HINT,
+    NO_PRODUCER_HINT,
+    NO_TRACE_HINT,
+    UNCLAIMED_HINT,
+    analysis_status_label,
+    coordinate_label,
+    dataset_name,
+    format_bytes,
+    is_unclaimed,
+    origin_label,
+    producer_label,
+    producer_relation,
+)
 from app.tui import AtlantisTUI
 
 
@@ -205,12 +229,21 @@ class CliType(StrEnumBase):
     SIMULATION = "simulation"
     PARCA = "parca"
     ANALYSIS = "analysis"
+    DATASET = "dataset"
     COMPOSE = "compose"
     DEMO = "demo"
     HELP = "help"
     TUI = "tui"
     GUI = "gui"
     TKAPP = "tkapp"
+
+
+class DatasetAvailability(StrEnumBase):
+    """Which datasets a listing shows: those whose object exists, those whose object is gone, or both."""
+
+    TRUE = "true"
+    FALSE = "false"
+    ANY = "any"
 
 
 class ApiBaseUrl(StrEnumBase):
@@ -232,6 +265,7 @@ simulation_cli = typer.Typer(help="Run and inspect simulation workflows.")
 parca_cli = typer.Typer(help="Inspect parca (parameter calculator) datasets and runs.")
 analysis_cli = typer.Typer(help="Inspect analysis jobs and outputs.")
 task_cli = typer.Typer(help="Run a self-contained repo-path script on the in-region task compute (viva-api#631).")
+dataset_cli = typer.Typer(help="Find, fetch and trace the files runs wrote (data provenance).")
 compose_cli = typer.Typer(help="Compose (process-bigraph) simulation commands.")
 composite_cli = typer.Typer(
     help="Process-bigraph-native composite dispatch (item 101/109) -- N real, ray:-addressed "
@@ -250,6 +284,7 @@ cli.add_typer(simulation_cli, name="simulation")
 cli.add_typer(parca_cli, name="parca")
 cli.add_typer(analysis_cli, name="analysis")
 cli.add_typer(task_cli, name="task")
+cli.add_typer(dataset_cli, name="dataset")
 cli.add_typer(compose_cli, name="compose")
 cli.add_typer(composite_cli, name="composite")
 cli.add_typer(worker_cli, name="worker")
@@ -837,6 +872,7 @@ for _name, _sub in [
     ("simulation", simulation_cli),
     ("parca", parca_cli),
     ("analysis", analysis_cli),
+    ("dataset", dataset_cli),
     ("compose", compose_cli),
     ("demo", demo_cli),
 ]:
@@ -1945,6 +1981,38 @@ def simulation_outputs(
     console.print(f"[memphis.success]Saved simulation outputs to:[/] {archive_dir!s}")
 
 
+@simulation_cli.command("datasets", help="List the datasets a simulation run wrote (and, optionally, its analyses).")
+def simulation_datasets(
+    simulation_id: int = Argument(help="Simulation database ID."),
+    include_analyses: bool = Option(
+        default=False, help="Also datasets written by analyses of this simulation, not only by the run itself."
+    ),
+    kind: str | None = Option(default=None, help="Only this kind, e.g. ptools-analysis, figure, parquet."),
+    view: str | None = Option(default=None, help="Only this view, e.g. ptools_rna."),
+    tag: str | None = Option(default=None, help="Comma-separated tags; all must match."),
+    available: DatasetAvailability = Option(
+        default=DatasetAvailability.TRUE, help="true: object exists; false: object gone; any: both."
+    ),
+    limit: int = Option(default=100, help="Page size (max 200)."),
+    offset: int = Option(default=0, help="Rows to skip."),
+    as_json: bool = Option(False, "--json", help="Print the page as JSON."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+    page = data_service.list_simulation_datasets(
+        simulation_id,
+        include_analyses=include_analyses,
+        kind=kind,
+        view=view,
+        tag=tag,
+        available=available.value,
+        limit=limit,
+        offset=offset,
+    )
+    _render_datasets(page, console, title=f"Datasets — sim {simulation_id}", as_json=as_json)
+
+
 @simulation_cli.command("analysis", help="Run standalone analysis on existing simulation output.")
 def simulation_analysis(
     simulation_id: int = Argument(help="Simulation database ID (must be completed)."),
@@ -1997,6 +2065,62 @@ def parca_status(
 # -- Analysis commands --
 
 
+@analysis_cli.command("list", help="List analyses across all simulations, newest change first.")
+def analysis_list(
+    experiment_id: str | None = Option(default=None, help="Only this experiment ID."),
+    simulation: int | None = Option(default=None, help="Only analyses of this simulation database ID."),
+    status: JobStatus | None = Option(
+        default=None, help="completed (ready), failed, or any other value for still computing."
+    ),
+    backend: str | None = Option(default=None, help="Only this backend, e.g. ray, k8s, batch."),
+    source: str | None = Option(default=None, help="What the analysis is of: sim:1002, or JSON."),
+    tag: str | None = Option(default=None, help="Comma-separated tags; all must match (e.g. cd2)."),
+    since: str | None = Option(default=None, help="Only analyses changed at or after this ISO time."),
+    limit: int | None = Option(default=50, help="Page size; 0 for every match."),
+    offset: int = Option(default=0, help="Rows to skip."),
+    as_json: bool = Option(False, "--json", help="Print the list as JSON."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+    analyses = data_service.list_analyses(
+        experiment_id=experiment_id,
+        simulation_id=simulation,
+        status=status.value if status is not None else None,
+        backend=backend,
+        source=source,
+        tag=tag,
+        since=since,
+        limit=limit or None,
+        offset=offset,
+    )
+    _render_analyses(analyses, console, as_json=as_json)
+    if limit and len(analyses) == limit:
+        console.print(f"[memphis.hint]More: --offset {offset + limit}[/]")
+
+
+@analysis_cli.command("datasets", help="List the datasets an analysis run wrote.")
+def analysis_datasets(
+    analysis_id: int = Argument(help="Analysis database ID."),
+    kind: str | None = Option(default=None, help="Only this kind, e.g. ptools-analysis, figure, report."),
+    view: str | None = Option(default=None, help="Only this view, e.g. ptools_rna."),
+    tag: str | None = Option(default=None, help="Comma-separated tags; all must match."),
+    available: DatasetAvailability = Option(
+        default=DatasetAvailability.TRUE, help="true: object exists; false: object gone; any: both."
+    ),
+    limit: int = Option(default=100, help="Page size (max 200)."),
+    offset: int = Option(default=0, help="Rows to skip."),
+    as_json: bool = Option(False, "--json", help="Print the page as JSON."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+    page = data_service.list_analysis_datasets(
+        analysis_id, kind=kind, view=view, tag=tag, available=available.value, limit=limit, offset=offset
+    )
+    _render_datasets(page, console, title=f"Datasets — analysis {analysis_id}", as_json=as_json)
+
+
 @analysis_cli.command("get", help="Get an analysis spec by its database ID.")
 def analysis_get(
     analysis_id: int = Argument(help="Analysis database ID."),
@@ -2042,6 +2166,250 @@ def analysis_plots(
     plots = data_service.get_analysis_plots(analysis_id=analysis_id)
     for plot in plots:
         display_json(plot.model_dump(), console)
+
+
+# -- Dataset commands (data provenance, docs/plan-data-provenance.md §7) --
+
+
+def _render_datasets(page: DatasetListDTO, console: Console, *, title: str, as_json: bool) -> None:
+    from rich.markup import escape
+    from rich.table import Table
+
+    if as_json:
+        display_json(page.model_dump(), console)
+        return
+    if not page.datasets:
+        console.print(f"[memphis.hint]{escape(NO_DATASETS_HINT)}[/]")
+        return
+    table = Table(title=title, border_style="magenta")
+    for col in DATASET_COLUMNS:
+        table.add_column(col)
+    for dataset in page.datasets:
+        origin = origin_label(dataset)
+        if not dataset.available:
+            origin += " [memphis.error]gone[/]"
+        table.add_row(
+            str(dataset.database_id),
+            escape(dataset.kind),
+            escape(dataset_name(dataset)),
+            escape(coordinate_label(dataset.attributes)),
+            producer_label(dataset),
+            format_bytes(dataset.size_bytes),
+            origin,
+            (dataset.updated_at or "")[:19],
+        )
+    console.print(table)
+    if page.next_offset is not None:
+        console.print(f"[memphis.hint]More: --offset {page.next_offset}[/]")
+
+
+def _render_analyses(analyses: list[ExperimentAnalysisDTO], console: Console, *, as_json: bool) -> None:
+    from rich.markup import escape
+    from rich.table import Table
+
+    if as_json:
+        display_json([analysis.model_dump(mode="json") for analysis in analyses], console)
+        return
+    if not analyses:
+        console.print("[memphis.hint]No analyses match.[/]")
+        return
+    table = Table(title=f"Analyses ({len(analyses)})", border_style="magenta")
+    for col in ANALYSIS_COLUMNS:
+        table.add_column(col)
+    for analysis in analyses:
+        status = analysis_status_label(analysis)
+        table.add_row(
+            str(analysis.database_id),
+            escape(analysis.name),
+            f"[{status_style(status)}]{status}[/]",
+            escape(analysis.backend or "—"),
+            str(analysis.simulation_id) if analysis.simulation_id is not None else "—",
+            escape(analysis.experiment_id or "—"),
+            escape(", ".join(analysis.tags) or "—"),
+            analysis.last_updated[:19],
+        )
+    console.print(table)
+
+
+def _add_producer(root: Any, producer: DatasetProducerDTO | None, dataset: DatasetDTO) -> None:
+    from rich.markup import escape
+
+    if producer is None:
+        root.add(f"[memphis.hint]{NO_PRODUCER_HINT}[/]")
+        return
+    # The walk attributes a bundle no analysis run claims to the simulation it sits under: the
+    # simulation's output holds it, but nothing says its run wrote it.
+    unclaimed = is_unclaimed(dataset, producer)
+    label = producer_relation(dataset, producer)
+    status = producer.status or "unknown"
+    node = root.add(
+        f"[memphis.label]{label}[/] {producer.kind} {producer.id}  {escape(producer.name or '')}  "
+        f"[{status_style(status)}]{status}[/]"
+    )
+    if unclaimed:
+        node.add(f"[memphis.hint]{UNCLAIMED_HINT}[/]")
+    if producer.trace_id:
+        node.add(f"trace {producer.trace_id}  (hpcrun {producer.hpcrun_id})")
+    else:
+        node.add(f"[memphis.hint]{NO_TRACE_HINT}[/]")
+    if producer.source:
+        node.add(f"of {escape(_json_mod.dumps(producer.source, sort_keys=True))}")
+    if producer.tags:
+        node.add(f"tags {escape(', '.join(producer.tags))}")
+
+
+def _render_provenance(provenance: DatasetProvenanceDTO, console: Console) -> None:
+    from rich.markup import escape
+    from rich.tree import Tree
+
+    dataset = provenance.dataset
+    gone = "" if dataset.available else "  [memphis.error]object gone[/]"
+    root = Tree(f"[memphis.title]dataset {dataset.database_id}[/]  {escape(dataset.kind)}  {escape(dataset.uri)}{gone}")
+    _add_producer(root, provenance.producer, dataset)
+    span = provenance.span
+    if span is not None:
+        root.add(f"[memphis.label]span[/] {escape(span.label)}  {span.span_id}  {span.status or 'open'}")
+    inputs = root.add(f"[memphis.label]read[/] {len(provenance.inputs)} registered dataset(s)")
+    for item in provenance.inputs:
+        inputs.add(f"{item.database_id}  {escape(item.kind)}  {escape(item.uri)}")
+    console.print(root)
+
+
+@dataset_cli.command("list", help="List registered datasets (the files runs wrote), newest change first.")
+def dataset_list(
+    kind: str | None = Option(
+        default=None, help="parquet, parca-cache, ptools-analysis, analysis, figure, report or other."
+    ),
+    view: str | None = Option(default=None, help="Only this view, e.g. ptools_rna."),
+    tag: str | None = Option(default=None, help="Comma-separated tags; all must match (e.g. cd2)."),
+    attr: list[str] = Option(
+        default=[],
+        help="Attribute filter key=value, repeatable: --attr variant=0 --attr protocol=multiseed. "
+        'A JSON value keeps its type (0 is a number, "0" a string).',
+    ),
+    simulation: int | None = Option(default=None, help="Written by this simulation run."),
+    analysis: int | None = Option(default=None, help="Written by this analysis run."),
+    parca: int | None = Option(default=None, help="Written by this ParCa run."),
+    source: str | None = Option(default=None, help="What the data is of: sim:1002, analysis:7, or JSON."),
+    available: DatasetAvailability = Option(
+        default=DatasetAvailability.TRUE, help="true: object exists; false: object gone; any: both."
+    ),
+    since: str | None = Option(default=None, help="Only datasets changed at or after this ISO time."),
+    limit: int = Option(default=100, help="Page size (max 200)."),
+    offset: int = Option(default=0, help="Rows to skip."),
+    as_json: bool = Option(False, "--json", help="Print the page as JSON."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+    page = data_service.list_datasets(
+        kind=kind,
+        view=view,
+        tag=tag,
+        attrs=list(attr),
+        simulation_id=simulation,
+        analysis_id=analysis,
+        parca_dataset_id=parca,
+        source=source,
+        available=available.value,
+        since=since,
+        limit=limit,
+        offset=offset,
+    )
+    _render_datasets(page, console, title="Datasets", as_json=as_json)
+
+
+@dataset_cli.command("get", help="Show one dataset record.")
+def dataset_get(
+    dataset_id: int = Argument(help="Dataset database ID."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+    display_json(data_service.get_dataset(dataset_id).model_dump(), console)
+
+
+@dataset_cli.command("fetch", help="Download one dataset's file (a ptools TSV, a figure, a report).")
+def dataset_fetch(
+    dataset_id: int = Argument(help="Dataset database ID."),
+    dest: str | None = Option(
+        default=None, help="File path, or a directory to save under the server's filename. Defaults to ./"
+    ),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    """Streams through the API, so no storage credentials are needed. Store kinds (parquet,
+    parca-cache) are refused by the server: read those from the dataset's uri."""
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+    path = data_service.fetch_dataset(dataset_id, dest)
+    console.print(f"[memphis.success]Saved dataset {dataset_id}[/] to {path} ({format_bytes(path.stat().st_size)})")
+
+
+@dataset_cli.command("provenance", help="Show what wrote a dataset: its run, trace, span and inputs.")
+def dataset_provenance(
+    dataset_id: int = Argument(help="Dataset database ID."),
+    as_json: bool = Option(False, "--json", help="Print the provenance record as JSON."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+    provenance = data_service.get_dataset_provenance(dataset_id)
+    if as_json:
+        display_json(provenance.model_dump(), console)
+        return
+    _render_provenance(provenance, console)
+
+
+@dataset_cli.command("tags", help="List the tags on datasets and how many datasets carry each.")
+def dataset_tags(
+    kind: str | None = Option(default=None, help="Only datasets of this kind."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+    tags = data_service.list_dataset_tags(kind=kind)
+    if not tags:
+        console.print("[dim]No dataset tags defined.[/]")
+        return
+    for name, count in tags.items():
+        console.print(f"[memphis.info]{name}[/]  {count}")
+
+
+@dataset_cli.command("tag", help="Attach one or more tags to a dataset.")
+def dataset_tag(
+    dataset_id: int = Argument(help="Dataset database ID."),
+    tags: list[str] = Argument(help="One or more tags to add (e.g. cd2)."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+    dataset = data_service.tag_dataset(dataset_id, list(tags))
+    console.print(f"[memphis.success]Tagged dataset {dataset_id}[/]  tags: {dataset.tags}")
+
+
+@dataset_cli.command("attributes", help="List the distinct values of each dataset attribute.")
+def dataset_attributes(
+    kind: str | None = Option(default=None, help="Only datasets of this kind."),
+    max_values: int = Option(default=20, help="Values shown per attribute (--json shows all)."),
+    as_json: bool = Option(False, "--json", help="Print every value as JSON."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    from rich.markup import escape
+
+    console = get_console()
+    data_service = get_data_service(base_url=base_url)
+    values = data_service.list_dataset_attributes(kind=kind)
+    if as_json:
+        payload: dict[str, object] = dict(values)
+        display_json(payload, console)
+        return
+    if not values:
+        console.print("[dim]No dataset attributes recorded.[/]")
+        return
+    for key, distinct in values.items():
+        shown = ", ".join(str(value) for value in distinct[:max_values])
+        more = f"  [dim](+{len(distinct) - max_values} more)[/]" if len(distinct) > max_values else ""
+        console.print(f"[memphis.info]{escape(key)}[/]  {escape(shown)}{more}")
 
 
 # -- Task commands (viva-api#631: in-region task-run verb) --
