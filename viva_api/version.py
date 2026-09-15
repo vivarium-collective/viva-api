@@ -1341,7 +1341,7 @@
 #            parameter ceiling hours out and makes ingest look healthy. Both
 #            were needed.
 #            Code-only: NO new migration, DB stays at e3a9c1d70b62.
-__version__ = "0.9.143"
+__version__ = "0.9.144"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in
