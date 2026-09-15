@@ -1280,14 +1280,14 @@ class JobScheduler:
             except Exception:
                 logger.exception("datasets: walking simulation %s failed", simulation.database_id)
                 continue
-            if result.registered or result.analyses_created or result.unavailable or result.skipped:
+            if result.registered or result.unavailable or result.skipped:
                 logger.info(
-                    "datasets: simulation %s walked %d bundle(s): %d registered, %d new analysis run(s), "
+                    "datasets: simulation %s walked %d bundle(s) (%d claimed by no analysis run): %d registered, "
                     "%d marked unavailable, %d skipped %s",
                     simulation.database_id,
                     result.bundles,
+                    result.unclaimed,
                     result.registered,
-                    result.analyses_created,
                     result.unavailable,
                     result.skipped,
                     "; ".join(result.reasons),

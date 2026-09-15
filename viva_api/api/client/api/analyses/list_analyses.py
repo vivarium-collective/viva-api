@@ -152,7 +152,7 @@ def sync_detailed(
         simulation_id (Union[None, Unset, int]): Optional: filter by simulation database id.
         status (Union[JobStatus, None, Unset]): Filter by reported status: 'completed' (ready),
             'failed' (or 'cancelled'); any other value means still computing.
-        backend (Union[None, Unset, str]): Filter by backend, e.g. 'ray', 'k8s', 'walk'.
+        backend (Union[None, Unset, str]): Filter by backend, e.g. 'ray', 'k8s', 'batch'.
         source (Union[None, Unset, str]): What the analysis is OF: 'sim:1002', or a JSON
             ProvenanceRef fragment.
         tag (Union[None, Unset, str]): Comma-separated tags; an analysis must carry all of them.
@@ -208,7 +208,7 @@ def sync(
         simulation_id (Union[None, Unset, int]): Optional: filter by simulation database id.
         status (Union[JobStatus, None, Unset]): Filter by reported status: 'completed' (ready),
             'failed' (or 'cancelled'); any other value means still computing.
-        backend (Union[None, Unset, str]): Filter by backend, e.g. 'ray', 'k8s', 'walk'.
+        backend (Union[None, Unset, str]): Filter by backend, e.g. 'ray', 'k8s', 'batch'.
         source (Union[None, Unset, str]): What the analysis is OF: 'sim:1002', or a JSON
             ProvenanceRef fragment.
         tag (Union[None, Unset, str]): Comma-separated tags; an analysis must carry all of them.
@@ -259,7 +259,7 @@ async def asyncio_detailed(
         simulation_id (Union[None, Unset, int]): Optional: filter by simulation database id.
         status (Union[JobStatus, None, Unset]): Filter by reported status: 'completed' (ready),
             'failed' (or 'cancelled'); any other value means still computing.
-        backend (Union[None, Unset, str]): Filter by backend, e.g. 'ray', 'k8s', 'walk'.
+        backend (Union[None, Unset, str]): Filter by backend, e.g. 'ray', 'k8s', 'batch'.
         source (Union[None, Unset, str]): What the analysis is OF: 'sim:1002', or a JSON
             ProvenanceRef fragment.
         tag (Union[None, Unset, str]): Comma-separated tags; an analysis must carry all of them.
@@ -313,7 +313,7 @@ async def asyncio(
         simulation_id (Union[None, Unset, int]): Optional: filter by simulation database id.
         status (Union[JobStatus, None, Unset]): Filter by reported status: 'completed' (ready),
             'failed' (or 'cancelled'); any other value means still computing.
-        backend (Union[None, Unset, str]): Filter by backend, e.g. 'ray', 'k8s', 'walk'.
+        backend (Union[None, Unset, str]): Filter by backend, e.g. 'ray', 'k8s', 'batch'.
         source (Union[None, Unset, str]): What the analysis is OF: 'sim:1002', or a JSON
             ProvenanceRef fragment.
         tag (Union[None, Unset, str]): Comma-separated tags; an analysis must carry all of them.

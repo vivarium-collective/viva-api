@@ -120,16 +120,16 @@ def sync_detailed(
     limit: Union[Unset, int] = 100,
     offset: Union[Unset, int] = 0,
 ) -> Response[Union[DatasetListDTO, HTTPValidationError]]:
-    r"""Datasets a simulation run wrote (optionally with those its analyses wrote)
+    """Datasets attributed to a simulation (optionally with those of its analyses)
 
-     docs/plan-data-provenance.md §7, \"what did this run write?\". Rows lag ingestion: a
-    running simulation's datasets appear as its trace is scraped. 404 for an unknown simulation.
+     docs/plan-data-provenance.md §7. The simulation is the producer of what its run wrote and of
+    bundles the S3 walk found under its output that no analysis run claims (``origin = walk``).
+    Rows lag ingestion. 404 for an unknown simulation.
 
     Args:
         id (int): Database ID of the simulation
-        include_analyses (Union[Unset, bool]): Also datasets written by analyses OF this
-            simulation (matched on the dataset's source), not only those the simulation run itself
-            wrote. Default: False.
+        include_analyses (Union[Unset, bool]): Also datasets attributed to analyses OF this
+            simulation (matched on the dataset's source). Default: False.
         kind (Union[None, Unset, str]): Dataset kind: parquet, parca-cache, ptools-analysis,
             analysis, figure, report, other.
         view (Union[None, Unset, str]): Logical view, e.g. 'ptools_rna'.
@@ -182,16 +182,16 @@ def sync(
     limit: Union[Unset, int] = 100,
     offset: Union[Unset, int] = 0,
 ) -> Optional[Union[DatasetListDTO, HTTPValidationError]]:
-    r"""Datasets a simulation run wrote (optionally with those its analyses wrote)
+    """Datasets attributed to a simulation (optionally with those of its analyses)
 
-     docs/plan-data-provenance.md §7, \"what did this run write?\". Rows lag ingestion: a
-    running simulation's datasets appear as its trace is scraped. 404 for an unknown simulation.
+     docs/plan-data-provenance.md §7. The simulation is the producer of what its run wrote and of
+    bundles the S3 walk found under its output that no analysis run claims (``origin = walk``).
+    Rows lag ingestion. 404 for an unknown simulation.
 
     Args:
         id (int): Database ID of the simulation
-        include_analyses (Union[Unset, bool]): Also datasets written by analyses OF this
-            simulation (matched on the dataset's source), not only those the simulation run itself
-            wrote. Default: False.
+        include_analyses (Union[Unset, bool]): Also datasets attributed to analyses OF this
+            simulation (matched on the dataset's source). Default: False.
         kind (Union[None, Unset, str]): Dataset kind: parquet, parca-cache, ptools-analysis,
             analysis, figure, report, other.
         view (Union[None, Unset, str]): Logical view, e.g. 'ptools_rna'.
@@ -239,16 +239,16 @@ async def asyncio_detailed(
     limit: Union[Unset, int] = 100,
     offset: Union[Unset, int] = 0,
 ) -> Response[Union[DatasetListDTO, HTTPValidationError]]:
-    r"""Datasets a simulation run wrote (optionally with those its analyses wrote)
+    """Datasets attributed to a simulation (optionally with those of its analyses)
 
-     docs/plan-data-provenance.md §7, \"what did this run write?\". Rows lag ingestion: a
-    running simulation's datasets appear as its trace is scraped. 404 for an unknown simulation.
+     docs/plan-data-provenance.md §7. The simulation is the producer of what its run wrote and of
+    bundles the S3 walk found under its output that no analysis run claims (``origin = walk``).
+    Rows lag ingestion. 404 for an unknown simulation.
 
     Args:
         id (int): Database ID of the simulation
-        include_analyses (Union[Unset, bool]): Also datasets written by analyses OF this
-            simulation (matched on the dataset's source), not only those the simulation run itself
-            wrote. Default: False.
+        include_analyses (Union[Unset, bool]): Also datasets attributed to analyses OF this
+            simulation (matched on the dataset's source). Default: False.
         kind (Union[None, Unset, str]): Dataset kind: parquet, parca-cache, ptools-analysis,
             analysis, figure, report, other.
         view (Union[None, Unset, str]): Logical view, e.g. 'ptools_rna'.
@@ -299,16 +299,16 @@ async def asyncio(
     limit: Union[Unset, int] = 100,
     offset: Union[Unset, int] = 0,
 ) -> Optional[Union[DatasetListDTO, HTTPValidationError]]:
-    r"""Datasets a simulation run wrote (optionally with those its analyses wrote)
+    """Datasets attributed to a simulation (optionally with those of its analyses)
 
-     docs/plan-data-provenance.md §7, \"what did this run write?\". Rows lag ingestion: a
-    running simulation's datasets appear as its trace is scraped. 404 for an unknown simulation.
+     docs/plan-data-provenance.md §7. The simulation is the producer of what its run wrote and of
+    bundles the S3 walk found under its output that no analysis run claims (``origin = walk``).
+    Rows lag ingestion. 404 for an unknown simulation.
 
     Args:
         id (int): Database ID of the simulation
-        include_analyses (Union[Unset, bool]): Also datasets written by analyses OF this
-            simulation (matched on the dataset's source), not only those the simulation run itself
-            wrote. Default: False.
+        include_analyses (Union[Unset, bool]): Also datasets attributed to analyses OF this
+            simulation (matched on the dataset's source). Default: False.
         kind (Union[None, Unset, str]): Dataset kind: parquet, parca-cache, ptools-analysis,
             analysis, figure, report, other.
         view (Union[None, Unset, str]): Logical view, e.g. 'ptools_rna'.

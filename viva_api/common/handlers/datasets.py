@@ -254,7 +254,7 @@ async def _analysis_producer(db: DatabaseService, analysis_id: int) -> tuple[Dat
         analysis = await db.get_analysis(database_id=analysis_id)
     except RuntimeError:
         return None, None
-    run = await db.get_hpcrun_by_ref(analysis_id, JobType.ANALYSIS)  # none for a walk-created run row
+    run = await db.get_hpcrun_by_ref(analysis_id, JobType.ANALYSIS)  # none for a backfilled run row
     producer = DatasetProducerDTO(
         kind="analysis",
         id=analysis_id,

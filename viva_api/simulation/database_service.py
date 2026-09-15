@@ -110,6 +110,7 @@ def _dataset_filter_clauses(
     available: bool | None = None,
     since: datetime.datetime | None = None,
     source: dict[str, Any] | None = None,
+    uri_prefix: str | None = None,
 ) -> list[ColumnElement[bool]]:
     """WHERE clauses shared by ``list_datasets`` and ``count_datasets``."""
     candidates: list[ColumnElement[bool] | None] = [
@@ -123,8 +124,21 @@ def _dataset_filter_clauses(
         ORMDataset.available.is_(available) if available is not None else None,
         ORMDataset.updated_at >= since if since is not None else None,
         ORMDataset.source.contains(dict(source)) if source else None,
+        ORMDataset.uri.startswith(uri_prefix, autoescape=True) if uri_prefix else None,
     ]
     return [clause for clause in candidates if clause is not None]
+
+
+def _given_fields(
+    producers: dict[str, int | None], optional_fields: dict[str, Any], source: dict[str, Any] | None
+) -> dict[str, Any]:
+    """The columns an upsert provides for an existing row. Unset fields are left alone, except
+    that a write naming a producer replaces the row's producer: the other producer columns are
+    cleared, so a row never carries two (the walk moving a bundle to the run that claims it)."""
+    given = {k: v for k, v in {**optional_fields, "source": source}.items() if v is not None}
+    if any(value is not None for value in producers.values()):
+        given.update(producers)
+    return given
 
 
 def _validate_dataset_write(uri: str, kind: str, origin: str) -> None:
@@ -227,11 +241,6 @@ class DatabaseService(ABC):
         pass
 
     @abstractmethod
-    async def add_analysis_tags(self, analysis_id: int, tags: list[str]) -> ExperimentAnalysisDTO:
-        """Union-merge tags into an analysis run row. ``RuntimeError`` when the id is unknown."""
-        pass
-
-    @abstractmethod
     async def record_analysis(
         self,
         *,
@@ -307,7 +316,8 @@ class DatabaseService(ABC):
         A new row needs at least one producer id (``ValueError`` otherwise). On an existing
         row, a ``walk`` write never touches an ``event``-sourced row (``"skipped"``); any
         other write sets the fields it provides, merges ``attributes`` (incoming keys win,
-        ``origin`` recorded) and union-merges ``tags``. Only real changes are written, so
+        ``origin`` recorded) and union-merges ``tags``; a producer it names replaces the row's
+        producer. Only real changes are written, so
         ``updated_at`` means "changed", not "seen" (``"unchanged"``). Safe under concurrent
         writers: a lost insert race is retried as an update."""
         pass
@@ -334,6 +344,7 @@ class DatabaseService(ABC):
         available: bool | None = True,
         since: datetime.datetime | None = None,
         source: dict[str, Any] | None = None,
+        uri_prefix: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[DatasetDTO]:
@@ -342,7 +353,8 @@ class DatabaseService(ABC):
         ``tags``: carries ALL of them. ``attributes``: JSONB containment, so values must match
         in type (``{"variant": 0}`` does not match ``"0"``). ``available=None`` includes gone
         objects. ``source``: the row's source contains this partial ProvenanceRef (e.g.
-        ``{"kind": "simulation", "ref": "1002"}``). ``limit`` is clamped to ``1..DATASET_LIST_MAX_LIMIT``."""
+        ``{"kind": "simulation", "ref": "1002"}``). ``uri_prefix``: the uri starts with it, wildcards
+        taken literally. ``limit`` is clamped to ``1..DATASET_LIST_MAX_LIMIT``."""
         pass
 
     @abstractmethod
@@ -924,18 +936,6 @@ class DatabaseServiceSQL(DatabaseService):
             return [orm_analysis.to_dto() for orm_analysis in result.scalars().all()]
 
     @override
-    async def add_analysis_tags(self, analysis_id: int, tags: list[str]) -> ExperimentAnalysisDTO:
-        async with self.async_sessionmaker() as session, session.begin():
-            row = (await session.execute(select(ORMAnalysis).where(ORMAnalysis.id == analysis_id))).scalars().first()
-            if row is None:
-                raise RuntimeError(f"Analysis {analysis_id} not found")
-            merged = _merge_tags(row.tags, tags)
-            if merged != list(row.tags or []):
-                row.tags = merged
-                await session.flush()
-            return row.to_dto()
-
-    @override
     async def record_analysis(
         self,
         *,
@@ -1122,9 +1122,7 @@ class DatabaseServiceSQL(DatabaseService):
                     if origin == DATASET_ORIGIN_WALK and existing_origin == DATASET_ORIGIN_EVENT:
                         return existing.to_dto(), "skipped"
 
-                    given = {
-                        k: v for k, v in {**producers, **optional_fields, "source": source}.items() if v is not None
-                    }
+                    given = _given_fields(producers, optional_fields, source)
                     incoming = {**given, "kind": kind, "attributes": incoming_attributes, "available": available}
                     changed = _dataset_changes(existing, incoming, tags)
                     if not changed:
@@ -1167,6 +1165,7 @@ class DatabaseServiceSQL(DatabaseService):
         available: bool | None = True,
         since: datetime.datetime | None = None,
         source: dict[str, Any] | None = None,
+        uri_prefix: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[DatasetDTO]:
@@ -1181,6 +1180,7 @@ class DatabaseServiceSQL(DatabaseService):
             available=available,
             since=since,
             source=source,
+            uri_prefix=uri_prefix,
         )
         stmt = select(ORMDataset)
         if clauses:

@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tests.simulation.test_event_ingest import _S3
-from viva_api.common.models import JobStatus
 from viva_api.simulation import dataset_walk
 from viva_api.simulation.database_service import DatabaseServiceSQL
 from viva_api.simulation.dataset_walk import (
@@ -150,7 +149,9 @@ async def _walk(db: DatabaseServiceSQL, simulation: Simulation, s3: _S3) -> Walk
 
 
 @pytest.mark.asyncio
-async def test_a_walk_registers_bundles_and_creates_the_missing_run_rows(database_service: DatabaseServiceSQL) -> None:
+async def test_a_walk_registers_bundles_and_attributes_unclaimed_ones_to_the_simulation(
+    database_service: DatabaseServiceSQL,
+) -> None:
     simulation = await _simulation(database_service, tags=["cd2"])
     existing = await database_service.record_analysis(
         experiment_id=simulation.experiment_id,
@@ -166,17 +167,16 @@ async def test_a_walk_registers_bundles_and_creates_the_missing_run_rows(databas
 
     result = await _walk(database_service, simulation, s3)
 
-    assert (result.bundles, result.analyses_created, result.registered, result.skipped) == (2, 1, 4, 0)
-    analyses = {a.name: a for a in await database_service.list_analyses(simulation_id=simulation.database_id)}
-    assert set(analyses) == {"analysis-percell-run3", "analysis-ptools-multiseed"}  # none for analysis-empty
-    discovered = analyses["analysis-ptools-multiseed"]
-    assert discovered.backend == "walk" and discovered.status == JobStatus.COMPLETED
-    assert discovered.result_uri == _uri(simulation, "analysis-ptools-multiseed")
+    assert (result.bundles, result.unclaimed, result.registered, result.skipped) == (2, 1, 4, 0)
+    # No run row is invented for the bundle no run claims.
+    analyses = await database_service.list_analyses(simulation_id=simulation.database_id)
+    assert [a.database_id for a in analyses] == [existing.database_id]
 
     tsv = await database_service.get_dataset_by_uri(
         _uri(simulation, "analysis-ptools-multiseed/ptools/ptools_rna_multiseed__variant=0.tsv")
     )
-    assert tsv is not None and tsv.kind == "ptools-analysis" and tsv.analysis_id == discovered.database_id
+    assert tsv is not None and tsv.kind == "ptools-analysis"
+    assert tsv.simulation_id == simulation.database_id and tsv.analysis_id is None
     assert tsv.view == "ptools_rna" and tsv.size_bytes == len(REAL_HEADER + REAL_ROW)
     assert {k: tsv.attributes[k] for k in ("protocol", "variant", "n_tp", "origin", "analysis_dir")} == {
         "protocol": "multiseed",
@@ -218,7 +218,7 @@ async def test_a_second_walk_changes_nothing_and_rereads_no_headers(database_ser
 
     again = await _walk(database_service, simulation, s3)
 
-    assert (again.analyses_created, again.registered, again.unchanged, again.unavailable) == (0, 0, 4, 0)
+    assert (again.unclaimed, again.registered, again.unchanged, again.unavailable) == (2, 0, 4, 0)
     assert s3.reads == []  # sizes unchanged, so n_tp is reused without a header read
 
 
@@ -259,13 +259,38 @@ async def test_a_vanished_bundle_marks_every_row_under_it_unavailable(database_s
     result = await _walk(database_service, simulation, s3)
 
     assert result.unavailable == 3  # the TSV, the figure and the report
-    multiseed = next(
-        a
-        for a in await database_service.list_analyses(simulation_id=simulation.database_id)
-        if a.name == "analysis-ptools-multiseed"
+    rows = await database_service.list_datasets(
+        uri_prefix=_uri(simulation, "analysis-ptools-multiseed/"), available=None
     )
-    rows = await database_service.list_datasets(analysis_id=multiseed.database_id, available=None)
-    assert rows and all(not row.available for row in rows)
+    assert len(rows) == 3 and all(not row.available for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_a_run_recorded_later_takes_its_bundle_over_from_the_simulation(
+    database_service: DatabaseServiceSQL,
+) -> None:
+    simulation = await _simulation(database_service)
+    s3 = _S3(_bundle_objects(simulation))
+    await _walk(database_service, simulation, s3)
+    uri = _uri(simulation, "analysis-ptools-multiseed/ptools/ptools_rna_multiseed__variant=0.tsv")
+    before = await database_service.get_dataset_by_uri(uri)
+    assert before is not None and before.simulation_id == simulation.database_id
+
+    run = await database_service.record_analysis(
+        experiment_id=simulation.experiment_id,
+        n_tp=None,
+        status=AnalysisStatusDB.READY,
+        config={"analysis_options": {"experiment_id": [simulation.experiment_id]}},
+        name="analysis-ptools-multiseed",
+        simulation_id=simulation.database_id,
+        backend="ray",
+        result_uri=_uri(simulation, "analysis-ptools-multiseed"),
+    )
+    moved = await _walk(database_service, simulation, s3)
+
+    after = await database_service.get_dataset_by_uri(uri)
+    assert (moved.unclaimed, moved.registered) == (1, 3)  # analysis-percell-run3 is still unclaimed
+    assert after is not None and after.analysis_id == run.database_id and after.simulation_id is None
 
 
 @pytest.mark.asyncio
@@ -284,6 +309,17 @@ async def test_the_walk_never_overwrites_an_event_sourced_row(database_service: 
 
     after = await database_service.get_dataset_by_uri(uri)
     assert after is not None and after.origin == "event" and after.attributes["n_tp"] == 9
+
+    # Availability follows the object, even on a row the walk may not rewrite.
+    key = uri.removeprefix("s3://work/")
+    saved = s3.objects.pop(key)
+    await _walk(database_service, simulation, s3)
+    gone = await database_service.get_dataset_by_uri(uri)
+    assert gone is not None and gone.available is False
+    s3.objects[key] = saved
+    await _walk(database_service, simulation, s3)
+    back = await database_service.get_dataset_by_uri(uri)
+    assert back is not None and back.available is True and back.origin == "event"
 
 
 @pytest.mark.asyncio

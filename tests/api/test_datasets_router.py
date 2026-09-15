@@ -282,7 +282,7 @@ async def test_provenance_names_the_producer_run_its_span_and_the_datasets_it_re
         assert body["span"]["span_id"] == "sim-span"
         assert body["inputs"] == []
 
-        # A walk-created run row has no HpcRun, and a walk-found dataset no span.
+        # A backfilled run row has no HpcRun, and a walk-found dataset no span.
         body = (await client.get(f"{base_router}/datasets/{walked.database_id}/provenance")).json()
         assert body["producer"]["kind"] == "analysis" and body["producer"]["hpcrun_id"] is None
         assert body["span"] is None and body["inputs"] == []

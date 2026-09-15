@@ -671,19 +671,19 @@ async def list_simulation_analyses(
     operation_id="list-simulation-datasets",
     tags=["Datasets"],
     dependencies=[Depends(get_database_service)],
-    summary="Datasets a simulation run wrote (optionally with those its analyses wrote)",
+    summary="Datasets attributed to a simulation (optionally with those of its analyses)",
 )
 async def list_simulation_datasets(
     id: int = FastAPIPath(description="Database ID of the simulation"),
     include_analyses: bool = Query(
         default=False,
-        description="Also datasets written by analyses OF this simulation (matched on the dataset's source), "
-        "not only those the simulation run itself wrote.",
+        description="Also datasets attributed to analyses OF this simulation (matched on the dataset's source).",
     ),
     params: handlers.datasets.DatasetListParams = Depends(handlers.datasets.dataset_list_params),
 ) -> DatasetListDTO:
-    """docs/plan-data-provenance.md §7, "what did this run write?". Rows lag ingestion: a
-    running simulation's datasets appear as its trace is scraped. 404 for an unknown simulation."""
+    """docs/plan-data-provenance.md §7. The simulation is the producer of what its run wrote and of
+    bundles the S3 walk found under its output that no analysis run claims (``origin = walk``).
+    Rows lag ingestion. 404 for an unknown simulation."""
     db_service = get_database_service()
     if db_service is None:
         raise HTTPException(status_code=500, detail="Database service is not initialized")
@@ -962,7 +962,7 @@ async def list_analyses(
         description="Filter by reported status: 'completed' (ready), 'failed' (or 'cancelled'); "
         "any other value means still computing.",
     ),
-    backend: str | None = Query(default=None, description="Filter by backend, e.g. 'ray', 'k8s', 'walk'."),
+    backend: str | None = Query(default=None, description="Filter by backend, e.g. 'ray', 'k8s', 'batch'."),
     source: str | None = Query(
         default=None, description="What the analysis is OF: 'sim:1002', or a JSON ProvenanceRef fragment."
     ),

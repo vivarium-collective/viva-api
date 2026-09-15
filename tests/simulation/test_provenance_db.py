@@ -390,10 +390,37 @@ async def test_list_datasets_filters_by_source(database_service: DatabaseService
 
 
 @pytest.mark.asyncio
-async def test_add_analysis_tags_union_merges_and_rejects_an_unknown_id(database_service: DatabaseServiceSQL) -> None:
-    analysis_id = await _analysis(database_service, tags=["a"])
-    tagged = await database_service.add_analysis_tags(analysis_id, ["b", "a"])
-    assert sorted(tagged.tags) == ["a", "b"]
-    assert sorted((await database_service.get_analysis(analysis_id)).tags) == ["a", "b"]
-    with pytest.raises(RuntimeError):
-        await database_service.add_analysis_tags(999_999_999, ["x"])
+async def test_a_write_that_names_a_producer_replaces_the_rows_producer(database_service: DatabaseServiceSQL) -> None:
+    simulation, _run = await _insert_run(database_service, correlation_id=f"prod-{uuid.uuid4().hex[:8]}")
+    analysis_id = await _analysis(database_service)
+    uri = _uri("moved")
+    first, _ = await database_service.upsert_dataset(
+        uri=uri, kind="ptools-analysis", origin="walk", simulation_id=simulation.database_id
+    )
+    assert (first.simulation_id, first.analysis_id) == (simulation.database_id, None)
+
+    moved, action = await database_service.upsert_dataset(
+        uri=uri, kind="ptools-analysis", origin="walk", analysis_id=analysis_id
+    )
+    assert action == "updated" and (moved.simulation_id, moved.analysis_id) == (None, analysis_id)
+
+    # A write naming no producer leaves it alone.
+    kept, action = await database_service.upsert_dataset(
+        uri=uri, kind="ptools-analysis", origin="walk", attributes={"n_tp": 8}
+    )
+    assert action == "updated" and (kept.simulation_id, kept.analysis_id) == (None, analysis_id)
+
+
+@pytest.mark.asyncio
+async def test_list_datasets_by_uri_prefix_takes_wildcards_literally(database_service: DatabaseServiceSQL) -> None:
+    analysis_id = await _analysis(database_service)
+    base = f"s3://bucket/prefix-{uuid.uuid4().hex[:6]}"
+    inside, _ = await database_service.upsert_dataset(
+        uri=f"{base}/a_b/x.tsv", kind="ptools-analysis", origin="walk", analysis_id=analysis_id
+    )
+    await database_service.upsert_dataset(
+        uri=f"{base}/aXb/x.tsv", kind="ptools-analysis", origin="walk", analysis_id=analysis_id
+    )
+    found = await database_service.list_datasets(uri_prefix=f"{base}/a_b/")
+    assert [d.database_id for d in found] == [inside.database_id]  # "_" is not a wildcard
+    assert len(await database_service.list_datasets(uri_prefix=f"{base}/")) == 2

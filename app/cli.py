@@ -2056,7 +2056,7 @@ def analysis_list(
     status: JobStatus | None = Option(
         default=None, help="completed (ready), failed, or any other value for still computing."
     ),
-    backend: str | None = Option(default=None, help="Only this backend, e.g. ray, k8s, walk."),
+    backend: str | None = Option(default=None, help="Only this backend, e.g. ray, k8s, batch."),
     source: str | None = Option(default=None, help="What the analysis is of: sim:1002, or JSON."),
     tag: str | None = Option(default=None, help="Comma-separated tags; all must match (e.g. cd2)."),
     since: str | None = Option(default=None, help="Only analyses changed at or after this ISO time."),
@@ -2247,21 +2247,27 @@ def _render_analyses(analyses: list[ExperimentAnalysisDTO], console: Console, *,
     console.print(table)
 
 
-def _add_producer(root: Any, producer: DatasetProducerDTO | None) -> None:
+def _add_producer(root: Any, producer: DatasetProducerDTO | None, dataset: DatasetDTO) -> None:
     from rich.markup import escape
 
     if producer is None:
         root.add("[memphis.hint]no producer run recorded[/]")
         return
+    # The walk attributes a bundle no analysis run claims to the simulation it sits under: the
+    # simulation's output holds it, but nothing says its run wrote it.
+    unclaimed = dataset.origin == "walk" and producer.kind == "simulation"
+    label = "found under" if unclaimed else "written by"
     status = producer.status or "unknown"
     node = root.add(
-        f"[memphis.label]written by[/] {producer.kind} {producer.id}  {escape(producer.name or '')}  "
+        f"[memphis.label]{label}[/] {producer.kind} {producer.id}  {escape(producer.name or '')}  "
         f"[{status_style(status)}]{status}[/]"
     )
+    if unclaimed:
+        node.add("[memphis.hint]found by the S3 walk; no analysis run claims this bundle[/]")
     if producer.trace_id:
         node.add(f"trace {producer.trace_id}  (hpcrun {producer.hpcrun_id})")
     else:
-        node.add("[memphis.hint]no traced run row (e.g. a bundle the S3 walk found)[/]")
+        node.add("[memphis.hint]no traced run row[/]")
     if producer.source:
         node.add(f"of {escape(_json_mod.dumps(producer.source, sort_keys=True))}")
     if producer.tags:
@@ -2275,7 +2281,7 @@ def _render_provenance(provenance: DatasetProvenanceDTO, console: Console) -> No
     dataset = provenance.dataset
     gone = "" if dataset.available else "  [memphis.error]object gone[/]"
     root = Tree(f"[memphis.title]dataset {dataset.database_id}[/]  {escape(dataset.kind)}  {escape(dataset.uri)}{gone}")
-    _add_producer(root, provenance.producer)
+    _add_producer(root, provenance.producer, dataset)
     span = provenance.span
     if span is not None:
         root.add(f"[memphis.label]span[/] {escape(span.label)}  {span.span_id}  {span.status or 'open'}")

@@ -836,11 +836,11 @@ paths:
     get:
       tags:
       - Datasets
-      summary: Datasets a simulation run wrote (optionally with those its analyses
-        wrote)
-      description: "docs/plan-data-provenance.md \xA77, \"what did this run write?\"\
-        . Rows lag ingestion: a\nrunning simulation's datasets appear as its trace\
-        \ is scraped. 404 for an unknown simulation."
+      summary: Datasets attributed to a simulation (optionally with those of its analyses)
+      description: "docs/plan-data-provenance.md \xA77. The simulation is the producer\
+        \ of what its run wrote and of\nbundles the S3 walk found under its output\
+        \ that no analysis run claims (``origin = walk``).\nRows lag ingestion. 404\
+        \ for an unknown simulation."
       operationId: list-simulation-datasets
       parameters:
       - name: id
@@ -856,12 +856,12 @@ paths:
         required: false
         schema:
           type: boolean
-          description: Also datasets written by analyses OF this simulation (matched
-            on the dataset's source), not only those the simulation run itself wrote.
+          description: Also datasets attributed to analyses OF this simulation (matched
+            on the dataset's source).
           default: false
           title: Include Analyses
-        description: Also datasets written by analyses OF this simulation (matched
-          on the dataset's source), not only those the simulation run itself wrote.
+        description: Also datasets attributed to analyses OF this simulation (matched
+          on the dataset's source).
       - name: kind
         in: query
         required: false
@@ -1217,9 +1217,9 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Filter by backend, e.g. 'ray', 'k8s', 'walk'.
+          description: Filter by backend, e.g. 'ray', 'k8s', 'batch'.
           title: Backend
-        description: Filter by backend, e.g. 'ray', 'k8s', 'walk'.
+        description: Filter by backend, e.g. 'ray', 'k8s', 'batch'.
       - name: source
         in: query
         required: false
@@ -1956,7 +1956,7 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-09-15T01:57:05.853786'
+                  created_at: '2026-09-15T07:59:19.874782'
                 parca_config:
                   outdir: .
                   operons: true
@@ -5137,9 +5137,12 @@ components:
         or ``parca``;
 
         ``hpcrun_id``/``trace_id``/``correlation_id`` are set when the run has a run
-        row (a
+        row (an
 
-        walk-created analysis has none).'
+        analysis row recorded by a backfill has none). A dataset the S3 walk found
+        under a
+
+        simulation''s output that no analysis run claims names the simulation.'
     DatasetProvenanceDTO:
       properties:
         dataset:
@@ -6286,7 +6289,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-09-15 01:57:05.770695'
+          default: '2026-09-15 07:59:19.773885'
         job_id:
           anyOf:
           - type: string

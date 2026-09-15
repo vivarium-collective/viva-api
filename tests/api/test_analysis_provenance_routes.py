@@ -121,7 +121,7 @@ async def test_list_analyses_filters_and_pages_newest_first(
     tag = f"ana-{uuid.uuid4().hex[:6]}"
     ref = str(uuid.uuid4().int % 10**9)
     ready = await _analysis(
-        database_service, backend="walk", tags=[tag], source={"kind": "simulation", "ref": ref, "resolved_id": 1}
+        database_service, backend="batch", tags=[tag], source={"kind": "simulation", "ref": ref, "resolved_id": 1}
     )
     failed = await _analysis(database_service, status=AnalysisStatusDB.FAILED, tags=[tag])
     running = await _analysis(database_service, status=AnalysisStatusDB.COMPUTING, tags=[tag, "cd2"])

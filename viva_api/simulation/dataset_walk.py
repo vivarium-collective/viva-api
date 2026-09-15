@@ -8,6 +8,11 @@ prefix, registers the consumable files it finds with ``attributes.origin = "walk
 marks rows unavailable when their object is gone. It never overwrites an event-sourced
 row (``DatabaseService.upsert_dataset``).
 
+The walk never creates run rows. A bundle belongs to the analysis run whose ``result_uri`` is
+the bundle directory; a bundle no run claims (a hand-dispatched fill, say) is attributed to
+the simulation whose output it sits under, and ``origin = walk`` says nobody claimed it. When
+a real producer is recorded later, the next walk moves the rows to it.
+
 What a bundle looks like (verified on dev, 2026-09-15)::
 
     <out_uri>/analyses/<bundle>/analysis.json                              -> report (listed, never read; 240 MB seen)
@@ -38,7 +43,6 @@ from typing import TYPE_CHECKING, Any
 from viva_api.analysis.models import DATASET_LIST_MAX_LIMIT, DATASET_ORIGIN_WALK
 from viva_api.common.storage import data_layout
 from viva_api.common.storage.file_paths import S3FilePath
-from viva_api.simulation.tables_orm import AnalysisStatusDB
 
 if TYPE_CHECKING:
     from viva_api.analysis.models import DatasetDTO
@@ -166,7 +170,7 @@ def _display_name(experiment_id: str, label: str, parsed: ArtifactName | None) -
 @dataclass
 class WalkResult:
     bundles: int = 0
-    analyses_created: int = 0
+    unclaimed: int = 0  # bundles no analysis run claims, attributed to the simulation
     registered: int = 0  # dataset rows inserted or changed
     unchanged: int = 0  # already registered exactly like this, or owned by an event
     skipped: int = 0
@@ -180,7 +184,7 @@ class WalkResult:
 
     def merge(self, other: WalkResult) -> None:
         self.bundles += other.bundles
-        self.analyses_created += other.analyses_created
+        self.unclaimed += other.unclaimed
         self.registered += other.registered
         self.unchanged += other.unchanged
         self.unavailable += other.unavailable
@@ -189,12 +193,13 @@ class WalkResult:
         self.skipped += other.skipped - len(other.reasons)
 
 
-async def _rows_by_uri(db: DatabaseService, analysis_id: int) -> dict[str, DatasetDTO]:
+async def _rows_under(db: DatabaseService, uri_prefix: str) -> dict[str, DatasetDTO]:
+    """Every registered row whose uri starts with ``uri_prefix``, available or not, by uri."""
     rows: dict[str, DatasetDTO] = {}
     offset = 0
     while True:
         page = await db.list_datasets(
-            analysis_id=analysis_id, available=None, limit=DATASET_LIST_MAX_LIMIT, offset=offset
+            uri_prefix=uri_prefix, available=None, limit=DATASET_LIST_MAX_LIMIT, offset=offset
         )
         rows.update({row.uri: row for row in page})
         if len(page) < DATASET_LIST_MAX_LIMIT:
@@ -255,110 +260,98 @@ async def _file_fields(
     }
 
 
+def _present(uri: str, bucket: str, keys: set[str]) -> bool:
+    """Whether a row's object is in a listing; a directory-like uri is present while anything is under it."""
+    key = uri.removeprefix(f"s3://{bucket}/")
+    return any(k.startswith(key) for k in keys) if key.endswith("/") else key in keys
+
+
+async def _mark_vanished(
+    rows: dict[str, DatasetDTO],
+    *,
+    bucket: str,
+    keys: set[str],
+    under: str,
+    db: DatabaseService,
+    result: WalkResult,
+    skip: tuple[str, ...] = (),
+) -> None:
+    """Mark the rows under ``under`` whose object the listing no longer has unavailable, whoever
+    registered them (availability is a fact about the object). ``skip``: prefixes already handled."""
+    for uri, row in rows.items():
+        if not row.available or not uri.startswith(under) or (skip and uri.startswith(skip)):
+            continue
+        if not _present(uri, bucket, keys):
+            await db.set_dataset_available(row.database_id, False)
+            result.unavailable += 1
+
+
 async def register_bundle(
     items: list[ListingItem],
     *,
     bucket: str,
     bundle_key: str,
-    analysis_id: int,
+    producer: dict[str, Any],
     simulation: Simulation,
     db: DatabaseService,
     file_service: FileService,
     tags: list[str] | None = None,
+    existing: dict[str, DatasetDTO] | None = None,
 ) -> WalkResult:
-    """Register every consumable file under one bundle directory for ``analysis_id``, and
-    mark that analysis's rows under the bundle unavailable when their object is gone.
-    ``tags`` are added to the simulation's on every row (tags only ever union-merge)."""
+    """Register every consumable file under one bundle directory for ``producer``
+    (``{"analysis_id": id}`` or ``{"simulation_id": id}``), and mark rows under the bundle
+    unavailable when their object is gone. ``tags`` are added to the simulation's on every row
+    (tags only ever union-merge). ``existing``: the registered rows under the bundle by uri,
+    read from the database when not given."""
     result = WalkResult(bundles=1)
     prefix = bundle_key.rstrip("/") + "/"
     bundle_name = prefix.rstrip("/").rsplit("/", 1)[-1]
-    existing = await _rows_by_uri(db, analysis_id)
-    seen: set[str] = set()
+    uri_prefix = f"s3://{bucket}/{prefix}"
+    rows = existing if existing is not None else await _rows_under(db, uri_prefix)
     for item in items:
-        if not item.Key.startswith(prefix):
-            continue
-        relative = item.Key[len(prefix) :]
-        kind = classify(relative)
+        relative = item.Key[len(prefix) :] if item.Key.startswith(prefix) else ""
+        kind = classify(relative) if relative else None
         if kind is None:
             continue
         uri = f"s3://{bucket}/{item.Key}"
-        seen.add(uri)
         fields = await _file_fields(
             item,
             kind=kind,
             filename=relative.rsplit("/", 1)[-1],
             bundle_name=bundle_name,
-            existing=existing.get(uri),
+            existing=rows.get(uri),
             simulation=simulation,
             file_service=file_service,
             extra_tags=list(tags or []),
         )
         try:
-            _dto, action = await db.upsert_dataset(
-                uri=uri,
-                kind=kind,
-                origin=DATASET_ORIGIN_WALK,
-                analysis_id=analysis_id,
-                available=True,
-                **fields,
+            dto, action = await db.upsert_dataset(
+                uri=uri, kind=kind, origin=DATASET_ORIGIN_WALK, available=True, **producer, **fields
             )
         except ValueError as refused:
             result.skip(f"{uri}: {refused}")
             continue
-        if action in ("inserted", "updated"):
-            result.registered += 1
-        else:
-            result.unchanged += 1
+        if action == "skipped" and not dto.available:
+            # An event-sourced row the walk may not rewrite, whose object is back.
+            await db.set_dataset_available(dto.database_id, True)
+            action = "updated"
+        result.registered += action in ("inserted", "updated")
+        result.unchanged += action not in ("inserted", "updated")
 
-    gone_prefix = f"s3://{bucket}/{prefix}"
-    for uri, row in existing.items():
-        if uri.startswith(gone_prefix) and uri not in seen and row.available:
-            await db.set_dataset_available(row.database_id, False)
-            result.unavailable += 1
+    await _mark_vanished(rows, bucket=bucket, keys={item.Key for item in items}, under=uri_prefix, db=db, result=result)
     return result
 
 
-async def _analysis_for_bundle(
-    result_uri: str, name: str, *, simulation: Simulation, out_uri: str, db: DatabaseService, result: WalkResult
-) -> int:
-    """The analysis run a bundle belongs to; a bundle nobody registered (a hand-dispatched
-    fill) gets a READY run row of its own, ``backend = "walk"``."""
-    existing = await db.get_analysis_by_result_uri(result_uri)
-    if existing is not None:
-        return existing.database_id
-    record = await db.record_analysis(
-        experiment_id=simulation.experiment_id,
-        n_tp=None,
-        status=AnalysisStatusDB.READY,
-        config={"analysis_options": {"experiment_id": [simulation.experiment_id]}, "discovered_by": "walk"},
-        name=name,
-        simulation_id=simulation.database_id,
-        backend="walk",
-        result_uri=result_uri,
-        source={
-            "kind": "simulation",
-            "ref": str(simulation.database_id),
-            "resolved_id": simulation.database_id,
-            "uri": out_uri,
-        },
-        tags=list(simulation.tags),
-    )
-    result.analyses_created += 1
-    return record.database_id
-
-
-async def _mark_vanished_bundles(
-    simulation: Simulation, *, root: str, present: set[str], db: DatabaseService, result: WalkResult
-) -> None:
-    """An analysis whose whole bundle directory is gone: every row under it is unavailable."""
-    for analysis in await db.list_analyses(simulation_id=simulation.database_id):
-        result_uri = (analysis.result_uri or "").rstrip("/")
-        if not result_uri.startswith(f"{root}/") or result_uri.rsplit("/", 1)[-1] in present:
-            continue
-        for row in (await _rows_by_uri(db, analysis.database_id)).values():
-            if row.available and row.uri.startswith(f"{result_uri}/"):
-                await db.set_dataset_available(row.database_id, False)
-                result.unavailable += 1
+async def _producer_for_bundle(
+    result_uri: str, simulation: Simulation, db: DatabaseService, result: WalkResult
+) -> dict[str, Any]:
+    """The analysis run that claims a bundle (its ``result_uri`` is the bundle directory), else the
+    simulation whose output the bundle sits under. Never creates a run row."""
+    claimed = await db.get_analysis_by_result_uri(result_uri)
+    if claimed is not None:
+        return {"analysis_id": claimed.database_id}
+    result.unclaimed += 1
+    return {"simulation_id": simulation.database_id}
 
 
 async def reconcile_simulation(
@@ -368,8 +361,9 @@ async def reconcile_simulation(
     file_service: FileService,
     storage_bucket: str | None,
 ) -> WalkResult:
-    """Walk one simulation's ``analyses/`` prefix: register bundles, create missing run rows,
-    and mark rows whose objects (or whole bundles) are gone. One listing per simulation."""
+    """Walk one simulation's ``analyses/`` prefix: register each bundle's files for the run that
+    claims the bundle (else the simulation), and mark rows whose objects, or whole bundles, are
+    gone. One listing per simulation; never creates a run row."""
     result = WalkResult()
     root = analyses_root_uri(simulation)
     bucket, root_key = split_s3_uri(root)
@@ -378,33 +372,40 @@ async def reconcile_simulation(
         return result
 
     root_prefix = root_key.rstrip("/") + "/"
+    listing = [
+        item
+        for item in await file_service.get_listing(S3FilePath(s3_path=Path(root_key)))
+        if item.Key.startswith(root_prefix)
+    ]
     groups: dict[str, list[ListingItem]] = {}
-    for item in await file_service.get_listing(S3FilePath(s3_path=Path(root_key))):
-        if not item.Key.startswith(root_prefix):
-            continue
+    for item in listing:
         name, sep, rest = item.Key[len(root_prefix) :].partition("/")
         if sep and rest:
             groups.setdefault(name, []).append(item)
 
-    out_uri = root.rsplit("/analyses", 1)[0]
+    root_uri = f"s3://{bucket}/{root_prefix}"
+    existing = await _rows_under(db, root_uri)
+    handled: list[str] = []
     for name, items in sorted(groups.items()):
         bundle_key = f"{root_prefix}{name}"
         if not any(classify(item.Key[len(bundle_key) + 1 :]) for item in items):
             continue  # nothing consumable (e.g. only a driver.log): not a dataset bundle
-        analysis_id = await _analysis_for_bundle(
-            f"s3://{bucket}/{bundle_key}", name, simulation=simulation, out_uri=out_uri, db=db, result=result
-        )
+        producer = await _producer_for_bundle(f"s3://{bucket}/{bundle_key}", simulation, db, result)
         result.merge(
             await register_bundle(
                 items,
                 bucket=bucket,
                 bundle_key=bundle_key,
-                analysis_id=analysis_id,
+                producer=producer,
                 simulation=simulation,
                 db=db,
                 file_service=file_service,
+                existing=existing,
             )
         )
+        handled.append(f"s3://{bucket}/{bundle_key}/")
 
-    await _mark_vanished_bundles(simulation, root=root, present=set(groups), db=db, result=result)
+    # Rows under a bundle directory that is gone altogether.
+    keys = {item.Key for item in listing}
+    await _mark_vanished(existing, bucket=bucket, keys=keys, under=root_uri, skip=tuple(handled), db=db, result=result)
     return result

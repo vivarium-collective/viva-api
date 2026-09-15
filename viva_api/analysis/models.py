@@ -464,8 +464,9 @@ class DatasetListDTO(BaseModel):
 
 class DatasetProducerDTO(BaseModel):
     """The run that wrote a dataset. ``kind`` is ``simulation``, ``analysis`` or ``parca``;
-    ``hpcrun_id``/``trace_id``/``correlation_id`` are set when the run has a run row (a
-    walk-created analysis has none)."""
+    ``hpcrun_id``/``trace_id``/``correlation_id`` are set when the run has a run row (an
+    analysis row recorded by a backfill has none). A dataset the S3 walk found under a
+    simulation's output that no analysis run claims names the simulation."""
 
     kind: str
     id: int

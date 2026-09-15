@@ -59,7 +59,7 @@ def _analysis(**overrides: Any) -> ExperimentAnalysisDTO:
         "config": AnalysisConfig(analysis_options=AnalysisConfigOptions(experiment_id=["exp"])),
         "last_updated": "2026-09-15 01:02:03.456",
         "status": JobStatus.COMPLETED,
-        "backend": "walk",
+        "backend": "ray",
         "simulation_id": 1002,
         "experiment_id": "exp",
         "tags": ["cd2"],
@@ -199,7 +199,7 @@ def test_dataset_provenance_renders_the_run_trace_span_and_inputs() -> None:
     upstream = _dataset(database_id=40, kind="parquet", uri="s3://bucket/vecoli-output/exp/history/variant=0/")
     svc = MagicMock()
     svc.get_dataset_provenance.return_value = DatasetProvenanceDTO(
-        dataset=_dataset(),
+        dataset=_dataset(attributes={"origin": "event", "protocol": "multiseed", "variant": 0}),
         producer=DatasetProducerDTO(
             kind="analysis",
             id=7,
@@ -219,11 +219,14 @@ def test_dataset_provenance_renders_the_run_trace_span_and_inputs() -> None:
     assert "analysis[variant=0]" in out and "00f067aa0ba902b7" in out
     assert "1 registered dataset" in out and "history/variant=0/" in out
 
+    # A bundle no analysis run claims, which the walk attributed to its simulation.
     svc.get_dataset_provenance.return_value = DatasetProvenanceDTO(
-        dataset=_dataset(available=False), producer=DatasetProducerDTO(kind="analysis", id=8)
+        dataset=_dataset(available=False, analysis_id=None, simulation_id=1002),
+        producer=DatasetProducerDTO(kind="simulation", id=1002, name="exp"),
     )
     out = _invoke(svc, "dataset", "provenance", "41")
-    assert "no traced run row" in out and "object gone" in out
+    assert "found under" in out and "simulation 1002" in out and "no analysis run claims" in out
+    assert "written by" not in out and "no traced run row" in out and "object gone" in out
 
     out = _invoke(svc, "dataset", "provenance", "41", "--json")
-    assert json.loads(out)["producer"]["id"] == 8
+    assert json.loads(out)["producer"]["id"] == 1002
