@@ -342,8 +342,11 @@ As implemented in #661, except where marked *deferred*:
 
 CLI: `atlantis dataset list | get | fetch | provenance | tags | tag | attributes`,
 `atlantis analysis list | datasets`, `atlantis simulation datasets <id> [--include-analyses]`
-(`dataset consumers` *deferred* with its route). The TUI and marimo GUI do not expose
-datasets yet.
+(`dataset consumers` *deferred* with its route). The **TUI** (a Datasets domain: list with a
+`key=value` filter string, record, provenance, fetch, tags, attributes; Analyses lists analyses
+and Simulations gains Datasets; selecting a row opens the next hop) and the **marimo GUI** (one
+Datasets & Analyses panel) carry the same operations as of `26d0f5b7`. All three read their
+wording from `app/dataset_views.py`, so "written by" and "found under" cannot drift apart.
 
 A standalone analysis run's events are stored but have no read route yet
 (`/simulations/{id}/events` reads the simulation's run); `docs/OBSERVABILITY.md` §5 records
@@ -388,8 +391,9 @@ that bundle's gather run.
 #661's commit order: schema; models + database service; standalone analysis as a traced run
 (`ANALYSIS` ingest candidacy moved here from the database-service commit, because the ingest
 tick's simulation lookup had to change with it); trace feeder; real-trace fixture; walk
-feeder; API; CLI; importer; no fabricated analysis rows; docs. The version bump is held until
-the plans are discussed (0.9.143 is already taken by #660).
+feeder; API; CLI; importer; no fabricated analysis rows; docs; TUI + GUI parity. The version
+bump is held until the plans are discussed; 0.9.143 (#660) and 0.9.144 (#663) are taken, so it
+takes the next free version (0.9.145 as of 2026-09-15).
 
 ## 10. Retention and durability
 
@@ -422,9 +426,11 @@ the plans are discussed (0.9.143 is already taken by #660).
    `create_all`, the reconciler adopting a current and a previous-release `create_all`
    database, and `create_all` vs migration agreeing on column types, defaults, indexes and
    constraints.
-3. `make check` twice; `uv run pytest` (full, minus `test_cli_e2e.py`): 1735 passed, 60
-   skipped on #661's head.
-4. On dev after deploy + importer, through the CLI (not yet run): `atlantis dataset list
+3. `make check`; `uv run pytest` (full, minus `test_cli_e2e.py`): 1802 passed, 58 skipped on
+   #661's head. The TUI is driven headless (Textual's pilot against a mocked service) and a
+   parity test pins that the CLI, TUI and GUI each reach every dataset call.
+4. On dev after deploy + importer, through the clients (not yet run; the GUI has not been
+   launched at all): `atlantis dataset list
    --kind ptools-analysis --tag cd2 --view ptools_rna --attr protocol=multiseed` returns the
    filled stores' multiseed tables; `atlantis dataset fetch <id>` byte-equals the S3 object;
    `atlantis dataset provenance <id>` names the claiming analysis run or, for a fill, "found
