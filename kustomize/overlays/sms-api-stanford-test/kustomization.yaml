@@ -182,7 +182,7 @@ images:
   # 0.9.55 on its own. Tag the next ptools rebuild with version.py as of then;
   # do not bump this tag without actually building and pushing that image.
   - name: ghcr.io/vivarium-collective/sms-ptools
-    newTag: 0.9.53
+    newTag: 0.9.143
   # vivarium-workbench: published by cutting a GitHub Release in the workbench
   # repo (build-and-push.yml → ghcr:<version>); pin that release tag here.
   # 0.3.0 builds on the 0.2.0 demo-migration release (workbench PR #453 + #466:
