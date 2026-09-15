@@ -20,6 +20,8 @@ Who calls it: the env worker, running on the workspace's own interpreter (not th
 can't run. This is the same mechanism I called directly by hand yesterday to reproduce Eran's antibiotic-cocktail document — the env worker is just doing programmatically what I did
 manually.
 
+---
+
 ## Path B — a real dispatch (my item 110 button, or "Run current spec" - NOT the pbg-native design: instead it's known as the "chain-dispatch")
 
 This is what actually spends money and runs a simulation. Composite resolution happens in a completely different place — inside the dispatched AWS Batch container itself, not in the
@@ -52,19 +54,26 @@ is where that call happens and what happens after: Path A stops at a JSON docume
 manual reproduction yesterday (calling baseline() directly) was a faithful stand-in for both — same underlying call, just made from my own shell instead of an env worker or a Batch
 container.
 
-## Path C - pbg-native dispatch:
+---
 
-Path C (pbg-native multi-node dispatch): atlantis composite run (or pbg-dispatch.sh)
+## Path C (pbg-native multi-node dispatch): atlantis composite run (or pbg-dispatch.sh)
+
 → POST /api/v1/simulations with extra_params.multi_node_dispatch={composite_id, num_nodes, params, steps}
-→ SimulationServiceRay's real fork point (simulation_service_ray.py:1448, checked before chain-dispatch's own composite is None and n_generations > 1 fork specifically to stop a
-  multi-node request from silently misrouting) → _submit_multi_node_composite() (line 1685) submits two real AWS Batch jobs via _submit_mnp — ParCa (1 node) first, then the composite job (N
-  nodes) gated depends_on=[parca_job_id] — → the composite job's container command, built by _multi_node_composite_command() (line 1643): stages run_pbg.py fresh from S3, sets
-  RAY_SHARDS_DEFAULT (real per-node vCPUs × num_nodes), runs python /tmp/run_pbg.py --composite-id v2ecoli.composites.lineage_ray_batch --overrides '{...}' -n <steps> →
-  sms-cdk/scripts/ray-batch-entrypoint.sh forms the real multi-node Ray cluster across all N nodes and exports RAY_ADDRESS before that command ever runs → INSIDE the container,
-  run_pbg.py::_resolve_document() is the entrypoint, same as Path B — composite_spec.get(composite_id) → apply_core_extensions() fires lineage_ray_batch's own registered
-  core_extensions=[register_ray_lineage], registering LineageProcess for the ray: protocol on core before the document is built → spec.to_document() calls lineage_ray_batch(core=core,
-  **overrides) directly, which runs prewarm_lineage_pool(core, n_workers) before build_lineage_ray_batch_document() — sizing the actor pool before any ray: address in the resulting document
-  can resolve — then returns the document → Composite(document, core=core) creates each ray:-addressed LineageProcess actor → composite.run(steps) — the real simulation executes here, each
-  actor running its own internal composite independently (_build_generation() calling the real baseline() function every generation, same function chain-dispatch uses), output streaming
-  natively to S3 from inside the actor. JobScheduler._advance_multi_node_job auto-triggers post-completion analysis on completion — the same generic mechanism colony's own MNP jobs use, not
-  lineage_ray_batch-specific.
+→ SimulationServiceRay's real fork point (simulation_service_ray.py:1448, checked before chain-dispatch's own composite is None and n_generations > 1 fork specifically to stop a multi-node request from silently misrouting)
+→ _submit_multi_node_composite() (line 1685) submits two real AWS Batch jobs via _submit_mnp
+     - ParCa (1 node) first
+     - then the composite job (N nodes) gated depends_on=[parca_job_id]
+→ the composite job's container command, built by _multi_node_composite_command() (line 1643):
+     - stages run_pbg.py fresh from S3
+     - sets RAY_SHARDS_DEFAULT (real per-node vCPUs × num_nodes)
+     - runs python /tmp/run_pbg.py --composite-id v2ecoli.composites.lineage_ray_batch --overrides '{...}' -n <steps>
+→ sms-cdk/scripts/ray-batch-entrypoint.sh forms the real multi-node Ray cluster across all N nodes and exports RAY_ADDRESS before that command ever runs
+→ INSIDE the container, run_pbg.py::_resolve_document() is the entrypoint, same as Path B   ← THE REAL ENTRYPOINT
+     - composite_spec.get(composite_id)
+     - apply_core_extensions() fires lineage_ray_batch's own registered core_extensions=[register_ray_lineage], registering LineageProcess for the ray: protocol on core before the document is built
+     - spec.to_document() calls lineage_ray_batch(core=core, **overrides) directly, which runs prewarm_lineage_pool(core, n_workers) before build_lineage_ray_batch_document() — sizing the actor pool before any ray: address in the resulting document can resolve — then returns the document
+→ Composite(document, core=core) creates each ray:-addressed LineageProcess actor
+→ composite.run(steps)        ← the real simulation executes here
+     - each actor running its own internal composite independently (_build_generation() calling the real baseline() function every generation, same function chain-dispatch uses)
+     - output streaming natively to S3 from inside the actor
+→ JobScheduler._advance_multi_node_job auto-triggers post-completion analysis on completion — the same generic mechanism colony's own MNP jobs use, not lineage_ray_batch-specific.
