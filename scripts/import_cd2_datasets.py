@@ -1,0 +1,298 @@
+#!/usr/bin/env python
+"""Import the CD2 ptools fill bundles into the dataset registry (docs/plan-data-provenance.md §8).
+
+Reads the CD2 manifest (``cd2_ptools_manifest.json``: every store, with the fill bundles
+present in S3) and, for each bundle:
+
+* an ``analysis`` run row: ``backend = "fill"``, ``result_uri`` = the bundle directory,
+  ``source`` = the store's simulation, ``tags`` = ``cd2``, ``cd2-<family>`` and the fill
+  mode. A row that already exists for the ``result_uri`` (the walk may have made one) is
+  reused and gains the tags;
+* ``dataset`` rows for its ``ptools/*.tsv``, ``viz/`` figures and ``analysis.json``, written by
+  the reconciliation walk's own ``register_bundle`` (``origin = walk``) and tagged like the run.
+
+Every bundle is attributed to an analysis run, including the sim-time ``analysis-mnp-*``
+directories that ``append-metabolites`` fills wrote into. That is how the walk attributes
+any bundle under ``analyses/``; if the two disagreed, the next walk would give the same rows
+a second producer. Idempotent on ``result_uri`` and dataset ``uri``.
+
+    uv run python scripts/import_cd2_datasets.py --manifest PATH             # analyze: read-only report
+    uv run python scripts/import_cd2_datasets.py --manifest PATH --apply     # write rows
+
+``--analyze`` (the default) reads only the database. ``--apply`` also lists each bundle's S3
+prefix (read-only) and writes rows. Narrow either with ``--family`` / ``--store``
+(repeatable). Connection: SQLALCHEMY_DATABASE_URL or POSTGRES_* (as db_reconcile); S3 through
+the app's storage settings. The manifest lives with the CD2 campaign notes, not in the repo.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from viva_api.common.storage.file_paths import S3FilePath
+from viva_api.simulation import dataset_walk
+from viva_api.simulation.tables_orm import AnalysisStatusDB
+
+if TYPE_CHECKING:
+    from viva_api.common.storage.file_service import FileService
+    from viva_api.simulation.database_service import DatabaseService
+    from viva_api.simulation.models import Simulation
+
+IMPORTER = "import_cd2_datasets"
+FILL_BACKEND = "fill"
+
+
+@dataclass(frozen=True)
+class Bundle:
+    """One fill bundle directory from the manifest."""
+
+    store: str
+    experiment_id: str
+    family: str
+    name: str
+    uri: str  # s3://bucket/<store>/analyses/<name>, no trailing slash
+    mode: str  # dedicated-fill | append-metabolites
+    store_uri: str
+    fill_jobs: tuple[str, ...]
+    view_types: tuple[str, ...]
+    ptools_tsv: int
+    viz: int
+
+    @property
+    def tags(self) -> list[str]:
+        return ["cd2", f"cd2-{self.family}", self.mode]
+
+
+def fill_mode(kind: str) -> str:
+    """The manifest's bundle ``kind`` as a tag: ``append-metabolites(into sim-time analysis)`` ->
+    ``append-metabolites``."""
+    return kind.split("(", 1)[0].strip() or "fill"
+
+
+def _bundle(store: dict[str, Any], name: str, info: dict[str, Any]) -> Bundle:
+    return Bundle(
+        store=str(store["store"]),
+        experiment_id=str(store.get("experiment_id") or store["store"]),
+        family=str(store.get("family") or "unknown"),
+        name=name,
+        uri=str(info["s3_uri"]).rstrip("/"),
+        mode=fill_mode(str(info.get("kind", ""))),
+        store_uri=str(store.get("s3_uri", "")).rstrip("/"),
+        fill_jobs=tuple(str(job) for job in store.get("fill_jobs") or ()),
+        view_types=tuple(str(view) for view in info.get("view_types") or ()),
+        ptools_tsv=int(info.get("ptools_tsv") or 0),
+        viz=int(info.get("viz") or 0),
+    )
+
+
+def load_bundles(
+    manifest: dict[str, Any], *, families: set[str] | None = None, stores: set[str] | None = None
+) -> tuple[list[Bundle], list[str]]:
+    """The bundles to import, in store order, and the selected stores that have none."""
+    bundles: list[Bundle] = []
+    empty: list[str] = []
+    for store in manifest.get("stores", []):
+        selected = (not families or store.get("family") in families) and (not stores or store["store"] in stores)
+        if not selected:
+            continue
+        if not store.get("fill_bundles"):
+            empty.append(str(store["store"]))
+            continue
+        bundles.extend(_bundle(store, name, info) for name, info in sorted(store["fill_bundles"].items()))
+    return bundles, empty
+
+
+@dataclass
+class ImportReport:
+    bundles: int = 0
+    runs_created: int = 0
+    runs_reused: int = 0
+    registered: int = 0
+    unchanged: int = 0
+    unavailable: int = 0
+    skipped: list[str] = field(default_factory=list)
+    lines: list[str] = field(default_factory=list)
+
+    def summary(self, *, applied: bool) -> str:
+        mode = "applied" if applied else "analyze (nothing written)"
+        return (
+            f"{mode}: {self.bundles} bundle(s); run rows {self.runs_created} created, {self.runs_reused} existing; "
+            f"datasets {self.registered} registered, {self.unchanged} unchanged, "
+            f"{self.unavailable} marked unavailable; {len(self.skipped)} skipped"
+        )
+
+
+def _run_row(bundle: Bundle, simulation: Simulation, generated_at: str | None) -> dict[str, Any]:
+    """``record_analysis`` arguments for a bundle's fill run."""
+    return {
+        "experiment_id": simulation.experiment_id,
+        "n_tp": None,
+        "status": AnalysisStatusDB.READY,
+        "config": {
+            "analysis_options": {"experiment_id": [simulation.experiment_id]},
+            "imported_by": IMPORTER,
+            "manifest_generated_at": generated_at,
+            "fill_mode": bundle.mode,
+            "fill_jobs": list(bundle.fill_jobs),
+            "view_types": list(bundle.view_types),
+        },
+        "name": bundle.name,
+        "simulation_id": simulation.database_id,
+        "backend": FILL_BACKEND,
+        "result_uri": bundle.uri,
+        "source": {
+            "kind": "simulation",
+            "ref": str(simulation.database_id),
+            "resolved_id": simulation.database_id,
+            "uri": bundle.store_uri,
+        },
+        "tags": bundle.tags,
+    }
+
+
+async def analyze_bundle(db: DatabaseService, bundle: Bundle, report: ImportReport) -> None:
+    listed = f"manifest lists {bundle.ptools_tsv} TSV, {bundle.viz} figure(s)"
+    existing = await db.get_analysis_by_result_uri(bundle.uri)
+    if existing is None:
+        report.lines.append(f"  {bundle.name}: would create a fill run row; {listed}")
+        return
+    count = await db.count_datasets(analysis_id=existing.database_id)
+    report.lines.append(
+        f"  {bundle.name}: run row {existing.database_id} ({existing.backend}) exists with {count} dataset(s); {listed}"
+    )
+
+
+async def apply_bundle(
+    db: DatabaseService,
+    file_service: FileService,
+    bundle: Bundle,
+    simulation: Simulation,
+    report: ImportReport,
+    *,
+    generated_at: str | None,
+) -> None:
+    existing = await db.get_analysis_by_result_uri(bundle.uri)
+    if existing is None:
+        analysis_id = (await db.record_analysis(**_run_row(bundle, simulation, generated_at))).database_id
+        report.runs_created += 1
+    else:
+        analysis_id = existing.database_id
+        await db.add_analysis_tags(analysis_id, bundle.tags)
+        report.runs_reused += 1
+
+    bucket, key = dataset_walk.split_s3_uri(bundle.uri)
+    items = await file_service.get_listing(S3FilePath(s3_path=Path(key)))
+    walked = await dataset_walk.register_bundle(
+        items,
+        bucket=bucket,
+        bundle_key=key,
+        analysis_id=analysis_id,
+        simulation=simulation,
+        db=db,
+        file_service=file_service,
+        tags=bundle.tags,
+    )
+    report.registered += walked.registered
+    report.unchanged += walked.unchanged
+    report.unavailable += walked.unavailable
+    report.skipped.extend(walked.reasons)
+    report.lines.append(
+        f"  {bundle.name}: run {analysis_id}; {walked.registered} registered, {walked.unchanged} unchanged, "
+        f"{walked.unavailable} marked unavailable"
+    )
+
+
+async def import_bundles(
+    bundles: list[Bundle],
+    *,
+    db: DatabaseService,
+    file_service: FileService | None,
+    storage_bucket: str | None,
+    apply: bool,
+    generated_at: str | None = None,
+) -> ImportReport:
+    """Analyze or apply every bundle. A bundle outside the storage bucket, or whose store has
+    no simulation row, is skipped with a reason; nothing else stops the run."""
+    if apply and file_service is None:
+        raise ValueError("--apply needs a file service to list the bundles")
+    report = ImportReport()
+    simulations: dict[str, Simulation | None] = {}
+    for bundle in bundles:
+        if not report.lines or not report.lines[-1].startswith(("  ", bundle.store)):
+            report.lines.append(bundle.store)
+        bucket, _key = dataset_walk.split_s3_uri(bundle.uri)
+        if storage_bucket and bucket != storage_bucket:
+            report.skipped.append(f"{bundle.uri}: not in the storage bucket {storage_bucket!r}")
+            continue
+        if bundle.experiment_id not in simulations:
+            simulations[bundle.experiment_id] = await db.get_simulation_by_experiment_id(bundle.experiment_id)
+        simulation = simulations[bundle.experiment_id]
+        if simulation is None:
+            report.skipped.append(
+                f"{bundle.store}/{bundle.name}: no simulation with experiment_id {bundle.experiment_id!r}"
+            )
+            continue
+        report.bundles += 1
+        if apply and file_service is not None:
+            await apply_bundle(db, file_service, bundle, simulation, report, generated_at=generated_at)
+        else:
+            await analyze_bundle(db, bundle, report)
+    return report
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Import the CD2 ptools fill bundles into the dataset registry.")
+    parser.add_argument("--manifest", required=True, type=Path, help="Path to cd2_ptools_manifest.json.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--analyze", action="store_true", help="Report what would be imported (the default; no writes).")
+    mode.add_argument("--apply", action="store_true", help="Write run and dataset rows.")
+    parser.add_argument("--family", action="append", default=[], help="Only this family (repeatable), e.g. run3.")
+    parser.add_argument("--store", action="append", default=[], help="Only this store (repeatable).")
+    return parser.parse_args(argv)
+
+
+async def run(args: argparse.Namespace) -> int:
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from viva_api.common.storage.file_service_s3 import FileServiceS3
+    from viva_api.config import get_settings
+    from viva_api.simulation.database_service import DatabaseServiceSQL
+    from viva_api.simulation.db_reconcile import resolve_database_url
+
+    manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+    bundles, empty = load_bundles(manifest, families=set(args.family) or None, stores=set(args.store) or None)
+    engine = create_async_engine(resolve_database_url())
+    file_service = FileServiceS3() if args.apply else None
+    try:
+        report = await import_bundles(
+            bundles,
+            db=DatabaseServiceSQL(async_engine=engine),
+            file_service=file_service,
+            storage_bucket=get_settings().storage_s3_bucket or None,
+            apply=bool(args.apply),
+            generated_at=manifest.get("generated_at"),
+        )
+    finally:
+        if file_service is not None:
+            await file_service.close()
+        await engine.dispose()
+    for line in report.lines:
+        print(line)
+    for reason in report.skipped:
+        print(f"skipped: {reason}")
+    print(f"{len(empty)} selected store(s) have no fill bundles")
+    print(report.summary(applied=bool(args.apply)))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    return asyncio.run(run(parse_args(argv)))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

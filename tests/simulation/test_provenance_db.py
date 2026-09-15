@@ -387,3 +387,13 @@ async def test_list_datasets_filters_by_source(database_service: DatabaseService
         await database_service.list_datasets(source={"kind": "simulation", "ref": ref, "coordinate": {"variant": 1}})
         == []
     )
+
+
+@pytest.mark.asyncio
+async def test_add_analysis_tags_union_merges_and_rejects_an_unknown_id(database_service: DatabaseServiceSQL) -> None:
+    analysis_id = await _analysis(database_service, tags=["a"])
+    tagged = await database_service.add_analysis_tags(analysis_id, ["b", "a"])
+    assert sorted(tagged.tags) == ["a", "b"]
+    assert sorted((await database_service.get_analysis(analysis_id)).tags) == ["a", "b"]
+    with pytest.raises(RuntimeError):
+        await database_service.add_analysis_tags(999_999_999, ["x"])

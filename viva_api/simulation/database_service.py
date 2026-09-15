@@ -227,6 +227,11 @@ class DatabaseService(ABC):
         pass
 
     @abstractmethod
+    async def add_analysis_tags(self, analysis_id: int, tags: list[str]) -> ExperimentAnalysisDTO:
+        """Union-merge tags into an analysis run row. ``RuntimeError`` when the id is unknown."""
+        pass
+
+    @abstractmethod
     async def record_analysis(
         self,
         *,
@@ -917,6 +922,18 @@ class DatabaseServiceSQL(DatabaseService):
                 stmt = stmt.limit(max(1, limit))
             result: Result[tuple[ORMAnalysis]] = await session.execute(stmt)
             return [orm_analysis.to_dto() for orm_analysis in result.scalars().all()]
+
+    @override
+    async def add_analysis_tags(self, analysis_id: int, tags: list[str]) -> ExperimentAnalysisDTO:
+        async with self.async_sessionmaker() as session, session.begin():
+            row = (await session.execute(select(ORMAnalysis).where(ORMAnalysis.id == analysis_id))).scalars().first()
+            if row is None:
+                raise RuntimeError(f"Analysis {analysis_id} not found")
+            merged = _merge_tags(row.tags, tags)
+            if merged != list(row.tags or []):
+                row.tags = merged
+                await session.flush()
+            return row.to_dto()
 
     @override
     async def record_analysis(

@@ -231,6 +231,7 @@ async def _file_fields(
     existing: DatasetDTO | None,
     simulation: Simulation,
     file_service: FileService,
+    extra_tags: list[str],
 ) -> dict[str, Any]:
     """The ``upsert_dataset`` fields a walked file contributes (everything but uri, kind, producer)."""
     parsed = parse_artifact_name(filename) if kind != "report" else None
@@ -249,7 +250,7 @@ async def _file_fields(
         "display_name": _display_name(simulation.experiment_id, view or filename, parsed),
         "size_bytes": item.Size,
         "attributes": attributes,
-        "tags": list(simulation.tags),
+        "tags": [*simulation.tags, *extra_tags],
         "source": _simulation_source(simulation, parsed),
     }
 
@@ -263,9 +264,11 @@ async def register_bundle(
     simulation: Simulation,
     db: DatabaseService,
     file_service: FileService,
+    tags: list[str] | None = None,
 ) -> WalkResult:
     """Register every consumable file under one bundle directory for ``analysis_id``, and
-    mark that analysis's rows under the bundle unavailable when their object is gone."""
+    mark that analysis's rows under the bundle unavailable when their object is gone.
+    ``tags`` are added to the simulation's on every row (tags only ever union-merge)."""
     result = WalkResult(bundles=1)
     prefix = bundle_key.rstrip("/") + "/"
     bundle_name = prefix.rstrip("/").rsplit("/", 1)[-1]
@@ -288,6 +291,7 @@ async def register_bundle(
             existing=existing.get(uri),
             simulation=simulation,
             file_service=file_service,
+            extra_tags=list(tags or []),
         )
         try:
             _dto, action = await db.upsert_dataset(
