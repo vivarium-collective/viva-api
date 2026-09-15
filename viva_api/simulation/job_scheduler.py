@@ -1194,12 +1194,14 @@ class JobScheduler:
                 logger.exception("Error ingesting events for HpcRun %s", hpc_run.database_id)
                 continue
             budget -= result.objects_read
-            if result.events_inserted or result.spans_changed:
+            if result.events_inserted or result.spans_changed or result.artifacts_registered:
                 logger.info(
-                    "events: HpcRun %s +%d event(s), %d span(s) changed, stage=%s generation=%s",
+                    "events: HpcRun %s +%d event(s), %d span(s) changed, %d dataset(s) registered, "
+                    "stage=%s generation=%s",
                     hpc_run.database_id,
                     result.events_inserted,
                     result.spans_changed,
+                    result.artifacts_registered,
                     result.stage,
                     result.generation,
                 )
