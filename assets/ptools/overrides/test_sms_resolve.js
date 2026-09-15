@@ -17,29 +17,35 @@ function t(name, analysis, vt, expect) {
 }
 
 // 1. exact stem still wins (unchanged upstream behaviour)
-t('exact match wins', {ptools_rna:'X', 'ptools_rna_multiseed__variant=0':'Y'}, 'ptools_rna', 'X');
+t('exact key wins', {ptools_rna:'X', 'ptools_rna_multiseed__variant=0.tsv':'Y'}, 'ptools_rna', 'X');
 // 2. unique prefix -- the 91/97 normal case
-t('unique prefix', {'ptools_rna_multiseed__variant=0':'Y'}, 'ptools_rna', 'Y');
+t('unique prefix', {'ptools_rna_multiseed__variant=0.tsv':'Y'}, 'ptools_rna', 'Y');
+// .tsv and .html no longer collide -- and only the .tsv is eligible
+t('tsv chosen over html for the same stem',
+  {'ptools_rna_multiseed__variant=0.tsv':'DATA',
+   'ptools_rna_multiseed__variant=0.html':'FIGURE'}, 'ptools_rna', 'DATA');
+t('html-only -> undefined, never upload a figure as omics data',
+  {'ptools_rna_multiseed__variant=0.html':'FIGURE'}, 'ptools_rna', undefined);
 // 3. the REAL ambiguous case (Run-4 analysis-mnp-*): prefer no scale suffix
 t('per-cell vs aggregate -> prefer the AGGREGATE (full time series)',
-  {'ptools_overview__variant=0':'SINGLE', 'ptools_overview_multigeneration__variant=0':'MULTIGEN'},
+  {'ptools_overview__variant=0.tsv':'SINGLE', 'ptools_overview_multigeneration__variant=0.tsv':'MULTIGEN'},
   'ptools_overview', 'MULTIGEN');
 // the real per-cell shape: many (gen, agent) files alongside one aggregate
 t('many per-cell files + one aggregate -> the aggregate',
-  {'ptools_rna__variant=0_seed=0_gen=0_agent=1':'G0',
-   'ptools_rna__variant=0_seed=0_gen=1_agent=1':'G1',
-   'ptools_rna_multigeneration__variant=0_seed=0':'LINEAGE'},
+  {'ptools_rna__variant=0_seed=0_gen=0_agent=1.tsv':'G0',
+   'ptools_rna__variant=0_seed=0_gen=1_agent=1.tsv':'G1',
+   'ptools_rna_multigeneration__variant=0_seed=0.tsv':'LINEAGE'},
   'ptools_rna', 'LINEAGE');
 // 4. nothing matches
-t('miss returns undefined', {'ptools_rxns__variant=0':'Z'}, 'ptools_rna', undefined);
+t('miss returns undefined', {'ptools_rxns__variant=0.tsv':'Z'}, 'ptools_rna', undefined);
 // 5. deterministic + warns when still ambiguous
-const a5={'ptools_rna_multiseed__variant=0':'A','ptools_rna_multigeneration__variant=0':'B'};
+const a5={'ptools_rna_multiseed__variant=0.tsv':'A','ptools_rna_multigeneration__variant=0.tsv':'B'};
 t('two scales, no plain -> sorted first', a5, 'ptools_rna', 'B'); // multigeneration sorts before multiseed
 // 6. falsy values ignored
-t('falsy candidate skipped', {'ptools_rna_multiseed__variant=0':'', 'ptools_rna_x':'V'}, 'ptools_rna', 'V');
+t('falsy candidate skipped', {'ptools_rna_multiseed__variant=0.tsv':'', 'ptools_rna_x.tsv':'V'}, 'ptools_rna', 'V');
 // 7. does not match a different view
 t('prefix DOES match a longer view name (documented hazard, no real pair collides today)',
-  {'ptools_rnap__variant=0':'NOPE'}, 'ptools_rna', 'NOPE');
+  {'ptools_rnap__variant=0.tsv':'NOPE'}, 'ptools_rna', 'NOPE');
 
 console.warn = _w;
 console.log(`\n  ambiguity warnings emitted: ${warns.length}`);

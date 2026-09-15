@@ -140,7 +140,8 @@ async function registerDatasetPtools (params, data) {
    aggregate file is unreachable. See CovertLabEcoli/sms-ecoli#166.
 
    Resolution order:
-     1. exact stem                  -- unchanged behaviour; wins whenever present
+     0. .tsv ONLY  -- the caller uploads this to PTools as an omics dataset
+     1. exact key                   -- unchanged behaviour; wins whenever present
      2. unique prefix match
      3. several prefix matches      -- prefer an AGGREGATE (_multigeneration/_multiseed)
                                       over a per-cell file
@@ -169,8 +170,15 @@ const SMS_SCALE_SUFFIXES = ['_multiseed', '_multigeneration'];
 function smsResolveValueType (analysis, valueType) {
   if (!analysis || !valueType) return undefined;
   if (analysis[valueType]) return analysis[valueType];            // 1
+  // DATA ONLY. The caller POSTs this content to PTools' /register-omics-dataset as
+  // `datatext`, with class=protein|reaction and expressiontype=absolute -- a tabular
+  // omics upload. A .html figure there would not render badly, it would register a
+  // figure AS measurement data. So .tsv is the only valid candidate; when there is
+  // none the caller's existing "missing from analysis results" error is the right
+  // outcome.
   const hits = Object.keys(analysis).filter(
-    k => k !== valueType && k.startsWith(valueType) && analysis[k]);
+    k => k !== valueType && k.startsWith(valueType) && analysis[k]
+         && /\.tsv$/i.test(k));
   if (hits.length === 0) return undefined;
   if (hits.length === 1) return analysis[hits[0]];                // 2
   const aggregate = hits.filter(
@@ -200,9 +208,13 @@ async function fetchDatasetSim (params, retries) {
     if (!data[0]?.content)
       throw new Error(`Error fetching simulation data: ${data.detail[0].msg}`);
     data.forEach(entry=>{
-      const vtype = entry.filename.split('.')[0];
+      // Key on the FULL filename, not `filename.split('.')[0]`. Stripping the
+      // extension made `<stem>.tsv` and `<stem>.html` collide on one key, so the
+      // last entry assigned silently replaced the other -- 11 of 22 keys collided
+      // in a real analyses/12 payload, and the .html won. The extension has to
+      // survive for smsResolveValueType to be able to select the data file.
       const content = entry.content;
-      if (vtype && content) analysis[vtype] = content;
+      if (entry.filename && content) analysis[entry.filename] = content;
     });
   }
   catch (error) {
