@@ -21,9 +21,15 @@ t('exact match wins', {ptools_rna:'X', 'ptools_rna_multiseed__variant=0':'Y'}, '
 // 2. unique prefix -- the 91/97 normal case
 t('unique prefix', {'ptools_rna_multiseed__variant=0':'Y'}, 'ptools_rna', 'Y');
 // 3. the REAL ambiguous case (Run-4 analysis-mnp-*): prefer no scale suffix
-t('two scales -> prefer no-suffix',
+t('per-cell vs aggregate -> prefer the AGGREGATE (full time series)',
   {'ptools_overview__variant=0':'SINGLE', 'ptools_overview_multigeneration__variant=0':'MULTIGEN'},
-  'ptools_overview', 'SINGLE');
+  'ptools_overview', 'MULTIGEN');
+// the real per-cell shape: many (gen, agent) files alongside one aggregate
+t('many per-cell files + one aggregate -> the aggregate',
+  {'ptools_rna__variant=0_seed=0_gen=0_agent=1':'G0',
+   'ptools_rna__variant=0_seed=0_gen=1_agent=1':'G1',
+   'ptools_rna_multigeneration__variant=0_seed=0':'LINEAGE'},
+  'ptools_rna', 'LINEAGE');
 // 4. nothing matches
 t('miss returns undefined', {'ptools_rxns__variant=0':'Z'}, 'ptools_rna', undefined);
 // 5. deterministic + warns when still ambiguous

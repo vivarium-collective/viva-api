@@ -142,13 +142,27 @@ async function registerDatasetPtools (params, data) {
    Resolution order:
      1. exact stem                  -- unchanged behaviour; wins whenever present
      2. unique prefix match
-     3. several prefix matches      -- prefer the candidate with no scale suffix
+     3. several prefix matches      -- prefer an AGGREGATE (_multigeneration/_multiseed)
+                                      over a per-cell file
      4. still ambiguous             -- first by sort order, and warn (never silent)
 
-   Step 3 is not hypothetical: 6 of 97 bundles in the live bucket carry two scales for
-   one view type inside one analysis (the Run-4 `analysis-mnp-*` directories, where a
-   fill appended alongside sim-time output). Without it the winner is whichever key the
-   forEach assigned last, which is order-dependent and gives no sign it happened.
+   Step 3 prefers the aggregate because of what these scales mean in v2ecoli
+   (`workflow/analyses/ptools_multiscale.py`): the three scales are byte-identical
+   source files differing only in which cells `history_sql` covers.
+     * `_multigeneration` is NOT an average -- a single-daughter lineage has one cell per
+       generation, so `GROUP BY time` is an identity; it rebuilds the absolute clock and
+       reuses the single-cell analyze verbatim. The TSV therefore spans the WHOLE lineage
+       (e.g. 0m..88m across two generations) and a per-cell file is one generation OF it.
+     * `_multiseed` bins the absolute time span into n_tp bins, AVGs each feature across
+       seeds, and adds a cross-seed SD spread panel.
+   Either way the aggregate is the full time series; the per-cell file is a fragment.
+   Preferring the fragment would hand the viewer one generation while the complete
+   lineage sits beside it in the same payload.
+
+   Ambiguity is the NORMAL case, not an edge case: a per-cell bundle carries one file per
+   (generation, agent) per view, so several keys prefix-match almost every request.
+   Without an explicit rule the winner is whichever key the forEach assigned last, which
+   is order-dependent and gives no sign it happened.
 */
 const SMS_SCALE_SUFFIXES = ['_multiseed', '_multigeneration'];
 
@@ -159,10 +173,10 @@ function smsResolveValueType (analysis, valueType) {
     k => k !== valueType && k.startsWith(valueType) && analysis[k]);
   if (hits.length === 0) return undefined;
   if (hits.length === 1) return analysis[hits[0]];                // 2
-  const plain = hits.filter(
-    k => !SMS_SCALE_SUFFIXES.some(sfx => k.slice(valueType.length).startsWith(sfx)));
-  if (plain.length === 1) return analysis[plain[0]];              // 3
-  const pick = (plain.length ? plain : hits).slice().sort()[0];   // 4
+  const aggregate = hits.filter(
+    k => SMS_SCALE_SUFFIXES.some(sfx => k.slice(valueType.length).startsWith(sfx)));
+  if (aggregate.length === 1) return analysis[aggregate[0]];      // 3
+  const pick = (aggregate.length ? aggregate : hits).slice().sort()[0];   // 4
   console.warn(`sms: valueType "${valueType}" is ambiguous (${hits.join(', ')}); using "${pick}"`);
   return analysis[pick];
 }
