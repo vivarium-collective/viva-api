@@ -37,9 +37,16 @@ It **launches nothing**: it is a viewer over already-available data. Comparisons
 fetch per value type. `rankCompare.html` registers datasets the same way and compares two
 columns. Fetches are sequential by design (:177).
 
-**Why fill bundles are invisible even once registered** (the pre-`dataset` API; slice 1 fixes this):
-no `n_tp` on the row; filenames like `ptools_rna_multiseed__variant=0.tsv` never equal the
-value type; a per-cell bundle would inline 400 files and the last cell would silently win.
+**Why fill bundles are invisible today**, and what is already in flight:
+- the filename stem never equals the value type (`ptools_rna_multiseed__variant=0`) — **fixed
+  client-side by viva-api PR #658** (`fix/ptools-viewer-valuetype-resolution`, 2026-09-14):
+  exact stem → unique prefix → prefer the no-scale-suffix candidate → warn; measured against
+  all 97 live bundles (6 carry two scales for one view in one `analysis-mnp-*` dir);
+- **no `analysis` row at all** for a fill (`GET /analyses?experiment_id=` returns nothing for
+  an `s3-only` bundle) — slice 1's registration;
+- no `n_tp` on the row, so `datacolumns` is wrong — slice 1 derives it at registration;
+- a per-cell bundle inlines 400 files through `/analyses/{id}/data` and the resolver picks
+  one — only the dataset-id path (§3) fixes that.
 
 ## 2. Goal
 
@@ -86,7 +93,8 @@ Keep the public entry points (`ptoolsGoBtnHandler`, `celovBtnHandler`, `dashboar
 | `valueType` checkboxes hard-code three views | built from the group's member views (adds `ptools_metabolites`, `ptools_overview` when present); the `class` mapping gains `compound` for metabolites (`ptools_object_class` precedent in `viva-ptools`) |
 
 **Feature detection, so one page works against old and new APIs during rollout:** on load
-`GET ${simBaseUrl}datasets/tags`; a 404 falls back to the current simulation flow unchanged.
+`GET ${simBaseUrl}datasets/tags`; a 404 falls back to the current simulation flow — which,
+with #658 merged, already resolves multiseed fills once slice 1 has registered them.
 
 **Same-origin stays true:** the ALB path-routes `/api/*` to sms-api and everything else to
 PTools, and the laptop tunnel reproduces that; no CORS is needed. Set `SMS_API_HOST=`
@@ -99,12 +107,13 @@ PTools, and the laptop tunnel reproduces that; no CORS is needed. Set `SMS_API_H
 `sms.js` is SRI's file, inside their CVS-tracked tree in the export. Two tracks, in
 parallel:
 
-- **Overlay now (ours):** a new `ptools/htdocs/sms/` directory in viva-api holding the
-  patched `sms.js` + `sms.html` and a `sms.js.patch` against the pristine 30.0 copy;
-  `Dockerfile-ptools` `COPY`s it over `/app/aic-export/pathway-tools/ptools/30.0/install/
-  htdocs/sms/` after the `ADD` of the archive. The patch file keeps a future export sync a
-  rebase, not a rewrite. ptools images are hand-built (never by CI) — see the ptools image
-  build memory / `kustomize/scripts/build_and_push.sh`.
+- **Overlay now (ours) — already established by PR #658:** `assets/ptools/overrides/htdocs/sms/sms.js`
+  is `COPY`d over `/app/aic-export/pathway-tools/ptools/30.0/install/htdocs/sms/sms.js` after
+  the archive `ADD` in `Dockerfile-ptools`, keeping the 1 GB vendor tarball byte-identical and
+  the patch a normal diffable file. This plan **extends that same file** (and adds `sms.html`
+  next to it) rather than opening a second overlay location; keep a `sms.js.patch` against
+  the pristine 30.0 copy so a future export sync is a rebase. ptools images are hand-built
+  (never by CI) — `kustomize/scripts/build_and_push.sh`.
 - **Upstream (SRI):** hand this document plus the patch to SRI (Paley) so the next export
   carries it and the overlay can be dropped. Their `displayMassFractionSummary` stub
   (:427, never wired) suggests they intended sms-api-side data services; `/datasets` is that
@@ -126,7 +135,8 @@ parallel:
 
 ## 7. Verification
 
-- **JS unit (no build tooling):** `tests/ptools/test_sms_groups.mjs` run with `node --test`:
+- **JS unit (no build tooling):** extend #658's pattern (`assets/ptools/overrides/test_sms_resolve.js`:
+  plain `node`, the helper lifted out of `sms.js` by marker, no DOM) with a `test_sms_groups.js`:
   group → picker rows; coordinate resolution to a dataset id; feature-detect fallback;
   `datacolumns` from `n_tp`. Fixture JSON captured from dev's `/datasets/groups`.
 - **API contract:** slice 1's router tests already cover `/datasets`; add the two additions
