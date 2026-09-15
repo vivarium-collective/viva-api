@@ -132,13 +132,49 @@ async function registerDatasetPtools (params, data) {
 
 }
 
+/* --- sms-api patch: tolerant valueType resolution -------------------------------
+   Upstream keys its cache on `filename.split('.')[0]` -- the exact filename stem --
+   then looks up `analysis[params.valueType]`. The simulation server's ptools analyses
+   land as `<view>_<scale>__variant=<n>.tsv` (e.g. `ptools_rna_multiseed__variant=0.tsv`),
+   so the stem is never equal to the requested valueType ("ptools_rna") and every
+   aggregate file is unreachable. See CovertLabEcoli/sms-ecoli#166.
+
+   Resolution order:
+     1. exact stem                  -- unchanged behaviour; wins whenever present
+     2. unique prefix match
+     3. several prefix matches      -- prefer the candidate with no scale suffix
+     4. still ambiguous             -- first by sort order, and warn (never silent)
+
+   Step 3 is not hypothetical: 6 of 97 bundles in the live bucket carry two scales for
+   one view type inside one analysis (the Run-4 `analysis-mnp-*` directories, where a
+   fill appended alongside sim-time output). Without it the winner is whichever key the
+   forEach assigned last, which is order-dependent and gives no sign it happened.
+*/
+const SMS_SCALE_SUFFIXES = ['_multiseed', '_multigeneration'];
+
+function smsResolveValueType (analysis, valueType) {
+  if (!analysis || !valueType) return undefined;
+  if (analysis[valueType]) return analysis[valueType];            // 1
+  const hits = Object.keys(analysis).filter(
+    k => k !== valueType && k.startsWith(valueType) && analysis[k]);
+  if (hits.length === 0) return undefined;
+  if (hits.length === 1) return analysis[hits[0]];                // 2
+  const plain = hits.filter(
+    k => !SMS_SCALE_SUFFIXES.some(sfx => k.slice(valueType.length).startsWith(sfx)));
+  if (plain.length === 1) return analysis[plain[0]];              // 3
+  const pick = (plain.length ? plain : hits).slice().sort()[0];   // 4
+  console.warn(`sms: valueType "${valueType}" is ambiguous (${hits.join(', ')}); using "${pick}"`);
+  return analysis[pick];
+}
+
 /* Fetch a dataset from the simulation server */
 async function fetchDatasetSim (params, retries) {
   if (!retries) retries = 0;
   const maxRetries = 5;
   const sim = getSim(params.experiment_id);
   const analysis = sim.analyses.find(x=>x.database_id==params.analysis_id);
-  if (analysis[params.valueType]) return analysis[params.valueType];
+  const cachedHit = smsResolveValueType(analysis, params.valueType);
+  if (cachedHit) return cachedHit;
   const msgCounter = showWorkingMsg("Fetching simulation data...");
   try {
     const response = await fetch(`${simBaseUrl}analyses/${params.analysis_id}/data`, {
@@ -163,7 +199,8 @@ async function fetchDatasetSim (params, retries) {
       console.error("Error fetching simulation data", error);
     }
   }
-  if (analysis[params.valueType]) return analysis[params.valueType];
+  const fetchedHit = smsResolveValueType(analysis, params.valueType);
+  if (fetchedHit) return fetchedHit;
   else console.error(`${params.valueType} missing from analysis results.`);
 }
 

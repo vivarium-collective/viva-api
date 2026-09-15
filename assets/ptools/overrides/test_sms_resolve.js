@@ -1,0 +1,42 @@
+const fs = require('fs');
+const path = require('path');
+// resolve relative to THIS file, not the cwd or an absolute developer path
+const src = fs.readFileSync(path.join(__dirname, 'htdocs', 'sms', 'sms.js'), 'utf8');
+// lift just the helper out of the file (no DOM deps)
+const start = src.indexOf("const SMS_SCALE_SUFFIXES");
+const end   = src.indexOf("/* Fetch a dataset from the simulation server */");
+eval(src.slice(start, end));
+
+let pass=0, fail=0;
+const warns=[]; const _w=console.warn; console.warn=m=>warns.push(m);
+function t(name, analysis, vt, expect) {
+  const got = smsResolveValueType(analysis, vt);
+  const ok = got === expect;
+  ok ? pass++ : fail++;
+  _w(`  ${ok?'PASS':'FAIL'}  ${name}\n        want=${JSON.stringify(expect)} got=${JSON.stringify(got)}`);
+}
+
+// 1. exact stem still wins (unchanged upstream behaviour)
+t('exact match wins', {ptools_rna:'X', 'ptools_rna_multiseed__variant=0':'Y'}, 'ptools_rna', 'X');
+// 2. unique prefix -- the 91/97 normal case
+t('unique prefix', {'ptools_rna_multiseed__variant=0':'Y'}, 'ptools_rna', 'Y');
+// 3. the REAL ambiguous case (Run-4 analysis-mnp-*): prefer no scale suffix
+t('two scales -> prefer no-suffix',
+  {'ptools_overview__variant=0':'SINGLE', 'ptools_overview_multigeneration__variant=0':'MULTIGEN'},
+  'ptools_overview', 'SINGLE');
+// 4. nothing matches
+t('miss returns undefined', {'ptools_rxns__variant=0':'Z'}, 'ptools_rna', undefined);
+// 5. deterministic + warns when still ambiguous
+const a5={'ptools_rna_multiseed__variant=0':'A','ptools_rna_multigeneration__variant=0':'B'};
+t('two scales, no plain -> sorted first', a5, 'ptools_rna', 'B'); // multigeneration sorts before multiseed
+// 6. falsy values ignored
+t('falsy candidate skipped', {'ptools_rna_multiseed__variant=0':'', 'ptools_rna_x':'V'}, 'ptools_rna', 'V');
+// 7. does not match a different view
+t('prefix DOES match a longer view name (documented hazard, no real pair collides today)',
+  {'ptools_rnap__variant=0':'NOPE'}, 'ptools_rna', 'NOPE');
+
+console.warn = _w;
+console.log(`\n  ambiguity warnings emitted: ${warns.length}`);
+warns.forEach(w=>console.log('   ',w));
+console.log(`\n  ${pass} passed, ${fail} failed`);
+process.exit(fail?1:0);
