@@ -9,6 +9,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.analysis_config import AnalysisConfig
+    from ..models.experiment_analysis_dto_source_type_0 import ExperimentAnalysisDTOSourceType0
 
 
 T = TypeVar("T", bound="ExperimentAnalysisDTO")
@@ -42,6 +43,9 @@ class ExperimentAnalysisDTO:
             backend (Union[None, Unset, str]):
             error_message (Union[None, Unset, str]):
             job_id_ext (Union[None, Unset, str]):
+            source (Union['ExperimentAnalysisDTOSourceType0', None, Unset]):
+            tags (Union[Unset, list[str]]):
+            n_datasets (Union[None, Unset, int]):
     """
 
     database_id: int
@@ -58,9 +62,14 @@ class ExperimentAnalysisDTO:
     backend: Union[None, Unset, str] = UNSET
     error_message: Union[None, Unset, str] = UNSET
     job_id_ext: Union[None, Unset, str] = UNSET
+    source: Union["ExperimentAnalysisDTOSourceType0", None, Unset] = UNSET
+    tags: Union[Unset, list[str]] = UNSET
+    n_datasets: Union[None, Unset, int] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.experiment_analysis_dto_source_type_0 import ExperimentAnalysisDTOSourceType0
+
         database_id = self.database_id
 
         name = self.name
@@ -131,6 +140,24 @@ class ExperimentAnalysisDTO:
         else:
             job_id_ext = self.job_id_ext
 
+        source: Union[None, Unset, dict[str, Any]]
+        if isinstance(self.source, Unset):
+            source = UNSET
+        elif isinstance(self.source, ExperimentAnalysisDTOSourceType0):
+            source = self.source.to_dict()
+        else:
+            source = self.source
+
+        tags: Union[Unset, list[str]] = UNSET
+        if not isinstance(self.tags, Unset):
+            tags = self.tags
+
+        n_datasets: Union[None, Unset, int]
+        if isinstance(self.n_datasets, Unset):
+            n_datasets = UNSET
+        else:
+            n_datasets = self.n_datasets
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({
@@ -159,12 +186,19 @@ class ExperimentAnalysisDTO:
             field_dict["error_message"] = error_message
         if job_id_ext is not UNSET:
             field_dict["job_id_ext"] = job_id_ext
+        if source is not UNSET:
+            field_dict["source"] = source
+        if tags is not UNSET:
+            field_dict["tags"] = tags
+        if n_datasets is not UNSET:
+            field_dict["n_datasets"] = n_datasets
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.analysis_config import AnalysisConfig
+        from ..models.experiment_analysis_dto_source_type_0 import ExperimentAnalysisDTOSourceType0
 
         d = dict(src_dict)
         database_id = d.pop("database_id")
@@ -273,6 +307,34 @@ class ExperimentAnalysisDTO:
 
         job_id_ext = _parse_job_id_ext(d.pop("job_id_ext", UNSET))
 
+        def _parse_source(data: object) -> Union["ExperimentAnalysisDTOSourceType0", None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                source_type_0 = ExperimentAnalysisDTOSourceType0.from_dict(data)
+
+                return source_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union["ExperimentAnalysisDTOSourceType0", None, Unset], data)
+
+        source = _parse_source(d.pop("source", UNSET))
+
+        tags = cast(list[str], d.pop("tags", UNSET))
+
+        def _parse_n_datasets(data: object) -> Union[None, Unset, int]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, int], data)
+
+        n_datasets = _parse_n_datasets(d.pop("n_datasets", UNSET))
+
         experiment_analysis_dto = cls(
             database_id=database_id,
             name=name,
@@ -288,6 +350,9 @@ class ExperimentAnalysisDTO:
             backend=backend,
             error_message=error_message,
             job_id_ext=job_id_ext,
+            source=source,
+            tags=tags,
+            n_datasets=n_datasets,
         )
 
         experiment_analysis_dto.additional_properties = d

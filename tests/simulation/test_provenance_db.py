@@ -363,3 +363,27 @@ async def test_tags_and_attribute_summaries(database_service: DatabaseServiceSQL
     assert tag in values["family"]
     assert {0, 1} <= set(values["variant"])
     assert values["origin"] == ["walk"] or "walk" in values["origin"]
+
+
+@pytest.mark.asyncio
+async def test_list_datasets_filters_by_source(database_service: DatabaseServiceSQL) -> None:
+    analysis_id = await _analysis(database_service)
+    ref = str(uuid.uuid4().int % 10**9)
+    of_simulation, _ = await database_service.upsert_dataset(
+        uri=_uri("of-simulation"),
+        kind="ptools-analysis",
+        origin="walk",
+        analysis_id=analysis_id,
+        source={"kind": "simulation", "ref": ref, "resolved_id": int(ref), "coordinate": {"variant": 0}},
+    )
+    await database_service.upsert_dataset(
+        uri=_uri("unsourced"), kind="ptools-analysis", origin="walk", analysis_id=analysis_id
+    )
+
+    found = await database_service.list_datasets(source={"kind": "simulation", "ref": ref})
+    assert [d.database_id for d in found] == [of_simulation.database_id]
+    # Containment reaches into the coordinate.
+    assert (
+        await database_service.list_datasets(source={"kind": "simulation", "ref": ref, "coordinate": {"variant": 1}})
+        == []
+    )

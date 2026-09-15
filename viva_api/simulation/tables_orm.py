@@ -477,6 +477,8 @@ class ORMAnalysis(Base):
             backend=self.backend,
             error_message=self.error_message,
             job_id_ext=self.job_id_ext,
+            source=self.source,
+            tags=list(self.tags or []),
         )
 
 

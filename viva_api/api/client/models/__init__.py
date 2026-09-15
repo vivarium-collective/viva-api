@@ -18,6 +18,7 @@ from .biomodels_regression_request import BiomodelsRegressionRequest
 from .biomodels_regression_result import BiomodelsRegressionResult
 from .biomodels_run_request import BiomodelsRunRequest
 from .biomodels_run_result import BiomodelsRunResult
+from .body_add_dataset_tags import BodyAddDatasetTags
 from .body_add_simulation_tags import BodyAddSimulationTags
 from .body_compose_run_copasi import BodyComposeRunCopasi
 from .body_compose_run_simulation import BodyComposeRunSimulation
@@ -50,16 +51,29 @@ from .config_document import ConfigDocument
 from .config_document_config import ConfigDocumentConfig
 from .containerization_engine import ContainerizationEngine
 from .containerization_file_repr import ContainerizationFileRepr
+from .dataset_dto import DatasetDTO
+from .dataset_dto_attributes import DatasetDTOAttributes
+from .dataset_dto_source_type_0 import DatasetDTOSourceType0
+from .dataset_list_dto import DatasetListDTO
+from .dataset_producer_dto import DatasetProducerDTO
+from .dataset_producer_dto_source_type_0 import DatasetProducerDTOSourceType0
+from .dataset_provenance_dto import DatasetProvenanceDTO
 from .env_worker_start_request import EnvWorkerStartRequest
 from .env_worker_start_response import EnvWorkerStartResponse
 from .env_worker_status_response import EnvWorkerStatusResponse
 from .experiment_analysis_dto import ExperimentAnalysisDTO
+from .experiment_analysis_dto_source_type_0 import ExperimentAnalysisDTOSourceType0
 from .experiment_analysis_request import ExperimentAnalysisRequest
 from .hpc_run import HpcRun
 from .http_validation_error import HTTPValidationError
 from .inner_composite_ref import InnerCompositeRef
 from .job_status import JobStatus
 from .job_type import JobType
+from .list_analysis_datasets_available import ListAnalysisDatasetsAvailable
+from .list_dataset_attributes_response_list_dataset_attributes import ListDatasetAttributesResponseListDatasetAttributes
+from .list_dataset_tags_response_list_dataset_tags import ListDatasetTagsResponseListDatasetTags
+from .list_datasets_available import ListDatasetsAvailable
+from .list_simulation_datasets_available import ListSimulationDatasetsAvailable
 from .list_simulation_tags_response_list_simulation_tags import ListSimulationTagsResponseListSimulationTags
 from .new_gene_cache_job import NewGeneCacheJob
 from .new_gene_cache_request import NewGeneCacheRequest
@@ -162,6 +176,7 @@ __all__ = (
     "BiomodelsRegressionResult",
     "BiomodelsRunRequest",
     "BiomodelsRunResult",
+    "BodyAddDatasetTags",
     "BodyAddSimulationTags",
     "BodyComposeRunCopasi",
     "BodyComposeRunSimulation",
@@ -192,16 +207,29 @@ __all__ = (
     "ConfigDocumentConfig",
     "ContainerizationEngine",
     "ContainerizationFileRepr",
+    "DatasetDTO",
+    "DatasetDTOAttributes",
+    "DatasetDTOSourceType0",
+    "DatasetListDTO",
+    "DatasetProducerDTO",
+    "DatasetProducerDTOSourceType0",
+    "DatasetProvenanceDTO",
     "EnvWorkerStartRequest",
     "EnvWorkerStartResponse",
     "EnvWorkerStatusResponse",
     "ExperimentAnalysisDTO",
+    "ExperimentAnalysisDTOSourceType0",
     "ExperimentAnalysisRequest",
     "HpcRun",
     "HTTPValidationError",
     "InnerCompositeRef",
     "JobStatus",
     "JobType",
+    "ListAnalysisDatasetsAvailable",
+    "ListDatasetAttributesResponseListDatasetAttributes",
+    "ListDatasetsAvailable",
+    "ListDatasetTagsResponseListDatasetTags",
+    "ListSimulationDatasetsAvailable",
     "ListSimulationTagsResponseListSimulationTags",
     "NewGeneCacheJob",
     "NewGeneCacheRequest",

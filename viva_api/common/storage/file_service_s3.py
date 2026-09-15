@@ -1,5 +1,7 @@
 import logging
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack
 from datetime import datetime
 from pathlib import Path
 from typing import override
@@ -199,6 +201,32 @@ class FileServiceS3(FileService):
                     return b""
                 logger.exception(f"Failed to read the head of {bucket}/{key}")
                 raise
+
+    @override
+    async def open_file_stream(self, s3_path: S3FilePath, chunk_size: int = 1024 * 1024) -> AsyncIterator[bytes] | None:
+        """Stream an S3 object in chunks, or ``None`` if it is missing. The client stays open until
+        the iterator is exhausted or closed."""
+        bucket, key = get_settings().storage_s3_bucket, str(s3_path.s3_path)
+        stack = AsyncExitStack()
+        try:
+            s3_client = await stack.enter_async_context(self.session.client("s3"))
+            response = await s3_client.get_object(Bucket=bucket, Key=key)
+        except Exception as e:
+            await stack.aclose()
+            if isinstance(e, ClientError) and e.response["Error"]["Code"] == "NoSuchKey":
+                return None
+            logger.exception(f"Failed to open {bucket}/{key}")
+            raise
+
+        async def chunks() -> AsyncIterator[bytes]:
+            try:
+                async with response["Body"] as body:
+                    async for chunk in body.iter_chunks(chunk_size):
+                        yield chunk
+            finally:
+                await stack.aclose()
+
+        return chunks()
 
     @override
     async def delete_file(self, s3_path: S3FilePath) -> None:

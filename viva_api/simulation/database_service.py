@@ -109,6 +109,7 @@ def _dataset_filter_clauses(
     analysis_id: int | None = None,
     available: bool | None = None,
     since: datetime.datetime | None = None,
+    source: dict[str, Any] | None = None,
 ) -> list[ColumnElement[bool]]:
     """WHERE clauses shared by ``list_datasets`` and ``count_datasets``."""
     candidates: list[ColumnElement[bool] | None] = [
@@ -121,6 +122,7 @@ def _dataset_filter_clauses(
         ORMDataset.analysis_id == analysis_id if analysis_id is not None else None,
         ORMDataset.available.is_(available) if available is not None else None,
         ORMDataset.updated_at >= since if since is not None else None,
+        ORMDataset.source.contains(dict(source)) if source else None,
     ]
     return [clause for clause in candidates if clause is not None]
 
@@ -326,6 +328,7 @@ class DatabaseService(ABC):
         analysis_id: int | None = None,
         available: bool | None = True,
         since: datetime.datetime | None = None,
+        source: dict[str, Any] | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[DatasetDTO]:
@@ -333,7 +336,8 @@ class DatabaseService(ABC):
 
         ``tags``: carries ALL of them. ``attributes``: JSONB containment, so values must match
         in type (``{"variant": 0}`` does not match ``"0"``). ``available=None`` includes gone
-        objects. ``limit`` is clamped to ``1..DATASET_LIST_MAX_LIMIT``."""
+        objects. ``source``: the row's source contains this partial ProvenanceRef (e.g.
+        ``{"kind": "simulation", "ref": "1002"}``). ``limit`` is clamped to ``1..DATASET_LIST_MAX_LIMIT``."""
         pass
 
     @abstractmethod
@@ -1145,6 +1149,7 @@ class DatabaseServiceSQL(DatabaseService):
         analysis_id: int | None = None,
         available: bool | None = True,
         since: datetime.datetime | None = None,
+        source: dict[str, Any] | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[DatasetDTO]:
@@ -1158,6 +1163,7 @@ class DatabaseServiceSQL(DatabaseService):
             analysis_id=analysis_id,
             available=available,
             since=since,
+            source=source,
         )
         stmt = select(ORMDataset)
         if clauses:

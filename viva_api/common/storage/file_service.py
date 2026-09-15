@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
 
@@ -47,6 +48,22 @@ class FileService(ABC):
         ``n_tp``) without downloading the file."""
         contents = await self.get_file_contents(s3_path)
         return None if contents is None else contents[: max(0, n_bytes)]
+
+    async def open_file_stream(self, s3_path: S3FilePath, chunk_size: int = 1024 * 1024) -> AsyncIterator[bytes] | None:
+        """An object's bytes as an async iterator of chunks, or ``None`` when it does not exist.
+
+        Existence is settled before the first chunk, so a caller can still answer 404. The
+        default reads the whole object; ``FileServiceS3`` streams it."""
+        contents = await self.get_file_contents(s3_path)
+        if contents is None:
+            return None
+        step = max(1, chunk_size)
+
+        async def chunks() -> AsyncIterator[bytes]:
+            for start in range(0, len(contents), step):
+                yield contents[start : start + step]
+
+        return chunks()
 
     @abstractmethod
     async def delete_file(self, s3_path: S3FilePath) -> None:

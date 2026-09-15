@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from viva_api.common import StrEnumBase
 from viva_api.common.models import DataId, JobStatus
 from viva_api.config import Settings, get_settings
+from viva_api.simulation.models import SimulationSpan
 
 MAX_ANALYSIS_CPUS = 3
 
@@ -57,7 +58,9 @@ class OutputFileMetadata(BaseModel):
 
 
 class TsvOutputFile(OutputFileMetadata):
-    pass
+    # GET /analyses/{id}/data: the file's key relative to the analysis result prefix. Set when
+    # ``filename`` is aliased to ``<view>.tsv`` so the real name is never lost.
+    path: str | None = None
 
 
 class OutputFile(BaseModel):
@@ -294,6 +297,12 @@ class ExperimentAnalysisDTO(BaseModel):
     backend: str | None = None
     error_message: str | None = None
     job_id_ext: str | None = None  # K8s job name (Ray-native standalone analysis)
+    # --- provenance (docs/plan-data-provenance.md §2a) ---
+    source: dict[str, Any] | None = None  # a ProvenanceRef: what this analysis run is OF
+    tags: list[str] = Field(default_factory=list)
+    # Set by GET /analyses/{id} only: how many available datasets the run has written so far.
+    # Reported apart from ``status`` so "running, 0 datasets" and "done, 0 datasets" differ.
+    n_datasets: int | None = None
 
 
 class AnalysisRun(BaseModel):
@@ -451,3 +460,28 @@ class DatasetListDTO(BaseModel):
     limit: int
     offset: int
     next_offset: int | None = None
+
+
+class DatasetProducerDTO(BaseModel):
+    """The run that wrote a dataset. ``kind`` is ``simulation``, ``analysis`` or ``parca``;
+    ``hpcrun_id``/``trace_id``/``correlation_id`` are set when the run has a run row (a
+    walk-created analysis has none)."""
+
+    kind: str
+    id: int
+    name: str | None = None
+    status: str | None = None
+    source: dict[str, Any] | None = None
+    tags: list[str] = Field(default_factory=list)
+    hpcrun_id: int | None = None
+    trace_id: str | None = None
+    correlation_id: str | None = None
+
+
+class DatasetProvenanceDTO(BaseModel):
+    """``GET /datasets/{id}/provenance``: one hop back from a dataset."""
+
+    dataset: DatasetDTO
+    producer: DatasetProducerDTO | None = None
+    span: SimulationSpan | None = None  # the span the artifact.written event came from
+    inputs: list[DatasetDTO] = Field(default_factory=list)  # registered datasets the producer's source names

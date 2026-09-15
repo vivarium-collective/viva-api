@@ -7,9 +7,12 @@ NOTE: this module is essentially "analysis_handlers_hpc". TODO: abstract this in
 import json
 import logging
 import re
+from collections import Counter
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from textwrap import dedent
+from typing import Any
 
 from starlette.requests import Request
 
@@ -39,6 +42,7 @@ from viva_api.dependencies import (
     get_ssh_session_service,
 )
 from viva_api.simulation.database_service import DatabaseService
+from viva_api.simulation.dataset_walk import parse_artifact_name
 from viva_api.simulation.models import SimulatorVersion
 from viva_api.simulation.simulation_service import SimulationService
 from viva_api.simulation.tables_orm import AnalysisStatusDB
@@ -317,12 +321,70 @@ async def fetch_simulation_analysis_figure(
     return content, _figure_content_type(rel)
 
 
-async def fetch_analysis_data(db_service: DatabaseService, analysis_id: int) -> list[TsvOutputFile]:
-    """Return all text output files of an existing analysis by id, as ``list[TsvOutputFile]``.
+@dataclass(frozen=True)
+class AnalysisFileSelection:
+    """Coordinate filters for ``GET /analyses/{id}/data`` (docs/plan-data-provenance.md §7).
+    Unset filters match everything; a set one excludes files that do not carry that value."""
 
-    Pure retrieval: reads S3 under the analysis row's ``result_uri`` and inlines each
-    file's content with variant/lineage_seed/generation parsed from its partition
-    path — the same shape as the legacy ``POST /analyses``. Never computes: if the
+    view: str | None = None
+    protocol: str | None = None
+    variant: int | None = None
+    seed: int | None = None
+    generation: int | None = None
+
+    def matches(self, facts: dict[str, Any]) -> bool:
+        wanted = {
+            "view": self.view,
+            "protocol": self.protocol,
+            "variant": self.variant,
+            "seed": self.seed,
+            "generation": self.generation,
+        }
+        return all(facts.get(key) == value for key, value in wanted.items() if value is not None)
+
+
+def _output_facts(key: str) -> dict[str, Any]:
+    """View, protocol and coordinate of one output file: its v2ecoli ``<name>__<group>`` name
+    first, then legacy ``variant=/lineage_seed=/generation=`` partition directories."""
+    path = Path(key)
+    partition = parse_partition_metadata(path)
+    facts: dict[str, Any] = {
+        "view": path.stem,
+        "protocol": None,
+        "variant": partition.get("variant"),
+        "seed": partition.get("lineage_seed"),
+        "generation": partition.get("generation"),
+        "agent": None,
+    }
+    parsed = parse_artifact_name(path.name)
+    if parsed is not None:
+        facts.update(parsed.coordinate)
+        facts["view"], facts["protocol"] = parsed.view, parsed.protocol
+    return facts
+
+
+def _output_names(keys: list[str], facts: dict[str, dict[str, Any]]) -> dict[str, str]:
+    """The response ``filename`` per key: ``<view><suffix>`` when the selection holds exactly one
+    file of that view and suffix (the name an unpatched ptools page asks for), else the real name."""
+    counts = Counter((facts[key]["view"], Path(key).suffix) for key in keys)
+    names: dict[str, str] = {}
+    for key in keys:
+        path = Path(key)
+        view = facts[key]["view"]
+        names[key] = f"{view}{path.suffix}" if counts[(view, path.suffix)] == 1 else path.name
+    return names
+
+
+async def fetch_analysis_data(
+    db_service: DatabaseService, analysis_id: int, selection: AnalysisFileSelection | None = None
+) -> list[TsvOutputFile]:
+    """Return the text output files of an existing analysis by id, as ``list[TsvOutputFile]``.
+
+    Pure retrieval: lists S3 under the analysis row's ``result_uri``, keeps the files
+    ``selection`` matches (before downloading anything), and inlines each with its coordinate
+    parsed from its name or partition path — the same shape as the legacy ``POST /analyses``.
+    When the selection holds one file per view, ``filename`` is aliased to ``<view>.tsv``;
+    ``path`` always carries the real key relative to the result prefix. Never computes: if the
     analysis is not READY it raises ``AnalysisNotReadyError`` (mapped to 409).
     """
     analysis = await db_service.get_analysis(database_id=analysis_id)  # RuntimeError -> 404 at the router
@@ -333,20 +395,26 @@ async def fetch_analysis_data(db_service: DatabaseService, analysis_id: int) -> 
     if file_service is None:
         raise RuntimeError("File service is not initialized")
 
+    selection = selection or AnalysisFileSelection()
     items = await _list_analysis_result_files(file_service, analysis.result_uri, _ANALYSIS_OUTPUT_EXTENSIONS)
+    facts = {item.Key: _output_facts(item.Key) for item in items}
+    keys = [item.Key for item in items if selection.matches(facts[item.Key])]
+    names = _output_names(keys, facts)
+    prefix = data_layout.key_from_uri(analysis.result_uri).rstrip("/") + "/"
     outputs: list[TsvOutputFile] = []
-    for item in items:
-        content = await file_service.get_file_contents(S3FilePath(s3_path=Path(item.Key)))
+    for key in keys:
+        content = await file_service.get_file_contents(S3FilePath(s3_path=Path(key)))
         if content is None:
             continue
-        metadata = parse_partition_metadata(Path(item.Key))
         outputs.append(
             TsvOutputFile(
-                filename=Path(item.Key).name,
+                filename=names[key],
+                path=key.removeprefix(prefix),
                 content=content.decode(errors="replace"),
-                variant=metadata.get("variant", 0),
-                lineage_seed=metadata.get("lineage_seed"),
-                generation=metadata.get("generation"),
+                variant=facts[key]["variant"] or 0,
+                lineage_seed=facts[key]["seed"],
+                generation=facts[key]["generation"],
+                agent_id=facts[key]["agent"],
             )
         )
     return outputs

@@ -19,6 +19,7 @@ class TsvOutputFile:
         generation (Union[None, Unset, int]):
         agent_id (Union[None, Unset, str]):
         content (Union[None, Unset, str]):
+        path (Union[None, Unset, str]):
     """
 
     filename: str
@@ -27,6 +28,7 @@ class TsvOutputFile:
     generation: Union[None, Unset, int] = UNSET
     agent_id: Union[None, Unset, str] = UNSET
     content: Union[None, Unset, str] = UNSET
+    path: Union[None, Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -58,6 +60,12 @@ class TsvOutputFile:
         else:
             content = self.content
 
+        path: Union[None, Unset, str]
+        if isinstance(self.path, Unset):
+            path = UNSET
+        else:
+            path = self.path
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({
@@ -73,6 +81,8 @@ class TsvOutputFile:
             field_dict["agent_id"] = agent_id
         if content is not UNSET:
             field_dict["content"] = content
+        if path is not UNSET:
+            field_dict["path"] = path
 
         return field_dict
 
@@ -119,6 +129,15 @@ class TsvOutputFile:
 
         content = _parse_content(d.pop("content", UNSET))
 
+        def _parse_path(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        path = _parse_path(d.pop("path", UNSET))
+
         tsv_output_file = cls(
             filename=filename,
             variant=variant,
@@ -126,6 +145,7 @@ class TsvOutputFile:
             generation=generation,
             agent_id=agent_id,
             content=content,
+            path=path,
         )
 
         tsv_output_file.additional_properties = d
