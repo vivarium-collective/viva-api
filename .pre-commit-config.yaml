@@ -12,8 +12,16 @@ repos:
       - id: pretty-format-json
         exclude: (^\.devcontainer/|^\.vscode/|^app/)
         args: [ --autofix, --no-sort-keys ]
+      # Vendored Pathway Tools files under assets/ptools/overrides/ are verbatim
+      # copies of the upstream distribution with a minimal, reviewable patch on top
+      # (see Dockerfile-ptools' COPY overlay). Normalising their whitespace would
+      # inflate the diff against upstream and make every future vendor refresh
+      # conflict -- the opposite of why the overlay exists. sms.js carries 18
+      # trailing-whitespace lines upstream; none are ours.
       - id: end-of-file-fixer
+        exclude: ^assets/ptools/overrides/
       - id: trailing-whitespace
+        exclude: ^assets/ptools/overrides/
 
   # This rev MUST stay equal to the exact `ruff==` pin in pyproject.toml's
   # `dev` group — tests/test_tooling_versions.py enforces it. When they drift,

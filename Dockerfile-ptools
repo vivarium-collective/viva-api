@@ -27,6 +27,15 @@ RUN rm -rf /var/lib/apt/lists/* && \
 WORKDIR /app
 
 ADD assets/ptools/aic-export-30.0.tar.gz /app/
+
+# Overlay patched vendor files on top of the extracted distribution.
+# The archive is ~1 GB, so patching it in place would make the change invisible in
+# review and unrevertible in practice; a COPY after the ADD keeps the vendor tarball
+# byte-identical and the patch a normal tracked, diffable file.
+#   htdocs/sms/sms.js -- tolerant valueType resolution (CovertLabEcoli/sms-ecoli#166)
+COPY assets/ptools/overrides/htdocs/sms/sms.js \
+     /app/aic-export/pathway-tools/ptools/30.0/install/htdocs/sms/sms.js
+
 RUN mkdir -p /app/ptools && \
     ./aic-export/pathway-tools/ptools/30.0/install/config-ptools /app/ptools
 
