@@ -1,10 +1,11 @@
-# ptools datasets: integrating `analysis_result` records into the Pathway Tools page
+# ptools datasets: integrating `dataset` records into the Pathway Tools page
 
 **Status (2026-09-14): plan, not started.** Follow-up to
 [`plan-task-provenance.md`](plan-task-provenance.md) (viva-api PR #656 / issue #655), which
-adds the `analysis_result` dataset table and the `GET /api/v1/datasets` API; and to
-[`plan-data-provenance.md`](plan-data-provenance.md), which explains where those rows come
-from. This document is the **consumer side**: how the Pathway Tools omics page stops walking
+is slice 2; and, first, to [`plan-data-provenance.md`](plan-data-provenance.md), **slice 1**,
+which adds the `dataset` table, the `GET /api/v1/datasets` API and explains where the rows
+come from. This consumer work depends on slice 1 only; slice 2 adds task-produced datasets
+to the same lists. This document is the **consumer side**: how the Pathway Tools omics page stops walking
 simulation → analyses → data and instead lists the datasets that exist, by tag and
 attribute, and fetches each by id.
 
@@ -36,18 +37,20 @@ It **launches nothing**: it is a viewer over already-available data. Comparisons
 fetch per value type. `rankCompare.html` registers datasets the same way and compares two
 columns. Fetches are sequential by design (:177).
 
-**Why fill bundles are invisible even once registered** (`plan-task-provenance.md` §2c):
+**Why fill bundles are invisible even once registered** (the pre-`dataset` API; slice 1 fixes this):
 no `n_tp` on the row; filenames like `ptools_rna_multiseed__variant=0.tsv` never equal the
 value type; a per-cell bundle would inline 400 files and the last cell would silently win.
 
 ## 2. Goal
 
-The page lists **datasets** (`analysis_result` rows of `kind = ptools-analysis`) directly —
+The page lists **datasets** (`dataset` rows of `kind = ptools-analysis`) directly —
+(a dataset row exists only once the trace was scraped or the reconciliation walk found the
+object — the page never sees a planned-but-unwritten file) —
 filtered by tag (`cd2`), view, protocol and coordinates — and fetches one TSV by dataset id.
 The simulation becomes a label on the row, not the entry point. Per-cell datasets are
 addressable one at a time. Compare and rank-compare keep working. Nothing is launched.
 
-## 3. What the page needs from the API (all in #656's `/datasets`; two additions requested)
+## 3. What the page needs from the API (all in slice 1's `/datasets`, `plan-data-provenance.md` §7; two additions requested)
 
 | call | purpose |
 |---|---|
@@ -58,7 +61,7 @@ addressable one at a time. Compare and rank-compare keep working. Nothing is lau
 | `GET /api/v1/datasets/{id}/content` | the TSV text (`text/tab-separated-values`) |
 | `GET /api/v1/datasets/{id}` | attributes (`n_tp`, `display_name`) for `datacolumns` and the title |
 
-Conventions the page relies on (to be stated in #656): every `ptools-analysis` row has
+Conventions the page relies on (to be stated in slice 1): every `ptools-analysis` row has
 `attributes.n_tp`, `attributes.protocol`, `attributes.variant`, `view`; `display_name` =
 `<experiment_id> · <protocol>[ · s<seed> g<gen>]`; `tags` include the campaign (`cd2`) and
 family (`run3`, …); `available=true` is the default filter.
@@ -109,8 +112,8 @@ parallel:
 
 ## 6. Rollout
 
-1. #656 implementation deployed to `sms-api-stanford-test` with the importer run → dataset
-   rows exist for the CD2 fills (`origin = walk`).
+1. Slice 1 (`plan-data-provenance.md`) deployed to `sms-api-stanford-test` with its importer
+   run → dataset rows exist for the CD2 fills (`origin = walk`); slice 2 is not required.
 2. Build + push `sms-ptools:<api version>` with the overlay; bump the dev overlay's
    `sms-ptools` `newTag` **only** for an image that was actually pushed; apply; verify by
    port-forward `svc/ptools 15550:1555` (`GET /` 200, `organism-summary?object=ECOLI` 200)
@@ -126,7 +129,7 @@ parallel:
 - **JS unit (no build tooling):** `tests/ptools/test_sms_groups.mjs` run with `node --test`:
   group → picker rows; coordinate resolution to a dataset id; feature-detect fallback;
   `datacolumns` from `n_tp`. Fixture JSON captured from dev's `/datasets/groups`.
-- **API contract:** the #656 router tests already cover `/datasets`; add the two additions
+- **API contract:** slice 1's router tests already cover `/datasets`; add the two additions
   (§3) there with a per-cell fixture (5 views × 32 cells).
 - **Live:** §6 steps 2–3 through the page, not curl; then `atlantis dataset list --kind
   ptools-analysis --tag cd2 --view ptools_rna --attr protocol=multiseed` agrees with what
