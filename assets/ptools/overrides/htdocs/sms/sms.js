@@ -900,11 +900,11 @@ function populateAnalysisSelector (analyses, parent) {
     parent.appendChild(input);
   }
   else {
-    const label = createElement('label');
-    const prompt = createElement('span');
+    const label = document.createElement('label');
+    const prompt = document.createElement('span');
     prompt.classList.add('paramLabel');
     prompt.innerHTML = "Select Analysis Configuration"
-    const select = createElement('select');
+    const select = document.createElement('select');
     select.classList.add('analysisId');
     analyses.forEach(analysis=>{
       const option = new Option(analysisDesc(analysis), analysis.database_id);
