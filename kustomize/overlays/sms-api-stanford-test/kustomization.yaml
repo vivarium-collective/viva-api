@@ -178,11 +178,19 @@ images:
   #
   # ptools is now tagged off the sms-api version line (whatever version.py read
   # when it was rebuilt) instead of versioning independently. It therefore LAGS
-  # sms-api between rebuilds -- 0.9.53 is this build; sms-api has since moved to
-  # 0.9.55 on its own. Tag the next ptools rebuild with version.py as of then;
-  # do not bump this tag without actually building and pushing that image.
+  # sms-api between rebuilds. Tag the next ptools rebuild with version.py as of
+  # then; do not bump this tag without actually building and pushing that image.
+  #
+  # 0.9.144 (2026-09-15) rebuilds the vendor overlay to pick up viva-api #665:
+  # upstream aic-export-30.0 sms.js called a bare `createElement(...)` three
+  # times in populateAnalysisSelector()'s multi-analysis branch, and no global
+  # of that name exists anywhere in the PTools htdocs tree -- so the analysis
+  # selector threw ReferenceError for any simulation with more than one
+  # analysis, which is the shape of every backfilled CD2 experiment (n_tp
+  # 5/10/20). Image content verified after push: the sms.js inside
+  # ghcr:0.9.144 is byte-identical to the merged file on main.
   - name: ghcr.io/vivarium-collective/sms-ptools
-    newTag: 0.9.143
+    newTag: 0.9.144
   # vivarium-workbench: published by cutting a GitHub Release in the workbench
   # repo (build-and-push.yml → ghcr:<version>); pin that release tag here.
   # 0.3.0 builds on the 0.2.0 demo-migration release (workbench PR #453 + #466:
