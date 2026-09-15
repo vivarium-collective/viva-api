@@ -39,6 +39,15 @@ class FileService(ABC):
     async def get_file_contents(self, s3_path: S3FilePath) -> bytes | None:
         pass
 
+    async def get_file_head(self, s3_path: S3FilePath, n_bytes: int) -> bytes | None:
+        """The first ``n_bytes`` of an object, or ``None`` when it does not exist.
+
+        The default reads the whole object and slices it; a backend that can range-read
+        overrides this (``FileServiceS3``). Used for cheap header reads (a ptools TSV's
+        ``n_tp``) without downloading the file."""
+        contents = await self.get_file_contents(s3_path)
+        return None if contents is None else contents[: max(0, n_bytes)]
+
     @abstractmethod
     async def delete_file(self, s3_path: S3FilePath) -> None:
         """Delete a file from storage. Raises exception if file doesn't exist or delete fails."""

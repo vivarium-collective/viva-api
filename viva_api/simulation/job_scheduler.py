@@ -1,6 +1,8 @@
 import asyncio
 import datetime
 import logging
+import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from viva_api.common.dispatch_validation import resolve_task_env
@@ -86,6 +88,10 @@ class JobScheduler:
         self._orphans_announced: set[int] = set()
         # correlation_id -> hpcrun_id, HITS only (see get_hpcrun_by_correlation_id)
         self._hpcrun_ids_by_correlation: dict[str, int] = {}
+        # Dataset reconciliation walk: the last simulation id walked (round robin) and when
+        # the last batch ran (monotonic seconds).
+        self._dataset_reconcile_cursor = 0
+        self._dataset_reconcile_at: float | None = None
 
     async def get_hpcrun_by_correlation_id(self, correlation_id: str) -> int | None:
         """Resolve a worker event's correlation id to its HpcRun id, caching
@@ -145,42 +151,30 @@ class JobScheduler:
             await self._polling_task
             logger.info("Stopped job status polling task.")
 
-    async def _polling_loop(self, interval_seconds: int) -> None:
-        while not self._stop_event.is_set():
+    def _polling_ticks(self) -> tuple[tuple[Callable[[], Awaitable[None]], str], ...]:
+        """Every tick of the polling loop, in order, with the message logged if it raises."""
+        return (
             # First, so the very first tick after startup reconciles whatever
             # the previous pod left behind (viva-api#414).
-            try:
-                await self.reconcile_local_tasks()
-            except Exception:
-                logger.exception("Error during orphaned local-task reconciliation")
-            try:
-                await self.reconcile_cancelled_nextflow_campaigns()
-            except Exception:
-                logger.exception("Error during cancelled-Nextflow-campaign reconciliation")
-            try:
-                await self.update_running_jobs()
-            except Exception:
-                logger.exception("Error during job polling")
-            try:
-                await self.update_chain_campaigns()
-            except Exception:
-                logger.exception("Error during chain-dispatch campaign polling")
-            try:
-                await self.update_multi_node_jobs()
-            except Exception:
-                logger.exception("Error during multi-node composite job polling")
-            try:
-                await self.update_nextflow_heads()
-            except Exception:
-                logger.exception("Error during Nextflow head polling")
-            try:
-                await self.update_analysis_runs()
-            except Exception:
-                logger.exception("Error during standalone analysis run polling")
-            try:
-                await self.ingest_run_events()
-            except Exception:
-                logger.exception("Error during run event ingestion")
+            (self.reconcile_local_tasks, "Error during orphaned local-task reconciliation"),
+            (self.reconcile_cancelled_nextflow_campaigns, "Error during cancelled-Nextflow-campaign reconciliation"),
+            (self.update_running_jobs, "Error during job polling"),
+            (self.update_chain_campaigns, "Error during chain-dispatch campaign polling"),
+            (self.update_multi_node_jobs, "Error during multi-node composite job polling"),
+            (self.update_nextflow_heads, "Error during Nextflow head polling"),
+            (self.update_analysis_runs, "Error during standalone analysis run polling"),
+            (self.ingest_run_events, "Error during run event ingestion"),
+            (self.reconcile_datasets, "Error during dataset reconciliation"),
+        )
+
+    async def _polling_loop(self, interval_seconds: int) -> None:
+        while not self._stop_event.is_set():
+            # Each tick is isolated: one that raises is logged and the rest still run.
+            for tick, message in self._polling_ticks():
+                try:
+                    await tick()
+                except Exception:
+                    logger.exception(message)
             await asyncio.sleep(interval_seconds)
 
     async def update_running_jobs(self) -> None:
@@ -1246,6 +1240,59 @@ class JobScheduler:
                 ),
             )
             logger.info("analysis run %s (analysis %s) -> %s", hpc_run.database_id, hpc_run.ref_id, resolved.status)
+
+    async def reconcile_datasets(self) -> None:
+        """The walk feeder's steady state (docs/plan-data-provenance.md §5).
+
+        Every ``datasets_reconcile_batch_interval_seconds``, walk the next
+        ``datasets_reconcile_batch_size`` simulations by id and wrap around. Each walk
+        registers files no trace event registered, creates run rows for bundles nobody
+        registered, and marks rows whose objects are gone. A failure is logged per
+        simulation and the batch moves on."""
+        from viva_api.dependencies import get_file_service
+        from viva_api.simulation import dataset_walk
+
+        settings = get_settings()
+        if not getattr(settings, "datasets_reconcile_enabled", True):
+            return
+        interval = int(getattr(settings, "datasets_reconcile_batch_interval_seconds", 60))
+        now = time.monotonic()
+        if self._dataset_reconcile_at is not None and now - self._dataset_reconcile_at < interval:
+            return
+        file_service = get_file_service()
+        if file_service is None:
+            return
+        self._dataset_reconcile_at = now
+        batch = max(1, int(getattr(settings, "datasets_reconcile_batch_size", 25)))
+        simulations = await self.database_service.list_simulations_after(self._dataset_reconcile_cursor, limit=batch)
+        if not simulations:
+            self._dataset_reconcile_cursor = 0
+            return
+        bucket = getattr(settings, "storage_s3_bucket", None)
+        for simulation in simulations:
+            try:
+                result = await dataset_walk.reconcile_simulation(
+                    simulation,
+                    db=self.database_service,
+                    file_service=file_service,
+                    storage_bucket=bucket if isinstance(bucket, str) else None,
+                )
+            except Exception:
+                logger.exception("datasets: walking simulation %s failed", simulation.database_id)
+                continue
+            if result.registered or result.analyses_created or result.unavailable or result.skipped:
+                logger.info(
+                    "datasets: simulation %s walked %d bundle(s): %d registered, %d new analysis run(s), "
+                    "%d marked unavailable, %d skipped %s",
+                    simulation.database_id,
+                    result.bundles,
+                    result.registered,
+                    result.analyses_created,
+                    result.unavailable,
+                    result.skipped,
+                    "; ".join(result.reasons),
+                )
+        self._dataset_reconcile_cursor = simulations[-1].database_id
 
     async def _record_chain_outcomes(
         self,

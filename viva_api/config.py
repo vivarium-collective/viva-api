@@ -243,6 +243,15 @@ class Settings(BaseSettings):
     # thousands of rows of telemetry nobody queries. Set true only to debug the
     # ingester itself.
     events_ingest_store_debug: bool = False
+    # Dataset reconciliation walk (data provenance slice 1, viva_api.simulation.dataset_walk):
+    # every ``datasets_reconcile_batch_interval_seconds`` the scheduler walks the
+    # ``analyses/`` prefix of the next ``datasets_reconcile_batch_size`` simulations (round
+    # robin by id), registering files no trace event registered and marking rows whose
+    # objects are gone. One S3 listing per simulation; TSV headers are range-read only when
+    # an object is new or changed size.
+    datasets_reconcile_enabled: bool = True
+    datasets_reconcile_batch_size: int = 25
+    datasets_reconcile_batch_interval_seconds: int = 60
 
     # ECR settings
     ecr_account_id: str = ""  # AWS account ID for ECR registry (e.g. "476270107793")

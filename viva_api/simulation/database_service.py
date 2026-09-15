@@ -614,6 +614,11 @@ class DatabaseService(ABC):
         pass
 
     @abstractmethod
+    async def list_simulations_after(self, after_id: int, limit: int) -> list[Simulation]:
+        """Up to ``limit`` simulations with ``id > after_id``, ascending (a round-robin cursor)."""
+        pass
+
+    @abstractmethod
     async def list_simulations(self, limit: int | None = None, offset: int = 0) -> list[Simulation]:
         """List simulations most-recent first (by id). ``limit`` bounds the query
         itself (not just the response); ``None`` returns all rows."""
@@ -2003,6 +2008,15 @@ class DatabaseServiceSQL(DatabaseService):
             if orm_simulation is None:
                 raise Exception(f"Simulation with id {simulation_id} not found in the database")
             await session.delete(orm_simulation)
+
+    @override
+    async def list_simulations_after(self, after_id: int, limit: int) -> list[Simulation]:
+        async with self.async_sessionmaker() as session:
+            stmt = (
+                select(ORMSimulation).where(ORMSimulation.id > after_id).order_by(ORMSimulation.id).limit(max(1, limit))
+            )
+            result: Result[tuple[ORMSimulation]] = await session.execute(stmt)
+            return self._build_simulations(list(result.scalars().all()))
 
     @override
     async def list_simulations(self, limit: int | None = None, offset: int = 0) -> list[Simulation]:

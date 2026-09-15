@@ -180,6 +180,27 @@ class FileServiceS3(FileService):
                 raise
 
     @override
+    async def get_file_head(self, s3_path: S3FilePath, n_bytes: int) -> bytes | None:
+        """The first ``n_bytes`` of an S3 object via a ranged GET, or ``None`` if it is missing."""
+        bucket, key = get_settings().storage_s3_bucket, str(s3_path.s3_path)
+        if n_bytes <= 0:
+            return b""
+        async with self.session.client("s3") as s3_client:
+            try:
+                response = await s3_client.get_object(Bucket=bucket, Key=key, Range=f"bytes=0-{n_bytes - 1}")
+                async with response["Body"] as stream:
+                    contents: bytes = await stream.read()
+                return contents
+            except ClientError as e:
+                code = e.response["Error"]["Code"]
+                if code == "NoSuchKey":
+                    return None
+                if code == "InvalidRange":  # an empty object
+                    return b""
+                logger.exception(f"Failed to read the head of {bucket}/{key}")
+                raise
+
+    @override
     async def delete_file(self, s3_path: S3FilePath) -> None:
         """Delete a file from S3."""
         logger.info(f"Deleting S3 object: {s3_path}")
