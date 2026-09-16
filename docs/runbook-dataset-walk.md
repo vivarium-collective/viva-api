@@ -106,6 +106,31 @@ What this looked like on 2026-09-15, against the copy and the real bucket:
 
 Applying simulation 1289 and re-analyzing it reported `0 registered, 449 unchanged`.
 
+### A full-fleet pass
+
+`walk_datasets.py` walks one batch. A complete pass over every simulation, newest first, was
+run on 2026-09-16 with a small resumable wrapper around the same
+`dataset_walk.reconcile_simulation` entry point. It took ~5 hours of wall clock and needed
+three properties the by-hand script does not have, each learned the hard way:
+
+- **A cursor written after every simulation.** The pass was killed three times by host memory
+  pressure -- caused by an editor, not by the walk, which holds ~140 MB. Resuming costs at most
+  one simulation, and because the upsert is keyed on `uri` a re-walk reports `unchanged`
+  instead of duplicating. This is what makes the pass safe to interrupt at any point.
+- **Skipping simulations whose stored config no longer parses.** Ids 61-72 carry
+  `parca_options.rnaseq_*` keys that `SimulationConfig` now forbids, so `get_simulation` raises
+  `ValidationError` for them. `list_simulations_after` does **not**: `_build_simulations`
+  strips the offending keys and re-parses (lenient LIST, strict DETAIL), which is why the
+  scheduler's own reconcile tick is unaffected. Resolve ids through the list path, or guard the
+  call. `walk_datasets.py --simulation 61` tracebacks for this same reason.
+- **Tolerating SSO expiry.** A multi-hour pass outlives an access token, so retry rather than
+  exit; botocore refreshes silently against the client registration, which lasts far longer.
+
+**Judging liveness.** The cursor only advances *between* simulations, so one large bundle
+(sim82's 40-seed x 10-generation campaigns) freezes it for many minutes while the walk is
+working perfectly -- which reads as a stall and is not one. `SELECT count(*) FROM dataset` is
+the signal that matters: rising rows behind a frozen cursor is healthy.
+
 ## 5. Read the result
 
 ```bash
@@ -116,36 +141,43 @@ docker exec -i viva-dump psql -U postgres -d postgres -q -f - < scripts/survey_d
 coordinate coverage, `n_tp`, the integrity checks, and how much of the fleet was touched. It
 is read-only, so it also runs against a real site through a pod's `psql`.
 
-### What it found, 2026-09-15
+### What it found: the full fleet, 2026-09-16
 
-3,954 rows over 12 bundles, from 4 simulations and 5 analysis runs -- every row `origin =
-walk`, none unavailable: 2,441 `figure`, 1,502 `ptools-analysis`, 11 `report`. 4,140 MB
-registered; median 343 kB, largest object 270 MB.
+A complete pass over all 1,319 simulations into a freshly truncated `dataset` table.
+**117,969 rows over 401 bundles, 118 GB registered** -- every row `origin = walk`, none
+unavailable: 74,303 `figure`, 43,182 `ptools-analysis`, 484 `report`. Median 613 kB, largest
+single object 432 MB.
 
-**Both attribution paths were exercised.** 3,010 rows across 5 bundles are *written by* an
-analysis run that claims them; 944 rows across 7 bundles are *found under* a simulation
-because no run claims them.
+**Both attribution paths, at scale.** 98,272 rows across 312 bundles are *written by* a
+claiming analysis run; 19,697 rows across 89 bundles are *found under* a simulation because no
+run claims them.
 
-**Every apparent gap turned out to be explained exactly** -- which is the reason to run the
-survey rather than eyeball rows:
+**Every apparent gap is explained exactly** -- the same arithmetic that held over a 12-bundle
+sample, now over 43,182 ptools rows. That it closes to the row at 30x the scale is the evidence
+that `parse_artifact_name` is right, rather than coincidentally consistent:
 
 | apparent gap | what it actually is |
 |---|---|
-| 36 of 1,502 ptools rows have no `seed` | exactly the 36 `multiseed` rows: an aggregate over seeds has none |
-| 110 have no `generation` / `agent` | exactly 74 `multigeneration` + 36 `multiseed` |
-| 323 have no `n_tp` | exactly the 323 `ptools_overview` files; every other view is 0-missing. Their header is commentary, not a timepoint row |
-| 1,272 rows carry no tags | 1,260 belong to analyses 8 and 108, whose **simulations** carry no tags. Tags are inherited from the producing simulation, so nothing was dropped |
+| 547 rows have no `seed` | exactly the 547 `multiseed` rows: an aggregate over seeds has none |
+| 1,203 have no `generation` / `agent` | exactly 547 `multiseed` + 656 `multigeneration` |
+| 9,629 have no `n_tp` | exactly the 9,629 `ptools_overview` files; every other view is 0-missing. Their header is commentary, not a timepoint row |
+| 21,301 rows carry no tags | every one resolves to a producing simulation that itself carries no tags -- checked, not assumed. Tags are inherited, so nothing was dropped |
 
 Integrity: **0 duplicate `uri`** (the upsert key holds), 0 missing `display_name`,
 `size_bytes` or `source`.
 
-**Coverage, stated plainly:** this touched 4 of 1,319 simulations and 5 of 765 analyses before
-the walk was stopped. It validates shape and correctness, not fleet coverage.
+`n_tp` takes 12 distinct values from 1 to 402, tracking run length: there is no single expected
+value, and a lone unusual one is not a defect.
 
-**One anomaly worth knowing:** 3 of the 5 claiming analyses (8, 3, 108) sit in `COMPUTING`
-while owning complete bundles. Attribution is unaffected -- a bundle is claimed by matching
-`result_uri`, not status -- but a status filter, and the reconciliation path that starts from
-READY analyses, will both misread those runs.
+**Coverage -- the headline number.** Only **138 of 1,319 simulations** have any dataset row,
+and 312 of 765 analyses claim a bundle. The other 89% of runs registered nothing, because the
+walk only looks at `<out_uri>/analyses/`. Every one of them wrote a trajectory store this
+registry cannot see. That is viva-api#672, measured rather than argued.
+
+**Analyses sitting in `COMPUTING` while owning complete bundles** -- among them analysis 9
+(`sim82-item71-b2-40se`), the single largest claimer at 3,881 rows. Attribution is unaffected,
+because a bundle is claimed by matching `result_uri`, not status, but a status filter and the
+reconciliation path that starts from READY analyses will both misread those runs.
 
 Cross-check a bundle against the objects themselves:
 
@@ -166,8 +198,9 @@ has an `analysis.json`.
   run itself wrote gets no row at all: the newest runs write `<out_uri>/v2ecoli_seed00.zarr/`
   (zarr v3) and the CD2-era ones write parquet under `<out_uri>/batch_baseline/<exp>/`, and
   neither is registered. That is viva-api#672, which carries the decision to model both as one
-  `store` kind with `attributes.format = zarr | parquet`. `parca-cache` rows likewise arrive
-  only by event.
+  `store` kind with `attributes.format = zarr | parquet`. Measured over the full fleet: 1,181
+  of 1,319 simulations came out of the walk with no row whatsoever. `parca-cache` rows likewise
+  arrive only by event.
 - **Availability flips over time.** You will see rows marked unavailable only for objects that
   are already gone.
 - **The API and clients.** They read the same rows, but nothing here starts a server.
