@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from viva_api.analysis.models import DATASET_LIST_MAX_LIMIT
+from viva_api.analysis.models import DATASET_LIST_MAX_LIMIT, ProducerRef
 from viva_api.common.storage.file_paths import S3FilePath
 from viva_api.simulation import dataset_walk
 
@@ -128,7 +128,7 @@ class ImportReport:
 
 async def _producer(
     db: DatabaseService, bundle: Bundle, simulation: Simulation, report: ImportReport
-) -> tuple[dict[str, Any], str]:
+) -> tuple[ProducerRef, str]:
     """The producer the walk would give the bundle, and how to say so."""
     claimed = await db.get_analysis_by_result_uri(bundle.uri)
     if claimed is not None:

@@ -26,8 +26,15 @@ import csv
 import os
 import pathlib
 
-#: Load order: a child's parents must exist first.
+#: Load order: a child's parents must exist first. Also the allow-list every identifier below
+#: is checked against, so no caller-supplied text reaches SQL.
 TABLES: tuple[str, ...] = ("simulator", "parca_dataset", "simulation", "analysis")
+
+#: The statements each table needs, built once from the allow-list above: a literal per table,
+#: never an f-string over a name from outside it.
+_COUNT_SQL = {table: f"SELECT count(*) FROM public.{table}" for table in TABLES}  # noqa: S608
+_SEQUENCE_SQL = {table: f"SELECT pg_get_serial_sequence('public.{table}', 'id')" for table in TABLES}
+_SETVAL_SQL = {table: f"SELECT setval($1, (SELECT max(id) FROM public.{table}))" for table in TABLES}  # noqa: S608
 
 _LOCAL_HOSTS = ("localhost", "127.0.0.1")
 
@@ -63,10 +70,10 @@ async def load(directory: pathlib.Path, url: str) -> int:
                 await connection.copy_to_table(
                     table, source=source, columns=columns, format="csv", header=True, schema_name="public"
                 )
-            count = await connection.fetchval(f"SELECT count(*) FROM public.{table}")
-            sequence = await connection.fetchval(f"SELECT pg_get_serial_sequence('public.{table}', 'id')")
+            count = await connection.fetchval(_COUNT_SQL[table])
+            sequence = await connection.fetchval(_SEQUENCE_SQL[table])
             if sequence:
-                await connection.execute(f"SELECT setval('{sequence}', (SELECT max(id) FROM public.{table}))")
+                await connection.execute(_SETVAL_SQL[table], sequence)
             print(f"{table}: {count} row(s)")
     finally:
         await connection.close()
