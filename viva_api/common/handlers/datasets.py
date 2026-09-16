@@ -10,17 +10,21 @@ import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal, Unpack
 
 from fastapi import Query
+from pydantic import JsonValue
 
 from viva_api.analysis.models import (
     DATASET_KINDS,
     DATASET_LIST_MAX_LIMIT,
     DatasetDTO,
+    DatasetFilters,
     DatasetListDTO,
     DatasetProducerDTO,
     DatasetProvenanceDTO,
+    DatasetScope,
+    JsonDict,
 )
 from viva_api.common.handlers.analyses import _figure_content_type
 from viva_api.common.storage.file_paths import S3FilePath
@@ -73,7 +77,7 @@ def naive_utc(moment: datetime.datetime | None) -> datetime.datetime | None:
     return moment.astimezone(datetime.UTC).replace(tzinfo=None)
 
 
-def parse_attribute_value(raw: str) -> Any:
+def parse_attribute_value(raw: str) -> JsonValue:
     """A filter value typed the way JSONB containment compares it.
 
     A JSON scalar keeps its type (``0`` is an integer, ``true`` a boolean, ``"0"`` a string);
@@ -85,9 +89,9 @@ def parse_attribute_value(raw: str) -> Any:
     return value if isinstance(value, str | int | float | bool) else raw
 
 
-def parse_attribute_filters(pairs: list[str], query_items: list[tuple[str, str]]) -> dict[str, Any] | None:
+def parse_attribute_filters(pairs: list[str], query_items: list[tuple[str, str]]) -> JsonDict | None:
     """``attr=<key>=<value>`` pairs plus ``attr.<key>=<value>`` parameters, as one containment filter."""
-    attributes: dict[str, Any] = {}
+    attributes: JsonDict = {}
     for pair in pairs:
         key, sep, raw = pair.partition("=")
         if not sep or not key.strip():
@@ -100,7 +104,7 @@ def parse_attribute_filters(pairs: list[str], query_items: list[tuple[str, str]]
     return attributes or None
 
 
-def parse_source_filter(source: str | None) -> dict[str, Any] | None:
+def parse_source_filter(source: str | None) -> JsonDict | None:
     """A ``source`` filter: ``sim:1002`` / ``analysis:7`` / ``task:3``, or a JSON ProvenanceRef fragment."""
     text = (source or "").strip()
     if not text:
@@ -139,7 +143,7 @@ class DatasetListParams:
     limit: int
     offset: int
 
-    def filters(self) -> dict[str, Any]:
+    def filters(self) -> DatasetFilters:
         return {
             "kind": self.kind,
             "view": self.view,
@@ -178,7 +182,7 @@ def dataset_list_params(
 # ---------------------------------------------------------------------------
 
 
-async def list_page(db: DatabaseService, params: DatasetListParams, **scope: Any) -> DatasetListDTO:
+async def list_page(db: DatabaseService, params: DatasetListParams, **scope: Unpack[DatasetScope]) -> DatasetListDTO:
     """One page of datasets, newest change first: the shared filters plus a route's own
     (a producer id, attributes, source). ``next_offset`` is ``None`` once a page comes back short."""
     check_kind(params.kind)
@@ -291,7 +295,7 @@ async def _producer(db: DatabaseService, dataset: DatasetDTO) -> tuple[DatasetPr
     return None, None
 
 
-async def _span(db: DatabaseService, run: HpcRun | None, span_id: Any) -> SimulationSpan | None:
+async def _span(db: DatabaseService, run: HpcRun | None, span_id: object) -> SimulationSpan | None:
     if run is None or not isinstance(span_id, str) or not span_id:
         return None
     for span in await db.list_hpcrun_spans(run.database_id, limit=_MAX_SPAN_ROWS):
@@ -300,7 +304,7 @@ async def _span(db: DatabaseService, run: HpcRun | None, span_id: Any) -> Simula
     return None
 
 
-async def _inputs(db: DatabaseService, source: Any, *, exclude: int) -> list[DatasetDTO]:
+async def _inputs(db: DatabaseService, source: object, *, exclude: int) -> list[DatasetDTO]:
     """Registered datasets a declared source resolves to: one ProvenanceRef or a list (slice 2's
     ``task.inputs``), matched on ``uri``. A reference to a whole run (``sim:1002``) has no uri and
     resolves to nothing here; the producer's ``source`` already names it."""

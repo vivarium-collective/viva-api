@@ -36,9 +36,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from viva_api.analysis.models import DATASET_KINDS, DATASET_ORIGIN_EVENT
+from viva_api.analysis.models import (
+    DATASET_KINDS,
+    DATASET_ORIGIN_EVENT,
+    DatasetWrite,
+    JsonDict,
+    ProducerRef,
+)
 from viva_api.simulation.models import JobType
 
 if TYPE_CHECKING:
@@ -80,7 +86,7 @@ def is_artifact_written(event: SimulationEvent) -> bool:
     return event.event == ARTIFACT_WRITTEN
 
 
-def _as_int(value: Any) -> int | None:
+def _as_int(value: object) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -90,7 +96,7 @@ def _as_int(value: Any) -> int | None:
     return None
 
 
-def _str_or_none(value: Any) -> str | None:
+def _str_or_none(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
@@ -99,7 +105,7 @@ def _str_or_none(value: Any) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _validated(event: SimulationEvent) -> tuple[str, str, dict[str, Any], dict[str, Any]]:
+def _validated(event: SimulationEvent) -> tuple[str, str, JsonDict, JsonDict]:
     """``(uri, kind, attributes copy, payload)``, or ``_Skip`` naming what is wrong."""
     payload = event.payload or {}
     uri = payload.get("uri")
@@ -114,10 +120,10 @@ def _validated(event: SimulationEvent) -> tuple[str, str, dict[str, Any], dict[s
     return uri, kind, dict(attributes), payload
 
 
-def _coordinate(attributes: dict[str, Any], event: SimulationEvent) -> dict[str, Any]:
+def _coordinate(attributes: JsonDict, event: SimulationEvent) -> JsonDict:
     """The event's coordinate: explicit attributes first, then the promoted baggage."""
-    fallback = {"variant": event.variant, "seed": event.lineage_seed, "generation": event.generation}
-    coordinate: dict[str, Any] = {}
+    fallback: JsonDict = {"variant": event.variant, "seed": event.lineage_seed, "generation": event.generation}
+    coordinate: JsonDict = {}
     for key in _COORDINATE_KEYS:
         value = attributes.get(key, fallback.get(key))
         if value is not None:
@@ -126,7 +132,7 @@ def _coordinate(attributes: dict[str, Any], event: SimulationEvent) -> dict[str,
 
 
 def _display_name(
-    explicit: Any, *, experiment_id: Any, view: str | None, name: str | None, kind: str, protocol: Any
+    explicit: object, *, experiment_id: object, view: str | None, name: str | None, kind: str, protocol: object
 ) -> str:
     if isinstance(explicit, str) and explicit:
         return explicit
@@ -134,17 +140,17 @@ def _display_name(
     return " · ".join(str(part) for part in (experiment_id, label, protocol) if part)
 
 
-def _tags(simulation: Simulation | None, extra: Any) -> list[str]:
+def _tags(simulation: Simulation | None, extra: object) -> list[str]:
     tags = list(simulation.tags) if simulation is not None else []
     if isinstance(extra, list):
         tags.extend(str(tag) for tag in extra if tag)
     return tags
 
 
-def _source(simulation: Simulation | None, coordinate: dict[str, Any]) -> dict[str, Any] | None:
+def _source(simulation: Simulation | None, coordinate: JsonDict) -> JsonDict | None:
     if simulation is None:
         return None
-    source: dict[str, Any] = {
+    source: JsonDict = {
         "kind": "simulation",
         "ref": str(simulation.database_id),
         "resolved_id": simulation.database_id,
@@ -154,7 +160,7 @@ def _source(simulation: Simulation | None, coordinate: dict[str, Any]) -> dict[s
     return source
 
 
-def dataset_fields(event: SimulationEvent, *, hpc_run: HpcRun, simulation: Simulation | None) -> dict[str, Any]:
+def dataset_fields(event: SimulationEvent, *, hpc_run: HpcRun, simulation: Simulation | None) -> DatasetWrite:
     """Everything ``upsert_dataset`` needs except the producer. Pure; raises ``_Skip``."""
     uri, kind, attributes, payload = _validated(event)
     extra_tags = attributes.pop("tags", None)
@@ -227,7 +233,7 @@ async def _producer(
     simulation: Simulation | None,
     db: DatabaseService,
     analyses: dict[int, ExperimentAnalysisDTO | None],
-) -> dict[str, Any]:
+) -> ProducerRef:
     """The producer foreign key for one artifact, or ``_Skip`` when none resolves."""
     if kind == "parca-cache":
         if simulation is not None and simulation.parca_dataset_id:

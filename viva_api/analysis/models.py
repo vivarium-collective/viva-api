@@ -1,9 +1,10 @@
+import datetime
 import json
 import pathlib
 import random
-from typing import Any, ParamSpec, TypeVar
+from typing import Any, ParamSpec, TypedDict, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from viva_api.common import StrEnumBase
 from viva_api.common.models import DataId, JobStatus
@@ -421,6 +422,63 @@ DATASET_ORIGINS: tuple[str, ...] = (DATASET_ORIGIN_EVENT, DATASET_ORIGIN_WALK)
 #: Page-size ceiling for dataset listings.
 DATASET_LIST_MAX_LIMIT = 200
 
+#: A JSONB payload as it round-trips through the API and the database: `attributes`, `source`,
+#: a coordinate. `JsonValue` says "arbitrary JSON" precisely, where `Any` would say "unchecked".
+JsonDict = dict[str, JsonValue]
+
+
+class ProducerRef(TypedDict, total=False):
+    """The one producer id a dataset row carries, as keyword arguments for ``upsert_dataset``.
+
+    Exactly one key is set (the registry and the walk each decide which); the database enforces
+    it with ``ck_dataset_producer``. A ``TypedDict`` rather than a bare dict so that a misspelled
+    producer key is a type error rather than a runtime ``ValueError``."""
+
+    simulation_id: int
+    parca_dataset_id: int
+    analysis_id: int
+
+
+class DatasetFields(TypedDict, total=False):
+    """What a walked file contributes to ``upsert_dataset``: everything but uri, kind and producer."""
+
+    view: str | None
+    display_name: str | None
+    size_bytes: int | None
+    sha256: str | None
+    attributes: JsonDict
+    tags: list[str]
+    source: JsonDict | None
+
+
+class DatasetWrite(DatasetFields, total=False):
+    """A complete ``upsert_dataset`` call bar the producer: what the trace feeder derives."""
+
+    uri: str
+    kind: str
+    origin: str
+    available: bool
+
+
+class DatasetFilters(TypedDict):
+    """The listing filters every dataset route shares (``DatasetListParams.filters``)."""
+
+    kind: str | None
+    view: str | None
+    tags: list[str] | None
+    available: bool | None
+    since: datetime.datetime | None
+
+
+class DatasetScope(TypedDict, total=False):
+    """A route's own narrowing on top of :class:`DatasetFilters`."""
+
+    attributes: JsonDict | None
+    source: JsonDict | None
+    simulation_id: int | None
+    analysis_id: int | None
+    parca_dataset_id: int | None
+
 
 class DatasetDTO(BaseModel):
     """One consumable file set a run actually wrote (a ``dataset`` row).
@@ -440,9 +498,9 @@ class DatasetDTO(BaseModel):
     display_name: str | None = None
     size_bytes: int | None = None
     sha256: str | None = None
-    attributes: dict[str, Any] = Field(default_factory=dict)
+    attributes: JsonDict = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)
-    source: dict[str, Any] | None = None
+    source: JsonDict | None = None
     available: bool = True
     created_at: str | None = None
     updated_at: str | None = None

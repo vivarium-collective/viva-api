@@ -23,6 +23,7 @@ from viva_api.analysis.models import (
     AnalysisJobFailedException,
     AnalysisRun,
     DatasetListDTO,
+    DatasetScope,
     ExperimentAnalysisDTO,
     ExperimentAnalysisRequest,
     OutputFile,
@@ -689,7 +690,7 @@ async def list_simulation_datasets(
         raise HTTPException(status_code=500, detail="Database service is not initialized")
     if await db_service.get_simulation(simulation_id=id) is None:
         raise HTTPException(status_code=404, detail=f"Simulation {id} not found")
-    scope: dict[str, Any] = (
+    scope: DatasetScope = (
         {"source": {"kind": "simulation", "ref": str(id)}} if include_analyses else {"simulation_id": id}
     )
     try:

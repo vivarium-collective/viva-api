@@ -38,9 +38,15 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from viva_api.analysis.models import DATASET_LIST_MAX_LIMIT, DATASET_ORIGIN_WALK
+from viva_api.analysis.models import (
+    DATASET_LIST_MAX_LIMIT,
+    DATASET_ORIGIN_WALK,
+    DatasetFields,
+    JsonDict,
+    ProducerRef,
+)
 from viva_api.common.storage import data_layout
 from viva_api.common.storage.file_paths import S3FilePath
 
@@ -80,11 +86,11 @@ _SHAPES: dict[frozenset[str], str] = {
 class ArtifactName:
     view: str
     protocol: str | None
-    coordinate: dict[str, Any]
+    coordinate: JsonDict
 
 
-def _coordinate_from_group(group: str) -> dict[str, Any] | None:
-    coordinate: dict[str, Any] = {}
+def _coordinate_from_group(group: str) -> JsonDict | None:
+    coordinate: JsonDict = {}
     if group == "all":
         return coordinate
     for part in group.split("_"):
@@ -208,16 +214,18 @@ async def _rows_under(db: DatabaseService, uri_prefix: str) -> dict[str, Dataset
 
 
 async def _n_tp(item: ListingItem, existing: DatasetDTO | None, file_service: FileService) -> int | None:
-    if existing is not None and existing.size_bytes == item.Size and isinstance(existing.attributes.get("n_tp"), int):
-        return int(existing.attributes["n_tp"])
+    # Reuse the recorded count when the object has not changed; a ranged read otherwise.
+    cached = existing.attributes.get("n_tp") if existing is not None and existing.size_bytes == item.Size else None
+    if isinstance(cached, int) and not isinstance(cached, bool):
+        return cached
     head = await file_service.get_file_head(S3FilePath(s3_path=Path(item.Key)), HEADER_BYTES)
     if not head:
         return None
     return timepoint_columns(head.decode("utf-8", errors="replace")) or None
 
 
-def _simulation_source(simulation: Simulation, parsed: ArtifactName | None) -> dict[str, Any]:
-    source: dict[str, Any] = {
+def _simulation_source(simulation: Simulation, parsed: ArtifactName | None) -> JsonDict:
+    source: JsonDict = {
         "kind": "simulation",
         "ref": str(simulation.database_id),
         "resolved_id": simulation.database_id,
@@ -237,10 +245,10 @@ async def _file_fields(
     simulation: Simulation,
     file_service: FileService,
     extra_tags: list[str],
-) -> dict[str, Any]:
+) -> DatasetFields:
     """The ``upsert_dataset`` fields a walked file contributes (everything but uri, kind, producer)."""
     parsed = parse_artifact_name(filename) if kind != "report" else None
-    attributes: dict[str, Any] = {"name": filename, "analysis_dir": bundle_name}
+    attributes: JsonDict = {"name": filename, "analysis_dir": bundle_name}
     if parsed is not None:
         attributes.update(parsed.coordinate)
         if parsed.protocol:
@@ -291,7 +299,7 @@ async def register_bundle(
     *,
     bucket: str,
     bundle_key: str,
-    producer: dict[str, Any],
+    producer: ProducerRef,
     simulation: Simulation,
     db: DatabaseService,
     file_service: FileService,
@@ -344,7 +352,7 @@ async def register_bundle(
 
 async def _producer_for_bundle(
     result_uri: str, simulation: Simulation, db: DatabaseService, result: WalkResult
-) -> dict[str, Any]:
+) -> ProducerRef:
     """The analysis run that claims a bundle (its ``result_uri`` is the bundle directory), else the
     simulation whose output the bundle sits under. Never creates a run row."""
     claimed = await db.get_analysis_by_result_uri(result_uri)

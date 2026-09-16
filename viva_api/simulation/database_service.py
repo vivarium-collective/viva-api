@@ -22,6 +22,7 @@ from viva_api.analysis.models import (
     AnalysisConfig,
     DatasetDTO,
     ExperimentAnalysisDTO,
+    JsonDict,
 )
 from viva_api.common.events_env import campaign_span_id, trace_id_from_correlation
 from viva_api.common.hpc.job_service import JobStatusUpdate, error_source_rank
@@ -103,13 +104,13 @@ def _dataset_filter_clauses(
     kind: str | None = None,
     view: str | None = None,
     tags: list[str] | None = None,
-    attributes: dict[str, Any] | None = None,
+    attributes: JsonDict | None = None,
     simulation_id: int | None = None,
     parca_dataset_id: int | None = None,
     analysis_id: int | None = None,
     available: bool | None = None,
     since: datetime.datetime | None = None,
-    source: dict[str, Any] | None = None,
+    source: JsonDict | None = None,
     uri_prefix: str | None = None,
 ) -> list[ColumnElement[bool]]:
     """WHERE clauses shared by ``list_datasets`` and ``count_datasets``."""
