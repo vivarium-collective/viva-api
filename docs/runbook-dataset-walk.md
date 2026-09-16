@@ -108,16 +108,44 @@ Applying simulation 1289 and re-analyzing it reported `0 registered, 449 unchang
 
 ## 5. Read the result
 
-```sql
--- what landed, by kind and how it was found
-SELECT kind, attributes->>'origin' AS origin, count(*), sum((NOT available)::int) AS gone
-FROM dataset GROUP BY 1, 2 ORDER BY 3 DESC;
-
--- who owns it: an analysis run, or the simulation the walk found it under
-SELECT CASE WHEN analysis_id IS NOT NULL THEN 'analysis'
-            WHEN parca_dataset_id IS NOT NULL THEN 'parca' ELSE 'simulation' END AS producer,
-       count(*) FROM dataset GROUP BY 1;
+```bash
+docker exec -i viva-dump psql -U postgres -d postgres -q -f - < scripts/survey_datasets.sql
 ```
+
+`scripts/survey_datasets.sql` is the survey: shape by kind and origin, the producer split,
+coordinate coverage, `n_tp`, the integrity checks, and how much of the fleet was touched. It
+is read-only, so it also runs against a real site through a pod's `psql`.
+
+### What it found, 2026-09-15
+
+3,954 rows over 12 bundles, from 4 simulations and 5 analysis runs -- every row `origin =
+walk`, none unavailable: 2,441 `figure`, 1,502 `ptools-analysis`, 11 `report`. 4,140 MB
+registered; median 343 kB, largest object 270 MB.
+
+**Both attribution paths were exercised.** 3,010 rows across 5 bundles are *written by* an
+analysis run that claims them; 944 rows across 7 bundles are *found under* a simulation
+because no run claims them.
+
+**Every apparent gap turned out to be explained exactly** -- which is the reason to run the
+survey rather than eyeball rows:
+
+| apparent gap | what it actually is |
+|---|---|
+| 36 of 1,502 ptools rows have no `seed` | exactly the 36 `multiseed` rows: an aggregate over seeds has none |
+| 110 have no `generation` / `agent` | exactly 74 `multigeneration` + 36 `multiseed` |
+| 323 have no `n_tp` | exactly the 323 `ptools_overview` files; every other view is 0-missing. Their header is commentary, not a timepoint row |
+| 1,272 rows carry no tags | 1,260 belong to analyses 8 and 108, whose **simulations** carry no tags. Tags are inherited from the producing simulation, so nothing was dropped |
+
+Integrity: **0 duplicate `uri`** (the upsert key holds), 0 missing `display_name`,
+`size_bytes` or `source`.
+
+**Coverage, stated plainly:** this touched 4 of 1,319 simulations and 5 of 765 analyses before
+the walk was stopped. It validates shape and correctness, not fleet coverage.
+
+**One anomaly worth knowing:** 3 of the 5 claiming analyses (8, 3, 108) sit in `COMPUTING`
+while owning complete bundles. Attribution is unaffected -- a bundle is claimed by matching
+`result_uri`, not status -- but a status filter, and the reconciliation path that starts from
+READY analyses, will both misread those runs.
 
 Cross-check a bundle against the objects themselves:
 
@@ -134,8 +162,12 @@ has an `analysis.json`.
 - **The trace feeder.** No producer emits `artifact.written` yet, so no row here carries
   `origin = event`, `hpcrun_id` or `span_id`. That path is tested with the recorded event streams
   in `tests/simulation/test_real_trace_fixture.py`.
-- **`parquet` and `parca-cache` rows.** The walk only classifies `ptools/*.tsv`, `viz/*` and
-  `analysis.json` under a bundle. Those kinds arrive only by event.
+- **A run's own trajectory store.** The walk lists only `<out_uri>/analyses/`, so the store the
+  run itself wrote gets no row at all: the newest runs write `<out_uri>/v2ecoli_seed00.zarr/`
+  (zarr v3) and the CD2-era ones write parquet under `<out_uri>/batch_baseline/<exp>/`, and
+  neither is registered. That is viva-api#672, which carries the decision to model both as one
+  `store` kind with `attributes.format = zarr | parquet`. `parca-cache` rows likewise arrive
+  only by event.
 - **Availability flips over time.** You will see rows marked unavailable only for objects that
   are already gone.
 - **The API and clients.** They read the same rows, but nothing here starts a server.
