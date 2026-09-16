@@ -153,6 +153,15 @@ ignore_missing_imports = true
 module = ["app.tui", "app.gui"]
 ignore_errors = true
 
+# The `Any` ratchet (#669). A module joins this list once its explicit `Any` is gone, and can
+# then never regress. `disallow_any_explicit` is deliberately NOT global yet: 47 of 97 checked
+# viva_api modules still carry explicit `Any`, and pydantic model modules report errors from the
+# plugin's generated machinery rather than from anything we wrote, so they need their own answer
+# first. See #669 for the audit and the rubric.
+[[tool.mypy.overrides]]
+module = ["viva_api.common.storage.gcs_aio"]
+disallow_any_explicit = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov-report=html"

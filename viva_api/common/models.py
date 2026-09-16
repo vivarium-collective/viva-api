@@ -2,7 +2,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
+
+#: Arbitrary JSON, said precisely. `JsonValue` is what a payload we deliberately do not model
+#: actually is; `Any` says "unchecked", which is a different claim and a weaker one.
+JsonDict = dict[str, JsonValue]
 
 
 class StrEnumBase(StrEnum):
