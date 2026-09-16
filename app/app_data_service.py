@@ -9,10 +9,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
 
 import httpx
 from httpx import AsyncClient
+from pydantic import JsonValue
 from tqdm import tqdm
 
 from viva_api.analysis.models import (
@@ -78,14 +78,26 @@ def _parse_content_disposition_filename(header_value: str) -> str | None:
     return None
 
 
-def _query(**values: Any) -> dict[str, Any]:
+def _query(**values: object) -> dict[str, str | int | list[str]]:
     """Query parameters with the unset ones dropped: ``None`` and empty lists go, booleans are
-    sent as ``true``/``false``, and a list repeats its parameter."""
-    params: dict[str, Any] = {}
+    sent as ``true``/``false``, and a list repeats its parameter.
+
+    ``object`` rather than ``Any`` for the input: these values are whatever a caller passes, and
+    ``object`` makes the checker enforce the narrowing this body already does. What comes back is
+    not unknown -- every caller passes ``str | int | bool | list[str] | None``, the ``None``s are
+    dropped and the bools stringified."""
+    params: dict[str, str | int | list[str]] = {}
     for key, value in values.items():
         if value is None or (isinstance(value, list) and not value):
             continue
-        params[key] = str(value).lower() if isinstance(value, bool) else value
+        if isinstance(value, bool):
+            params[key] = str(value).lower()
+        elif isinstance(value, str | int):
+            params[key] = value
+        elif isinstance(value, list):
+            params[key] = [str(item) for item in value]
+        else:
+            raise TypeError(f"query parameter {key!r} is {type(value).__name__}, expected str, int, bool or list")
     return params
 
 
@@ -867,9 +879,10 @@ class E2EDataService:
         tags: dict[str, int] = _ok(self.client.get(url="/api/v1/datasets/tags", params=_query(kind=kind))).json()
         return tags
 
-    def list_dataset_attributes(self, kind: str | None = None) -> dict[str, list[Any]]:
+    def list_dataset_attributes(self, kind: str | None = None) -> dict[str, list[JsonValue]]:
+        """The distinct values of each dataset attribute: JSON scalars, so ``JsonValue``."""
         response = _ok(self.client.get(url="/api/v1/datasets/attributes", params=_query(kind=kind)))
-        values: dict[str, list[Any]] = response.json()
+        values: dict[str, list[JsonValue]] = response.json()
         return values
 
     def tag_dataset(self, dataset_id: int, tags: list[str]) -> DatasetDTO:
