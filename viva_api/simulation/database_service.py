@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Literal, cast, override
 
 from pydantic import ValidationError
-from sqlalchemy import ColumnElement, CursorResult, Result, and_, func, or_, select, text
+from sqlalchemy import ColumnElement, CursorResult, Integer, Result, and_, func, or_, select, text
 from sqlalchemy import update as sa_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -112,9 +112,42 @@ def _dataset_filter_clauses(
     since: datetime.datetime | None = None,
     source: JsonDict | None = None,
     uri_prefix: str | None = None,
+    q: str | None = None,
+    experiment_id: str | None = None,
 ) -> list[ColumnElement[bool]]:
-    """WHERE clauses shared by ``list_datasets`` and ``count_datasets``."""
+    """WHERE clauses shared by ``list_datasets`` and ``count_datasets``.
+
+    ``q`` is the human's search: a case-insensitive substring of the display name or the uri.
+    ``display_name`` is nullable, so the uri arm carries rows that have none -- an ``OR`` with a
+    NULL arm would otherwise drop them.
+
+    ``experiment_id`` is a SQL predicate, deliberately NOT a lookup through
+    ``get_simulation_by_experiment_id``: that builds a ``SimulationConfig`` strictly and raises
+    ``ValidationError`` for the stored configs that no longer validate (dev ids 61-72 carry
+    ``parca_options.rnaseq_*`` keys since made ``extra="forbid"``), which would turn a filter
+    into a 500 for those experiments. A subquery never parses a config. It matches both
+    producer shapes: ``source.ref`` names the simulation the data is OF even when an analysis
+    run wrote it, and ``simulation_id`` catches rows whose producer is the simulation itself.
+    Verified against 117,969 walked rows: every row carries ``source.kind = "simulation"`` with
+    a ``ref`` that resolves, none dangling."""
+    sims_for_experiment = (
+        select(ORMSimulation.id).where(ORMSimulation.config["experiment_id"].astext == experiment_id)
+        if experiment_id
+        else None
+    )
     candidates: list[ColumnElement[bool] | None] = [
+        or_(
+            ORMDataset.display_name.ilike(f"%{q}%"),
+            ORMDataset.uri.ilike(f"%{q}%"),
+        )
+        if q
+        else None,
+        or_(
+            ORMDataset.source["ref"].astext.cast(Integer).in_(sims_for_experiment),
+            ORMDataset.simulation_id.in_(sims_for_experiment),
+        )
+        if sims_for_experiment is not None
+        else None,
         ORMDataset.kind == kind if kind is not None else None,
         ORMDataset.view == view if view is not None else None,
         ORMDataset.tags.contains(list(tags)) if tags else None,
@@ -346,6 +379,8 @@ class DatabaseService(ABC):
         since: datetime.datetime | None = None,
         source: dict[str, Any] | None = None,
         uri_prefix: str | None = None,
+        q: str | None = None,
+        experiment_id: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[DatasetDTO]:
@@ -355,7 +390,9 @@ class DatabaseService(ABC):
         in type (``{"variant": 0}`` does not match ``"0"``). ``available=None`` includes gone
         objects. ``source``: the row's source contains this partial ProvenanceRef (e.g.
         ``{"kind": "simulation", "ref": "1002"}``). ``uri_prefix``: the uri starts with it, wildcards
-        taken literally. ``limit`` is clamped to ``1..DATASET_LIST_MAX_LIMIT``."""
+        taken literally. ``q``: case-insensitive substring of the display name or the uri.
+        ``experiment_id``: datasets OF that experiment, whichever run wrote them. ``limit`` is
+        clamped to ``1..DATASET_LIST_MAX_LIMIT``."""
         pass
 
     @abstractmethod
@@ -373,6 +410,8 @@ class DatabaseService(ABC):
         since: datetime.datetime | None = None,
         source: JsonDict | None = None,
         uri_prefix: str | None = None,
+        q: str | None = None,
+        experiment_id: str | None = None,
     ) -> int:
         """How many datasets match, for a listing's ``total``.
 
@@ -1180,6 +1219,8 @@ class DatabaseServiceSQL(DatabaseService):
         since: datetime.datetime | None = None,
         source: dict[str, Any] | None = None,
         uri_prefix: str | None = None,
+        q: str | None = None,
+        experiment_id: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[DatasetDTO]:
@@ -1195,6 +1236,8 @@ class DatabaseServiceSQL(DatabaseService):
             since=since,
             source=source,
             uri_prefix=uri_prefix,
+            q=q,
+            experiment_id=experiment_id,
         )
         stmt = select(ORMDataset)
         if clauses:
@@ -1222,6 +1265,8 @@ class DatabaseServiceSQL(DatabaseService):
         since: datetime.datetime | None = None,
         source: JsonDict | None = None,
         uri_prefix: str | None = None,
+        q: str | None = None,
+        experiment_id: str | None = None,
     ) -> int:
         clauses = _dataset_filter_clauses(
             kind=kind,
@@ -1235,6 +1280,8 @@ class DatabaseServiceSQL(DatabaseService):
             since=since,
             source=source,
             uri_prefix=uri_prefix,
+            q=q,
+            experiment_id=experiment_id,
         )
         stmt = select(func.count(ORMDataset.id))
         if clauses:

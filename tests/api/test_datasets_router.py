@@ -10,6 +10,9 @@ from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
+from sqlalchemy import select
+from sqlalchemy import update as sa_update
 
 from tests.simulation.test_event_ingest import _insert_run
 from viva_api.common.models import JobId
@@ -17,7 +20,7 @@ from viva_api.config import get_settings
 from viva_api.dependencies import set_file_service
 from viva_api.simulation.database_service import DatabaseServiceSQL
 from viva_api.simulation.models import JobType, SimulationSpan
-from viva_api.simulation.tables_orm import AnalysisStatusDB
+from viva_api.simulation.tables_orm import AnalysisStatusDB, ORMSimulation
 
 BUCKET = "api-bucket"
 
@@ -148,6 +151,19 @@ async def test_list_datasets_filters_by_kind_tags_typed_attributes_source_and_pa
         # Wildcards are literal, not LIKE patterns.
         assert (await client.get(f"{base_router}/datasets", params={"uri_prefix": "s3://%"})).json()["total"] == 0
 
+        # q: a case-insensitive substring of the display name OR the uri. display_name is
+        # nullable, so the uri arm has to carry rows that have none.
+        assert set(await listed(q="PTOOLS_RNA_MULTISEED")) == {rna_multiseed, figure}
+        assert await listed(q="seed=3") == [rna_single]
+        assert await listed(q="no-such-thing") == []
+
+        # experiment_id: everything OF the experiment, whichever run wrote it. These rows are
+        # produced by an analysis run and carry no simulation_id, so this only works because the
+        # filter also matches source.ref -- the same reason include_analyses exists.
+        by_experiment = await listed(experiment_id=simulation.experiment_id)
+        assert set(by_experiment) == {rna_multiseed, rna_single, figure}
+        assert await listed(experiment_id="no-such-experiment") == []
+
         # A gone object is hidden unless asked for.
         await database_service.set_dataset_available(figure, False)
         assert figure not in await listed()
@@ -157,6 +173,61 @@ async def test_list_datasets_filters_by_kind_tags_typed_attributes_source_and_pa
         for bad in ({"kind": "tsv"}, {"attr": "variant"}, {"source": "simulation"}, {"source": "{bad"}):
             resp = await client.get(f"{base_router}/datasets", params=bad)
             assert resp.status_code == 400, (bad, resp.text)
+
+
+@pytest.mark.asyncio
+async def test_experiment_id_filter_works_when_the_stored_config_no_longer_validates(
+    base_router: str, database_service: DatabaseServiceSQL
+) -> None:
+    """The reason ``experiment_id`` is a SQL predicate and not a lookup.
+
+    ``get_simulation_by_experiment_id`` builds a ``SimulationConfig`` strictly, so it RAISES for
+    rows whose stored config carries keys since made ``extra="forbid"`` -- on smsvpctest that is
+    ``parca_options.rnaseq_*`` from a branch build (see
+    ``tests/simulation/test_parca_options_from_stored.py``, and dev ids 61-72, which stopped a
+    full dataset walk dead). Routing the filter through that lookup would turn those experiments
+    into a 500. A subquery never parses a config, so the rows stay findable.
+
+    Both halves are asserted: the filter works, AND the lookup still raises. If someone later
+    'simplifies' this to the obvious lookup, the second assertion is what fails.
+    """
+    simulation, _run = await _insert_run(database_service, correlation_id=f"dsx-{uuid.uuid4().hex[:8]}")
+    dto, _ = await database_service.upsert_dataset(
+        uri=_uri("ptools/ptools_rna__variant=0_seed=0_gen=0_agent=0.tsv"),
+        kind="ptools-analysis",
+        origin="walk",
+        simulation_id=simulation.database_id,
+        view="ptools_rna",
+        source={"kind": "simulation", "ref": str(simulation.database_id)},
+    )
+
+    # Plant the offending keys straight into the JSONB, past the model that would reject them --
+    # which is exactly how the real rows got that way.
+    async with database_service.async_sessionmaker() as session, session.begin():
+        stored = (
+            await session.execute(select(ORMSimulation.config).where(ORMSimulation.id == simulation.database_id))
+        ).scalar_one()
+        broken = {
+            **stored,
+            "parca_options": {
+                "rnaseq_manifest_path": "$ECOLI_SOURCES/data/manifest.tsv",
+                "rnaseq_basal_dataset_id": "vecoli_m9_glucose_minus_aas",
+                "rnaseq_fill_missing_genes_from_ref": True,
+            },
+        }
+        await session.execute(
+            sa_update(ORMSimulation).where(ORMSimulation.id == simulation.database_id).values(config=broken)
+        )
+
+    with pytest.raises(ValidationError):
+        await database_service.get_simulation_by_experiment_id(simulation.experiment_id)
+
+    async with await _client() as client:
+        resp = await client.get(f"{base_router}/datasets", params={"experiment_id": simulation.experiment_id})
+        assert resp.status_code == 200, resp.text
+        page = resp.json()
+        assert [d["database_id"] for d in page["datasets"]] == [dto.database_id]
+        assert page["total"] == 1
 
 
 @pytest.mark.asyncio

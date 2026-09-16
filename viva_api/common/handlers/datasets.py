@@ -141,6 +141,8 @@ class DatasetListParams:
     available: bool | None
     since: datetime.datetime | None
     uri_prefix: str | None
+    q: str | None
+    experiment_id: str | None
     limit: int
     offset: int
 
@@ -152,6 +154,8 @@ class DatasetListParams:
             "available": self.available,
             "since": self.since,
             "uri_prefix": self.uri_prefix,
+            "q": self.q,
+            "experiment_id": self.experiment_id,
         }
 
 
@@ -169,6 +173,15 @@ def dataset_list_params(
         description="Datasets whose uri starts with this, e.g. a bundle directory "
         "'s3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards are literal.",
     ),
+    q: str | None = Query(
+        default=None,
+        description="Free text: a case-insensitive substring of the display name or the uri.",
+    ),
+    experiment_id: str | None = Query(
+        default=None,
+        description="Datasets of this experiment, whichever run wrote them (a simulation's own "
+        "output and the bundles its analyses produced). Unknown experiment: an empty page.",
+    ),
     limit: int = Query(default=100, ge=1, le=DATASET_LIST_MAX_LIMIT, description="Page size."),
     offset: int = Query(default=0, ge=0, description="Rows to skip (pagination, with limit)."),
 ) -> DatasetListParams:
@@ -180,6 +193,8 @@ def dataset_list_params(
         available=_AVAILABILITY[available],
         since=naive_utc(since),
         uri_prefix=uri_prefix,
+        q=(q or "").strip() or None,
+        experiment_id=(experiment_id or "").strip() or None,
         limit=limit,
         offset=offset,
     )

@@ -469,6 +469,8 @@ class DatasetFilters(TypedDict):
     available: bool | None
     since: datetime.datetime | None
     uri_prefix: str | None
+    q: str | None
+    experiment_id: str | None
 
 
 class DatasetScope(TypedDict, total=False):

@@ -2300,6 +2300,10 @@ def dataset_list(
     uri_prefix: str | None = Option(
         default=None, help="Datasets whose uri starts with this, e.g. one bundle directory. Wildcards are literal."
     ),
+    q: str | None = Option(
+        None, "--q", "--search", help="Free text: part of the display name or the uri, case-insensitive."
+    ),
+    experiment: str | None = Option(default=None, help="Datasets of this experiment_id, whichever run wrote them."),
     limit: int = Option(default=100, help="Page size (max 200)."),
     offset: int = Option(default=0, help="Rows to skip."),
     as_json: bool = Option(False, "--json", help="Print the page as JSON."),
@@ -2319,6 +2323,8 @@ def dataset_list(
         available=available.value,
         since=since,
         uri_prefix=uri_prefix,
+        q=q,
+        experiment_id=experiment,
         limit=limit,
         offset=offset,
     )

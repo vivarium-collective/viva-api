@@ -21,6 +21,8 @@ def _get_kwargs(
     available: Union[Unset, ListAnalysisDatasetsAvailable] = ListAnalysisDatasetsAvailable.TRUE,
     since: Union[None, Unset, datetime.datetime] = UNSET,
     uri_prefix: Union[None, Unset, str] = UNSET,
+    q: Union[None, Unset, str] = UNSET,
+    experiment_id: Union[None, Unset, str] = UNSET,
     limit: Union[Unset, int] = 100,
     offset: Union[Unset, int] = 0,
 ) -> dict[str, Any]:
@@ -68,6 +70,20 @@ def _get_kwargs(
     else:
         json_uri_prefix = uri_prefix
     params["uri_prefix"] = json_uri_prefix
+
+    json_q: Union[None, Unset, str]
+    if isinstance(q, Unset):
+        json_q = UNSET
+    else:
+        json_q = q
+    params["q"] = json_q
+
+    json_experiment_id: Union[None, Unset, str]
+    if isinstance(experiment_id, Unset):
+        json_experiment_id = UNSET
+    else:
+        json_experiment_id = experiment_id
+    params["experiment_id"] = json_experiment_id
 
     params["limit"] = limit
 
@@ -122,6 +138,8 @@ def sync_detailed(
     available: Union[Unset, ListAnalysisDatasetsAvailable] = ListAnalysisDatasetsAvailable.TRUE,
     since: Union[None, Unset, datetime.datetime] = UNSET,
     uri_prefix: Union[None, Unset, str] = UNSET,
+    q: Union[None, Unset, str] = UNSET,
+    experiment_id: Union[None, Unset, str] = UNSET,
     limit: Union[Unset, int] = 100,
     offset: Union[Unset, int] = 0,
 ) -> Response[Union[DatasetListDTO, HTTPValidationError]]:
@@ -143,6 +161,11 @@ def sync_detailed(
         uri_prefix (Union[None, Unset, str]): Datasets whose uri starts with this, e.g. a bundle
             directory 's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards are
             literal.
+        q (Union[None, Unset, str]): Free text: a case-insensitive substring of the display name
+            or the uri.
+        experiment_id (Union[None, Unset, str]): Datasets of this experiment, whichever run wrote
+            them (a simulation's own output and the bundles its analyses produced). Unknown
+            experiment: an empty page.
         limit (Union[Unset, int]): Page size. Default: 100.
         offset (Union[Unset, int]): Rows to skip (pagination, with limit). Default: 0.
 
@@ -162,6 +185,8 @@ def sync_detailed(
         available=available,
         since=since,
         uri_prefix=uri_prefix,
+        q=q,
+        experiment_id=experiment_id,
         limit=limit,
         offset=offset,
     )
@@ -183,6 +208,8 @@ def sync(
     available: Union[Unset, ListAnalysisDatasetsAvailable] = ListAnalysisDatasetsAvailable.TRUE,
     since: Union[None, Unset, datetime.datetime] = UNSET,
     uri_prefix: Union[None, Unset, str] = UNSET,
+    q: Union[None, Unset, str] = UNSET,
+    experiment_id: Union[None, Unset, str] = UNSET,
     limit: Union[Unset, int] = 100,
     offset: Union[Unset, int] = 0,
 ) -> Optional[Union[DatasetListDTO, HTTPValidationError]]:
@@ -204,6 +231,11 @@ def sync(
         uri_prefix (Union[None, Unset, str]): Datasets whose uri starts with this, e.g. a bundle
             directory 's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards are
             literal.
+        q (Union[None, Unset, str]): Free text: a case-insensitive substring of the display name
+            or the uri.
+        experiment_id (Union[None, Unset, str]): Datasets of this experiment, whichever run wrote
+            them (a simulation's own output and the bundles its analyses produced). Unknown
+            experiment: an empty page.
         limit (Union[Unset, int]): Page size. Default: 100.
         offset (Union[Unset, int]): Rows to skip (pagination, with limit). Default: 0.
 
@@ -224,6 +256,8 @@ def sync(
         available=available,
         since=since,
         uri_prefix=uri_prefix,
+        q=q,
+        experiment_id=experiment_id,
         limit=limit,
         offset=offset,
     ).parsed
@@ -239,6 +273,8 @@ async def asyncio_detailed(
     available: Union[Unset, ListAnalysisDatasetsAvailable] = ListAnalysisDatasetsAvailable.TRUE,
     since: Union[None, Unset, datetime.datetime] = UNSET,
     uri_prefix: Union[None, Unset, str] = UNSET,
+    q: Union[None, Unset, str] = UNSET,
+    experiment_id: Union[None, Unset, str] = UNSET,
     limit: Union[Unset, int] = 100,
     offset: Union[Unset, int] = 0,
 ) -> Response[Union[DatasetListDTO, HTTPValidationError]]:
@@ -260,6 +296,11 @@ async def asyncio_detailed(
         uri_prefix (Union[None, Unset, str]): Datasets whose uri starts with this, e.g. a bundle
             directory 's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards are
             literal.
+        q (Union[None, Unset, str]): Free text: a case-insensitive substring of the display name
+            or the uri.
+        experiment_id (Union[None, Unset, str]): Datasets of this experiment, whichever run wrote
+            them (a simulation's own output and the bundles its analyses produced). Unknown
+            experiment: an empty page.
         limit (Union[Unset, int]): Page size. Default: 100.
         offset (Union[Unset, int]): Rows to skip (pagination, with limit). Default: 0.
 
@@ -279,6 +320,8 @@ async def asyncio_detailed(
         available=available,
         since=since,
         uri_prefix=uri_prefix,
+        q=q,
+        experiment_id=experiment_id,
         limit=limit,
         offset=offset,
     )
@@ -298,6 +341,8 @@ async def asyncio(
     available: Union[Unset, ListAnalysisDatasetsAvailable] = ListAnalysisDatasetsAvailable.TRUE,
     since: Union[None, Unset, datetime.datetime] = UNSET,
     uri_prefix: Union[None, Unset, str] = UNSET,
+    q: Union[None, Unset, str] = UNSET,
+    experiment_id: Union[None, Unset, str] = UNSET,
     limit: Union[Unset, int] = 100,
     offset: Union[Unset, int] = 0,
 ) -> Optional[Union[DatasetListDTO, HTTPValidationError]]:
@@ -319,6 +364,11 @@ async def asyncio(
         uri_prefix (Union[None, Unset, str]): Datasets whose uri starts with this, e.g. a bundle
             directory 's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards are
             literal.
+        q (Union[None, Unset, str]): Free text: a case-insensitive substring of the display name
+            or the uri.
+        experiment_id (Union[None, Unset, str]): Datasets of this experiment, whichever run wrote
+            them (a simulation's own output and the bundles its analyses produced). Unknown
+            experiment: an empty page.
         limit (Union[Unset, int]): Page size. Default: 100.
         offset (Union[Unset, int]): Rows to skip (pagination, with limit). Default: 0.
 
@@ -340,6 +390,8 @@ async def asyncio(
             available=available,
             since=since,
             uri_prefix=uri_prefix,
+            q=q,
+            experiment_id=experiment_id,
             limit=limit,
             offset=offset,
         )

@@ -811,6 +811,8 @@ class E2EDataService:
         available: str = "true",
         since: str | None = None,
         uri_prefix: str | None = None,
+        q: str | None = None,
+        experiment_id: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> DatasetListDTO:
@@ -826,6 +828,8 @@ class E2EDataService:
             available=available,
             since=since,
             uri_prefix=uri_prefix,
+            q=q,
+            experiment_id=experiment_id,
             limit=limit,
             offset=offset,
         )
