@@ -197,7 +197,16 @@ async def list_page(db: DatabaseService, params: DatasetListParams, **scope: Unp
     ``total`` counts every matching row with the same filters and scope, so a client can show
     "1-100 of 43,182" and narrow instead of paging blindly. It is a second query rather than a
     window function because the page and the count share one clause builder, which is what keeps
-    them honest; at this table's size the count is an index-or-seq scan of no consequence."""
+    them honest.
+
+    Measured on 117,969 real rows (the 2026-09-16 fleet walk): a faceted count -- kind, view,
+    tag and an attribute containment -- is **3.6 ms**, a bitmap AND over ``ix_dataset_kind_view``
+    and the ``tags`` GIN index. The costly shapes are the ones with nothing to index: an
+    unfiltered count is a **133 ms** sequential scan, and ``uri_prefix`` is **41 ms**, because
+    ``LIKE 'prefix%'`` cannot use the unique ``uri`` btree under this collation. Both are
+    acceptable today and both grow linearly, so if this table gains an order of magnitude the
+    answers are a ``text_pattern_ops`` index for the prefix and a cached or estimated count for
+    the unfiltered case -- not dropping ``total``."""
     check_kind(params.kind)
     datasets = await db.list_datasets(**params.filters(), **scope, limit=params.limit, offset=params.offset)
     total = await db.count_datasets(**params.filters(), **scope)
