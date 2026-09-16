@@ -362,11 +362,24 @@ class DatabaseService(ABC):
     async def count_datasets(
         self,
         *,
+        kind: str | None = None,
+        view: str | None = None,
+        tags: list[str] | None = None,
+        attributes: JsonDict | None = None,
         simulation_id: int | None = None,
         parca_dataset_id: int | None = None,
         analysis_id: int | None = None,
         available: bool | None = None,
+        since: datetime.datetime | None = None,
+        source: JsonDict | None = None,
+        uri_prefix: str | None = None,
     ) -> int:
+        """How many datasets match, for a listing's ``total``.
+
+        Takes the SAME filters as ``list_datasets`` and builds the same clauses, so a count can
+        never disagree with the page it describes. It used to accept only the producer ids and
+        ``available``, which was enough for an analysis's ``n_datasets`` but would have reported
+        the whole table as the total of a filtered listing."""
         pass
 
     @abstractmethod
@@ -1198,16 +1211,30 @@ class DatabaseServiceSQL(DatabaseService):
     async def count_datasets(
         self,
         *,
+        kind: str | None = None,
+        view: str | None = None,
+        tags: list[str] | None = None,
+        attributes: JsonDict | None = None,
         simulation_id: int | None = None,
         parca_dataset_id: int | None = None,
         analysis_id: int | None = None,
         available: bool | None = None,
+        since: datetime.datetime | None = None,
+        source: JsonDict | None = None,
+        uri_prefix: str | None = None,
     ) -> int:
         clauses = _dataset_filter_clauses(
+            kind=kind,
+            view=view,
+            tags=tags,
+            attributes=attributes,
             simulation_id=simulation_id,
             parca_dataset_id=parca_dataset_id,
             analysis_id=analysis_id,
             available=available,
+            since=since,
+            source=source,
+            uri_prefix=uri_prefix,
         )
         stmt = select(func.count(ORMDataset.id))
         if clauses:

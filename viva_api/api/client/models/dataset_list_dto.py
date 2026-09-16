@@ -17,17 +17,24 @@ T = TypeVar("T", bound="DatasetListDTO")
 class DatasetListDTO:
     """A page of datasets. ``next_offset`` is ``None`` on the last page.
 
-    Attributes:
-        datasets (list['DatasetDTO']):
-        limit (int):
-        offset (int):
-        next_offset (Union[None, Unset, int]):
+    ``total`` is how many rows match the filters, not how many this page holds, so a client can
+    say "1-100 of 43,182" and decide whether to narrow instead of paging. It counts with the
+    SAME clauses as the page (``count_datasets``), so the two can never disagree. It defaults to
+    0 only so a hand-built page in a test need not supply it; every route sets it.
+
+        Attributes:
+            datasets (list['DatasetDTO']):
+            limit (int):
+            offset (int):
+            next_offset (Union[None, Unset, int]):
+            total (Union[Unset, int]):  Default: 0.
     """
 
     datasets: list["DatasetDTO"]
     limit: int
     offset: int
     next_offset: Union[None, Unset, int] = UNSET
+    total: Union[Unset, int] = 0
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -46,6 +53,8 @@ class DatasetListDTO:
         else:
             next_offset = self.next_offset
 
+        total = self.total
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({
@@ -55,6 +64,8 @@ class DatasetListDTO:
         })
         if next_offset is not UNSET:
             field_dict["next_offset"] = next_offset
+        if total is not UNSET:
+            field_dict["total"] = total
 
         return field_dict
 
@@ -83,11 +94,14 @@ class DatasetListDTO:
 
         next_offset = _parse_next_offset(d.pop("next_offset", UNSET))
 
+        total = d.pop("total", UNSET)
+
         dataset_list_dto = cls(
             datasets=datasets,
             limit=limit,
             offset=offset,
             next_offset=next_offset,
+            total=total,
         )
 
         dataset_list_dto.additional_properties = d

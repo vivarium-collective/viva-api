@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.142
+  version: 0.9.144
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -920,6 +920,20 @@ paths:
           description: Only datasets changed at or after this time.
           title: Since
         description: Only datasets changed at or after this time.
+      - name: uri_prefix
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Datasets whose uri starts with this, e.g. a bundle directory
+            's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards
+            are literal.
+          title: Uri Prefix
+        description: Datasets whose uri starts with this, e.g. a bundle directory
+          's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards are
+          literal.
       - name: limit
         in: query
         required: false
@@ -1391,6 +1405,20 @@ paths:
           description: Only datasets changed at or after this time.
           title: Since
         description: Only datasets changed at or after this time.
+      - name: uri_prefix
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Datasets whose uri starts with this, e.g. a bundle directory
+            's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards
+            are literal.
+          title: Uri Prefix
+        description: Datasets whose uri starts with this, e.g. a bundle directory
+          's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards are
+          literal.
       - name: limit
         in: query
         required: false
@@ -1956,7 +1984,7 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-09-15T07:59:19.874782'
+                  created_at: '2026-09-16T08:16:19.230310'
                 parca_config:
                   outdir: .
                   operons: true
@@ -2277,6 +2305,20 @@ paths:
           description: Only datasets changed at or after this time.
           title: Since
         description: Only datasets changed at or after this time.
+      - name: uri_prefix
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Datasets whose uri starts with this, e.g. a bundle directory
+            's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards
+            are literal.
+          title: Uri Prefix
+        description: Datasets whose uri starts with this, e.g. a bundle directory
+          's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards are
+          literal.
       - name: limit
         in: query
         required: false
@@ -5015,7 +5057,8 @@ components:
           - type: 'null'
           title: Sha256
         attributes:
-          additionalProperties: true
+          additionalProperties:
+            $ref: '#/components/schemas/JsonValue'
           type: object
           title: Attributes
         tags:
@@ -5025,7 +5068,8 @@ components:
           title: Tags
         source:
           anyOf:
-          - additionalProperties: true
+          - additionalProperties:
+              $ref: '#/components/schemas/JsonValue'
             type: object
           - type: 'null'
           title: Source
@@ -5077,13 +5121,30 @@ components:
           - type: integer
           - type: 'null'
           title: Next Offset
+        total:
+          type: integer
+          title: Total
+          default: 0
       type: object
       required:
       - datasets
       - limit
       - offset
       title: DatasetListDTO
-      description: A page of datasets. ``next_offset`` is ``None`` on the last page.
+      description: 'A page of datasets. ``next_offset`` is ``None`` on the last page.
+
+
+        ``total`` is how many rows match the filters, not how many this page holds,
+        so a client can
+
+        say "1-100 of 43,182" and decide whether to narrow instead of paging. It counts
+        with the
+
+        SAME clauses as the page (``count_datasets``), so the two can never disagree.
+        It defaults to
+
+        0 only so a hand-built page in a test need not supply it; every route sets
+        it.'
     DatasetProducerDTO:
       properties:
         kind:
@@ -5629,6 +5690,7 @@ components:
       - parca
       - build_image
       title: JobType
+    JsonValue: {}
     NewGeneCacheJob:
       properties:
         job_id:
@@ -6289,7 +6351,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-09-15 07:59:19.773885'
+          default: '2026-09-16 08:16:19.147679'
         job_id:
           anyOf:
           - type: string

@@ -46,7 +46,7 @@ def _dataset(**overrides: Any) -> DatasetDTO:
 
 
 def _page(*datasets: DatasetDTO) -> DatasetListDTO:
-    return DatasetListDTO(datasets=list(datasets), limit=100, offset=0)
+    return DatasetListDTO(datasets=list(datasets), limit=100, offset=0, total=len(datasets))
 
 
 def _analysis(**overrides: Any) -> ExperimentAnalysisDTO:

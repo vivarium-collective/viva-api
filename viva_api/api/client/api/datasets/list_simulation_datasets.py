@@ -21,6 +21,7 @@ def _get_kwargs(
     tag: Union[None, Unset, str] = UNSET,
     available: Union[Unset, ListSimulationDatasetsAvailable] = ListSimulationDatasetsAvailable.TRUE,
     since: Union[None, Unset, datetime.datetime] = UNSET,
+    uri_prefix: Union[None, Unset, str] = UNSET,
     limit: Union[Unset, int] = 100,
     offset: Union[Unset, int] = 0,
 ) -> dict[str, Any]:
@@ -63,6 +64,13 @@ def _get_kwargs(
     else:
         json_since = since
     params["since"] = json_since
+
+    json_uri_prefix: Union[None, Unset, str]
+    if isinstance(uri_prefix, Unset):
+        json_uri_prefix = UNSET
+    else:
+        json_uri_prefix = uri_prefix
+    params["uri_prefix"] = json_uri_prefix
 
     params["limit"] = limit
 
@@ -117,6 +125,7 @@ def sync_detailed(
     tag: Union[None, Unset, str] = UNSET,
     available: Union[Unset, ListSimulationDatasetsAvailable] = ListSimulationDatasetsAvailable.TRUE,
     since: Union[None, Unset, datetime.datetime] = UNSET,
+    uri_prefix: Union[None, Unset, str] = UNSET,
     limit: Union[Unset, int] = 100,
     offset: Union[Unset, int] = 0,
 ) -> Response[Union[DatasetListDTO, HTTPValidationError]]:
@@ -139,6 +148,9 @@ def sync_detailed(
             ListSimulationDatasetsAvailable.TRUE.
         since (Union[None, Unset, datetime.datetime]): Only datasets changed at or after this
             time.
+        uri_prefix (Union[None, Unset, str]): Datasets whose uri starts with this, e.g. a bundle
+            directory 's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards are
+            literal.
         limit (Union[Unset, int]): Page size. Default: 100.
         offset (Union[Unset, int]): Rows to skip (pagination, with limit). Default: 0.
 
@@ -158,6 +170,7 @@ def sync_detailed(
         tag=tag,
         available=available,
         since=since,
+        uri_prefix=uri_prefix,
         limit=limit,
         offset=offset,
     )
@@ -179,6 +192,7 @@ def sync(
     tag: Union[None, Unset, str] = UNSET,
     available: Union[Unset, ListSimulationDatasetsAvailable] = ListSimulationDatasetsAvailable.TRUE,
     since: Union[None, Unset, datetime.datetime] = UNSET,
+    uri_prefix: Union[None, Unset, str] = UNSET,
     limit: Union[Unset, int] = 100,
     offset: Union[Unset, int] = 0,
 ) -> Optional[Union[DatasetListDTO, HTTPValidationError]]:
@@ -201,6 +215,9 @@ def sync(
             ListSimulationDatasetsAvailable.TRUE.
         since (Union[None, Unset, datetime.datetime]): Only datasets changed at or after this
             time.
+        uri_prefix (Union[None, Unset, str]): Datasets whose uri starts with this, e.g. a bundle
+            directory 's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards are
+            literal.
         limit (Union[Unset, int]): Page size. Default: 100.
         offset (Union[Unset, int]): Rows to skip (pagination, with limit). Default: 0.
 
@@ -221,6 +238,7 @@ def sync(
         tag=tag,
         available=available,
         since=since,
+        uri_prefix=uri_prefix,
         limit=limit,
         offset=offset,
     ).parsed
@@ -236,6 +254,7 @@ async def asyncio_detailed(
     tag: Union[None, Unset, str] = UNSET,
     available: Union[Unset, ListSimulationDatasetsAvailable] = ListSimulationDatasetsAvailable.TRUE,
     since: Union[None, Unset, datetime.datetime] = UNSET,
+    uri_prefix: Union[None, Unset, str] = UNSET,
     limit: Union[Unset, int] = 100,
     offset: Union[Unset, int] = 0,
 ) -> Response[Union[DatasetListDTO, HTTPValidationError]]:
@@ -258,6 +277,9 @@ async def asyncio_detailed(
             ListSimulationDatasetsAvailable.TRUE.
         since (Union[None, Unset, datetime.datetime]): Only datasets changed at or after this
             time.
+        uri_prefix (Union[None, Unset, str]): Datasets whose uri starts with this, e.g. a bundle
+            directory 's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards are
+            literal.
         limit (Union[Unset, int]): Page size. Default: 100.
         offset (Union[Unset, int]): Rows to skip (pagination, with limit). Default: 0.
 
@@ -277,6 +299,7 @@ async def asyncio_detailed(
         tag=tag,
         available=available,
         since=since,
+        uri_prefix=uri_prefix,
         limit=limit,
         offset=offset,
     )
@@ -296,6 +319,7 @@ async def asyncio(
     tag: Union[None, Unset, str] = UNSET,
     available: Union[Unset, ListSimulationDatasetsAvailable] = ListSimulationDatasetsAvailable.TRUE,
     since: Union[None, Unset, datetime.datetime] = UNSET,
+    uri_prefix: Union[None, Unset, str] = UNSET,
     limit: Union[Unset, int] = 100,
     offset: Union[Unset, int] = 0,
 ) -> Optional[Union[DatasetListDTO, HTTPValidationError]]:
@@ -318,6 +342,9 @@ async def asyncio(
             ListSimulationDatasetsAvailable.TRUE.
         since (Union[None, Unset, datetime.datetime]): Only datasets changed at or after this
             time.
+        uri_prefix (Union[None, Unset, str]): Datasets whose uri starts with this, e.g. a bundle
+            directory 's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards are
+            literal.
         limit (Union[Unset, int]): Page size. Default: 100.
         offset (Union[Unset, int]): Rows to skip (pagination, with limit). Default: 0.
 
@@ -339,6 +366,7 @@ async def asyncio(
             tag=tag,
             available=available,
             since=since,
+            uri_prefix=uri_prefix,
             limit=limit,
             offset=offset,
         )

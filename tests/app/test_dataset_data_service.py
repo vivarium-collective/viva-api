@@ -18,7 +18,7 @@ from app.app_data_service import BaseUrl, E2EDataService
 
 URI = "s3://bucket/vecoli-output/exp/analyses/a/ptools/ptools_rna_multiseed__variant=0.tsv"
 DATASET: dict[str, Any] = {"database_id": 41, "kind": "ptools-analysis", "uri": URI, "analysis_id": 7}
-PAGE: dict[str, Any] = {"datasets": [DATASET], "limit": 100, "offset": 0, "next_offset": None}
+PAGE: dict[str, Any] = {"datasets": [DATASET], "limit": 100, "offset": 0, "next_offset": None, "total": 1}
 
 
 def _service(handler: Callable[[httpx.Request], httpx.Response]) -> tuple[E2EDataService, list[httpx.Request]]:

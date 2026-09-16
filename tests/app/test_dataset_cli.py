@@ -48,8 +48,15 @@ def _dataset(**overrides: Any) -> DatasetDTO:
     return DatasetDTO(**values)
 
 
-def _page(*datasets: DatasetDTO, next_offset: int | None = None) -> DatasetListDTO:
-    return DatasetListDTO(datasets=list(datasets), limit=100, offset=0, next_offset=next_offset)
+def _page(*datasets: DatasetDTO, next_offset: int | None = None, total: int | None = None) -> DatasetListDTO:
+    """``total`` defaults to the page's own size, which is the truth for a one-page fixture."""
+    return DatasetListDTO(
+        datasets=list(datasets),
+        limit=100,
+        offset=0,
+        next_offset=next_offset,
+        total=len(datasets) if total is None else total,
+    )
 
 
 def _analysis(**overrides: Any) -> ExperimentAnalysisDTO:

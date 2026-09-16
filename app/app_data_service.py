@@ -810,6 +810,7 @@ class E2EDataService:
         source: str | None = None,
         available: str = "true",
         since: str | None = None,
+        uri_prefix: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> DatasetListDTO:
@@ -824,6 +825,7 @@ class E2EDataService:
             source=source,
             available=available,
             since=since,
+            uri_prefix=uri_prefix,
             limit=limit,
             offset=offset,
         )

@@ -1446,7 +1446,10 @@ class AtlantisTUI(App[None]):
             return
         gone = sum(1 for dataset in page.datasets if not dataset.available)
         suffix = f"  [red]{gone} gone[/red]" if gone else ""
-        self.write_log(f"[green]{escape(title)}: {len(page.datasets)} dataset(s)[/green]{suffix}")
+        # The page size alone is misleading once the table is large: a full page reads "100
+        # dataset(s)" whether the filter matched 100 rows or 43,182. Say which.
+        shown = f"{page.offset + 1}-{page.offset + len(page.datasets)} of {page.total}"
+        self.write_log(f"[green]{escape(title)}: {shown} dataset(s)[/green]{suffix}")
         if page.next_offset is not None:
             self.write_log(f"[dim]More: add offset={page.next_offset} to the filter[/dim]")
         self.write_log("[dim]Select a row for its provenance.[/dim]\n")

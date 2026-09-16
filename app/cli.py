@@ -2199,6 +2199,8 @@ def _render_datasets(page: DatasetListDTO, console: Console, *, title: str, as_j
             (dataset.updated_at or "")[:19],
         )
     console.print(table)
+    shown = f"{page.offset + 1}-{page.offset + len(page.datasets)}"
+    console.print(f"[memphis.hint]Showing {shown} of {page.total}[/]")
     if page.next_offset is not None:
         console.print(f"[memphis.hint]More: --offset {page.next_offset}[/]")
 
@@ -2295,6 +2297,9 @@ def dataset_list(
         default=DatasetAvailability.TRUE, help="true: object exists; false: object gone; any: both."
     ),
     since: str | None = Option(default=None, help="Only datasets changed at or after this ISO time."),
+    uri_prefix: str | None = Option(
+        default=None, help="Datasets whose uri starts with this, e.g. one bundle directory. Wildcards are literal."
+    ),
     limit: int = Option(default=100, help="Page size (max 200)."),
     offset: int = Option(default=0, help="Rows to skip."),
     as_json: bool = Option(False, "--json", help="Print the page as JSON."),
@@ -2313,6 +2318,7 @@ def dataset_list(
         source=source,
         available=available.value,
         since=since,
+        uri_prefix=uri_prefix,
         limit=limit,
         offset=offset,
     )

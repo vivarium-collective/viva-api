@@ -29,7 +29,7 @@ AVAILABILITY_CHOICES: tuple[str, ...] = ("true", "false", "any")
 #: What a filter string may name for ``E2EDataService.list_datasets``; any other ``key=value``
 #: is an attribute filter (``variant=0``, ``protocol=multiseed``).
 _DATASET_FILTER_INTS = {"simulation": "simulation_id", "analysis": "analysis_id", "parca": "parca_dataset_id"}
-_DATASET_FILTER_STRS = ("kind", "view", "tag", "source", "available", "since")
+_DATASET_FILTER_STRS = ("kind", "view", "tag", "source", "available", "since", "uri_prefix")
 _PAGING = ("limit", "offset")
 
 #: What a filter string may name for ``E2EDataService.list_analyses``.

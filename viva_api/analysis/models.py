@@ -468,6 +468,7 @@ class DatasetFilters(TypedDict):
     tags: list[str] | None
     available: bool | None
     since: datetime.datetime | None
+    uri_prefix: str | None
 
 
 class DatasetScope(TypedDict, total=False):
@@ -512,12 +513,18 @@ class DatasetDTO(BaseModel):
 
 
 class DatasetListDTO(BaseModel):
-    """A page of datasets. ``next_offset`` is ``None`` on the last page."""
+    """A page of datasets. ``next_offset`` is ``None`` on the last page.
+
+    ``total`` is how many rows match the filters, not how many this page holds, so a client can
+    say "1-100 of 43,182" and decide whether to narrow instead of paging. It counts with the
+    SAME clauses as the page (``count_datasets``), so the two can never disagree. It defaults to
+    0 only so a hand-built page in a test need not supply it; every route sets it."""
 
     datasets: list[DatasetDTO]
     limit: int
     offset: int
     next_offset: int | None = None
+    total: int = 0
 
 
 class DatasetProducerDTO(BaseModel):

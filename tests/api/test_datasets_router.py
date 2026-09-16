@@ -81,6 +81,7 @@ async def test_list_datasets_filters_by_kind_tags_typed_attributes_source_and_pa
     tag = f"dsr-{uuid.uuid4().hex[:6]}"
     source = {"kind": "simulation", "ref": str(simulation.database_id), "resolved_id": simulation.database_id}
     rows: list[int] = []
+    uris: list[str] = []
     for name, kind, attributes in (
         ("ptools/ptools_rna_multiseed__variant=0.tsv", "ptools-analysis", {"variant": 0, "protocol": "multiseed"}),
         (
@@ -90,8 +91,10 @@ async def test_list_datasets_filters_by_kind_tags_typed_attributes_source_and_pa
         ),
         ("viz/ptools_rna_multiseed__variant=1.html", "figure", {"variant": 1, "protocol": "multiseed"}),
     ):
+        uri = _uri(name)
+        uris.append(uri)
         dto, _ = await database_service.upsert_dataset(
-            uri=_uri(name),
+            uri=uri,
             kind=kind,
             origin="walk",
             analysis_id=analysis_id,
@@ -125,6 +128,25 @@ async def test_list_datasets_filters_by_kind_tags_typed_attributes_source_and_pa
         assert len(first["datasets"]) == 2 and first["next_offset"] == 2
         last = (await client.get(f"{base_router}/datasets", params={"tag": tag, "limit": 2, "offset": 2})).json()
         assert len(last["datasets"]) == 1 and last["next_offset"] is None
+
+        # `total` counts every MATCHING row, not the page and not the table: it is what lets a
+        # client say "1-2 of 3" and narrow instead of paging. Counting with the listing's own
+        # filters is the whole point -- a count that ignored them would report the table.
+        assert first["total"] == 3 and last["total"] == 3
+        assert (await client.get(f"{base_router}/datasets", params={"tag": tag, "kind": "figure"})).json()["total"] == 1
+
+        # uri_prefix: every row under one directory. `_uri` randomises the bundle segment per
+        # call, so the prefix must come from a row that was actually inserted -- deriving it
+        # from a fresh _uri() would match nothing and pass for the wrong reason.
+        ptools_dir = uris[0].rsplit("/", 1)[0] + "/"
+        under = (await client.get(f"{base_router}/datasets", params={"tag": tag, "uri_prefix": ptools_dir})).json()
+        assert [d["database_id"] for d in under["datasets"]] == [rna_multiseed] and under["total"] == 1
+        bundle = uris[0].rsplit("/", 2)[0] + "/"
+        whole = (await client.get(f"{base_router}/datasets", params={"tag": tag, "uri_prefix": bundle})).json()
+        assert [d["database_id"] for d in whole["datasets"]] == [rna_multiseed] and whole["total"] == 1
+        assert (await client.get(f"{base_router}/datasets", params={"uri_prefix": "s3://nope/"})).json()["total"] == 0
+        # Wildcards are literal, not LIKE patterns.
+        assert (await client.get(f"{base_router}/datasets", params={"uri_prefix": "s3://%"})).json()["total"] == 0
 
         # A gone object is hidden unless asked for.
         await database_service.set_dataset_available(figure, False)

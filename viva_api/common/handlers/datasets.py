@@ -140,6 +140,7 @@ class DatasetListParams:
     tags: list[str] | None
     available: bool | None
     since: datetime.datetime | None
+    uri_prefix: str | None
     limit: int
     offset: int
 
@@ -150,6 +151,7 @@ class DatasetListParams:
             "tags": self.tags,
             "available": self.available,
             "since": self.since,
+            "uri_prefix": self.uri_prefix,
         }
 
 
@@ -162,6 +164,11 @@ def dataset_list_params(
         description="'true' (default): datasets whose object exists; 'false': those whose object is gone; 'any'.",
     ),
     since: datetime.datetime | None = Query(default=None, description="Only datasets changed at or after this time."),
+    uri_prefix: str | None = Query(
+        default=None,
+        description="Datasets whose uri starts with this, e.g. a bundle directory "
+        "'s3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards are literal.",
+    ),
     limit: int = Query(default=100, ge=1, le=DATASET_LIST_MAX_LIMIT, description="Page size."),
     offset: int = Query(default=0, ge=0, description="Rows to skip (pagination, with limit)."),
 ) -> DatasetListParams:
@@ -172,6 +179,7 @@ def dataset_list_params(
         tags=parse_tags(tag),
         available=_AVAILABILITY[available],
         since=naive_utc(since),
+        uri_prefix=uri_prefix,
         limit=limit,
         offset=offset,
     )
@@ -184,11 +192,19 @@ def dataset_list_params(
 
 async def list_page(db: DatabaseService, params: DatasetListParams, **scope: Unpack[DatasetScope]) -> DatasetListDTO:
     """One page of datasets, newest change first: the shared filters plus a route's own
-    (a producer id, attributes, source). ``next_offset`` is ``None`` once a page comes back short."""
+    (a producer id, attributes, source). ``next_offset`` is ``None`` once a page comes back short.
+
+    ``total`` counts every matching row with the same filters and scope, so a client can show
+    "1-100 of 43,182" and narrow instead of paging blindly. It is a second query rather than a
+    window function because the page and the count share one clause builder, which is what keeps
+    them honest; at this table's size the count is an index-or-seq scan of no consequence."""
     check_kind(params.kind)
     datasets = await db.list_datasets(**params.filters(), **scope, limit=params.limit, offset=params.offset)
+    total = await db.count_datasets(**params.filters(), **scope)
     next_offset = params.offset + params.limit if len(datasets) == params.limit else None
-    return DatasetListDTO(datasets=datasets, limit=params.limit, offset=params.offset, next_offset=next_offset)
+    return DatasetListDTO(
+        datasets=datasets, limit=params.limit, offset=params.offset, next_offset=next_offset, total=total
+    )
 
 
 async def require_dataset(db: DatabaseService, dataset_id: int) -> DatasetDTO:
