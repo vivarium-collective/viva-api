@@ -10,8 +10,8 @@ of simulations, read-only by default.
     uv run python scripts/walk_datasets.py --simulation 1319 -v    # one simulation, per-file
     uv run python scripts/walk_datasets.py --limit 25 --apply      # register rows
 
-**S3 is only ever read** -- one LIST per simulation and a ranged GET of a TSV's first bytes
-(`FileServiceS3.get_file_head`). The walk's only writes are `dataset` rows, so `--apply`
+**S3 is only ever read, and only LISTED** -- one `list_objects_v2` per simulation, never an
+object's contents (viva-api#675). The walk's only writes are `dataset` rows, so `--apply`
 writes exactly to the database in `SQLALCHEMY_DATABASE_URL` / `POSTGRES_*` and nowhere else.
 Point that at a restored dump, not at a hosted database: see
 `docs/runbook-dataset-walk.md`.

@@ -266,10 +266,16 @@ filename. *Changed from extending `parse_partition_metadata`:* the walk has its 
 `analysis_runner` names files `f"{name}__{group}"` with the group key's `/` turned into `_`;
 the group's shape gives the protocol (`variant` = multiseed; `variant, seed` =
 multigeneration; `variant, seed, gen, agent` = single; `…, parent` = multidaughter; `all`),
-and a `_<scale>` suffix on the name (`ptools_rna_multiseed`) wins. `n_tp` comes from a ranged
-read of the header, re-read only when the object's size changes. Real ptools headers are
-`$  0m  124m … 870m  0m_sd  124m_sd …`: the timepoints are the columns after the first that
-do not end in `_sd`. `display_name` = `<experiment_id> · <view> · <protocol>[ · s3 g12]`.
+and a `_<scale>` suffix on the name (`ptools_rna_multiseed`) wins. `display_name` =
+`<experiment_id> · <view> · <protocol>[ · s3 g12]`.
+
+Everything above comes from the **listing** — key, size and the name. *Superseded
+(viva-api#675):* the walk used to read each ptools TSV's header with a ranged GET to count
+timepoint columns (those not ending in `_sd`) and record `n_tp`. It no longer opens objects at
+all. `n_tp` is a content feature and belongs to whoever knows the format: the producer reports it
+in the `artifact.written` payload (§4a), and a consumer needing it before the emit side ships
+already downloads the bytes. The reads it replaced cost one ranged GET per file with no timepoint
+row on **every** pass — 9,629 of them on the 2026-09-16 registry (#673).
 
 ## 6. Schema (two Alembic revisions on `e3a9c1d70b62`)
 

@@ -13,7 +13,8 @@ survive hours, credential expiry and eviction.
 It runs the same code path as the scheduler's tick (``dataset_walk.reconcile_simulation``), so
 the result is the walk's real behaviour rather than a re-implementation of it.
 
-**S3 is only ever read** -- one LIST per simulation and a ranged GET of a TSV's first bytes.
+**S3 is only ever read, and only LISTED** -- one `list_objects_v2` per simulation, never an
+object's contents (viva-api#675).
 The only writes are ``dataset`` rows in ``SQLALCHEMY_DATABASE_URL`` / ``POSTGRES_*``.
 
 Three properties a full pass needs that a batch does not, each learned from the 2026-09-16 run

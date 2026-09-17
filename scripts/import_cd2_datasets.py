@@ -161,7 +161,6 @@ async def apply_bundle(
         producer=producer_ids,
         simulation=simulation,
         db=db,
-        file_service=file_service,
         tags=bundle.tags,
     )
     report.registered += walked.registered

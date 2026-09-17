@@ -23,7 +23,6 @@ from viva_api.simulation.dataset_walk import (
     classify,
     parse_artifact_name,
     reconcile_simulation,
-    timepoint_columns,
 )
 from viva_api.simulation.job_scheduler import JobScheduler
 from viva_api.simulation.models import (
@@ -45,8 +44,6 @@ REAL_ROW = (
     "EG10001\t0.2542\t0.2778\t0.2650\t0.2754\t0.2033\t0.2606\t0.3076\t0.2569\t"
     "0.05\t0.11\t0.07\t0.01\t0.08\t0.05\t0.06\t0.08\n"
 )
-#: A ptools_overview header: commentary, no timepoint row. 9,629 of these on the real registry.
-OVERVIEW_HEADER = "# overview: gene / protein / reaction counts; no timepoint columns\n"
 
 
 # ---------------------------------------------------------------------------
@@ -81,12 +78,6 @@ OVERVIEW_HEADER = "# overview: gene / protein / reaction counts; no timepoint co
 )
 def test_names_parse_by_v2ecoli_conventions(filename: str, expected: ArtifactName | None) -> None:
     assert parse_artifact_name(filename) == expected
-
-
-def test_timepoints_skip_the_sd_columns_and_accept_the_legacy_t_header() -> None:
-    assert timepoint_columns(REAL_HEADER + REAL_ROW) == 8
-    assert timepoint_columns("$\tt0\tt1\tt2\ngeneA\t1\t2\t3\n") == 3
-    assert timepoint_columns("$\n") == 0
 
 
 def test_only_consumable_files_are_datasets() -> None:
@@ -180,13 +171,15 @@ async def test_a_walk_registers_bundles_and_attributes_unclaimed_ones_to_the_sim
     assert tsv is not None and tsv.kind == "ptools-analysis"
     assert tsv.simulation_id == simulation.database_id and tsv.analysis_id is None
     assert tsv.view == "ptools_rna" and tsv.size_bytes == len(REAL_HEADER + REAL_ROW)
-    assert {k: tsv.attributes[k] for k in ("protocol", "variant", "n_tp", "origin", "analysis_dir")} == {
+    # No `n_tp`: every attribute here is derived from the LISTING, because the walk never opens
+    # an object (viva-api#675). A producer reports `n_tp` in its `artifact.written` payload.
+    assert {k: tsv.attributes[k] for k in ("protocol", "variant", "origin", "analysis_dir")} == {
         "protocol": "multiseed",
         "variant": 0,
-        "n_tp": 8,
         "origin": "walk",
         "analysis_dir": "analysis-ptools-multiseed",
     }
+    assert "n_tp" not in tsv.attributes
     assert tsv.tags == ["cd2"]
     assert tsv.display_name == f"{simulation.experiment_id} · ptools_rna · multiseed"
 
@@ -212,33 +205,29 @@ async def test_a_walk_registers_bundles_and_attributes_unclaimed_ones_to_the_sim
 
 
 @pytest.mark.asyncio
-async def test_a_zero_timepoint_header_is_recorded_and_never_reread(database_service: DatabaseServiceSQL) -> None:
-    """A ``ptools_overview`` header is commentary with no timepoint row, so the count is 0 -- and
-    0 has to be STORED (viva-api#673).
+async def test_the_walk_never_opens_an_object(database_service: DatabaseServiceSQL) -> None:
+    """The registry indexes objects; it does not parse them (viva-api#675).
 
-    Discarding it (``timepoint_columns(...) or None``) meant nothing was cached, so the size-match
-    shortcut could never hold and EVERY walk re-read the header. Measured on the 2026-09-16
-    registry: 9,629 such rows, one ranged GET each, on every pass, ~99.96% of a re-walk's wall
-    clock. The sibling test below could not catch it: its fixture has no zero-timepoint file, so
-    ``s3.reads == []`` passed while these objects were being re-read forever.
+    Every field the walk records comes from the LISTING -- key, size, and the coordinate the name
+    encodes. It reads no content, not even on a FIRST walk where nothing is registered yet, which
+    is the strong form of the invariant: the sibling test below only shows that a *second* walk
+    adds no reads, and that held even while the walk was re-reading every ``ptools_overview``
+    header on every pass (viva-api#673).
+
+    Content features belong to whoever knows the format: ``n_tp`` comes from the producer in the
+    ``artifact.written`` payload, and a consumer needing it now already downloads the bytes.
     """
     simulation = await _simulation(database_service)
-    objects = dict(_bundle_objects(simulation))
-    relative = "analysis-ptools-multiseed/ptools/ptools_overview__variant=0.tsv"
-    objects[f"vecoli-output/{simulation.experiment_id}/analyses/{relative}"] = OVERVIEW_HEADER.encode()
-    s3 = _S3(objects)
+    s3 = _S3(_bundle_objects(simulation))
 
-    await _walk(database_service, simulation, s3)
+    result = await _walk(database_service, simulation, s3)
 
-    row = await database_service.get_dataset_by_uri(_uri(simulation, relative))
-    assert row is not None, "the overview file should register like any other ptools TSV"
-    assert row.attributes["n_tp"] == 0, "a zero count is an answer, not a failure: it must be stored"
-
-    s3.reads.clear()
-    again = await _walk(database_service, simulation, s3)
-
-    assert again.registered == 0
-    assert s3.reads == []  # the stored 0 is a cache hit, so the header is not read a second time
+    assert result.registered == 4, "a first walk registers the bundle's consumable files"
+    assert s3.reads == [], "the walk opened an object; it should only ever LIST"
+    tsv = await database_service.get_dataset_by_uri(
+        _uri(simulation, "analysis-ptools-multiseed/ptools/ptools_rna_multiseed__variant=0.tsv")
+    )
+    assert tsv is not None and "n_tp" not in tsv.attributes, "n_tp is the producer's to report, not the walk's"
 
 
 @pytest.mark.asyncio

@@ -44,7 +44,10 @@ columns. Fetches are sequential by design (:177).
   all 97 live bundles (6 carry two scales for one view in one `analysis-mnp-*` dir);
 - **no `analysis` row at all** for a fill (`GET /analyses?experiment_id=` returns nothing for
   an `s3-only` bundle) — slice 1's registration;
-- no `n_tp` on the row, so `datacolumns` is wrong — slice 1 derives it at registration;
+- no `n_tp` on the row, so `datacolumns` is wrong — **the page counts its own columns**
+  (viva-api#675). It already downloads the TSV to POST as `datatext`, so the timepoint count is
+  free from bytes in hand; the walk does not open objects, and a producer-reported `n_tp` arrives
+  in the `artifact.written` payload once the emit side ships;
 - a per-cell bundle inlines 400 files through `/analyses/{id}/data` and the resolver picks
   one — only the dataset-id path (§3) fixes that.
 

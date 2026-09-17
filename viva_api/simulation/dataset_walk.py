@@ -27,10 +27,13 @@ only = multiseed; ``variant, seed`` = multigeneration; ``variant, seed, gen, age
 single; ``..., parent`` = multidaughter; ``all``), and a ``_<scale>`` suffix on the name,
 when present, wins.
 
-``n_tp`` comes from the TSV header, read with a small range request and skipped when the
-object's size has not changed since the last walk. Real ptools headers are
-``$  0m  124m ... 870m  0m_sd  124m_sd ...``: the timepoints are the columns after the
-first that do not end in ``_sd``.
+**The walk never opens an object.** Every field it records comes from the LISTING -- key, size,
+and the coordinate the file name encodes. Content features are the business of whoever knows the
+format: ``n_tp`` arrives in the ``artifact.written`` payload from the producer that wrote the
+file (plan §4a, §11.5), and a consumer needing it before the emit side ships already downloads
+the bytes. The walk used to read each ptools TSV's header to count timepoint columns, which cost
+one ranged GET per file with no timepoint row on every pass -- 9,629 of them on the 2026-09-16
+registry, ~99.96% of a re-walk's wall clock (viva-api#673, #675).
 """
 
 from __future__ import annotations
@@ -64,8 +67,6 @@ REPORT_NAME = "analysis.json"
 FIGURE_SUFFIXES: tuple[str, ...] = (".html", ".svg", ".png")
 #: Scale suffixes an analysis name can carry (``ptools_rna_multiseed``).
 SCALES: tuple[str, ...] = ("multigeneration", "multidaughter", "multiseed", "multivariant", "multiexperiment", "single")
-#: Enough bytes for any ptools header line.
-HEADER_BYTES = 8192
 _MAX_REASONS = 5
 
 _INT_KEYS = {"variant": "variant", "seed": "seed", "gen": "generation"}
@@ -126,12 +127,6 @@ def parse_artifact_name(filename: str) -> ArtifactName | None:
     if protocol is None:
         protocol = "all" if group == "all" else _SHAPES.get(frozenset(coordinate))
     return ArtifactName(view=view, protocol=protocol, coordinate=coordinate)
-
-
-def timepoint_columns(header: str) -> int:
-    """Timepoint columns of a ptools TSV header: those after the first that are not ``*_sd``."""
-    columns = header.split("\n", 1)[0].rstrip("\r").split("\t")[1:]
-    return sum(1 for column in columns if column and not column.endswith("_sd"))
 
 
 def split_s3_uri(uri: str) -> tuple[str, str]:
@@ -213,26 +208,6 @@ async def _rows_under(db: DatabaseService, uri_prefix: str) -> dict[str, Dataset
         offset += len(page)
 
 
-async def _n_tp(item: ListingItem, existing: DatasetDTO | None, file_service: FileService) -> int | None:
-    """Timepoint columns of a ptools TSV: the recorded count when the object has not changed, a
-    ranged header read otherwise. ``None`` means the header could not be READ, nothing else.
-
-    **Zero is an answer, not a failure.** A ``ptools_overview`` header is commentary with no
-    timepoint row, so the count is legitimately 0 -- and it must be recorded, or the cache can
-    never hold for those files and every walk re-reads them forever. That was measured on the
-    2026-09-16 registry (viva-api#673): 9,629 rows, one ranged GET each, on every pass, which was
-    ~99.96% of a re-walk's wall clock. Only an unreadable header stays uncached, so a transient
-    read failure still retries.
-    """
-    cached = existing.attributes.get("n_tp") if existing is not None and existing.size_bytes == item.Size else None
-    if isinstance(cached, int) and not isinstance(cached, bool):
-        return cached
-    head = await file_service.get_file_head(S3FilePath(s3_path=Path(item.Key)), HEADER_BYTES)
-    if not head:
-        return None
-    return timepoint_columns(head.decode("utf-8", errors="replace"))
-
-
 def _simulation_source(simulation: Simulation, parsed: ArtifactName | None) -> JsonDict:
     source: JsonDict = {
         "kind": "simulation",
@@ -244,28 +219,29 @@ def _simulation_source(simulation: Simulation, parsed: ArtifactName | None) -> J
     return source
 
 
-async def _file_fields(
+def _file_fields(
     item: ListingItem,
     *,
     kind: str,
     filename: str,
     bundle_name: str,
-    existing: DatasetDTO | None,
     simulation: Simulation,
-    file_service: FileService,
     extra_tags: list[str],
 ) -> DatasetFields:
-    """The ``upsert_dataset`` fields a walked file contributes (everything but uri, kind, producer)."""
+    """The ``upsert_dataset`` fields a walked file contributes (everything but uri, kind, producer).
+
+    Derived from the LISTING only -- name, size, and the coordinate the name encodes. The walk
+    never opens an object: content features belong to whoever knows the format (viva-api#675).
+    ``n_tp`` in particular arrives in the ``artifact.written`` payload from the producer that
+    wrote the file (plan §4a, §11.5); a consumer that needs it before the emit side ships already
+    downloads the bytes and can count its own columns.
+    """
     parsed = parse_artifact_name(filename) if kind != "report" else None
     attributes: JsonDict = {"name": filename, "analysis_dir": bundle_name}
     if parsed is not None:
         attributes.update(parsed.coordinate)
         if parsed.protocol:
             attributes["protocol"] = parsed.protocol
-    if kind == "ptools-analysis":
-        n_tp = await _n_tp(item, existing, file_service)
-        if n_tp is not None:  # 0 is a real count and must be stored, or it is re-read forever
-            attributes["n_tp"] = n_tp
     view = parsed.view if parsed is not None else None
     return {
         "view": view,
@@ -311,7 +287,6 @@ async def register_bundle(
     producer: ProducerRef,
     simulation: Simulation,
     db: DatabaseService,
-    file_service: FileService,
     tags: list[str] | None = None,
     existing: dict[str, DatasetDTO] | None = None,
 ) -> WalkResult:
@@ -331,14 +306,12 @@ async def register_bundle(
         if kind is None:
             continue
         uri = f"s3://{bucket}/{item.Key}"
-        fields = await _file_fields(
+        fields = _file_fields(
             item,
             kind=kind,
             filename=relative.rsplit("/", 1)[-1],
             bundle_name=bundle_name,
-            existing=rows.get(uri),
             simulation=simulation,
-            file_service=file_service,
             extra_tags=list(tags or []),
         )
         try:
@@ -416,7 +389,6 @@ async def reconcile_simulation(
                 producer=producer,
                 simulation=simulation,
                 db=db,
-                file_service=file_service,
                 existing=existing,
             )
         )

@@ -10,7 +10,7 @@ touched. Run end to end on 2026-09-15 against `sms-api-stanford-test`.
 
 | what | reads | writes |
 |---|---|---|
-| `dataset_walk.reconcile_simulation` | one S3 `LIST` per simulation; a ranged `GET` of the first 8 KB of a TSV for `n_tp` | `dataset` rows only |
+| `dataset_walk.reconcile_simulation` | one S3 `LIST` per simulation, and nothing else — the walk never opens an object (viva-api#675) | `dataset` rows only |
 | `scripts/walk_datasets.py` (default `--analyze`) | the above | **nothing** — the writes are intercepted and counted |
 | `scripts/walk_datasets.py --apply` | the above | `dataset` rows in `SQLALCHEMY_DATABASE_URL` |
 | the export in step 1 | the deployment's database | nothing |
@@ -160,7 +160,7 @@ that `parse_artifact_name` is right, rather than coincidentally consistent:
 |---|---|
 | 547 rows have no `seed` | exactly the 547 `multiseed` rows: an aggregate over seeds has none |
 | 1,203 have no `generation` / `agent` | exactly 547 `multiseed` + 656 `multigeneration` |
-| 9,629 have no `n_tp` | exactly the 9,629 `ptools_overview` files; every other view is 0-missing. Their header is commentary, not a timepoint row. **Superseded:** those rows were re-reading their header on every walk because a zero count was discarded rather than stored (viva-api#673). The walk now records `n_tp: 0` for them, so after the next pass this row reads "9,629 carry `n_tp: 0`" and the header is read once, not forever |
+| 9,629 have no `n_tp` | exactly the 9,629 `ptools_overview` files; every other view is 0-missing. Their header is commentary, not a timepoint row. **Superseded (viva-api#675):** the walk no longer reads headers at all, so it records **no** `n_tp` for any row. The 33,553 counts in this snapshot were written by the old behaviour and remain; new walk-registered rows carry none until a producer reports it in the `artifact.written` payload. The header reads this row used to describe cost one ranged GET per file on **every** pass (#673) |
 | 21,301 rows carry no tags | every one resolves to a producing simulation that itself carries no tags -- checked, not assumed. Tags are inherited, so nothing was dropped |
 
 Integrity: **0 duplicate `uri`** (the upsert key holds), 0 missing `display_name`,

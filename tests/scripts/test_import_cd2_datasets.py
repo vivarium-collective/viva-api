@@ -179,7 +179,10 @@ async def test_apply_registers_and_tags_without_creating_run_rows_and_a_later_wa
     assert len(fill) == 3 and {(d.simulation_id, d.analysis_id) for d in fill} == {(run2.database_id, None)}
     assert sorted(d.view or "" for d in fill if d.kind == "ptools-analysis") == ["ptools_rna", "ptools_rxns"]
     assert all({"cd2", "cd2-run2", "cd2-fill", "cd2-sim"} <= set(d.tags) for d in fill)
-    assert {d.attributes.get("n_tp") for d in fill if d.kind == "ptools-analysis"} == {8}
+    # No `n_tp`: the walk registers from the LISTING and never opens an object (viva-api#675).
+    # The producer reports it in the `artifact.written` payload, and the ptools page counts its
+    # own columns from the TSV it already downloads to POST as `datatext`.
+    assert {d.attributes.get("n_tp") for d in fill if d.kind == "ptools-analysis"} == {None}
     assert {d.origin for d in fill} == {"walk"}
 
     # The sim-time bundle keeps the gather run that claims it, and is not tagged as a fill.
