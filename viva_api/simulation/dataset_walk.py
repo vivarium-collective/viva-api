@@ -214,14 +214,23 @@ async def _rows_under(db: DatabaseService, uri_prefix: str) -> dict[str, Dataset
 
 
 async def _n_tp(item: ListingItem, existing: DatasetDTO | None, file_service: FileService) -> int | None:
-    # Reuse the recorded count when the object has not changed; a ranged read otherwise.
+    """Timepoint columns of a ptools TSV: the recorded count when the object has not changed, a
+    ranged header read otherwise. ``None`` means the header could not be READ, nothing else.
+
+    **Zero is an answer, not a failure.** A ``ptools_overview`` header is commentary with no
+    timepoint row, so the count is legitimately 0 -- and it must be recorded, or the cache can
+    never hold for those files and every walk re-reads them forever. That was measured on the
+    2026-09-16 registry (viva-api#673): 9,629 rows, one ranged GET each, on every pass, which was
+    ~99.96% of a re-walk's wall clock. Only an unreadable header stays uncached, so a transient
+    read failure still retries.
+    """
     cached = existing.attributes.get("n_tp") if existing is not None and existing.size_bytes == item.Size else None
     if isinstance(cached, int) and not isinstance(cached, bool):
         return cached
     head = await file_service.get_file_head(S3FilePath(s3_path=Path(item.Key)), HEADER_BYTES)
     if not head:
         return None
-    return timepoint_columns(head.decode("utf-8", errors="replace")) or None
+    return timepoint_columns(head.decode("utf-8", errors="replace"))
 
 
 def _simulation_source(simulation: Simulation, parsed: ArtifactName | None) -> JsonDict:
@@ -255,7 +264,7 @@ async def _file_fields(
             attributes["protocol"] = parsed.protocol
     if kind == "ptools-analysis":
         n_tp = await _n_tp(item, existing, file_service)
-        if n_tp:
+        if n_tp is not None:  # 0 is a real count and must be stored, or it is re-read forever
             attributes["n_tp"] = n_tp
     view = parsed.view if parsed is not None else None
     return {

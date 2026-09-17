@@ -160,7 +160,7 @@ that `parse_artifact_name` is right, rather than coincidentally consistent:
 |---|---|
 | 547 rows have no `seed` | exactly the 547 `multiseed` rows: an aggregate over seeds has none |
 | 1,203 have no `generation` / `agent` | exactly 547 `multiseed` + 656 `multigeneration` |
-| 9,629 have no `n_tp` | exactly the 9,629 `ptools_overview` files; every other view is 0-missing. Their header is commentary, not a timepoint row |
+| 9,629 have no `n_tp` | exactly the 9,629 `ptools_overview` files; every other view is 0-missing. Their header is commentary, not a timepoint row. **Superseded:** those rows were re-reading their header on every walk because a zero count was discarded rather than stored (viva-api#673). The walk now records `n_tp: 0` for them, so after the next pass this row reads "9,629 carry `n_tp: 0`" and the header is read once, not forever |
 | 21,301 rows carry no tags | every one resolves to a producing simulation that itself carries no tags -- checked, not assumed. Tags are inherited, so nothing was dropped |
 
 Integrity: **0 duplicate `uri`** (the upsert key holds), 0 missing `display_name`,

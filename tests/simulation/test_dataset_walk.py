@@ -45,6 +45,8 @@ REAL_ROW = (
     "EG10001\t0.2542\t0.2778\t0.2650\t0.2754\t0.2033\t0.2606\t0.3076\t0.2569\t"
     "0.05\t0.11\t0.07\t0.01\t0.08\t0.05\t0.06\t0.08\n"
 )
+#: A ptools_overview header: commentary, no timepoint row. 9,629 of these on the real registry.
+OVERVIEW_HEADER = "# overview: gene / protein / reaction counts; no timepoint columns\n"
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +209,36 @@ async def test_a_walk_registers_bundles_and_attributes_unclaimed_ones_to_the_sim
     assert figure is not None and figure.kind == "figure"
     assert report is not None and report.kind == "report"
     assert await database_service.get_dataset_by_uri(_uri(simulation, "analysis-ptools-multiseed/driver.log")) is None
+
+
+@pytest.mark.asyncio
+async def test_a_zero_timepoint_header_is_recorded_and_never_reread(database_service: DatabaseServiceSQL) -> None:
+    """A ``ptools_overview`` header is commentary with no timepoint row, so the count is 0 -- and
+    0 has to be STORED (viva-api#673).
+
+    Discarding it (``timepoint_columns(...) or None``) meant nothing was cached, so the size-match
+    shortcut could never hold and EVERY walk re-read the header. Measured on the 2026-09-16
+    registry: 9,629 such rows, one ranged GET each, on every pass, ~99.96% of a re-walk's wall
+    clock. The sibling test below could not catch it: its fixture has no zero-timepoint file, so
+    ``s3.reads == []`` passed while these objects were being re-read forever.
+    """
+    simulation = await _simulation(database_service)
+    objects = dict(_bundle_objects(simulation))
+    relative = "analysis-ptools-multiseed/ptools/ptools_overview__variant=0.tsv"
+    objects[f"vecoli-output/{simulation.experiment_id}/analyses/{relative}"] = OVERVIEW_HEADER.encode()
+    s3 = _S3(objects)
+
+    await _walk(database_service, simulation, s3)
+
+    row = await database_service.get_dataset_by_uri(_uri(simulation, relative))
+    assert row is not None, "the overview file should register like any other ptools TSV"
+    assert row.attributes["n_tp"] == 0, "a zero count is an answer, not a failure: it must be stored"
+
+    s3.reads.clear()
+    again = await _walk(database_service, simulation, s3)
+
+    assert again.registered == 0
+    assert s3.reads == []  # the stored 0 is a cache hit, so the header is not read a second time
 
 
 @pytest.mark.asyncio
