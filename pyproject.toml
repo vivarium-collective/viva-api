@@ -101,6 +101,7 @@ dev = [
     "ipdb>=0.13.13",
     "types-aiofiles>=25.1.0.20251011",
     "types-python-dateutil>=2.9.0.20251115",
+    "import-linter>=2.15",
 ]
 docs = [
     "sphinx>=8.2.3,<10",
@@ -156,6 +157,112 @@ ignore_errors = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov-report=html"
+
+[tool.importlinter]
+# Core split, P0 (docs/plan-core.md): these contracts describe the seams the split will cut,
+# BEFORE any code moves. They run REPORT-ONLY from `make check` (`make imports` to see them,
+# `make imports-strict` to fail on them) -- several are knowingly broken today, and the
+# breakages are the work list in docs/architecture-core.md Part 3. Contracts look at DIRECT
+# imports only (allow_indirect_imports) so each reported line is one edge to cut. A contract flips to
+# enforcing (moves into `make check` proper) in the phase that fixes it; P1 adds
+# `viva_core` as a root package with "viva_core imports neither viva_api nor app".
+root_packages = ["viva_api", "app"]
+include_external_packages = false
+
+[[tool.importlinter.contracts]]
+id = "generic-infra-is-domain-free"
+name = "Future core: generic infrastructure imports no SMS application code"
+type = "forbidden"
+allow_indirect_imports = true
+source_modules = [
+    "viva_api.common.ssh",
+    "viva_api.common.messaging",
+    "viva_api.common.hpc",
+    "viva_api.common.models",
+    "viva_api.common.events_env",
+    "viva_api.common.dispatch_validation",
+    "viva_api.common.storage.file_service",
+    "viva_api.common.storage.file_service_s3",
+    "viva_api.common.storage.file_service_gcs",
+    "viva_api.common.storage.file_service_qumulo_s3",
+    "viva_api.common.storage.gcs_aio",
+    "viva_api.api.auth",
+    "viva_api.api.oidc",
+]
+forbidden_modules = [
+    "viva_api.simulation",
+    "viva_api.analysis",
+    "viva_api.data",
+    "viva_api.common.handlers",
+    "viva_api.common.simulator_defaults",
+    "viva_api.common.analysis_dag",
+    "viva_api.dependencies",
+    "app",
+]
+
+[[tool.importlinter.contracts]]
+id = "env-worker-is-domain-free"
+name = "Future core: env workers and the relay import no SMS application code"
+type = "forbidden"
+allow_indirect_imports = true
+source_modules = [
+    "viva_api.compose.env_worker_service",
+    "viva_api.compose.env_worker_relay",
+]
+forbidden_modules = [
+    "viva_api.simulation",
+    "viva_api.analysis",
+    "viva_api.data",
+    "viva_api.common.handlers",
+    "viva_api.common.simulator_defaults",
+    "viva_api.common.analysis_dag",
+    "app",
+]
+
+[[tool.importlinter.contracts]]
+id = "compose-is-domain-free"
+name = "Future core: compose imports no SMS application code"
+type = "forbidden"
+allow_indirect_imports = true
+source_modules = ["viva_api.compose"]
+forbidden_modules = [
+    "viva_api.simulation",
+    "viva_api.analysis",
+    "viva_api.data",
+    "viva_api.common.handlers",
+    "viva_api.common.simulator_defaults",
+    "viva_api.common.analysis_dag",
+    "app",
+]
+
+[[tool.importlinter.contracts]]
+id = "config-is-domain-free"
+name = "Future core: config and file paths import no SMS application code"
+type = "forbidden"
+allow_indirect_imports = true
+source_modules = ["viva_api.config", "viva_api.common.storage.file_paths"]
+forbidden_modules = [
+    "viva_api.simulation",
+    "viva_api.analysis",
+    "viva_api.common.handlers",
+    "viva_api.common.simulator_defaults",
+]
+
+[[tool.importlinter.contracts]]
+id = "server-does-not-import-clients"
+name = "The server never imports the clients (app)"
+type = "forbidden"
+allow_indirect_imports = true
+source_modules = ["viva_api"]
+forbidden_modules = ["app"]
+
+[[tool.importlinter.contracts]]
+id = "wiring-does-not-import-routers"
+name = "dependencies.py does not import the routers it wires"
+type = "forbidden"
+allow_indirect_imports = true
+source_modules = ["viva_api.dependencies"]
+forbidden_modules = ["viva_api.api.routers"]
 
 [tool.deptry]
 exclude = [".venv/*", "home/*", "simulation_configs/*", "app/ui/explore_outputs.py", "knowledge/composites/dump_composites.py"]
