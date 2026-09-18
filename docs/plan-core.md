@@ -39,6 +39,7 @@ and has a rollback. There is no big-bang step.
 | D6 | **Environments:** core owns environments, build recipes and build jobs. The SMS `simulator` table and `/core/v1/simulator/*` stay in SMS and map onto core environments; repo guardrails stay SMS-side. | 2026-09-18 | Jim |
 | D7 | **Standalone:** core must run without `viva_api` for every service it provides. | 2026-09-18 | Jim |
 | D8 | **Core CLI:** an independent CLI targeting only core, built on the OpenAPI client generated from the core spec. In the plan for standalone operation; not required up front. | 2026-09-18 | Jim |
+| D9 | **BioModels and the curated COPASI / Tellurium simulators move to core** (not SMS), and are eventually factored back out into the reproducible-biology hosted-services application. | 2026-09-18 | Jim |
 
 ## 3. The issues, in one page
 
@@ -154,8 +155,16 @@ jobs as core jobs; the SMS simulator build path delegates to them (rows and
 `/core/v1/simulator/*` unchanged). Compose resolves images through `EnvironmentRef`; its
 `analysis` writes, ParCa staging and `analysis_options` move behind an SMS post-completion
 hook. `BackgroundTask` dispatch → lease-based dispatch with orphan reconcile (the #414
-pattern). BioModels and curated COPASI / Tellurium → `viva_core.contrib.sysbio`;
-`/curated/ecoli` → SMS.
+pattern). `/curated/ecoli` → SMS.
+
+BioModels and curated COPASI / Tellurium (D9) → `viva_core/contrib/sysbio`, URLs unchanged.
+The modules (`compose/biomodels_service.py`, `biomodel_documents.py`) already import nothing
+from the rest of `viva_api`, so they can move as early as P1; the routes follow here, once
+compose itself is core. While moving: lift the document building and the synchronous
+BioModels fetches out of the router into the service, and add the import-linter contract —
+`contrib.sysbio` may use only core's public service API and `CoreClient`; core proper never
+imports `contrib`. That contract is what makes the later factoring-out (to the
+reproducible-biology hosted-services application, after P10) a lift rather than a refactor.
 
 **Standalone gate:** from here `tests/core/` covers every core service with no hooks
 registered. Risk: medium.
@@ -218,6 +227,11 @@ surfaces gated, K8s labels parameterised, `VIVA_CORE_` env prefix. Then extract 
 repo and PyPI distribution, with the core CLI.
 
 ## 5. Sequencing against in-flight work
+
+- **#678 (BioModels consolidation, merged 2026-09-18):** already on `main`; it shrank the
+  surface to `identifiers`, `metadata` and one `/biomodels/run`, which is the shape that
+  moves (D9). New BioModels work should keep to the rule in P5 — no imports from SMS
+  packages — so nothing has to be untangled at the move.
 
 - **#661 (datasets): merge as-is, first.** It is large, conflicting with `main`, and owned
   by another session; reshaping it before merge costs more than relocating it after. P4a
@@ -294,3 +308,8 @@ gating latency compared to the baseline.
   table was briefly planned to move into core, then kept in SMS once environments, build
   recipes and build jobs were confirmed sufficient (D6); "core is standalone" was made an
   explicit principle with an enforcing test suite rather than an implication (D7).
+- **2026-09-18** — D9: BioModels and the curated simulators go to core, not SMS, and are
+  later factored out into the reproducible-biology hosted-services application. The earlier
+  draft already placed them in `viva_core.contrib.sysbio`; what changed is that the
+  destination is now named, and the "public API only" contract is a requirement of the move
+  rather than a nicety.

@@ -10,7 +10,7 @@
 > decision log of `plan-core.md`, not as a silent rewrite here.
 >
 > **Snapshot.** Part 1 was surveyed at `main` `8c597736` (2026-09-18) and the endpoint
-> counts re-checked at `c0ea8c0b`. Line numbers drift; module and function names are the
+> counts re-checked at `c0ea8c0b` (after #678, the BioModels consolidation). Line numbers drift; module and function names are the
 > durable reference.
 
 ## Why this document exists
@@ -119,8 +119,13 @@ Where it reaches into SMS:
 - Dispatch runs in a FastAPI `BackgroundTask`: the row says RUNNING before anything is
   submitted, and a pod death strands it. There is no orphan reconcile for compose.
 
-BioModels and the COPASI / Tellurium templates are neither core nor SMS — they are a third,
-systems-biology application layer living in the compose router.
+BioModels (consolidated by #678 into `identifiers`, `metadata` and one `/biomodels/run` that
+runs one or more models through one or more simulators) and the COPASI / Tellurium templates
+are **not SMS**. They are the seed of a separate application — reproducible-biology hosted
+services — and today they are already a clean consumer: `compose/biomodels_service.py` and
+`compose/biomodel_documents.py` import nothing from the rest of `viva_api`, and submit runs
+through the ordinary compose path. The router still builds the process-bigraph document
+inline and fetches from BioModels synchronously in the handler.
 
 ### `/env-worker/v1` — generic (30)
 
@@ -353,7 +358,8 @@ viva_core/
   infra/      ssh, messaging
   client/     protocol (CoreClient), inprocess, http, generated/ (OpenAPI client from the core spec)
   cli/        the standalone core CLI, built only on client/generated
-  contrib/sysbio/    BioModels + curated COPASI / Tellurium — optional extra, a second consumer
+  contrib/sysbio/    BioModels + curated COPASI / Tellurium — in core for now, built as a consumer of
+                     core's public API so it can be factored out later (see 2.3)
 ```
 
 ## 2.3 The abstractions
@@ -389,6 +395,16 @@ repo-to-backend map stay SMS guardrails.
 `ArtifactClassifier` and `WalkSource` (dataset walker), `run_pbg` emitter plugins, namespaced
 capabilities. Every transition is also written to a durable `core.job_transition` outbox, so
 the in-process hook and the later HTTP feed read one stream.
+
+**BioModels and the curated simulators — in core now, leaving later.** They move to core
+with the rest of compose (`viva_core/contrib/sysbio`, mounted by default at the existing
+`/compose/v1/biomodels/*` and `/compose/v1/curated/{copasi,tellurium}` URLs), and never to
+SMS. Their eventual home is the reproducible-biology hosted-services application, a second
+consumer of core alongside SMS. Two rules keep that extraction a lift rather than a
+refactor: `contrib.sysbio` uses **only** core's public service API and `CoreClient` — the
+same surface an external application would have — and core proper never imports it (an
+import-linter contract). Its science dependencies (libsedml, libsbml, biosimulators-utils,
+biomodels) are an extra, so a minimal core does not need them.
 
 **`CoreClient`.** A Protocol with an in-process and an HTTP implementation. SMS touches core
 only through it and the hook registries.
@@ -475,7 +491,7 @@ Status: `planned` → `in progress` → `done (PR, version)`. Phases refer to `p
 | 11 | Environments and builds | SMS `simulator` + recipes in Ray/K8s services | `core.environment`, `BuildRecipe`, build jobs | P5 | planned |
 | 12 | Compose → SMS reach-ins | simulator table, `analysis` rows, ParCa staging | SMS post-completion hook | P5 | planned |
 | 13 | Compose dispatch | `BackgroundTask`, strandable | lease-based dispatch + orphan reconcile | P5 | planned |
-| 14 | BioModels / curated | in compose router | `viva_core.contrib.sysbio`; `/curated/ecoli` → SMS | P5 | planned |
+| 14 | BioModels / curated | in compose router (`compose/biomodels_service.py`, `biomodel_documents.py`) | `viva_core.contrib.sysbio`, core-public-API only; later factored out to the reproducible-biology application. `/curated/ecoli` → SMS | P1 (modules) / P5 (routes) → extraction after P10 | planned |
 | 15 | Monitoring loops | `JobScheduler` + `ComposeJobMonitor` | core `job_monitor` + SMS `CampaignSubscriber` on the outbox | P6 | planned |
 | 16 | Job table | `hpcrun` + `compose_hpcrun`, `public` | `core.job` + `public.hpcrun` extension row | P7 | planned |
 | 17 | Events and spans | keyed on SMS `hpcrun` | `core.job_event` / `job_span`, `/viva/v1/jobs/{id}/events` | P7 | planned |
