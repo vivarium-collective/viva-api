@@ -1341,7 +1341,24 @@
 #            parameter ceiling hours out and makes ingest look healthy. Both
 #            were needed.
 #            Code-only: NO new migration, DB stays at e3a9c1d70b62.
-__version__ = "0.9.144"
+#           0.9.145 -- core split, first deploy checkpoint (docs/plan-core.md, P0 first
+#            wave + P1a). No behaviour change is intended; this release exists to
+#            prove on a live site what tests cannot:
+#            * the image carries the new top-level package `viva_core` (#686) -- nine
+#              modules moved out of viva_api.common, old import paths kept as
+#              self-replacing stubs. MARKER: /app/viva_core/models.py exists.
+#            * db_reconcile probes are scoped to current_schema() (#682) -- the
+#              migration Job must still classify the site MANAGED at head.
+#            * shutdown stops the scheduler, ComposeJobMonitor, relay TaskRunner and
+#              relay sockets BEFORE the engine is disposed (#683) -- watch one
+#              rolling restart.
+#            * set_messaging_service sets its global (#681); Stanford overlays strip
+#              the SLURM wiring by name (#684, rendered manifests byte-identical);
+#              import-linter contracts in `make check` (#680).
+#            Also first dev deploy of what merged after 0.9.142: postgres-client 17 in
+#            the api image (#668), BioModels consolidated to /biomodels/run (#678).
+#            Code-only: NO new migration, DB stays at e3a9c1d70b62.
+__version__ = "0.9.145"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in

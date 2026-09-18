@@ -73,7 +73,7 @@ images:
   # conflict, logged rather than silent. Same root cause as #392/0.9.92 --
   # reconstructing the block instead of merging into it.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.142
+    newTag: 0.9.145
     # 2026-09-09: 0.9.131 -> 0.9.132, viva-api#558 -- _submit_multi_node_composite
     # now stages each seed_overrides[*].cache_dir S3 prefix under the dispatch's
     # own cache_s3 (server-side copy under a _seed_overrides/<seed>/ subpath),
