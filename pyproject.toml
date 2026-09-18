@@ -124,6 +124,7 @@ constraint-dependencies = [
 [tool.hatch.build.targets.sdist]
 include = [
     "viva_api",
+    "viva_core",
     "sms_api",
     "tests",
     "app",
@@ -132,6 +133,7 @@ include = [
 [tool.hatch.build.targets.wheel]
 include = [
     "viva_api",
+    "viva_core",
     "sms_api",
     "tests",
     "app",
@@ -142,7 +144,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.mypy]
-files = ["viva_api", "tests", "app"]
+files = ["viva_api", "viva_core", "tests", "app"]
 strict = true
 exclude = ['^notes/', '^viva_api/api/client/.*', '^app/ui/.*', '^app/gui\\.py$', '^app/tui\\.py$', '^sms_api/.*']
 
@@ -164,10 +166,19 @@ addopts = "--cov-report=html"
 # `make imports-strict` to fail on them) -- several are knowingly broken today, and the
 # breakages are the work list in docs/architecture-core.md Part 3. Contracts look at DIRECT
 # imports only (allow_indirect_imports) so each reported line is one edge to cut. A contract flips to
-# enforcing (moves into `make check` proper) in the phase that fixes it; P1 adds
-# `viva_core` as a root package with "viva_core imports neither viva_api nor app".
-root_packages = ["viva_api", "app"]
+# enforcing (moves into `make check` proper) in the phase that fixes it. P1 added
+# `viva_core` and its contract, `core-is-standalone`, which is enforced from day one; a
+# module that moves into viva_core leaves the "future core" lists below.
+root_packages = ["viva_api", "viva_core", "app"]
 include_external_packages = false
+
+[[tool.importlinter.contracts]]
+id = "core-is-standalone"
+name = "viva_core imports neither viva_api nor app (ENFORCED)"
+type = "forbidden"
+source_modules = ["viva_core"]
+forbidden_modules = ["viva_api", "app"]
+# No allow_indirect_imports here: core must not reach viva_api even transitively.
 
 [[tool.importlinter.contracts]]
 id = "generic-infra-is-domain-free"
@@ -178,8 +189,6 @@ source_modules = [
     "viva_api.common.ssh",
     "viva_api.common.messaging",
     "viva_api.common.hpc",
-    "viva_api.common.models",
-    "viva_api.common.events_env",
     "viva_api.common.dispatch_validation",
     "viva_api.common.storage.file_service",
     "viva_api.common.storage.file_service_s3",
@@ -392,7 +401,7 @@ skip_empty = true
 
 [tool.coverage.run]
 branch = true
-source = ["viva_api", "client"]
+source = ["viva_api", "viva_core", "client"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]

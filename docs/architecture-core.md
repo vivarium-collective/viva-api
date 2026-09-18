@@ -178,6 +178,12 @@ own status enum.
 
 ## 1.4 Package structure
 
+*Since P1a* there is a second top-level package, `viva_core/` (`models`, `infra/messaging`,
+`events/events_env`, `backends/{job_service,k8s_job_service,models,nextflow_weblog}`), which
+imports nothing from `viva_api` or `app`. The old `viva_api.common.*` paths for those modules
+are self-replacing stubs — same module object under both names. The graph below is otherwise
+unchanged: everything still imports them through the old names.
+
 ```
 app (cli / tui / gui) ──► common.handlers, config, simulation, common.storage
         ▲                        │
@@ -486,8 +492,8 @@ Status: `planned` → `in progress` → `done (PR, version)`. Phases refer to `p
 
 | # | Seam | Current | Target | Phase | Status |
 |---|---|---|---|---|---|
-| 1 | Import boundary | none enforced | import-linter: core ↛ viva_api, app | P0 / P1 | in progress — #680 merged: six contracts, 1 enforced (env workers + relay), 5 report-only (9 edges). `viva_core` contract arrives with P1 |
-| 2 | Generic modules | under `viva_api/common`, `api/` | `viva_core/{infra,storage,backends,events,api}` + aliasing shim | P1 | planned |
+| 1 | Import boundary | none enforced | import-linter: core ↛ viva_api, app | P0 / P1 | in progress — seven contracts; **enforced:** `core-is-standalone` (P1a, transitive) and env workers + relay (#680); report-only: 5 (9 edges) |
+| 2 | Generic modules | under `viva_api/common`, `api/` | `viva_core/{infra,storage,backends,events,api}` + aliasing shim | P1 | in progress — P1a: `models`, `infra/messaging`, `events/events_env`, `backends/{job_service,k8s_job_service,models,nextflow_weblog}` moved; old paths are self-replacing stubs. P1b (storage, ssh, slurm, nextflow_trace) waits on `file_paths` ↛ `config` |
 | 3 | Batch engine | private methods of `SimulationServiceRay` | `viva_core/backends/batch.py` | P2a | planned |
 | 4 | Backends | three SMS-shaped service classes | `JobBackend` adapters: batch, k8s, slurm, local | P2b | planned |
 | 5 | Image resolution | `<ecr>/v2ecoli:<commit>` hard-wired | explicit `EnvironmentRef` | P2b / P5 | planned |
@@ -506,6 +512,6 @@ Status: `planned` → `in progress` → `done (PR, version)`. Phases refer to `p
 | 18 | Alembic | one chain, `create_all` at boot, #637 | two chains, `create_all` off, FRESH works | P0 / P7 | planned |
 | 19 | Clients | one `base_url`, server imports | `core_base_url`, DTOs out of server internals | P8 | planned |
 | 20 | Deployment | one `api` Deployment | second Deployment, then ALB rules | P9 | planned |
-| 21 | Standalone gate | — | `tests/core/` with no hooks, core-only deps | P1 → P5 | planned |
+| 21 | Standalone gate | — | `tests/core/` with no hooks, core-only deps | P1 → P5 | in progress — P1a: every core module imports with `viva_api`/`app` blocked; AST scan for domain terms in core constructs; old-name/new-module identity. App boot + per-service tests arrive with P3–P5 |
 | 22 | Auth and tenancy | seam only | enforced, quotas, allow-lists | P10 | planned |
 | 23 | Core CLI | none; generated client is test-only | standalone CLI on the generated core client | P8 | planned |

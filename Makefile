@@ -35,7 +35,7 @@ check: ## Run code quality tools.
 
 # Contracts in [tool.importlinter] that hold today and therefore FAIL `make check` if broken.
 # A contract moves onto this list in the phase that fixes it -- never off it.
-ENFORCED_IMPORT_CONTRACTS := env-worker-is-domain-free
+ENFORCED_IMPORT_CONTRACTS := core-is-standalone env-worker-is-domain-free
 
 .PHONY: imports
 imports: ## Report the core-split import contracts (never fails; see [tool.importlinter]).

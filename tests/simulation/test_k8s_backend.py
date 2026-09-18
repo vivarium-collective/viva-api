@@ -7,11 +7,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from viva_api.common.hpc.k8s_job_service import K8sJobService, _job_to_status
 from viva_api.common.hpc.local_task_service import LocalTaskService
 from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.config import ComputeBackend, get_settings
 from viva_api.simulation.simulation_service_k8s import SimulationServiceK8s
+from viva_core.backends.k8s_job_service import K8sJobService, _job_to_status
 
 if TYPE_CHECKING:
     from viva_api.simulation.database_service import DatabaseServiceSQL

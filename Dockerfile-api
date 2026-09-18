@@ -76,6 +76,9 @@ RUN uv sync --frozen --no-install-project --no-default-groups
 
 # Copy the rest of the application code
 COPY --chown=appuser:appgroup viva_api /app/viva_api
+# The domain-neutral core (docs/plan-core.md). viva_api imports it, so the image is broken
+# without it -- tests/test_deploy_config.py asserts every shipped top-level package is copied.
+COPY --chown=appuser:appgroup viva_core /app/viva_core
 # Back-compat shim so deployed Jobs still invoking `python -m sms_api.*` keep
 # working across the sms_api -> viva_api rename (see sms_api/__init__.py).
 COPY --chown=appuser:appgroup sms_api /app/sms_api
