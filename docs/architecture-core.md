@@ -256,7 +256,10 @@ directory names and client-visible ids. S3 is keyed by `experiment_id` strings a
 was written for NATS; those settings are dead. Process-local state that shadows the
 database: the relay's socket registry and per-worker queues, `LocalTaskService`'s task
 maps, hit-only correlation-id caches. The boot sweep `fail_unfinished_tasks` is unscoped —
-a second process booting would fail the first one's tasks.
+a second process booting would fail the first one's tasks (scoping it needs a column;
+P0 second wave). *Changed by P0 (#683):* shutdown now stops the scheduler, the
+`ComposeJobMonitor`, the relay `TaskRunner` and the relay sockets **before** the engine is
+disposed; previously the last three were never stopped.
 
 Tests use Postgres testcontainers with `create_db`; they never run Alembic except in the
 dedicated migration tests.
@@ -294,6 +297,11 @@ Routing is by path prefix at the ALB, defined in `../sms-cdk/lib/internal-alb-st
 `/bigraph-loom` to the workbench; **everything else to PTools**, so an unrouted path is an
 HTML 404. A new routed service needs a target group, rules, a security-group rule and a
 `cdk deploy`. `ingress.yaml` on the Stanford overlays is dead code.
+
+*Changed by P0 (#684):* the Stanford overlays now strip the SLURM/SSH wiring with a
+strategic-merge `$patch: delete` keyed by name; `tests/test_deploy_config.py` forbids
+JSON-patching a list by index in a supported overlay. `sms-api-eks` and `sms-api-rke-dev`
+still carry one positional remove each.
 
 ## 1.8 Clients and consumers
 
@@ -478,7 +486,7 @@ Status: `planned` → `in progress` → `done (PR, version)`. Phases refer to `p
 
 | # | Seam | Current | Target | Phase | Status |
 |---|---|---|---|---|---|
-| 1 | Import boundary | none enforced | import-linter: core ↛ viva_api, app | P0 / P1 | in progress — #680: six contracts, 1 enforced (env workers + relay), 5 report-only (9 edges) |
+| 1 | Import boundary | none enforced | import-linter: core ↛ viva_api, app | P0 / P1 | in progress — #680 merged: six contracts, 1 enforced (env workers + relay), 5 report-only (9 edges). `viva_core` contract arrives with P1 |
 | 2 | Generic modules | under `viva_api/common`, `api/` | `viva_core/{infra,storage,backends,events,api}` + aliasing shim | P1 | planned |
 | 3 | Batch engine | private methods of `SimulationServiceRay` | `viva_core/backends/batch.py` | P2a | planned |
 | 4 | Backends | three SMS-shaped service classes | `JobBackend` adapters: batch, k8s, slurm, local | P2b | planned |
