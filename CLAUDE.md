@@ -197,6 +197,24 @@ are deprecated aliases, slated for removal in its Phase 3.
 
 `viva_api/api/client/` is auto-generated from the OpenAPI spec. Regenerate with `make api_client`.
 
+### Core split (in progress — read before moving code across packages)
+
+viva-api is being split into a domain-neutral, **standalone** core (`viva_core/`:
+process-bigraph jobs on Ray/Nextflow, container tasks, env workers, environments and
+builds, datasets, events) and the SMS service that keeps today's endpoints. Two living
+documents own this:
+
+- [`docs/architecture-core.md`](docs/architecture-core.md) — current architecture, target
+  architecture, and the seam-by-seam delta table.
+- [`docs/plan-core.md`](docs/plan-core.md) — decisions, phases P0–P10, risks, open
+  questions, the status ledger and the decision log.
+
+**Maintenance rule:** a PR that implements a step updates the ledger in `plan-core.md`, and,
+if it changes structure, moves the item from target to current in `architecture-core.md`
+and flips its delta row — in the same PR. A change of plan is a dated decision-log entry,
+not a silent rewrite. Core carries no domain terms (ecoli, parca, …) in its identifiers and
+never imports `viva_api` or `app`.
+
 ## Development
 
 ### Setup
