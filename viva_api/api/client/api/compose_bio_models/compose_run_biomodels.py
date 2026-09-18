@@ -19,7 +19,7 @@ def _get_kwargs(
 
     _kwargs: dict[str, Any] = {
         "method": "post",
-        "url": "/compose/v1/biomodels/batch",
+        "url": "/compose/v1/biomodels/run",
     }
 
     _kwargs["json"] = body.to_dict()
@@ -63,10 +63,24 @@ def sync_detailed(
     client: Union[AuthenticatedClient, Client],
     body: BiomodelsRunRequest,
 ) -> Response[Union[BiomodelsRunResult, HTTPValidationError]]:
-    """Run a batch of BioModels database models
+    """Run one or more BioModels through one or more simulators
+
+     Single entry point for BioModels runs — subsumes the former
+    single/batch/audit/regression endpoints.
+
+    - ``model_ids`` (or the first ``n_models``) selects which models to run.
+    - ``simulators``: one runs each model on that simulator; several wire all of
+      them into one PB document per model for cross-validation.
+
+    Each model is submitted independently; one that fails to load or submit is
+    collected in ``failed`` rather than aborting the run.
 
     Args:
-        body (BiomodelsRunRequest):
+        body (BiomodelsRunRequest): One request shape for every BioModels run — subsumes the
+            former
+            single/batch/audit/regression endpoints. Cardinality comes from
+            ``model_ids``/``n_models``; per-model cross-validation comes from listing
+            more than one simulator.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -92,10 +106,24 @@ def sync(
     client: Union[AuthenticatedClient, Client],
     body: BiomodelsRunRequest,
 ) -> Optional[Union[BiomodelsRunResult, HTTPValidationError]]:
-    """Run a batch of BioModels database models
+    """Run one or more BioModels through one or more simulators
+
+     Single entry point for BioModels runs — subsumes the former
+    single/batch/audit/regression endpoints.
+
+    - ``model_ids`` (or the first ``n_models``) selects which models to run.
+    - ``simulators``: one runs each model on that simulator; several wire all of
+      them into one PB document per model for cross-validation.
+
+    Each model is submitted independently; one that fails to load or submit is
+    collected in ``failed`` rather than aborting the run.
 
     Args:
-        body (BiomodelsRunRequest):
+        body (BiomodelsRunRequest): One request shape for every BioModels run — subsumes the
+            former
+            single/batch/audit/regression endpoints. Cardinality comes from
+            ``model_ids``/``n_models``; per-model cross-validation comes from listing
+            more than one simulator.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -116,10 +144,24 @@ async def asyncio_detailed(
     client: Union[AuthenticatedClient, Client],
     body: BiomodelsRunRequest,
 ) -> Response[Union[BiomodelsRunResult, HTTPValidationError]]:
-    """Run a batch of BioModels database models
+    """Run one or more BioModels through one or more simulators
+
+     Single entry point for BioModels runs — subsumes the former
+    single/batch/audit/regression endpoints.
+
+    - ``model_ids`` (or the first ``n_models``) selects which models to run.
+    - ``simulators``: one runs each model on that simulator; several wire all of
+      them into one PB document per model for cross-validation.
+
+    Each model is submitted independently; one that fails to load or submit is
+    collected in ``failed`` rather than aborting the run.
 
     Args:
-        body (BiomodelsRunRequest):
+        body (BiomodelsRunRequest): One request shape for every BioModels run — subsumes the
+            former
+            single/batch/audit/regression endpoints. Cardinality comes from
+            ``model_ids``/``n_models``; per-model cross-validation comes from listing
+            more than one simulator.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -143,10 +185,24 @@ async def asyncio(
     client: Union[AuthenticatedClient, Client],
     body: BiomodelsRunRequest,
 ) -> Optional[Union[BiomodelsRunResult, HTTPValidationError]]:
-    """Run a batch of BioModels database models
+    """Run one or more BioModels through one or more simulators
+
+     Single entry point for BioModels runs — subsumes the former
+    single/batch/audit/regression endpoints.
+
+    - ``model_ids`` (or the first ``n_models``) selects which models to run.
+    - ``simulators``: one runs each model on that simulator; several wire all of
+      them into one PB document per model for cross-validation.
+
+    Each model is submitted independently; one that fails to load or submit is
+    collected in ``failed`` rather than aborting the run.
 
     Args:
-        body (BiomodelsRunRequest):
+        body (BiomodelsRunRequest): One request shape for every BioModels run — subsumes the
+            former
+            single/batch/audit/regression endpoints. Cardinality comes from
+            ``model_ids``/``n_models``; per-model cross-validation comes from listing
+            more than one simulator.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

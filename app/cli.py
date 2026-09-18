@@ -2499,6 +2499,36 @@ def compose_biomodels_meta(
     display_json(result, console)
 
 
+def _print_biomodels_result(console: Console, result: dict[str, Any], label: str) -> None:
+    submitted = result.get("submitted", [])
+    failed = result.get("failed", [])
+    total = result.get("total_requested", len(submitted) + len(failed))
+    console.print(f"[bold]{label} complete:[/bold] {len(submitted)}/{total} submitted, {len(failed)} failed")
+    if failed:
+        console.print(f"[yellow]Failed IDs:[/yellow] {', '.join(failed)}")
+    display_json(result, console)
+
+
+def _poll_biomodels_submission(console: Console, data_service: E2EDataService, result: dict[str, Any]) -> None:
+    submitted = result.get("submitted", [])
+    first = submitted[0] if submitted else None
+    sim_id = first.get("simulation_database_id") if isinstance(first, dict) else None
+    if sim_id is None:
+        console.print("[yellow]No submitted simulation to poll.[/yellow]")
+        return
+    import time
+
+    while True:
+        time.sleep(5)
+        with console.status(f"[memphis.spinner]Polling status for simulation {sim_id}..."):
+            status_data = data_service.compose_get_simulation_status(simulation_id=sim_id)
+        status = status_data.get("status", "unknown")
+        console.print(f"  Status: {status}")
+        if status in ("completed", "failed", "cancelled", "timeout"):
+            break
+    display_json(status_data, console)
+
+
 @compose_cli.command("biomodels-run", help="Run a BioModels database model via Copasi or Tellurium.")
 def compose_biomodels_run(
     biomodel_id: str = Argument(help="BioModel ID (e.g. BIOMD0000000001)."),
@@ -2509,24 +2539,10 @@ def compose_biomodels_run(
     console = get_console()
     data_service = get_data_service(base_url=base_url)
     with console.status(f"[memphis.spinner]Submitting {biomodel_id} via {simulator}..."):
-        result = data_service.compose_biomodels_run(biomodel_id=biomodel_id, simulator=simulator)
+        result = data_service.compose_biomodels_run(model_ids=[biomodel_id], simulators=[simulator])
     display_json(result, console)
     if poll:
-        sim_id = result.get("simulation_database_id")
-        if sim_id is None:
-            console.print("[yellow]No simulation_database_id in response; cannot poll.[/yellow]")
-            return
-        import time
-
-        while True:
-            time.sleep(5)
-            with console.status(f"[memphis.spinner]Polling status for simulation {sim_id}..."):
-                status_data = data_service.compose_get_simulation_status(simulation_id=sim_id)
-            status = status_data.get("status", "unknown")
-            console.print(f"  Status: {status}")
-            if status in ("completed", "failed", "cancelled", "timeout"):
-                break
-        display_json(status_data, console)
+        _poll_biomodels_submission(console, data_service, result)
 
 
 @compose_cli.command("biomodels-batch", help="Run a batch of BioModels database models.")
@@ -2540,12 +2556,12 @@ def compose_biomodels_batch(
     data_service = get_data_service(base_url=base_url)
     model_ids = [i.strip() for i in ids.split(",") if i.strip()] if ids else None
     with console.status("[memphis.spinner]Submitting BioModels batch..."):
-        result = data_service.compose_biomodels_batch(
-            simulator=simulator,
+        result = data_service.compose_biomodels_run(
             model_ids=model_ids,
             n_models=n if model_ids is None else None,
+            simulators=[simulator],
         )
-    display_json(result, console)
+    _print_biomodels_result(console, result, "Batch")
 
 
 @compose_cli.command("biomodels-audit", help="Run a BioModel on multiple simulators for cross-validation.")
@@ -2559,25 +2575,10 @@ def compose_biomodels_audit(
     data_service = get_data_service(base_url=base_url)
     sim_list = [s.strip() for s in simulators.split(",") if s.strip()]
     with console.status(f"[memphis.spinner]Submitting audit for {biomodel_id} ({', '.join(sim_list)})..."):
-        result = data_service.compose_biomodels_audit(biomodel_id=biomodel_id, simulators=sim_list)
+        result = data_service.compose_biomodels_run(model_ids=[biomodel_id], simulators=sim_list)
     display_json(result, console)
     if poll:
-        experiment = result.get("experiment", result)
-        sim_id = experiment.get("simulation_database_id") if isinstance(experiment, dict) else None
-        if sim_id is None:
-            console.print("[yellow]No simulation_database_id in response; cannot poll.[/yellow]")
-            return
-        import time
-
-        while True:
-            time.sleep(5)
-            with console.status(f"[memphis.spinner]Polling audit simulation {sim_id}..."):
-                status_data = data_service.compose_get_simulation_status(simulation_id=sim_id)
-            status = status_data.get("status", "unknown")
-            console.print(f"  Status: {status}")
-            if status in ("completed", "failed", "cancelled", "timeout"):
-                break
-        display_json(status_data, console)
+        _poll_biomodels_submission(console, data_service, result)
 
 
 @compose_cli.command("biomodels-regression", help="Run a BioModels regression suite.")
@@ -2592,18 +2593,12 @@ def compose_biomodels_regression(
     model_ids = [i.strip() for i in ids.split(",") if i.strip()] if ids else None
     sim_list = [s.strip() for s in simulators.split(",") if s.strip()]
     with console.status("[memphis.spinner]Submitting BioModels regression suite..."):
-        result = data_service.compose_biomodels_regression(
-            n_models=n,
+        result = data_service.compose_biomodels_run(
             model_ids=model_ids,
+            n_models=n if model_ids is None else None,
             simulators=sim_list,
         )
-    submitted = result.get("submitted", [])
-    failed = result.get("failed", [])
-    total = result.get("total_requested", n)
-    console.print(f"[bold]Regression complete:[/bold] {len(submitted)}/{total} submitted, {len(failed)} failed")
-    if failed:
-        console.print(f"[yellow]Failed IDs:[/yellow] {', '.join(failed)}")
-    display_json(result, console)
+    _print_biomodels_result(console, result, "Regression")
 
 
 # -- Demo commands --
