@@ -100,14 +100,41 @@ Deploy: app + migration Job. Rollback: previous tag. Risk: low.
 
 ### P1 — Move the already-clean modules
 
-`common/{ssh,messaging}`, `storage/file_service*`, `gcs_aio`, `hpc/*`, `common/models.py`,
-`events_env.py`, `dispatch_validation.py`, `api/{auth,oidc}.py`, `simulation/chrome_trace.py`
-→ `viva_core/`. Old names keep working through a table-driven `sys.modules`-aliasing finder
-(the `sms_api` shim pattern) — not `import *` stubs, which break patch targets. Break the
-`config` ⇄ `file_paths` cycle. Flip the core ↛ viva_api contract to **enforcing**. Start
-`tests/core/`.
+Sliced by what each module imports, because core may not import `viva_api` — so anything
+that reads `viva_api.config` cannot move until that read is gone.
 
-Deploy: app only. Verify: `pytest tests/common tests/api tests/core`, import-linter. Risk: low.
+- **P1a (first PR).** The `viva_core/` package, its packaging (wheel, image `COPY`, mypy,
+  coverage), the **enforced** `core-is-standalone` contract, `tests/core/`, and the modules
+  with no `viva_api` imports at all: `common/models.py` → `viva_core/models.py`;
+  `common/messaging/` → `viva_core/infra/messaging/`; `common/events_env.py` →
+  `viva_core/events/`; `common/hpc/{job_service,k8s_job_service,models,nextflow_weblog}.py`
+  → `viva_core/backends/`.
+- **P1b.** Break `file_paths` → `config` (it reads two path-prefix settings lazily), then
+  move `storage/file_paths`, `file_service*`, `gcs_aio`, `ssh/`, `hpc/slurm_service`,
+  `hpc/nextflow_trace`. The three file services and `gcs_aio` also read `config` directly,
+  so this slice is where core gets its first, minimal settings object.
+
+**The shim.** Old import paths keep working through a *self-replacing stub* left at each old
+path: it imports the new module, keeps a `TYPE_CHECKING`-only star import so mypy still
+resolves the old name, and assigns the new module into `sys.modules[__name__]`. The old name
+is therefore the **same module object** — `mock.patch("old.path.X")` patches the one real
+attribute, `isinstance` agrees across names, module state does not fork, and the `sms_api`
+redirect keeps working on top of it. (The plan first said "a table-driven meta-path finder";
+that cannot satisfy mypy, which needs a file at the old path.) A test reaching for a name the
+star import does not carry — a private name, or one left out of `__all__` — imports it from
+the new path. In-repo importers are **not** mass-rewritten: ~120 files import these modules
+and other sessions have branches open against them; they migrate as they are touched.
+
+**Re-homed out of P1**, each for a reason found when the imports were read:
+`dispatch_validation.py` stays in SMS — it is domain code (`V2ECOLI_SKIP_CACHE_VERIFY`, the
+ParCa-cache rules), not infrastructure; `api/{auth,oidc}.py` read `config` and move with the
+settings split (P3); `simulation/chrome_trace.py` imports `simulation.models` and moves with
+the events store (P4 / P7); `hpc/local_task_service.py` binds `hpcrun` rows and moves in P2b.
+
+Deploy: app only — **and the image must contain `viva_core`** (`Dockerfile-api` copies
+source trees one by one; `tests/test_deploy_config.py` now asserts every shipped package is
+copied). Verify: full `pytest`, `make check`, and on dev the marker grep is
+`/app/viva_core/models.py` existing on the newest pod. Risk: low.
 
 ### P2 — Backend extraction
 
@@ -290,7 +317,8 @@ gating latency compared to the baseline.
 | P-1 | #679 | — | — | — | merged 2026-09-18 (`21bd7296`); docs only |
 | P0 (first wave) | #680 import-linter contracts · #681 `set_messaging_service` · #682 reconciler `current_schema()` · #683 shutdown stops pollers · #684 kustomize by-name patches | rides the next release | — | — | **merged 2026-09-18** (`ca67b43f`, `2f6d73b1`, `f99caa02`, `7f3f6777`, `86c5f292`); combined `main` verified: `make check` ×2, 378 tests. Not yet deployed — #681–#683 change runtime code and go out with the next version bump; #680 and #684 change nothing that runs |
 | P0 (after #661) | #637 FRESH fix + `create_all`-vs-migrations parity test · `DB_CREATE_ALL` guard · `owner_instance` column scoping the env-worker boot sweep | | | | not started — each adds or tests a migration, so they wait for #661 to keep the chain at one head |
-| P1 | | | | | |
+| P1a | (this PR) `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | | | | open |
+| P1b | `file_paths` ↛ `config`; storage, ssh, slurm, nextflow_trace | | | | not started |
 | P2a | | | | | |
 | P2b | | | | | |
 | P3 | | | | | |
@@ -315,6 +343,10 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-18** — P1 sliced (P1a / P1b) and four modules re-homed, after reading each
+  candidate's imports: core may not import `viva_api`, so `viva_api.config` readers wait.
+  The shim became a self-replacing stub file instead of a meta-path finder, because mypy
+  needs a file at the old path. Details under P1.
 - **2026-09-18** — #679 and the P0 first wave (#680–#684) merged, on Jim's say-so per PR.
   #683 had been stacked on #681; it was retargeted to `main` after #681 merged and went in
   last. Still open from P0: the second wave, waiting on #661.
