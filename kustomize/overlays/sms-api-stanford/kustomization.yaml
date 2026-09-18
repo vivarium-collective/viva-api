@@ -193,23 +193,40 @@ patches:
       kind: Deployment
       name: api
   # Remove SLURM/SSH infrastructure from base api.yaml — stanford uses
-  # K8s/AWS Batch exclusively.  Order: highest index first so removals don't
-  # shift the indices of subsequent operations.
+  # K8s/AWS Batch exclusively.
+  #
+  # BY NAME, not by index. This was a JSON patch removing env/5, volumeMounts/2..0 and
+  # volumes/2..0 -- correct only for as long as nobody reordered or inserted an entry
+  # in base/api.yaml, and silently wrong afterwards (it would delete whatever had moved
+  # into that slot). A strategic-merge `$patch: delete` names what it removes; the merge
+  # keys are `name` for env and volumes, `mountPath` for volumeMounts.
   - patch: |-
-      - op: remove
-        path: /spec/template/spec/containers/0/env/5
-      - op: remove
-        path: /spec/template/spec/containers/0/volumeMounts/2
-      - op: remove
-        path: /spec/template/spec/containers/0/volumeMounts/1
-      - op: remove
-        path: /spec/template/spec/containers/0/volumeMounts/0
-      - op: remove
-        path: /spec/template/spec/volumes/2
-      - op: remove
-        path: /spec/template/spec/volumes/1
-      - op: remove
-        path: /spec/template/spec/volumes/0
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: api
+      spec:
+        template:
+          spec:
+            containers:
+              - name: api
+                env:
+                  - name: SLURM_SUBMIT_KEY_PATH
+                    $patch: delete
+                volumeMounts:
+                  - mountPath: /home/FCAM/svc_vivarium
+                    $patch: delete
+                  - mountPath: /run/secrets/slurm_submit_key_file
+                    $patch: delete
+                  - mountPath: /run/secrets/ssh-known-hosts
+                    $patch: delete
+            volumes:
+              - name: vivarium-home-pvc
+                $patch: delete
+              - name: slurm-submit-key-file
+                $patch: delete
+              - name: ssh-known-hosts
+                $patch: delete
     target:
       kind: Deployment
       name: api
