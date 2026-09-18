@@ -1073,7 +1073,10 @@ class DatabaseServiceSQL(DatabaseService):
                         database_id=orm_parca_dataset.id,
                         parca_dataset_request=ParcaDatasetRequest(
                             simulator_version=simulator_version,
-                            parca_config=parca_options_from_stored(orm_parca_dataset.parca_config),
+                            parca_config=self._lenient_parca_options(
+                                orm_parca_dataset.parca_config,  # type: ignore[arg-type]
+                                orm_parca_dataset.id,
+                            ),
                         ),
                         remote_archive_path=orm_parca_dataset.remote_archive_path,
                     )
@@ -1551,6 +1554,40 @@ class DatabaseServiceSQL(DatabaseService):
                 for tag in tags or []:
                     tag_map.setdefault(tag, []).append(experiment_id)
             return tag_map
+
+    @staticmethod
+    def _lenient_parca_options(raw: dict, dataset_id: int) -> ParcaOptions:
+        """Deserialize a stored ParcaOptions for a LIST view without letting one
+        legacy record 500 the whole listing. ParcaOptions is extra="forbid", but
+        older parca datasets carry rnaseq_* keys the current schema now rejects
+        (e.g. rnaseq_manifest_path / rnaseq_basal_dataset_id). Strip ONLY the
+        extra-forbidden keys the error names and re-parse strictly; last resort,
+        model_construct. Strict validation still gates creation and the per-id
+        detail path (get_parca_dataset), so this is a lenient LIST + strict
+        DETAIL, not a global loosening — the same treatment _build_simulations
+        gives SimulationConfig."""
+        try:
+            return ParcaOptions(**raw)
+        except ValidationError as exc:
+            offending = [err["loc"] for err in exc.errors() if err["type"] == "extra_forbidden"]
+            logger.warning(
+                "list_parca_datasets: parca dataset id=%s has a stored parca_config that fails "
+                "strict validation; listing it with legacy fields dropped. Offending: %s",
+                dataset_id,
+                "; ".join(".".join(str(p) for p in err["loc"]) for err in exc.errors()),
+            )
+            cleaned = copy.deepcopy(dict(raw))
+            for loc in offending:
+                *parents, key = loc
+                node: Any = cleaned
+                for parent in parents:
+                    node = node.get(parent) if isinstance(node, dict) else None
+                if isinstance(node, dict):
+                    node.pop(key, None)
+            try:
+                return ParcaOptions(**cleaned)
+            except ValidationError:
+                return ParcaOptions.model_construct(**raw)
 
     @staticmethod
     def _build_simulations(orm_simulations: list[ORMSimulation]) -> list[Simulation]:
