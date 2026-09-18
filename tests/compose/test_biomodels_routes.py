@@ -120,88 +120,106 @@ async def test_get_biomodel_metadata_not_found(fastapi_app: object) -> None:
     assert response.status_code == 404
 
 
+# The four former endpoints (single run / batch / audit / regression) are now one
+# POST /compose/v1/biomodels/run — cardinality via model_ids/n_models, and one vs
+# many `simulators` selects single-run vs cross-validation.
+
+
 @pytest.mark.asyncio
-async def test_run_biomodel_copasi(fastapi_app: object) -> None:
+async def test_run_single_copasi(fastapi_app: object) -> None:
     experiment = _fake_experiment(sim_id=10)
     with _patch_load_biomodel(), _patch_biomodels_run_compose(experiment):
         async with AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://testserver") as client:  # type: ignore[arg-type]
-            response = await client.post("/compose/v1/biomodels/BIOMD001/run", params={"simulator": "copasi"})
+            response = await client.post(
+                "/compose/v1/biomodels/run",
+                json={"model_ids": ["BIOMD001"], "simulators": ["copasi"]},
+            )
     assert response.status_code == 200
-    assert response.json()["simulation_database_id"] == 10
+    data = response.json()
+    assert data["total_requested"] == 1
+    assert data["submitted"][0]["simulation_database_id"] == 10
+    assert data["failed"] == []
 
 
 @pytest.mark.asyncio
-async def test_run_biomodel_tellurium(fastapi_app: object) -> None:
+async def test_run_single_tellurium(fastapi_app: object) -> None:
     experiment = _fake_experiment(sim_id=20)
     with _patch_load_biomodel(), _patch_biomodels_run_compose(experiment):
         async with AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://testserver") as client:  # type: ignore[arg-type]
-            response = await client.post("/compose/v1/biomodels/BIOMD001/run", params={"simulator": "tellurium"})
+            response = await client.post(
+                "/compose/v1/biomodels/run",
+                json={"model_ids": ["BIOMD001"], "simulators": ["tellurium"]},
+            )
     assert response.status_code == 200
-    assert response.json()["simulation_database_id"] == 20
+    assert response.json()["submitted"][0]["simulation_database_id"] == 20
 
 
 @pytest.mark.asyncio
-async def test_run_biomodel_load_failure(fastapi_app: object) -> None:
+async def test_run_load_failure_is_reported_not_raised(fastapi_app: object) -> None:
+    # A model that fails to load is collected in `failed` (200), not a 400 — the
+    # unified endpoint cannot abort a batch on one bad model.
     with _patch_load_biomodel_error(RuntimeError("EBI down")):
         async with AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://testserver") as client:  # type: ignore[arg-type]
-            response = await client.post("/compose/v1/biomodels/BIOMD001/run")
-    assert response.status_code == 400
+            response = await client.post(
+                "/compose/v1/biomodels/run",
+                json={"model_ids": ["BIOMD001"]},
+            )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["submitted"] == []
+    assert data["failed"] == ["BIOMD001"]
+    assert data["total_requested"] == 1
 
 
 @pytest.mark.asyncio
-async def test_run_biomodels_batch(fastapi_app: object) -> None:
+async def test_run_batch_by_n_models(fastapi_app: object) -> None:
     experiment = _fake_experiment(sim_id=5)
     mock_ids = ["BIOMD001", "BIOMD002"]
 
     with _patch_load_biomodel(), _patch_biomodels_run_compose(experiment), _patch_biomodels_identifiers(mock_ids):
         async with AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://testserver") as client:  # type: ignore[arg-type]
             response = await client.post(
-                "/compose/v1/biomodels/batch",
-                json={"n_models": 2, "simulator": "copasi"},
+                "/compose/v1/biomodels/run",
+                json={"n_models": 2, "simulators": ["copasi"]},
             )
     assert response.status_code == 200
     data = response.json()
-    assert isinstance(data["submitted"], list)
-    assert isinstance(data["failed"], list)
+    assert data["total_requested"] == 2
+    assert len(data["submitted"]) == 2
+    assert data["failed"] == []
 
 
 @pytest.mark.asyncio
-async def test_audit_biomodel(fastapi_app: object) -> None:
+async def test_run_cross_validation_multi_simulator(fastapi_app: object) -> None:
+    # The former "audit": one model, several simulators wired into one document.
     experiment = _fake_experiment(sim_id=99)
     with _patch_load_biomodel(), _patch_biomodels_run_compose(experiment):
         async with AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://testserver") as client:  # type: ignore[arg-type]
             response = await client.post(
-                "/compose/v1/biomodels/BIOMD001/audit",
-                params={"simulators": ["copasi", "tellurium"]},
+                "/compose/v1/biomodels/run",
+                json={"model_ids": ["BIOMD001"], "simulators": ["copasi", "tellurium"]},
             )
     assert response.status_code == 200
     data = response.json()
-    assert data["experiment"]["simulation_database_id"] == 99
-    assert "copasi" in data["simulators_used"]
-    assert "tellurium" in data["simulators_used"]
+    assert data["total_requested"] == 1
+    assert len(data["submitted"]) == 1
+    assert data["submitted"][0]["simulation_database_id"] == 99
 
 
 @pytest.mark.asyncio
-async def test_audit_biomodel_load_failure(fastapi_app: object) -> None:
-    with _patch_load_biomodel_error(ValueError("bad")):
-        async with AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://testserver") as client:  # type: ignore[arg-type]
-            response = await client.post("/compose/v1/biomodels/BIOMD001/audit")
-    assert response.status_code == 400
-
-
-@pytest.mark.asyncio
-async def test_regression_endpoint(fastapi_app: object) -> None:
+async def test_run_regression_multi_model_multi_simulator(fastapi_app: object) -> None:
+    # The former "regression": N models, several simulators each.
     experiment = _fake_experiment(sim_id=7)
     mock_ids = ["BIOMD001", "BIOMD002"]
 
     with _patch_load_biomodel(), _patch_biomodels_run_compose(experiment), _patch_biomodels_identifiers(mock_ids):
         async with AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://testserver") as client:  # type: ignore[arg-type]
             response = await client.post(
-                "/compose/v1/biomodels/regression",
+                "/compose/v1/biomodels/run",
                 json={"n_models": 2, "simulators": ["copasi", "tellurium"]},
             )
     assert response.status_code == 200
     data = response.json()
     assert data["total_requested"] == 2
-    assert isinstance(data["submitted"], list)
-    assert isinstance(data["failed"], list)
+    assert len(data["submitted"]) == 2
+    assert data["failed"] == []

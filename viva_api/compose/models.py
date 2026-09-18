@@ -391,47 +391,31 @@ class BiomodelInfo(BaseModel):
 
 
 class BiomodelsRunRequest(BaseModel):
+    """One request shape for every BioModels run — subsumes the former
+    single/batch/audit/regression endpoints. Cardinality comes from
+    ``model_ids``/``n_models``; per-model cross-validation comes from listing
+    more than one simulator."""
+
     model_ids: list[str] | None = Field(
         default=None, description="Specific BioModel IDs to run. Mutually exclusive with n_models."
     )
     n_models: int | None = Field(
-        default=None, ge=1, le=50, description="Run the first N BioModels. Ignored if model_ids is set."
+        default=None, ge=1, le=1000, description="Run the first N BioModels. Ignored if model_ids is set."
     )
-    simulator: BiomodelSimulator = Field(
-        default=BiomodelSimulator.COPASI, description="Simulator to use for each model."
+    simulators: list[BiomodelSimulator] = Field(
+        default_factory=lambda: [BiomodelSimulator.COPASI],
+        description=(
+            "Simulators to run for each model. A single simulator runs the model on it; "
+            "several are wired into one PB document per model for cross-validation "
+            "(the former 'audit'/'regression' behavior)."
+        ),
     )
 
 
 class BiomodelsRunResult(BaseModel):
     submitted: list[ComposeSimulationExperiment]
     failed: list[str] = Field(default_factory=list, description="BioModel IDs that failed to submit.")
-
-
-class BiomodelsAuditRequest(BaseModel):
-    biomodel_id: str
-    simulators: list[BiomodelSimulator] = Field(
-        default_factory=lambda: [BiomodelSimulator.COPASI, BiomodelSimulator.TELLURIUM]
-    )
-
-
-class BiomodelsAuditResult(BaseModel):
-    experiment: ComposeSimulationExperiment
-    simulators_used: list[BiomodelSimulator]
-
-
-class BiomodelsRegressionRequest(BaseModel):
-    n_models: int = Field(default=10, ge=1, le=1000, description="Number of models to run. Ignored if model_ids set.")
-    model_ids: list[str] | None = Field(default=None, description="Specific BioModel IDs to run. Overrides n_models.")
-    simulators: list[BiomodelSimulator] = Field(
-        default_factory=lambda: [BiomodelSimulator.COPASI, BiomodelSimulator.TELLURIUM],
-        description="Simulators to wire into each model's PB document.",
-    )
-
-
-class BiomodelsRegressionResult(BaseModel):
-    submitted: list[ComposeSimulationExperiment]
-    failed: list[str] = Field(default_factory=list, description="BioModel IDs that failed to submit.")
-    total_requested: int
+    total_requested: int = Field(description="Number of models attempted (len(submitted) + len(failed)).")
 
 
 def get_singularity_hash(singularity_def_rep: ContainerizationFileRepr) -> str:
