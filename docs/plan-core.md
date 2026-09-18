@@ -288,7 +288,8 @@ gating latency compared to the baseline.
 | Phase | PRs | Version | Dev | Prod | Notes |
 |---|---|---|---|---|---|
 | P-1 | this PR | — | — | — | docs only |
-| P0 | | | | | |
+| P0 (first wave) | #680 import-linter contracts · #681 `set_messaging_service` · #682 reconciler `current_schema()` · #683 shutdown stops pollers (stacked on #681) · #684 kustomize by-name patches | — | — | — | open, unmerged; none needs a deploy on its own |
+| P0 (after #661) | #637 FRESH fix + `create_all`-vs-migrations parity test · `DB_CREATE_ALL` guard · `owner_instance` column scoping the env-worker boot sweep | | | | not started — each adds or tests a migration, so they wait for #661 to keep the chain at one head |
 | P1 | | | | | |
 | P2a | | | | | |
 | P2b | | | | | |
@@ -308,6 +309,12 @@ gating latency compared to the baseline.
   table was briefly planned to move into core, then kept in SMS once environments, build
   recipes and build jobs were confirmed sufficient (D6); "core is standalone" was made an
   explicit principle with an enforcing test suite rather than an implication (D7).
+- **2026-09-18** — P0 split into two waves. #661 is still open and conflicting, and three
+  P0 items add or test migrations on the single Alembic chain; starting them now would give
+  the chain two heads. First wave (no schema change, no overlap with #661 beyond one
+  non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
+  First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
+  broken, 9 direct edges — the work list for P1–P5.
 - **2026-09-18** — D9: BioModels and the curated simulators go to core, not SMS, and are
   later factored out into the reproducible-biology hosted-services application. The earlier
   draft already placed them in `viva_core.contrib.sysbio`; what changed is that the

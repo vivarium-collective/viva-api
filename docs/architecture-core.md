@@ -478,7 +478,7 @@ Status: `planned` → `in progress` → `done (PR, version)`. Phases refer to `p
 
 | # | Seam | Current | Target | Phase | Status |
 |---|---|---|---|---|---|
-| 1 | Import boundary | none enforced | import-linter: core ↛ viva_api, app | P0 / P1 | planned |
+| 1 | Import boundary | none enforced | import-linter: core ↛ viva_api, app | P0 / P1 | in progress — #680: six contracts, 1 enforced (env workers + relay), 5 report-only (9 edges) |
 | 2 | Generic modules | under `viva_api/common`, `api/` | `viva_core/{infra,storage,backends,events,api}` + aliasing shim | P1 | planned |
 | 3 | Batch engine | private methods of `SimulationServiceRay` | `viva_core/backends/batch.py` | P2a | planned |
 | 4 | Backends | three SMS-shaped service classes | `JobBackend` adapters: batch, k8s, slurm, local | P2b | planned |
