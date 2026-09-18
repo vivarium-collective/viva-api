@@ -178,7 +178,7 @@ global_messaging_service: MessagingService | None = None
 
 def set_messaging_service(service: MessagingService | None) -> None:
     global global_messaging_service
-    global_job_scheduler = service  # noqa: F841
+    global_messaging_service = service
 
 
 def get_messaging_service() -> MessagingService | None:
@@ -621,5 +621,7 @@ async def shutdown_standalone() -> None:
     if job_scheduler:
         await job_scheduler.close()
         set_job_scheduler(None)
+    # JobScheduler.close() disconnected it; drop the reference so nothing hands out a dead client.
+    set_messaging_service(None)
     # for dirpath in [p for p in Path(f"{REPO_ROOT}/.results_cache").rglob("*") if p.is_dir()]:
     #     shutil.rmtree(dirpath)
