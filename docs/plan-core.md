@@ -287,8 +287,8 @@ gating latency compared to the baseline.
 
 | Phase | PRs | Version | Dev | Prod | Notes |
 |---|---|---|---|---|---|
-| P-1 | this PR | — | — | — | docs only |
-| P0 (first wave) | #680 import-linter contracts · #681 `set_messaging_service` · #682 reconciler `current_schema()` · #683 shutdown stops pollers (stacked on #681) · #684 kustomize by-name patches | — | — | — | open, unmerged; none needs a deploy on its own |
+| P-1 | #679 | — | — | — | merged 2026-09-18 (`21bd7296`); docs only |
+| P0 (first wave) | #680 import-linter contracts · #681 `set_messaging_service` · #682 reconciler `current_schema()` · #683 shutdown stops pollers · #684 kustomize by-name patches | rides the next release | — | — | **merged 2026-09-18** (`ca67b43f`, `2f6d73b1`, `f99caa02`, `7f3f6777`, `86c5f292`); combined `main` verified: `make check` ×2, 378 tests. Not yet deployed — #681–#683 change runtime code and go out with the next version bump; #680 and #684 change nothing that runs |
 | P0 (after #661) | #637 FRESH fix + `create_all`-vs-migrations parity test · `DB_CREATE_ALL` guard · `owner_instance` column scoping the env-worker boot sweep | | | | not started — each adds or tests a migration, so they wait for #661 to keep the chain at one head |
 | P1 | | | | | |
 | P2a | | | | | |
@@ -315,6 +315,9 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-18** — #679 and the P0 first wave (#680–#684) merged, on Jim's say-so per PR.
+  #683 had been stacked on #681; it was retargeted to `main` after #681 merged and went in
+  last. Still open from P0: the second wave, waiting on #661.
 - **2026-09-18** — D9: BioModels and the curated simulators go to core, not SMS, and are
   later factored out into the reproducible-biology hosted-services application. The earlier
   draft already placed them in `viva_core.contrib.sysbio`; what changed is that the
