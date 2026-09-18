@@ -299,7 +299,38 @@ repo and PyPI distribution, with the core CLI.
 7. The core CLI's name (`viva`?), and whether `atlantis` delegates its generic verbs to it
    or stays independent.
 
-## 8. Verification, every phase
+## 8. Deploy checkpoints
+
+Merging is not deploying. A phase is *proven* only where the thing under test exists only in
+a deployment: the image actually containing a package, configuration as the pod reads it, the
+reconciler against a real RDS, shutdown under a real rolling restart, dispatch against real
+Batch, routing through the real ALB.
+
+**Rule: one kind of plumbing change per deploy** — image / configuration / dispatch path /
+startup wiring / database / routing — so a regression on dev bisects to one cause.
+
+| # | After | Why it needs a deploy | Prove on dev |
+|---|---|---|---|
+| A | P0 first wave + P1a | new top-level package in the image; reconciler probes; shutdown order | `current_schema()` is `public`; migration Job classifies MANAGED; pod boots; `/app/viva_core/models.py` on the newest pod; EUTE smoke via `atlantis`; `vwb smoke`; one rolling restart's logs |
+| B | P0 second wave | `create_all` off and the FRESH path changed — how every database bootstraps | alone; `--analyze` per site; migration Job; boot against an already-migrated DB |
+| C | P1b + P2a | core's first settings object; the Batch submit path moved | every dispatch path: Ray MNP sim, container analysis, task, compose, image build, Nextflow head |
+| D | P2b | env-worker and task image resolution | workbench through the relay; `vwb smoke`; `atlantis worker`, `task` |
+| E | P3 | settings split, new wiring and lifespan, app factory | alone; diff redacted effective settings and the OpenAPI spec old pod vs new |
+| F | P4a, then P4b | additive migration with dual-write | SQL check that both column sets agree; `atlantis dataset` |
+| G | P5 | durable compose dispatch | kill the pod mid-dispatch; the row must be reconciled, not stranded |
+| H | P6 | scheduler split | multi-generation chain campaign; gating latency vs baseline |
+| I | P7 a, b, c — each separately | the table move | rehearse on a restored copy of the prod DB; RDS snapshot; (b) only with no campaign RUNNING; soak between steps |
+| J | P9 a, b, c — each separately | second Deployment and ALB routing | dark, then the flag flip (rollback = flip back), then `cdk deploy` |
+
+**Prod cadence.** Dev takes every checkpoint. Prod may skip code-only ones but follows dev on
+every **database** checkpoint (B, F, I) after a soak — letting migrations pile up for prod is
+the big-jump risk (§6 #3).
+
+**Before each deploy:** check for pod-local in-flight work (`hpcrun` rows on the `local`
+backend, relay workers, unsettled `env_worker_task`) — a restart drops those. Batch and K8s
+jobs survive; polling resumes with the new pod.
+
+## 9. Verification, every phase
 
 `make check` (twice — the first run reformats), `uv run pytest`, the import-linter
 contracts, the `create_all`-vs-migrations parity test (from P0), `db_reconcile --analyze` on
@@ -315,9 +346,9 @@ gating latency compared to the baseline.
 | Phase | PRs | Version | Dev | Prod | Notes |
 |---|---|---|---|---|---|
 | P-1 | #679 | — | — | — | merged 2026-09-18 (`21bd7296`); docs only |
-| P0 (first wave) | #680 import-linter contracts · #681 `set_messaging_service` · #682 reconciler `current_schema()` · #683 shutdown stops pollers · #684 kustomize by-name patches | rides the next release | — | — | **merged 2026-09-18** (`ca67b43f`, `2f6d73b1`, `f99caa02`, `7f3f6777`, `86c5f292`); combined `main` verified: `make check` ×2, 378 tests. Not yet deployed — #681–#683 change runtime code and go out with the next version bump; #680 and #684 change nothing that runs |
+| P0 (first wave) | #680 import-linter contracts · #681 `set_messaging_service` · #682 reconciler `current_schema()` · #683 shutdown stops pollers · #684 kustomize by-name patches | 0.9.145 | checkpoint A | — | **merged 2026-09-18** (`ca67b43f`, `2f6d73b1`, `f99caa02`, `7f3f6777`, `86c5f292`); combined `main` verified: `make check` ×2, 378 tests. Not yet deployed — #681–#683 change runtime code and go out with the next version bump; #680 and #684 change nothing that runs |
 | P0 (after #661) | #637 FRESH fix + `create_all`-vs-migrations parity test · `DB_CREATE_ALL` guard · `owner_instance` column scoping the env-worker boot sweep | | | | not started — each adds or tests a migration, so they wait for #661 to keep the chain at one head |
-| P1a | (this PR) `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | | | | open |
+| P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | checkpoint A | — | merged 2026-09-18 (`8c9f8e78`) |
 | P1b | `file_paths` ↛ `config`; storage, ssh, slurm, nextflow_trace | | | | not started |
 | P2a | | | | | |
 | P2b | | | | | |
@@ -343,6 +374,11 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-18** — Deploy checkpoints added (§8), at Jim's prompt: merged ≠ deployed, and
+  several changes can only be proven live. Rule: one kind of plumbing change per deploy.
+  Checkpoint A = 0.9.145 on dev, taken BEFORE P1b. Pre-flight on dev: `current_schema()` is
+  `public` (search_path `"$user", public`, user `postgres`, no other schema), DB already at
+  head `e3a9c1d70b62`, no pod-local work in flight.
 - **2026-09-18** — P1 sliced (P1a / P1b) and four modules re-homed, after reading each
   candidate's imports: core may not import `viva_api`, so `viva_api.config` readers wait.
   The shim became a self-replacing stub file instead of a meta-path finder, because mypy
