@@ -30,7 +30,7 @@ from viva_api.compose.database_service import ComposeDatabaseService
 from viva_api.compose.models import ComposeHpcRun, ComposeJobStatus, ComposeSimulation, ComposeSimulatorVersion
 from viva_api.compose.simulation_service import ComposeSimulationService
 from viva_api.config import get_settings
-from viva_api.simulation.simulation_service_ray import ANALYSIS_OUT_DIR, V2ECOLI_DIR
+from viva_api.simulation.ray.image_paths import ANALYSIS_OUT_DIR, V2ECOLI_DIR
 
 logger = logging.getLogger(__name__)
 
