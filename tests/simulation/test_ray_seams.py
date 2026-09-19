@@ -79,3 +79,22 @@ def test_a_patch_on_the_seam_reaches_the_service() -> None:
     with patch("viva_api.simulation.ray._seams.get_settings", lambda: fake):
         uri = simulation_service_ray.SimulationServiceRay()._image_uri("abc1234")
     assert "123456789012" in uri and "xx-test-1" in uri and uri.endswith("some-repo:abc1234")
+
+
+def test_no_method_is_defined_twice_across_the_carved_classes() -> None:
+    """The carve moves methods out of ``SimulationServiceRay`` into mixins it inherits. A
+    method left behind in the service -- or copied into two mixins -- would silently shadow
+    the other by MRO, and the shadowed copy would rot unnoticed. One definition each."""
+    carved = [
+        c
+        for c in simulation_service_ray.SimulationServiceRay.__mro__
+        if c.__module__.startswith("viva_api.simulation.ray.")
+    ]
+    assert carved, "SimulationServiceRay inherits nothing from viva_api.simulation.ray -- has the carve been undone?"
+    owners: dict[str, list[str]] = {}
+    for cls in [simulation_service_ray.SimulationServiceRay, *carved]:
+        for name, value in vars(cls).items():
+            if callable(value) or isinstance(value, staticmethod | classmethod):
+                owners.setdefault(name, []).append(cls.__name__)
+    twice = {name: classes for name, classes in owners.items() if len(classes) > 1 and not name.startswith("__")}
+    assert not twice, f"defined in more than one class of the hierarchy: {twice}"
