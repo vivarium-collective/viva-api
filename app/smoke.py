@@ -33,6 +33,7 @@ from __future__ import annotations
 import io
 import json
 import secrets
+import tarfile
 import tempfile
 import time
 import zipfile
@@ -268,21 +269,42 @@ def find_level(payload: Any) -> float | None:
     return found
 
 
+def _archive_json_members(data: bytes) -> Iterator[tuple[str, bytes | None]]:
+    """``(name, content)`` for every member of a results archive; content only for ``.json``.
+
+    The format is sniffed, not assumed: the Ray path streams a gzipped TAR
+    (``application/gzip``) while the SLURM path serves a ZIP -- and the client saves both as
+    ``compose_results_<id>.zip``. Found by this check on its second live run, when the job
+    finally completed and the "zip" turned out not to be one.
+    """
+    if data[:2] == b"PK":
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            for name in archive.namelist():
+                yield name, archive.read(name) if name.endswith(".json") else None
+        return
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tar:
+        for member in tar:
+            if not member.isfile():
+                continue
+            handle = tar.extractfile(member) if member.name.endswith(".json") else None
+            yield member.name, handle.read() if handle is not None else None
+
+
 def level_from_results_archive(data: bytes) -> tuple[float | None, list[str]]:
-    """Every JSON member of a results archive is searched; returns the level and the names."""
+    """Every JSON member of a results archive is searched; returns the level and the names.
+    ``final_state.json`` wins when several members carry a level."""
     names: list[str] = []
     level: float | None = None
-    with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        for member in archive.namelist():
-            names.append(member)
-            if not member.endswith(".json"):
-                continue
-            try:
-                found = find_level(json.loads(archive.read(member)))
-            except ValueError:
-                continue
-            if found is not None and (level is None or member.endswith("final_state.json")):
-                level = found
+    for name, content in _archive_json_members(data):
+        names.append(name)
+        if content is None:
+            continue
+        try:
+            found = find_level(json.loads(content))
+        except ValueError:
+            continue
+        if found is not None and (level is None or name.endswith("final_state.json")):
+            level = found
     return level, names
 
 

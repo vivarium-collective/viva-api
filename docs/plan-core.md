@@ -406,7 +406,7 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 | # | After | Why it needs a deploy | Prove on dev |
 |---|---|---|---|
 | A ✅ 0.9.145, 2026-09-18 | P0 first wave + P1a | new top-level package in the image; reconciler probes; shutdown order | `current_schema()` is `public`; migration Job classifies MANAGED; pod boots; `/app/viva_core/models.py` on the newest pod; EUTE smoke via `atlantis`; `vwb smoke`; one rolling restart's logs |
-| A2 | P1b + the `run_pbg` fix (#689) | configuration plumbing — how the storage settings reach the file services — kept apart from P2.1's dispatch change (one kind per deploy) | Tier 0 + Tier 1; `compose` flips FAIL → PASS; `atlantis simulation outputs` (the S3 file service end to end); marker `/app/viva_core/settings.py` |
+| A2 ✅ 0.9.146, 2026-09-19 | P1b + the `run_pbg` fix (#689) | configuration plumbing — how the storage settings reach the file services — kept apart from P2.1's dispatch change (one kind per deploy) | Tier 0 + Tier 1; `compose` flips FAIL → PASS; `atlantis simulation outputs` (the S3 file service end to end); marker `/app/viva_core/settings.py` |
 | B | P0 second wave | `create_all` off and the FRESH path changed — how every database bootstraps | alone; `--analyze` per site; migration Job; boot against an already-migrated DB |
 | C | P2.0–P2.1 | core's first settings object; the Batch submit path moved | every dispatch path: Ray MNP sim, container analysis, task, compose, image build, Nextflow head |
 | D | P2.2–P2.3 | strategies; env-worker and task image resolution | workbench through the relay; `vwb smoke`; `atlantis worker`, `task` |
@@ -460,7 +460,7 @@ gating latency compared to the baseline.
 | P0 (first wave) | #680 import-linter contracts · #681 `set_messaging_service` · #682 reconciler `current_schema()` · #683 shutdown stops pollers · #684 kustomize by-name patches | 0.9.145 | **2026-09-18** (checkpoint A) | — | **merged 2026-09-18** (`ca67b43f`, `2f6d73b1`, `f99caa02`, `7f3f6777`, `86c5f292`); combined `main` verified: `make check` ×2, 378 tests. Not yet deployed — #681–#683 change runtime code and go out with the next version bump; #680 and #684 change nothing that runs |
 | P0 (after #661) | #637 FRESH fix + `create_all`-vs-migrations parity test · `DB_CREATE_ALL` guard · `owner_instance` column scoping the env-worker boot sweep | | | | not started — each adds or tests a migration, so they wait for #661 to keep the chain at one head |
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
-| P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | checkpoint A2 | — | merged 2026-09-19 (`c9fa2bd5`) |
+| P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + retarget 298 patches; (c) smoke Tier 2 + R | test-only | — | — | (a) merged; (b), (c) not started |
 | P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core) | | | | not started |
 | P2.2 | mixins → `DispatchStrategy` objects; router | | | | not started |
@@ -487,6 +487,16 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — **Checkpoint A2 passed on dev (0.9.146, #694).** `kubectl diff` = one line;
+  migration Job *managed*, 16/16, no-op; marker `/app/viva_core/settings.py`; inside the pod
+  `get_core_settings() is get_settings()` with the S3 bucket and region populated; startup 0
+  errors / 0 warnings; smoke Tier 0 6/6; Tier 1 `task` PASS, `worker` PASS; **P1b proven** by
+  `atlantis simulation outputs 1344` — 82 files streamed out of S3 through the new settings
+  path; **#689 proven** — compose simulation 9 COMPLETED with `emitter_history.json` in its
+  results and `level = 1.61051 = 1.1^5`. The `compose` *check* itself then crashed
+  (`BadZipFile`): the Ray path serves a gzipped tar, which the client saved as `.zip` and the
+  check read as a zip. Both fixed (format sniffed); the check verified against that real
+  payload. Second run, second real finding.
 - **2026-09-19** — Checkpoint **A2** inserted (Jim asked whether to deploy now; yes): P1b is a
   *configuration* change and P2.1 a *dispatch* change, so letting P1b ride checkpoint C broke
   the one-kind-per-deploy rule this plan set. A2 = 0.9.146 = P1b + the `run_pbg` fix.

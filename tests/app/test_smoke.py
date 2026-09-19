@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import tarfile
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,6 +39,18 @@ def _results_zip(members: dict[str, Any]) -> bytes:
     with zipfile.ZipFile(buffer, "w") as archive:
         for name, body in members.items():
             archive.writestr(name, json.dumps(body))
+    return buffer.getvalue()
+
+
+def _results_tar_gz(members: dict[str, Any], prefix: str = "exp_123/") -> bytes:
+    """What the Ray path really serves: a gzipped tar, members under an experiment folder."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        for name, body in members.items():
+            payload = body if isinstance(body, bytes) else json.dumps(body).encode()
+            info = tarfile.TarInfo(prefix + name)
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
     return buffer.getvalue()
 
 
@@ -329,6 +342,36 @@ def test_compose_checks_the_number_not_the_status() -> None:
     assert "no `level`" in _run("compose", svc).detail
 
 
+def test_results_archive_format_is_sniffed_not_assumed() -> None:
+    """The Ray path serves a gzipped tar (the client mislabels it .zip); SLURM serves a zip."""
+    members = {"final_state.json": {"level": 1.61051, "global_time": 5.0}, "run_pbg.py": b"print(1)"}
+    from_tar, tar_names = smoke.level_from_results_archive(_results_tar_gz(members))
+    from_zip, zip_names = smoke.level_from_results_archive(
+        _results_zip({"final_state.json": members["final_state.json"]})
+    )
+    assert from_tar == from_zip == pytest.approx(1.61051)
+    assert "exp_123/run_pbg.py" in tar_names and zip_names == ["final_state.json"]
+
+
+def test_final_state_wins_over_emitter_history() -> None:
+    history = {"emitter": [{"level": 1.0}, {"level": 1.1}]}
+    data = _results_tar_gz({"emitter_history.json": history, "final_state.json": {"level": 1.61051}})
+    level, _ = smoke.level_from_results_archive(data)
+    assert level == pytest.approx(1.61051)
+
+
+def test_compose_passes_on_the_real_ray_payload_shape() -> None:
+    svc = FakeService()
+
+    def tar_results(simulation_id: int, dest: Path) -> Path:
+        out = dest / f"compose_results_{simulation_id}.tar.gz"
+        out.write_bytes(_results_tar_gz({"final_state.json": {"level": smoke.SMOKE_COMPOSITE_EXPECTED}}))
+        return out
+
+    svc.compose_get_simulation_results = tar_results  # type: ignore[method-assign]
+    assert _run("compose", svc).outcome is smoke.Outcome.PASS
+
+
 def test_the_expected_level_is_what_the_composite_computes() -> None:
     assert pytest.approx(1.61051) == smoke.SMOKE_COMPOSITE_EXPECTED
 
@@ -391,3 +434,17 @@ def test_cli_exits_nonzero_on_failure_and_writes_json(tmp_path: Path, monkeypatc
 
 def test_cli_rejects_an_unknown_check() -> None:
     assert CliRunner().invoke(cli, ["smoke", "run", "--only", "nope", "--url", "http://x"]).exit_code == 2
+
+
+@pytest.mark.parametrize(("payload", "suffix"), [(b"PK\x03\x04rest", ".zip"), (b"\x1f\x8b\x08\x00rest", ".tar.gz")])
+def test_compose_results_are_saved_under_the_extension_of_what_they_are(
+    payload: bytes, suffix: str, tmp_path: Path
+) -> None:
+    """The Ray path serves a gzipped tar; it used to be saved as `.zip`."""
+    from app.app_data_service import E2EDataService
+
+    service = E2EDataService(base_url="http://fake")
+    service.client = _client({("GET", "/compose/v1/simulation/7/results"): httpx.Response(200, content=payload)})
+    saved = service.compose_get_simulation_results(7, tmp_path)
+    assert saved.name == f"compose_results_7{suffix}"
+    assert saved.read_bytes() == payload
