@@ -138,18 +138,65 @@ and other sessions have branches open against them; they migrate as they are tou
 `dispatch_validation.py` stays in SMS — it is domain code (`V2ECOLI_SKIP_CACHE_VERIFY`, the
 ParCa-cache rules), not infrastructure; `api/{auth,oidc}.py` read `config` and move with the
 settings split (P3); `simulation/chrome_trace.py` imports `simulation.models` and moves with
-the events store (P4 / P7); `hpc/local_task_service.py` binds `hpcrun` rows and moves in P2b.
+the events store (P4 / P7); `hpc/local_task_service.py` binds `hpcrun` rows and moves in P2.3.
 
 Deploy: app only — **and the image must contain `viva_core`** (`Dockerfile-api` copies
 source trees one by one; `tests/test_deploy_config.py` now asserts every shipped package is
 copied). Verify: full `pytest`, `make check`, and on dev the marker grep is
 `/app/viva_core/models.py` existing on the newest pod. Risk: low.
 
-### P2 — Backend extraction
+### P2 — Break up `simulation_service_ray.py`, and extract the backends
 
-- **P2a.** `BatchJobClient` → `viva_core/backends/batch.py`; `SimulationServiceRay`
-  delegates. Move-only PRs.
-- **P2b, first piece — the core runtime image.** A small reference environment that is not
+`SimulationServiceRay` is one class of **4,305 lines and ~75 methods** holding eleven
+concerns. It was extended, mechanism by mechanism, into the home of *four* simulation
+dispatch paths; it should have been broken up on the SMS side long before a core existed
+(Jim, 2026-09-19). Extracting the generic Batch engine alone would leave a ~4,000-line class
+with all four mechanisms still in it — so P2 is a **decomposition**, of which the core
+extraction is the first cut.
+
+| Concern | ~lines | Destination |
+|---|---|---|
+| Batch engine — job definitions, MNP + container submit, pacer, status, cancel, logs | 550 | **core** `backends/batch.py` (`BatchJobClient`) |
+| `/tasks` — submit, upload, dispatch, status, logs | 190 | **core** `tasks/` |
+| Image build — `submit_build_image_job`, `_build_command`, `_run_build` | 200 | **core** `backends/build.py` + an SMS recipe |
+| ParCa and caches (ParCa, new-gene, variant, upstream, seed-override staging) | 520 | SMS `simulation/ray/parca.py` |
+| Dispatch 1 — multi-node composite on Ray | 470 | SMS `ray/strategies/mnp.py` |
+| Dispatch 2 — chain dispatch (per seed x generation, lineage, campaign result, cancel / reap) | 900 | SMS `ray/strategies/chain.py` |
+| Dispatch 3 — Nextflow head (render, params, session, head job) | 460 | SMS `ray/strategies/nextflow.py`, on core's Nextflow backend |
+| Dispatch 4 — "mbp tracked" | 220 | SMS `ray/strategies/mbp_tracked.py` |
+| Analysis — container, campaign, multi-node | 460 | SMS `ray/analysis.py` |
+| **The router** — `submit_ecoli_simulation_job`, one 299-line method choosing among the four | 299 | SMS `ray/service.py`, reduced to selecting a strategy |
+| Config interpretation (`strain_from_config`, `injected_processes_from_config`, …) | 200 | SMS `ray/config_interpretation.py` |
+
+**The hazard that dictates the staging.** Tests patch this module's *names*: **309** string
+patches, **205** of `simulation_service_ray.get_settings` and **93** of
+`simulation_service_ray.boto`. Code moved to another file looks those names up in *its own*
+module, so the patches stop reaching it — silently. A naively moved `_submit_container` runs
+with real settings and a **real boto client** while its test still passes. The suite has no
+guard against reaching AWS today. So:
+
+- **P2.0 — make it safe to move (no code moves).**
+  (a) An autouse test guard: creating a real boto3 client or session in a unit test fails
+  loudly; the genuine integration tests opt out with a marker.
+  (b) One seam: `viva_api/simulation/ray/_seams.py` owns `get_settings` and `boto`; this file
+  reads them through it; the 298 patch strings are retargeted there mechanically, in one PR,
+  while the code is still in one place — so the PR proves the patches still bite (break the
+  seam, the tests must fail).
+  (c) Smoke **Tier 2** and **Tier R** (§8): this is the first phase that can break dispatch.
+- **P2.1 — carve, move-only, one concern per PR**, leaves first: config interpretation →
+  Batch engine (**straight into `viva_core`** as `BatchJobClient`, composed, not inherited) →
+  tasks → build → ParCa → analysis → Nextflow → mbp-tracked → MNP → chain. The SMS pieces
+  start as **mixins** of `SimulationServiceRay`: `self.` keeps working, private-method names
+  that tests and `compose` reach for (`_parca_command` ×34, `_seed_generation_command` ×15,
+  `_submit_container`, `_submit_mnp`, …) stay valid, and each PR is a pure move that a reviewer
+  can verify by diff. `simulation_service_ray.py` ends as the facade and re-exports.
+- **P2.2 — mixins become strategies.** A `DispatchStrategy` Protocol (`applies`, `submit`,
+  `cancel`, `progress`); each mechanism an object with explicit dependencies (`BatchJobClient`,
+  layout, settings) instead of `self`; `submit_ecoli_simulation_job` shrinks to a router.
+  Tests move from patching module globals to passing fakes — the smell P2.0 only contained.
+- **P2.3 — the rest of the backends** (was P2b), **starting with the core runtime image**:
+
+  - **The core runtime image.** A small reference environment that is not
   any application's science image: Python slim + process-bigraph + pbg-emitters + the Batch
   container entrypoint (stage-in / stage-out contract) + the env-worker module. A few hundred
   MB, built by CI from this repo (`Dockerfile-core-runtime`), pushed to its own ECR/ghcr
@@ -162,7 +209,7 @@ copied). Verify: full `pytest`, `make check`, and on dev the marker grep is
   to name. Once it exists: Tier 1 smoke runs on it by default, `tests/core/` gets a real
   non-application environment, and the public core has a default environment that carries no
   domain code. (Instance scale-up from zero remains; only the pull shrinks.)
-- **P2b, rest.** K8s, SLURM and LOCAL adapters behind `JobBackend`; `batch_build.py` →
+  - **Then:** K8s, SLURM and LOCAL adapters behind `JobBackend`; `batch_build.py` →
   `backends/build.py`; `LocalTaskService` over a `JobStore` Protocol; compose stops calling
   Ray privates; tasks and env-worker take an explicit `EnvironmentRef` with SMS supplying
   the defaults; a minimal `CoreContainer`.
@@ -286,7 +333,7 @@ repo and PyPI distribution, with the core CLI.
   by another session; reshaping it before merge costs more than relocating it after. P4a
   generalises it additively; P7 moves it.
 - **#656 (task provenance): do not build it on `hpcrun.jobref_task_id`.** Build it once, in
-  core shape, in P4b. If it becomes urgent, P2a + P4 can run ahead of P2b / P3.
+  core shape, in P4b. If it becomes urgent, P2.0–P2.1's Batch-engine and tasks cuts + P4 can run ahead of the rest of P2 and P3.
 - **`plan-remove-slurm-fsx-stanford-test.md`** removes SLURM from a *site*; D4 keeps SLURM
   as a *core backend*. They do not conflict, but the SLURM code must survive that removal
   as `viva_core/backends/slurm.py`.
@@ -313,7 +360,7 @@ repo and PyPI distribution, with the core CLI.
 1. Is `/viva/v1` the right public prefix for core?
 2. May migrated compose rows get new job ids (old one kept in `legacy_compose_id`)?
 3. `/api/v1/tasks`: a permanent SMS facade, or deprecated in favour of `/viva/v1/tasks`?
-4. How urgent is #656 — take the P2a → P4 fast lane?
+4. How urgent is #656 — take the fast lane (the Batch-engine and tasks cuts of P2.1, then P4)?
 5. Core's bus: Redis + the outbox (leaning this way, and deleting the dead `compose_nats_*`
    settings), or NATS?
 6. Does the public hosted core get its own database? It would confirm the soft-reference
@@ -360,8 +407,8 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 |---|---|---|---|
 | A ✅ 0.9.145, 2026-09-18 | P0 first wave + P1a | new top-level package in the image; reconciler probes; shutdown order | `current_schema()` is `public`; migration Job classifies MANAGED; pod boots; `/app/viva_core/models.py` on the newest pod; EUTE smoke via `atlantis`; `vwb smoke`; one rolling restart's logs |
 | B | P0 second wave | `create_all` off and the FRESH path changed — how every database bootstraps | alone; `--analyze` per site; migration Job; boot against an already-migrated DB |
-| C | P1b + P2a | core's first settings object; the Batch submit path moved | every dispatch path: Ray MNP sim, container analysis, task, compose, image build, Nextflow head |
-| D | P2b | env-worker and task image resolution | workbench through the relay; `vwb smoke`; `atlantis worker`, `task` |
+| C | P1b + P2.0–P2.1 | core's first settings object; the Batch submit path moved | every dispatch path: Ray MNP sim, container analysis, task, compose, image build, Nextflow head |
+| D | P2.2–P2.3 | strategies; env-worker and task image resolution | workbench through the relay; `vwb smoke`; `atlantis worker`, `task` |
 | E | P3 | settings split, new wiring and lifespan, app factory | alone; diff redacted effective settings and the OpenAPI spec old pod vs new |
 | F | P4a, then P4b | additive migration with dual-write | SQL check that both column sets agree; `atlantis dataset` |
 | G | P5 | durable compose dispatch | kill the pod mid-dispatch; the row must be reconciled, not stranded |
@@ -381,7 +428,7 @@ is reported separately from PASS and says why; `--json-out` is the record a rele
 | 2 | tens of minutes, dollars — *not built yet* | a Ray multi-node simulation with analysis; a 2x2 chain dispatch; a Nextflow head; the vEcoli qualification script; an image build |
 | R | *not built yet* | a pod restart with a Tier 1 job in flight: status still resolves; the terminated pod's log shows the shutdown order |
 
-Required: **A** = 0 + `task`. **B** = 0 + 1. **C** = 0 + 1 + 2 (P2a is the first change that
+Required: **A** = 0 + `task`. **B** = 0 + 1. **C** = 0 + 1 + 2 (P2.1 is the first change that
 can break dispatch — Tier 2 and R are built before it). **D** = 0 + 1 (`worker`, `task`
 especially). **E** = 0 + 1 + R. **F** = 0 + 1. **G** = 0 + 1 + R. **H** = 0 + 1 + 2. **I**, **J** = all.
 
@@ -412,9 +459,11 @@ gating latency compared to the baseline.
 | P0 (first wave) | #680 import-linter contracts · #681 `set_messaging_service` · #682 reconciler `current_schema()` · #683 shutdown stops pollers · #684 kustomize by-name patches | 0.9.145 | **2026-09-18** (checkpoint A) | — | **merged 2026-09-18** (`ca67b43f`, `2f6d73b1`, `f99caa02`, `7f3f6777`, `86c5f292`); combined `main` verified: `make check` ×2, 378 tests. Not yet deployed — #681–#683 change runtime code and go out with the next version bump; #680 and #684 change nothing that runs |
 | P0 (after #661) | #637 FRESH fix + `create_all`-vs-migrations parity test · `DB_CREATE_ALL` guard · `owner_instance` column scoping the env-worker boot sweep | | | | not started — each adds or tests a migration, so they wait for #661 to keep the chain at one head |
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
-| P1b | (this PR) `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | rides checkpoint C | | | open |
-| P2a | | | | | |
-| P2b | | | | | |
+| P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | rides checkpoint C | | | merged 2026-09-19 (`c9fa2bd5`), not deployed |
+| P2.0 | test guard vs real AWS; `_seams`; smoke Tier 2 + R | | | | not started |
+| P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core) | | | | not started |
+| P2.2 | mixins → `DispatchStrategy` objects; router | | | | not started |
+| P2.3 | core runtime image; K8s / SLURM / LOCAL adapters; `EnvironmentRef` | | | | not started |
 | P3 | | | | | |
 | P4a | | | | | |
 | P4b | | | | | |
@@ -437,12 +486,20 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — **P2 rewritten as a decomposition** (Jim: the module was extended for
+  several dispatch mechanisms and should have been broken up even on the SMS side). Measured:
+  one class, 4,305 lines, ~75 methods, eleven concerns, four dispatch mechanisms behind one
+  299-line router; 78 commits to the file in 30 days, none in an open PR today. The staging
+  is dictated by the tests, not the code: 298 patches of the module's `get_settings` / `boto`
+  names would silently stop applying to moved code. Mixins first (pure moves), strategies
+  second. Same disease, not yet planned in this detail: `job_scheduler.py` (1,276 lines, P6),
+  `common/handlers/simulations.py` (2,418), `routers/env_worker.py` (1,168, P3).
 - **2026-09-19** — P1b: core gets settings by **inheritance + provider**, not a copy. Rejected:
   a second `BaseSettings` reading the same variables (import-order dependent, because
   `config.py` loads dotenv files at import), and passing settings into every constructor
   (touches every call site while other sessions have branches open). This is the seam P3
   widens — `CoreSettings` grows, `Settings` shrinks.
-- **2026-09-19** — **Core runtime image pulled forward to the front of P2b** (Jim). Trigger:
+- **2026-09-19** — **Core runtime image pulled forward to the front of P2b** (now P2.3) (Jim). Trigger:
   the first live Tier 1 run — 320 s of cold start for a 2 s task, because the only image a
   task can run in is the 5.74 GB science image. The stopgap (a small image pushed under a
   tag in the `v2ecoli` repository) was considered and rejected: it pollutes the science

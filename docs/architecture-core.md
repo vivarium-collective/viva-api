@@ -504,9 +504,10 @@ Status: `planned` → `in progress` → `done (PR, version)`. Phases refer to `p
 |---|---|---|---|---|---|
 | 1 | Import boundary | none enforced | import-linter: core ↛ viva_api, app | P0 / P1 | in progress — seven contracts; **enforced:** `core-is-standalone` (P1a, transitive) and env workers + relay (#680); report-only: 5 (9 edges) |
 | 2 | Generic modules | under `viva_api/common`, `api/` | `viva_core/{infra,storage,backends,events,api}` + aliasing shim | P1 | in progress — P1a: `models`, `infra/messaging`, `events/events_env`, `backends/{job_service,k8s_job_service,models,nextflow_weblog}` moved; old paths are self-replacing stubs. P1b: `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved |
-| 3 | Batch engine | private methods of `SimulationServiceRay` | `viva_core/backends/batch.py` | P2a | planned |
-| 4 | Backends | three SMS-shaped service classes | `JobBackend` adapters: batch, k8s, slurm, local | P2b | planned |
-| 5 | Image resolution | `<ecr>/v2ecoli:<commit>` hard-wired | explicit `EnvironmentRef` (see row 24 for the image it defaults to) | P2b / P5 | planned |
+| 3 | Batch engine | private methods of `SimulationServiceRay` | `viva_core/backends/batch.py` (`BatchJobClient`, composed) | P2.1 | planned |
+| 4 | Backends | three SMS-shaped service classes | `JobBackend` adapters: batch, k8s, slurm, local | P2.3 | planned |
+| 25 | SMS Ray service | one class, 4,305 lines, ~75 methods, four dispatch mechanisms behind a 299-line router | `simulation/ray/`: a facade + router, one `DispatchStrategy` per mechanism, `parca`, `analysis`, `config_interpretation` | P2.0 → P2.2 | planned |
+| 5 | Image resolution | `<ecr>/v2ecoli:<commit>` hard-wired | explicit `EnvironmentRef` (see row 24 for the image it defaults to) | P2.3 / P5 | planned |
 | 6 | Settings | one flat `Settings` | `CoreSettings` + `SmsSettings`, same env names | P1b / P3 | in progress — P1b: `viva_core.settings.CoreSettings` holds the storage + path-prefix fields; `Settings` inherits them; the application registers a provider so core reads its object. P3 moves the rest |
 | 7 | Wiring | module globals, router setters, one `init_standalone` | `CoreContainer` + `SmsContainer`, `create_core_app()` | P3 | planned |
 | 8 | OpenAPI | one spec | core spec + SMS spec (SMS = union until P8) | P3 / P8 | planned |
@@ -525,4 +526,4 @@ Status: `planned` → `in progress` → `done (PR, version)`. Phases refer to `p
 | 21 | Standalone gate | — | `tests/core/` with no hooks, core-only deps | P1 → P5 | in progress — P1a: every core module imports with `viva_api`/`app` blocked; AST scan for domain terms in core constructs; old-name/new-module identity. App boot + per-service tests arrive with P3–P5 |
 | 22 | Auth and tenancy | seam only | enforced, quotas, allow-lists | P10 | planned |
 | 23 | Core CLI | none; generated client is test-only | standalone CLI on the generated core client | P8 | planned |
-| 24 | Runtime image | every task / composite / env worker runs in `<ecr>/v2ecoli:<commit>` (5.74 GB) | a small core runtime image, the default `EnvironmentRef`; Tier 1 smoke and `tests/core/` run on it | P2b (first piece) | planned |
+| 24 | Runtime image | every task / composite / env worker runs in `<ecr>/v2ecoli:<commit>` (5.74 GB) | a small core runtime image, the default `EnvironmentRef`; Tier 1 smoke and `tests/core/` run on it | P2.3 (first piece) | planned |
