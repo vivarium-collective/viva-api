@@ -974,9 +974,14 @@ class AwsBatchJobLister:
     def __init__(self, region: str | None = None, client: Any = None) -> None:
         if client is None:
             import boto3
+            from botocore.config import Config
 
-            client = boto3.client("batch", region_name=region) if region else boto3.client("batch")
+            # One look is (queues x 5 states) ListJobs calls -- 65 on an account with 13
+            # queues -- so let botocore absorb throttling rather than fail the check on it.
+            config = Config(retries={"mode": "standard", "max_attempts": 8})
+            client = boto3.client("batch", region_name=region, config=config)
         self._client = client
+        self._queue_names: list[str] | None = None
         self._client.describe_job_queues(maxResults=1)  # fail here, with a reason, not mid-check
 
     def _pages(self, call: Callable[..., dict[str, Any]], **kwargs: Any) -> Iterator[dict[str, Any]]:
@@ -988,6 +993,13 @@ class AwsBatchJobLister:
             kwargs["nextToken"] = page["nextToken"]
 
     def _queues(self) -> list[str]:
+        """Every queue in the account, listed once: they do not change during a check, and
+        the server's own queue settings are not something a client can read."""
+        if self._queue_names is None:
+            self._queue_names = self._list_queues()
+        return self._queue_names
+
+    def _list_queues(self) -> list[str]:
         return [
             q["jobQueueName"]
             for page in self._pages(self._client.describe_job_queues)
