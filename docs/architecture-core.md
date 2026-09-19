@@ -179,7 +179,8 @@ own status enum.
 ## 1.4 Package structure
 
 *Since P1a* there is a second top-level package, `viva_core/` (`models`, `infra/messaging`,
-`events/events_env`, `backends/{job_service,k8s_job_service,models,nextflow_weblog}`), which
+`events/events_env`, `backends/{job_service,k8s_job_service,models,nextflow_weblog}`; since
+P1b also `settings`, `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}`), which
 imports nothing from `viva_api` or `app`. The old `viva_api.common.*` paths for those modules
 are self-replacing stubs — same module object under both names. The graph below is otherwise
 unchanged: everything still imports them through the old names.
@@ -207,7 +208,7 @@ common.handlers    ──► simulation (18 imports), analysis, app, dependencie
 name: `handlers/*` (3,300 lines), `simulator_defaults.py`, `storage/data_layout.py`,
 `analysis_dag.py`, `gateway/utils.py`, `utils.py`, `capabilities.py`, `s3_streaming.py`.
 
-Cycles: `config` ⇄ `common.simulator_defaults`; `config` ⇄ `common.storage.file_paths`;
+Cycles: `config` ⇄ `common.simulator_defaults`; ~~`config` ⇄ `common.storage.file_paths`~~ (gone with P1b);
 `dependencies` ⇄ `api.routers`; `common.handlers` ⇄ `app`; `simulation` ⇄ `compose`.
 
 ## 1.5 Persistence
@@ -502,11 +503,11 @@ Status: `planned` → `in progress` → `done (PR, version)`. Phases refer to `p
 | # | Seam | Current | Target | Phase | Status |
 |---|---|---|---|---|---|
 | 1 | Import boundary | none enforced | import-linter: core ↛ viva_api, app | P0 / P1 | in progress — seven contracts; **enforced:** `core-is-standalone` (P1a, transitive) and env workers + relay (#680); report-only: 5 (9 edges) |
-| 2 | Generic modules | under `viva_api/common`, `api/` | `viva_core/{infra,storage,backends,events,api}` + aliasing shim | P1 | in progress — P1a: `models`, `infra/messaging`, `events/events_env`, `backends/{job_service,k8s_job_service,models,nextflow_weblog}` moved; old paths are self-replacing stubs. P1b (storage, ssh, slurm, nextflow_trace) waits on `file_paths` ↛ `config` |
+| 2 | Generic modules | under `viva_api/common`, `api/` | `viva_core/{infra,storage,backends,events,api}` + aliasing shim | P1 | in progress — P1a: `models`, `infra/messaging`, `events/events_env`, `backends/{job_service,k8s_job_service,models,nextflow_weblog}` moved; old paths are self-replacing stubs. P1b: `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved |
 | 3 | Batch engine | private methods of `SimulationServiceRay` | `viva_core/backends/batch.py` | P2a | planned |
 | 4 | Backends | three SMS-shaped service classes | `JobBackend` adapters: batch, k8s, slurm, local | P2b | planned |
 | 5 | Image resolution | `<ecr>/v2ecoli:<commit>` hard-wired | explicit `EnvironmentRef` (see row 24 for the image it defaults to) | P2b / P5 | planned |
-| 6 | Settings | one flat `Settings` | `CoreSettings` + `SmsSettings`, same env names | P3 | planned |
+| 6 | Settings | one flat `Settings` | `CoreSettings` + `SmsSettings`, same env names | P1b / P3 | in progress — P1b: `viva_core.settings.CoreSettings` holds the storage + path-prefix fields; `Settings` inherits them; the application registers a provider so core reads its object. P3 moves the rest |
 | 7 | Wiring | module globals, router setters, one `init_standalone` | `CoreContainer` + `SmsContainer`, `create_core_app()` | P3 | planned |
 | 8 | OpenAPI | one spec | core spec + SMS spec (SMS = union until P8) | P3 / P8 | planned |
 | 9 | Datasets | #661, SMS-shaped, three producer FKs | `viva_core/datasets`, owner refs, SMS facade | P4a | planned |
