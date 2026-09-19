@@ -186,15 +186,9 @@ name = "Future core: generic infrastructure imports no SMS application code"
 type = "forbidden"
 allow_indirect_imports = true
 source_modules = [
-    "viva_api.common.ssh",
     "viva_api.common.messaging",
     "viva_api.common.hpc",
     "viva_api.common.dispatch_validation",
-    "viva_api.common.storage.file_service",
-    "viva_api.common.storage.file_service_s3",
-    "viva_api.common.storage.file_service_gcs",
-    "viva_api.common.storage.file_service_qumulo_s3",
-    "viva_api.common.storage.gcs_aio",
     "viva_api.api.auth",
     "viva_api.api.oidc",
 ]
@@ -246,10 +240,10 @@ forbidden_modules = [
 
 [[tool.importlinter.contracts]]
 id = "config-is-domain-free"
-name = "Future core: config and file paths import no SMS application code"
+name = "Future core: config imports no SMS application code"
 type = "forbidden"
 allow_indirect_imports = true
-source_modules = ["viva_api.config", "viva_api.common.storage.file_paths"]
+source_modules = ["viva_api.config"]
 forbidden_modules = [
     "viva_api.simulation",
     "viva_api.analysis",

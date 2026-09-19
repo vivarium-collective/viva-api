@@ -1,49 +1,16 @@
-from abc import ABC, abstractmethod
-from datetime import datetime
-from pathlib import Path
+"""Moved to :mod:`viva_core.storage.file_service` (core split, ``docs/plan-core.md`` P1).
 
-from pydantic import BaseModel
+This name stays importable, and at runtime it IS the new module -- the same object -- so
+patching an attribute through this path patches the one real attribute, and ``isinstance``
+checks agree across both names. New code should import from the new path.
+"""
 
-from viva_api.common.storage.file_paths import S3FilePath
+import sys
+from typing import TYPE_CHECKING
 
+from viva_core.storage import file_service as _moved
 
-class ListingItem(BaseModel):
-    Key: str
-    LastModified: datetime
-    ETag: str
-    Size: int
+if TYPE_CHECKING:
+    from viva_core.storage.file_service import *  # noqa: F403
 
-
-class FileService(ABC):
-    @abstractmethod
-    async def download_file(self, s3_path: S3FilePath, file_path: Path | None = None) -> tuple[S3FilePath, str]:
-        pass
-
-    @abstractmethod
-    async def upload_file(self, file_path: Path, s3_path: S3FilePath) -> S3FilePath:
-        pass
-
-    @abstractmethod
-    async def upload_bytes(self, file_contents: bytes, s3_path: S3FilePath) -> S3FilePath:
-        pass
-
-    @abstractmethod
-    async def get_modified_date(self, s3_path: S3FilePath) -> datetime:
-        pass
-
-    @abstractmethod
-    async def get_listing(self, s3_path: S3FilePath) -> list[ListingItem]:
-        pass
-
-    @abstractmethod
-    async def get_file_contents(self, s3_path: S3FilePath) -> bytes | None:
-        pass
-
-    @abstractmethod
-    async def delete_file(self, s3_path: S3FilePath) -> None:
-        """Delete a file from storage. Raises exception if file doesn't exist or delete fails."""
-        pass
-
-    @abstractmethod
-    async def close(self) -> None:
-        pass
+sys.modules[__name__] = _moved

@@ -109,10 +109,19 @@ that reads `viva_api.config` cannot move until that read is gone.
   `common/messaging/` → `viva_core/infra/messaging/`; `common/events_env.py` →
   `viva_core/events/`; `common/hpc/{job_service,k8s_job_service,models,nextflow_weblog}.py`
   → `viva_core/backends/`.
-- **P1b.** Break `file_paths` → `config` (it reads two path-prefix settings lazily), then
-  move `storage/file_paths`, `file_service*`, `gcs_aio`, `ssh/`, `hpc/slurm_service`,
-  `hpc/nextflow_trace`. The three file services and `gcs_aio` also read `config` directly,
-  so this slice is where core gets its first, minimal settings object.
+- **P1b.** `viva_core/settings.py` — core's first, deliberately small, settings object —
+  then `storage/{file_paths,file_service,file_service_s3,file_service_gcs,file_service_qumulo_s3,gcs_aio}`
+  → `viva_core/storage/`, `ssh/ssh_service` → `viva_core/infra/ssh/`,
+  `hpc/{slurm_service,nextflow_trace}` → `viva_core/backends/`.
+  **One definition, one object.** `CoreSettings` defines the storage and path-prefix fields;
+  `viva_api.config.Settings` *inherits* them (138 fields before and after, checked field by
+  field against `main`). A standalone core builds `CoreSettings` from the environment; an
+  embedding application registers a provider so core reads the application's **own object**
+  — `viva_api/__init__.py` does that lazily, so reaching a moved module through its old path
+  is enough. That matters here because `config.py` loads its dotenv files into the process
+  environment at import: a second object built at another moment could disagree.
+  The `config` ⇄ `file_paths` import cycle is gone (the lazy import it forced is now a normal
+  one).
 
 **The shim.** Old import paths keep working through a *self-replacing stub* left at each old
 path: it imports the new module, keeps a `TYPE_CHECKING`-only star import so mypy still
@@ -403,7 +412,7 @@ gating latency compared to the baseline.
 | P0 (first wave) | #680 import-linter contracts · #681 `set_messaging_service` · #682 reconciler `current_schema()` · #683 shutdown stops pollers · #684 kustomize by-name patches | 0.9.145 | **2026-09-18** (checkpoint A) | — | **merged 2026-09-18** (`ca67b43f`, `2f6d73b1`, `f99caa02`, `7f3f6777`, `86c5f292`); combined `main` verified: `make check` ×2, 378 tests. Not yet deployed — #681–#683 change runtime code and go out with the next version bump; #680 and #684 change nothing that runs |
 | P0 (after #661) | #637 FRESH fix + `create_all`-vs-migrations parity test · `DB_CREATE_ALL` guard · `owner_instance` column scoping the env-worker boot sweep | | | | not started — each adds or tests a migration, so they wait for #661 to keep the chain at one head |
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
-| P1b | `file_paths` ↛ `config`; storage, ssh, slurm, nextflow_trace | | | | not started |
+| P1b | (this PR) `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | rides checkpoint C | | | open |
 | P2a | | | | | |
 | P2b | | | | | |
 | P3 | | | | | |
@@ -428,6 +437,11 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — P1b: core gets settings by **inheritance + provider**, not a copy. Rejected:
+  a second `BaseSettings` reading the same variables (import-order dependent, because
+  `config.py` loads dotenv files at import), and passing settings into every constructor
+  (touches every call site while other sessions have branches open). This is the seam P3
+  widens — `CoreSettings` grows, `Settings` shrinks.
 - **2026-09-19** — **Core runtime image pulled forward to the front of P2b** (Jim). Trigger:
   the first live Tier 1 run — 320 s of cold start for a 2 s task, because the only image a
   task can run in is the 5.74 GB science image. The stopgap (a small image pushed under a
