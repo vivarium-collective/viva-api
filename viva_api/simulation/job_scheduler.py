@@ -27,11 +27,11 @@ from viva_api.simulation.models import (
     WorkerEvent,
     WorkerEventMessagePayload,
 )
-from viva_api.simulation.simulation_service_ray import (
-    SimulationServiceRay,
+from viva_api.simulation.ray.config_interpretation import (
     injected_processes_from_config,
     strain_from_config,
 )
+from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
 logger = logging.getLogger(__name__)
 
