@@ -256,3 +256,28 @@ async def test_a_populated_baseline_table_stops_the_reconciliation(
 
     with pytest.raises(RuntimeError, match="'simulation' holds rows"):
         await _upgrade(empty_database, RECONCILES_THE_BASELINE, monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_owner_instance_revision_round_trips(empty_database: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``docs/plan-core.md`` section 7a: every revision in the core split ships a real downgrade,
+    proven by upgrade -> downgrade -> upgrade against a real Postgres."""
+
+    async def owner_column() -> bool:
+        columns = (await _schema(empty_database))["tables"]["env_worker_task"]["columns"]
+        return "owner_instance" in columns
+
+    await _upgrade(empty_database, "e7b3c9a1d5f2", monkeypatch)
+    assert await owner_column()
+    at_head = await _schema(empty_database)
+
+    monkeypatch.setenv("SQLALCHEMY_DATABASE_URL", empty_database)
+    await asyncio.to_thread(command.downgrade, _alembic_config(empty_database), "c9a1e3f5b7d2")
+    assert not await owner_column()
+    assert (
+        "ix_env_worker_task_owner_instance"
+        not in (await _schema(empty_database))["tables"]["env_worker_task"]["indexes"]
+    )
+
+    await _upgrade(empty_database, "e7b3c9a1d5f2", monkeypatch)
+    assert await _schema(empty_database) == at_head

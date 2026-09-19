@@ -245,6 +245,12 @@ async def _marker_dataset_table(conn: AsyncConnection) -> bool:
     return await _table_exists(conn, "dataset")
 
 
+async def _marker_env_worker_task_owner_instance(conn: AsyncConnection) -> bool:
+    """True once ``env_worker_task.owner_instance`` exists (e7b3c9a1d5f2). False on a
+    create_all database made before the column joined the model, true after -- monotone."""
+    return await _column_exists(conn, "env_worker_task", "owner_instance")
+
+
 # (revision, human-readable marker description) -- predicates are positional, in
 # _LEGACY_PREDICATES
 # One marker per revision reachable by a legacy create_all database. New entries
@@ -286,6 +292,7 @@ LEGACY_FINGERPRINTS: list[tuple[str, str]] = [
     ("e3a9c1d70b62", "hpcrun_event.component column exists (renamed from the draft 'layer')"),
     ("b2f6d8e0a4c7", "enum jobtypedb has value 'ANALYSIS'"),
     ("c9a1e3f5b7d2", "table 'dataset' exists"),
+    ("e7b3c9a1d5f2", "env_worker_task.owner_instance column exists"),
 ]
 _LEGACY_PREDICATES = [
     _marker_baseline,
@@ -306,6 +313,7 @@ _LEGACY_PREDICATES = [
     _marker_hpcrun_event_component,
     _marker_jobtype_analysis,
     _marker_dataset_table,
+    _marker_env_worker_task_owner_instance,
 ]
 
 

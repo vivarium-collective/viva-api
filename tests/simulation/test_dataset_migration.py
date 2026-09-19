@@ -45,6 +45,8 @@ from viva_api.simulation.tables_orm import Base
 PRE_REVISION = "e3a9c1d70b62"
 JOBTYPE_REVISION = "b2f6d8e0a4c7"
 DATASET_REVISION = "c9a1e3f5b7d2"
+#: `upgrade head` and the reconciler go past the dataset revision now; this is where they stop.
+HEAD_REVISION = "e7b3c9a1d5f2"
 
 _NEW_COLUMNS = (("analysis", "source"), ("analysis", "tags"), ("hpcrun", "jobref_analysis_id"))
 _NEW_INDEXES = ("ix_analysis_tags", "ix_hpcrun_jobref_analysis_id")
@@ -162,6 +164,11 @@ async def _drop_provenance_objects(url: str) -> None:
         "DROP INDEX ix_analysis_tags",
         "ALTER TABLE analysis DROP COLUMN tags",
         "ALTER TABLE analysis DROP COLUMN source",
+        # ...and nothing NEWER than provenance either: a database bootstrapped on that release
+        # cannot have a column a later revision adds. Left in place it reads as a marker that is
+        # True above two that are False, and the reconciler rightly calls that INCONSISTENT.
+        "DROP INDEX IF EXISTS ix_env_worker_task_owner_instance",
+        "ALTER TABLE env_worker_task DROP COLUMN IF EXISTS owner_instance",
     )
 
 
@@ -188,7 +195,7 @@ async def test_upgrade_head_on_a_managed_database_adds_everything_and_keeps_rows
 
     await asyncio.to_thread(command.upgrade, _cfg(url, monkeypatch), "head")
 
-    assert await _version(url) == DATASET_REVISION
+    assert await _version(url) == HEAD_REVISION
     assert "ANALYSIS" in await _jobtype_labels(url)
     facts = await _column_facts(url)
     for table, column in _NEW_COLUMNS:
@@ -283,7 +290,7 @@ async def test_upgrade_head_is_a_noop_on_a_create_all_database(
     await asyncio.to_thread(command.stamp, cfg, PRE_REVISION)
     await asyncio.to_thread(command.upgrade, cfg, "head")
 
-    assert await _version(url) == DATASET_REVISION
+    assert await _version(url) == HEAD_REVISION
     after = (await _column_facts(url), await _index_defs(url), await _dataset_constraints(url))
     assert after == before
 
@@ -298,10 +305,10 @@ async def test_reconciler_adopts_a_current_create_all_database_at_the_new_head(
 
     diag = await asyncio.to_thread(db_reconcile.diagnose, url, cfg)
     assert diag.state is DbState.LEGACY
-    assert diag.matched_revision == DATASET_REVISION
+    assert diag.matched_revision == HEAD_REVISION
 
     assert await asyncio.to_thread(db_reconcile.apply, url, cfg, diag) == 0
-    assert await _version(url) == DATASET_REVISION
+    assert await _version(url) == HEAD_REVISION
 
 
 @pytest.mark.asyncio
@@ -324,7 +331,7 @@ async def test_reconciler_carries_a_previous_release_create_all_database_to_head
     assert diag.matched_revision == PRE_REVISION, diag.message
 
     assert await asyncio.to_thread(db_reconcile.apply, url, cfg, diag) == 0
-    assert await _version(url) == DATASET_REVISION
+    assert await _version(url) == HEAD_REVISION
     assert "ANALYSIS" in await _jobtype_labels(url)
     facts = await _column_facts(url)
     assert all(key in facts for key in _NEW_COLUMNS)

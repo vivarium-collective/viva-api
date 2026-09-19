@@ -41,6 +41,13 @@ MIGRATION = (
     "CREATE UNIQUE INDEX IF NOT EXISTS ix_env_worker_task_correlation_id ON env_worker_task (correlation_id)",
 )
 
+#: The table's shape is now spread over TWO revisions. b4d7e9c02a15 (above) creates it;
+#: e7b3c9a1d5f2 adds ``owner_instance``. The ORM-vs-migration comparison applies both.
+OWNER_INSTANCE_MIGRATION = (
+    "ALTER TABLE env_worker_task ADD COLUMN IF NOT EXISTS owner_instance VARCHAR",
+    "CREATE INDEX IF NOT EXISTS ix_env_worker_task_owner_instance ON env_worker_task (owner_instance)",
+)
+
 
 async def _fresh(engine: AsyncEngine) -> None:
     """Drop the table so each test starts from a known-absent state.
@@ -54,8 +61,9 @@ async def _fresh(engine: AsyncEngine) -> None:
 
 
 async def _apply(engine: AsyncEngine) -> None:
+    """Both revisions that define this table, in chain order."""
     async with engine.begin() as conn:
-        for stmt in MIGRATION:
+        for stmt in (*MIGRATION, *OWNER_INSTANCE_MIGRATION):
             await conn.execute(text(stmt))
 
 
@@ -141,7 +149,7 @@ async def test_the_orm_and_the_migration_agree_on_the_columns(postgres_url: str)
         await create_compose_db(engine)  # the ORM's idea of the table
         from_orm = await _columns(engine)
         await _fresh(engine)
-        await _apply(engine)  # the migration's idea of it
+        await _apply(engine)  # the migrations' idea of it: the create, then the later add
         from_sql = await _columns(engine)
         assert from_orm == from_sql, (
             f"ORM-only: {sorted(from_orm - from_sql)}  migration-only: {sorted(from_sql - from_orm)}"
@@ -194,3 +202,14 @@ async def test_status_is_a_plain_string_column_in_both(postgres_url: str) -> Non
             assert (await _column_types(engine))["status"] == "character varying"
     finally:
         await engine.dispose()
+
+
+def test_the_statements_above_are_the_ones_the_revision_runs() -> None:
+    """``OWNER_INSTANCE_MIGRATION`` is a copy, and a copy can rot: pin it to the revision file."""
+    from pathlib import Path
+
+    revision = Path(__file__).resolve().parents[2] / "alembic" / "versions"
+    [source] = list(revision.glob("e7b3c9a1d5f2_*.py"))
+    text_of_revision = " ".join(source.read_text(encoding="utf-8").split())
+    for stmt in OWNER_INSTANCE_MIGRATION:
+        assert " ".join(stmt.split()) in text_of_revision.replace('" "', ""), stmt

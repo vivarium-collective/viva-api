@@ -541,8 +541,11 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         # catches its own exceptions rather than trusting an outer handler whose
         # idea of "non-fatal" is scoped to the whole function.
         try:
+            # Scoped to THIS process's role: a second process sharing the database must not fail
+            # the tasks the first one is running (docs/plan-core.md P0 / P9).
             stranded = await task_db.fail_unfinished_tasks(
-                "lost to a viva-api restart: the worker socket did not survive the process"
+                "lost to a viva-api restart: the worker socket did not survive the process",
+                owner_instance=settings.owner_instance,
             )
             if stranded:
                 logger.warning("settled %d env-worker task(s) stranded by a restart", len(stranded))

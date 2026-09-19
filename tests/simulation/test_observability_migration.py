@@ -441,11 +441,16 @@ async def test_create_all_and_the_migration_build_the_same_types_not_just_the_sa
         finally:
             await engine.dispose()
 
-    # Path A: the app's own bootstrap.
+    # Path A: the app's own bootstrap -- BOTH metadatas, as startup does. A Base-only database
+    # is not a shape production ever has, and revisions past this one touch compose tables
+    # (e7b3c9a1d5f2 adds env_worker_task.owner_instance), so `upgrade head` below needs them.
+    from viva_api.compose.tables_orm import ComposeBase
+
     engine = create_async_engine(fresh_postgres_url)
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(ComposeBase.metadata.create_all)
     finally:
         await engine.dispose()
     by_create_all = await _snapshot()

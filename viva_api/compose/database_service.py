@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, override
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import InstrumentedAttribute
 
@@ -626,6 +626,7 @@ class EnvWorkerTaskDatabaseService(ABC):
         params: dict[str, object] | None,
         correlation_id: str,
         created_by: str | None,
+        owner_instance: str | None = None,
     ) -> EnvWorkerTask: ...
 
     @abstractmethod
@@ -650,7 +651,9 @@ class EnvWorkerTaskDatabaseService(ABC):
     async def list_unfinished_tasks(self) -> list[EnvWorkerTask]: ...
 
     @abstractmethod
-    async def fail_unfinished_tasks(self, reason: str, job_name: str | None = None) -> list[EnvWorkerTask]: ...
+    async def fail_unfinished_tasks(
+        self, reason: str, job_name: str | None = None, owner_instance: str | None = None
+    ) -> list[EnvWorkerTask]: ...
 
 
 class EnvWorkerTaskORMExecutor(EnvWorkerTaskDatabaseService):
@@ -702,6 +705,7 @@ class EnvWorkerTaskORMExecutor(EnvWorkerTaskDatabaseService):
         params: dict[str, object] | None,
         correlation_id: str,
         created_by: str | None,
+        owner_instance: str | None = None,
     ) -> EnvWorkerTask:
         # Inserted QUEUED and inserted BEFORE the caller is answered -- compose's
         # contract (handlers.py: "the row exists before the response so a status
@@ -715,6 +719,7 @@ class EnvWorkerTaskORMExecutor(EnvWorkerTaskDatabaseService):
                 status=ComposeJobStatusDB.QUEUED.value,
                 correlation_id=correlation_id,
                 created_by=created_by,
+                owner_instance=owner_instance,
             )
             session.add(row)
             await session.flush()
@@ -770,7 +775,9 @@ class EnvWorkerTaskORMExecutor(EnvWorkerTaskDatabaseService):
             return [row.to_task() for row in result.scalars().all()]
 
     @override
-    async def fail_unfinished_tasks(self, reason: str, job_name: str | None = None) -> list[EnvWorkerTask]:
+    async def fail_unfinished_tasks(
+        self, reason: str, job_name: str | None = None, owner_instance: str | None = None
+    ) -> list[EnvWorkerTask]:
         """Terminate unfinished tasks, returning what was actually terminated.
 
         Two callers, one shape. On BOOT (job_name=None) it settles everything
@@ -780,6 +787,12 @@ class EnvWorkerTaskORMExecutor(EnvWorkerTaskDatabaseService):
         worker's tasks, so someone whose work was killed by another person's
         `worker stop` reads why instead of watching `running` forever.
 
+        ``owner_instance`` scopes the BOOT sweep to one role's rows. Unscoped, the sweep is only
+        correct while exactly one process uses this table: a second process booting would fail
+        every task the first one is running right now. Rows with NO owner predate the column and
+        are swept too -- otherwise the first boot after the migration would leave whatever was
+        already stranded unsettled for good.
+
         Returns the affected rows so the caller can say how many, and to whom.
         """
         async with self.async_session_maker() as session, session.begin():
@@ -788,6 +801,10 @@ class EnvWorkerTaskORMExecutor(EnvWorkerTaskDatabaseService):
             stmt = select(ORMEnvWorkerTask).where(ORMEnvWorkerTask.status.in_(self.SETTLEABLE))
             if job_name is not None:
                 stmt = stmt.where(ORMEnvWorkerTask.job_name == job_name)
+            if owner_instance is not None:
+                stmt = stmt.where(
+                    or_(ORMEnvWorkerTask.owner_instance == owner_instance, ORMEnvWorkerTask.owner_instance.is_(None))
+                )
             rows = list((await session.execute(stmt)).scalars().all())
             now = datetime.datetime.now()
             for row in rows:
