@@ -67,6 +67,10 @@ class FakeService:
         self.stopped: list[str] = []
         self.submitted_script: str = ""
         self.read_raises: Exception | None = None
+        self.workflows: list[dict[str, Any]] = []
+        self.simulation_status = "completed"
+        self.nextflow_task_states = ["COMPLETED", "COMPLETED"]
+        self.output_seed_summaries = 2
 
     @property
     def client(self) -> httpx.Client:
@@ -151,6 +155,25 @@ class FakeService:
         out.write_bytes(_results_zip(members))
         return out
 
+    def run_workflow(self, **kwargs: Any) -> Any:
+        self.workflows.append(kwargs)
+        return SimpleNamespace(database_id=900 + len(self.workflows))
+
+    def get_workflow_status(self, simulation_id: int) -> Any:
+        return SimpleNamespace(status=self.simulation_status)
+
+    def get_workflow_tasks(self, simulation_id: int) -> list[Any]:
+        return [SimpleNamespace(status=state) for state in self.nextflow_task_states]
+
+    def get_output_data_sync(self, simulation_id: int, dest: Path) -> Path:
+        root = dest / "experiment"
+        root.mkdir(parents=True)
+        (root / "summary.json").write_text("{}", encoding="utf-8")  # the experiment-level one does not count
+        for seed in range(self.output_seed_summaries):
+            (root / f"seed_{seed:02d}").mkdir()
+            (root / f"seed_{seed:02d}" / "summary.json").write_text("{}", encoding="utf-8")
+        return root
+
     def run_analysis(self, simulation_id: int, modules: str | None = None) -> dict[str, Any]:
         return {"database_id": 77}
 
@@ -169,7 +192,7 @@ def _opts(**overrides: Any) -> smoke.SmokeOptions:
 
 
 def _run(name: str, svc: FakeService, **overrides: Any) -> smoke.CheckResult:
-    [check] = smoke.select_checks(1, only=[name])
+    [check] = smoke.select_checks(3, only=[name])
     [result] = smoke.run_checks(svc, [check], _opts(**overrides))
     return result
 
@@ -403,7 +426,10 @@ def test_a_crashing_check_is_reported_and_does_not_stop_the_run() -> None:
 
 def test_select_checks() -> None:
     assert {c.tier for c in smoke.select_checks(0)} == {0}
-    assert {c.name for c in smoke.select_checks(1, skip=["task"])} == {c.name for c in smoke.CHECKS} - {"task"}
+    up_to_tier_1 = {c.name for c in smoke.CHECKS if c.tier <= 1}
+    assert {c.name for c in smoke.select_checks(1, skip=["task"])} == up_to_tier_1 - {"task"}
+    assert {c.tier for c in smoke.select_checks(2)} == {0, 1, 2}
+    assert "restart" in {c.name for c in smoke.select_checks(3)}
     assert [c.name for c in smoke.select_checks(0, only=["compose"])] == ["compose"]
     with pytest.raises(ValueError, match="unknown check"):
         smoke.select_checks(0, only=["nope"])
@@ -448,3 +474,178 @@ def test_compose_results_are_saved_under_the_extension_of_what_they_are(
     saved = service.compose_get_simulation_results(7, tmp_path)
     assert saved.name == f"compose_results_7{suffix}"
     assert saved.read_bytes() == payload
+
+
+# ------------------------------------------------------------------ tier 2: one real simulation per dispatch path
+
+CHAIN_DONE = {
+    "id": 1,
+    "seeds_total": 2,
+    "seeds_succeeded": 2,
+    "seeds_failed": 0,
+    "seeds_in_progress": 0,
+    "terminal": True,
+}
+
+
+def _chain_routes(progress: dict[str, Any]) -> dict[tuple[str, str], httpx.Response]:
+    return {("GET", "/api/v1/simulations/901/chain-progress"): httpx.Response(200, json=progress)}
+
+
+def test_each_dispatch_path_is_selected_the_way_a_real_client_selects_it() -> None:
+    svc = FakeService(_chain_routes(CHAIN_DONE))
+    for name in ("sim-default",):
+        assert _run(name, svc).outcome is smoke.Outcome.PASS
+    default = svc.workflows[-1]
+    assert (default["num_generations"], default["num_seeds"], default["extra_params"]) == (1, 1, None)
+    assert default["simulator_id"] == 7 and default["experiment_id"].startswith("smoke-default-")
+    assert "smoke" in default["tags"]
+
+    svc = FakeService(_chain_routes(CHAIN_DONE))
+    assert _run("sim-chain", svc).outcome is smoke.Outcome.PASS
+    assert (svc.workflows[-1]["num_generations"], svc.workflows[-1]["num_seeds"]) == (2, 2)  # >1 generation = chain
+
+    svc = FakeService()
+    assert _run("sim-nextflow", svc).outcome is smoke.Outcome.PASS
+    assert svc.workflows[-1]["extra_params"]["nextflow_dispatch"]["composite_id"] == smoke.NEXTFLOW_COMPOSITE_ID
+
+    svc = FakeService()
+    assert _run("sim-composite", svc).outcome is smoke.Outcome.PASS
+    assert svc.workflows[-1]["extra_params"]["multi_node_dispatch"]["composite_id"] == smoke.MULTI_NODE_COMPOSITE_ID
+
+
+def test_a_completed_simulation_with_no_seed_output_is_a_failure() -> None:
+    svc = FakeService()
+    svc.output_seed_summaries = 0
+    result = _run("sim-default", svc)
+    assert result.outcome is smoke.Outcome.FAIL
+    assert "0 per-seed summary.json" in result.detail
+
+
+def test_a_failed_simulation_fails() -> None:
+    svc = FakeService()
+    svc.simulation_status = "failed"
+    assert _run("sim-default", svc).outcome is smoke.Outcome.FAIL
+
+
+def test_chain_needs_every_seed_to_have_succeeded() -> None:
+    one_failed = {**CHAIN_DONE, "seeds_succeeded": 1, "seeds_failed": 1}
+    result = _run("sim-chain", FakeService(_chain_routes(one_failed)))
+    assert result.outcome is smoke.Outcome.FAIL
+    assert "chain-progress says" in result.detail
+
+
+def test_nextflow_needs_every_traced_task_completed_and_at_least_one() -> None:
+    svc = FakeService()
+    svc.nextflow_task_states = ["COMPLETED", "FAILED"]
+    assert "its tasks are" in _run("sim-nextflow", svc).detail
+    svc.nextflow_task_states = []
+    assert "lists no tasks" in _run("sim-nextflow", svc).detail
+
+
+def test_an_explicit_simulator_wins() -> None:
+    svc = FakeService()
+    _run("sim-default", svc, simulator_id=42)
+    assert svc.workflows[-1]["simulator_id"] == 42
+
+
+def test_tier_2_checks_run_concurrently_and_are_all_reported() -> None:
+    """Four simulations are hours if run one after another; their cost is waiting on Batch."""
+    import threading
+
+    svc = FakeService(_chain_routes(CHAIN_DONE))
+    barrier = threading.Barrier(4, timeout=10)
+    original = svc.run_workflow
+
+    def all_four_submit_before_any_returns(**kwargs: Any) -> Any:
+        barrier.wait()  # deadlocks (and times out) unless four submissions are in flight together
+        return original(**kwargs)
+
+    svc.run_workflow = all_four_submit_before_any_returns  # type: ignore[method-assign]
+    checks = smoke.select_checks(2, only=["sim-default", "sim-chain", "sim-nextflow", "sim-composite"])
+    results = smoke.run_checks(svc, checks, smoke.SmokeOptions(sleep=lambda _: None))
+    assert [r.name for r in results] == ["sim-default", "sim-chain", "sim-nextflow", "sim-composite"]
+    assert not barrier.broken
+
+
+# ------------------------------------------------------------------ tier R: a job in flight survives a restart
+
+
+def _restart_service() -> FakeService:
+    return FakeService({("GET", "/version"): httpx.Response(200, json="9.9.9")})
+
+
+def test_restart_skips_without_a_command() -> None:
+    result = _run("restart", _restart_service())
+    assert result.outcome is smoke.Outcome.SKIP and "--restart-command" in result.detail
+
+
+def test_restart_passes_when_the_job_still_resolves_with_its_output() -> None:
+    result = _run("restart", _restart_service(), restart_command="true")
+    assert result.outcome is smoke.Outcome.PASS
+    assert "still resolved" in result.detail
+
+
+def test_restart_fails_when_the_command_fails() -> None:
+    result = _run("restart", _restart_service(), restart_command="false")
+    assert result.outcome is smoke.Outcome.FAIL and "restart command exited 1" in result.detail
+
+
+def test_restart_fails_when_the_api_never_comes_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    svc = FakeService({("GET", "/version"): httpx.Response(200, json="9.9.9")})
+    calls = {"n": 0}
+    real_get = svc.client.get
+
+    def version_then_down(path: str, **kwargs: Any) -> httpx.Response:
+        calls["n"] += 1
+        return real_get(path, **kwargs) if calls["n"] == 1 else httpx.Response(502, text="bad gateway")
+
+    monkeypatch.setattr(svc.client, "get", version_then_down)
+    result = _run("restart", svc, restart_command="true", restart_wait_seconds=3.0)
+    assert result.outcome is smoke.Outcome.FAIL and "did not come back" in result.detail
+
+
+def test_restart_fails_when_the_job_is_lost() -> None:
+    svc = _restart_service()
+    svc.task_log_lines = ["the pod that knew about this job is gone"]
+    result = _run("restart", svc, restart_command="true")
+    assert result.outcome is smoke.Outcome.FAIL and "lacks the nonce" in result.detail
+
+
+# ------------------------------------------------------------------ polling rides through a blip
+
+
+def test_polling_rides_through_a_connection_blip() -> None:
+    """A tier-2 poll runs for an hour. A port-forward restarting is not the deployment failing."""
+    answers: list[Any] = [httpx.ConnectError("refused"), httpx.ReadTimeout("slow"), "running", "completed"]
+
+    def read() -> str:
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return str(answer)
+
+    assert smoke._poll(_opts(), read, "a job") == "completed"
+
+
+def test_polling_gives_up_when_the_api_stays_unreachable() -> None:
+    def read() -> str:
+        raise httpx.ConnectError("refused")
+
+    with pytest.raises(smoke.CheckFailed, match="API unreachable for 180 s"):
+        smoke._poll(_opts(timeout_seconds=10_000.0), read, "a job")
+
+
+def test_an_answer_resets_the_unreachable_clock() -> None:
+    """Two outages that are each inside the grace window, with an answer between them, are
+    fine -- together they exceed it, so this only passes if the answer reset the clock.
+    (The fake clock ticks on every read, and the loop reads it more than once per turn.)"""
+    script: list[Any] = [httpx.ConnectError("x")] * 50 + ["running"] + [httpx.ConnectError("x")] * 50 + ["completed"]
+
+    def read() -> str:
+        answer = script.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return str(answer)
+
+    assert smoke._poll(_opts(timeout_seconds=10_000.0), read, "a job") == "completed"

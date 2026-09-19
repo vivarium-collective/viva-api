@@ -431,8 +431,8 @@ is reported separately from PASS and says why; `--json-out` is the record a rele
 |---|---|---|
 | 0 | seconds, free, read-only | `/version` = `/health`; every spec operation is served; capabilities; the relay is routed and live (JSON 404, not the gateway's HTML); the database-backed list endpoints; an events read |
 | 1 | minutes, cents | one tiny real dispatch per mechanism: a container **task**; a relayed env **worker** (a K8s Job) + a task on its task tier, always stopped; a five-step **composite** that must return 1.1^5; opt-in: a standalone **analysis** (`--simulation-id`), a **BioModels** run (`--biomodel`) |
-| 2 | tens of minutes, dollars — *not built yet* | a Ray multi-node simulation with analysis; a 2x2 chain dispatch; a Nextflow head; the vEcoli qualification script; an image build |
-| R | *not built yet* | a pod restart with a Tier 1 job in flight: status still resolves; the terminated pod's log shows the shutdown order |
+| 2 | tens of minutes, dollars | **one real simulation per dispatch mechanism**, submitted the way a real client selects each and run **concurrently**: `sim-default` (1 seed x 1 generation), `sim-chain` (2 x 2 — more than one generation is what selects chain dispatch; every seed must have succeeded), `sim-nextflow` (`extra_params.nextflow_dispatch`; every traced task completed), `sim-composite` (`extra_params.multi_node_dispatch`). Each must show **output**, not just COMPLETED. Not covered: an image build, and the upstream K8s + Nextflow path (`scripts/qualification_test.sh` stays the check for that) |
+| R (`--tier 3`) | minutes | a task is put in flight, the deployment is restarted with the operator's own `--restart-command` (`scripts/smoke_restart_k8s.sh`), `/version` must be unchanged and the task must still resolve with its output. Status that lives only in a pod's memory fails this. The shutdown order in the terminated pod's log is still read by hand |
 
 Required: **A** = 0 + `task`. **A2** = 0 + 1 + an outputs download. **B** = 0 + 1. **C** = 0 + 1 + 2 (P2.1 is the first change that
 can break dispatch — Tier 2 and R are built before it). **D** = 0 + 1 (`worker`, `task`
@@ -466,7 +466,7 @@ gating latency compared to the baseline.
 | P0 (after #661) | #637 FRESH fix + `create_all`-vs-migrations parity test · `DB_CREATE_ALL` guard · `owner_instance` column scoping the env-worker boot sweep | | | | not started — each adds or tests a migration, so they wait for #661 to keep the chain at one head |
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
-| P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — **this PR**; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) merged; (b) open; (c) not started |
+| P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — **this PR**; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — **this PR** |
 | P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core) | | | | not started |
 | P2.2 | mixins → `DispatchStrategy` objects; router | | | | not started |
 | P2.3 | core runtime image; K8s / SLURM / LOCAL adapters; `EnvironmentRef` | | | | not started |
@@ -492,6 +492,23 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — **Tier 2 and Tier R passed live on dev (0.9.146).** Tier 2, four simulations
+  submitted together: `sim-default` sim 1350 (29 min; 82 output files, 1 seed summary),
+  `sim-chain` sim 1347 (52 min; 2/2 seeds succeeded over 2 generations), `sim-nextflow` sim
+  1348 (31 min; 2 traced tasks, all completed), `sim-composite` sim 1349 (33 min; 14 output
+  files) — **52 min wall clock, ~146 min if run serially.** Tier R: task 4 in flight, api pod
+  replaced, `/version` unchanged, task still resolved with its output; new pod 0 restarts,
+  0 errors. This is the pre-carve baseline for checkpoint C: every dispatch path is known
+  good on 0.9.146, so a Tier 2 failure after P2.1 is P2.1's. One thing the live run showed:
+  `kubectl rollout status` returned in 3.6 s, before the old pod was gone — the restart
+  helper now also waits for the old pods to be deleted.
+- **2026-09-19** — Smoke Tier 2 + R built (P2.0c). Tier 2 is **per dispatch mechanism**, because
+  that is the unit P2.1 can break; the four are selected exactly as the router selects them
+  (`nextflow_dispatch` → `mbp_dispatch` → `multi_node_dispatch` → more than one generation =
+  chain → default). `mbp_dispatch` has no check yet. They run concurrently — their cost is
+  AWS Batch time, not the client's. Polling now rides through up to 180 s of the API being
+  unreachable: an hour-long poll will meet a port-forward restart or the tunnel's 70-minute
+  lifetime, and neither is the deployment failing.
 - **2026-09-19** — P2.0b corrected a claim of mine. I had written that the `boto3` patches
   were positional too. They are not: all 93 are `patch("….boto3.client")`, which patches the
   shared module globally. Only the 205 `get_settings` patches are positional. The seam is

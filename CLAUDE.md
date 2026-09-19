@@ -241,6 +241,8 @@ make spec                  # Regenerate OpenAPI spec
 make api_client            # Regenerate spec + OpenAPI client library
 make smoke BASE_URL=<url>  # Smoke-test a DEPLOYED API, read-only (Tier 0); TIER=1 adds one tiny real dispatch per mechanism
 make e2e BASE_URL=<url>    # = make smoke TIER=1 (task, env worker, composite). `uv run atlantis smoke list` shows the checks
+                           # TIER=2 = one real simulation per dispatch path, concurrently (tens of minutes, dollars);
+                           # TIER=3 adds the restart check (needs SMOKE_ARGS='--restart-command "scripts/smoke_restart_k8s.sh <ns> <port>"')
 
 uv run pytest              # Run all tests
 uv run pytest -x           # Stop on first failure
