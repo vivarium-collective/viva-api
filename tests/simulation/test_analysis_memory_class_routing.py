@@ -70,7 +70,7 @@ def _submit(memory_class: str, *, large_queue: str) -> Any:
     settings = _container_settings(ray_container_large_queue=large_queue)
     batch = _fake_container_batch(["c-1"])
     service = SimulationServiceRay()
-    with patch("viva_api.simulation.simulation_service_ray.get_settings", lambda: settings):
+    with patch("viva_api.simulation.ray._seams.get_settings", lambda: settings):
         service._submit_container(
             job_name="analysis-x",
             job_definition="smscdk-ray-container-abc1234:1",
@@ -106,7 +106,7 @@ def test_default_memory_class_is_standard() -> None:
     settings = _container_settings(ray_container_large_queue="smscdk-ray-standalone-large")
     batch = _fake_container_batch(["c-1"])
     service = SimulationServiceRay()
-    with patch("viva_api.simulation.simulation_service_ray.get_settings", lambda: settings):
+    with patch("viva_api.simulation.ray._seams.get_settings", lambda: settings):
         service._submit_container(
             job_name="parca-x",
             job_definition="smscdk-ray-container-abc1234:1",

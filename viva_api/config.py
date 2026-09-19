@@ -7,9 +7,11 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
 
-from viva_api.common.storage.file_paths import HPCFilePath
+from viva_core.settings import CoreSettings, set_core_settings_provider
+from viva_core.settings import get_local_cache_dir as get_local_cache_dir  # re-exported: many importers
+from viva_core.storage.file_paths import HPCFilePath
 
 
 def _parse_docker_config_json(path: str) -> tuple[str, str]:
@@ -74,33 +76,14 @@ class APIFilePath(Path):
     pass
 
 
-class Settings(BaseSettings):
+class Settings(CoreSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
     storage_backend: STORAGE_BACKEND = "s3"
 
-    # GCS configuration
-    storage_gcs_bucket: str = "files.biosimulations.dev"
-    storage_gcs_endpoint_url: str = "https://storage.googleapis.com"
-    storage_gcs_region: str = "us-east4"
-    storage_gcs_credentials_file: str = ""
-
-    # Local storage configuration
-    storage_local_cache_dir: str = "./local_cache"
-
-    # AWS S3 configuration
-    storage_s3_bucket: str = ""
-    storage_s3_region: str = "us-east-1"
-    storage_s3_access_key_id: str = ""
-    storage_s3_secret_access_key: str = ""
-    storage_s3_session_token: str = ""
-
-    # Qumulo S3-compatible storage configuration
-    storage_qumulo_endpoint_url: str = ""
-    storage_qumulo_bucket: str = ""
-    storage_qumulo_access_key_id: str = ""
-    storage_qumulo_secret_access_key: str = ""
-    storage_qumulo_verify_ssl: bool = True
+    # Storage backends (GCS / S3 / Qumulo), the local cache dir and the local<->remote path
+    # prefixes are INHERITED from viva_core.settings.CoreSettings -- one definition of each
+    # field, its default and its variable name (core split, docs/plan-core.md P1b).
 
     mongodb_uri: str = "mongodb://localhost:27017"
     mongodb_database: str = "biosimulations"
@@ -179,10 +162,7 @@ class Settings(BaseSettings):
     vecoli_config_dir: HPCFilePath = HPCFilePath(remote_path=Path(""))
     cache_dir: str = f"{REPO_ROOT}/.results_cache"
 
-    # Path prefix mapping for local vs remote (HPC) filesystem access
-    # Example: path_local_prefix=/Volumes/SMS, path_remote_prefix=/projects/SMS
-    path_local_prefix: str = ""
-    path_remote_prefix: str = ""
+    # path_local_prefix / path_remote_prefix: inherited from CoreSettings.
 
     # valid namespaces correspond 1:1 with namespaces in kustomize/ config
     deployment_namespace: str = ""
@@ -538,8 +518,8 @@ def get_settings(env_file: Path | None = None) -> Settings:
     return Settings()
 
 
-def get_local_cache_dir() -> Path:
-    settings = get_settings()
-    local_cache_dir = Path(settings.storage_local_cache_dir)
-    local_cache_dir.mkdir(parents=True, exist_ok=True)
-    return local_cache_dir
+# Core reads ITS settings through this process's Settings object, not a second one built from
+# the environment at some other moment. The lambda looks `get_settings` up at call time, so a
+# test that swaps or clears it is followed. (viva_api/__init__.py registers the same thing
+# lazily, for a process that reaches a moved module before it ever imports this one.)
+set_core_settings_provider(lambda: get_settings())

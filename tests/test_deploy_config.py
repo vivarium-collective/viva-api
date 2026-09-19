@@ -85,3 +85,58 @@ def test_api_image_excludes_dev_and_docs_dependency_groups() -> None:
     assert sync_lines, "expected at least one `uv sync` line in Dockerfile-api"
     for line in sync_lines:
         assert "--no-default-groups" in line, f"`uv sync` line must pass --no-default-groups: {line!r}"
+
+
+# --- no positional JSON patches in the supported overlays (core split, docs/plan-core.md P0) ---
+
+SUPPORTED_OVERLAYS = ("sms-api-stanford-test", "sms-api-stanford")
+
+
+def _json_patch_ops(overlay: str) -> list[dict[str, Any]]:
+    kustomization = REPO_ROOT / "kustomize" / "overlays" / overlay / "kustomization.yaml"
+    doc: dict[str, Any] = yaml.safe_load(kustomization.read_text(encoding="utf-8"))
+    ops: list[dict[str, Any]] = []
+    for entry in doc.get("patches", []):
+        body = yaml.safe_load(entry.get("patch", "")) if "patch" in entry else None
+        if isinstance(body, list):  # a JSON patch is a list of ops; a strategic-merge patch is a mapping
+            ops.extend(op for op in body if isinstance(op, dict))
+    return ops
+
+
+def test_supported_overlays_never_patch_a_list_by_index() -> None:
+    """A JSON-patch path ending in ``/<n>`` addresses a list slot, not a thing.
+
+    The Stanford overlays used to strip the SLURM/SSH wiring from ``base/api.yaml`` with
+    ``remove .../env/5``, ``volumeMounts/2..0`` and ``volumes/2..0``. That is right only
+    until someone inserts or reorders an entry in the base -- after which it silently
+    deletes whatever moved into the slot. With a second Deployment about to be cloned from
+    that base, by-index patches are a trap: use a strategic-merge ``$patch: delete`` keyed
+    by name (``mountPath`` for volumeMounts). Appending with ``/-`` is fine.
+    """
+    offenders = [
+        f"{overlay}: {op.get('op')} {op.get('path')}"
+        for overlay in SUPPORTED_OVERLAYS
+        for op in _json_patch_ops(overlay)
+        if str(op.get("path", "")).rsplit("/", 1)[-1].isdigit()
+    ]
+    assert not offenders, "positional JSON patch(es) in a supported overlay:\n  " + "\n  ".join(offenders)
+
+
+# --- every shipped top-level package reaches the image (core split, docs/plan-core.md P1) ---
+
+
+def test_api_image_copies_every_package_the_wheel_ships() -> None:
+    """``Dockerfile-api`` copies source trees one by one, so a NEW top-level package is
+    absent from the image until someone adds its ``COPY`` -- and the failure is an
+    ``ImportError`` at pod start, not at build. ``viva_core`` is the first package added
+    since ``sms_api``; this keeps the wheel's package list and the image in step.
+    """
+    import tomllib
+
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    shipped = set(pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["include"]) - {"tests"}
+    assert "viva_core" in shipped, "viva_core must ship in the wheel"
+
+    dockerfile = DOCKERFILE_API.read_text(encoding="utf-8")
+    missing = sorted(pkg for pkg in shipped if f" {pkg} /app/{pkg}" not in dockerfile)
+    assert not missing, f"Dockerfile-api has no COPY for shipped package(s): {missing}"

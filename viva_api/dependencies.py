@@ -21,6 +21,7 @@ from viva_api.simulation.tables_orm import create_db
 if TYPE_CHECKING:
     from viva_api.common.hpc.local_task_service import LocalTaskService
     from viva_api.common.models import JobId
+    from viva_api.compose.job_monitor import ComposeJobMonitor
     from viva_api.simulation.job_scheduler import JobScheduler
     from viva_api.simulation.simulation_service import SimulationService
 
@@ -171,6 +172,21 @@ def get_job_scheduler() -> "JobScheduler | None":
     return global_job_scheduler
 
 
+# ------ compose job monitor (kept here so shutdown can stop it) ------
+
+global_compose_job_monitor: "ComposeJobMonitor | None" = None
+
+
+def set_compose_job_monitor(monitor: "ComposeJobMonitor | None") -> None:
+    global global_compose_job_monitor
+    global_compose_job_monitor = monitor
+
+
+def get_compose_job_monitor() -> "ComposeJobMonitor | None":
+    global global_compose_job_monitor
+    return global_compose_job_monitor
+
+
 # ------ messaging/cache service (modular standalone: new/arbitrary channels ----
 
 global_messaging_service: MessagingService | None = None
@@ -178,7 +194,7 @@ global_messaging_service: MessagingService | None = None
 
 def set_messaging_service(service: MessagingService | None) -> None:
     global global_messaging_service
-    global_job_scheduler = service  # noqa: F841
+    global_messaging_service = service
 
 
 def get_messaging_service() -> MessagingService | None:
@@ -494,6 +510,7 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         await compose_db.get_allow_list_db().seed_if_empty(DEFAULT_COMPOSE_ALLOW_LIST)
 
         set_compose_services(db=compose_db, sim=compose_sim, monitor=compose_monitor)
+        set_compose_job_monitor(compose_monitor)
 
         # Start compose job monitor polling
         await compose_monitor.start_polling(interval_seconds=30)
@@ -597,7 +614,48 @@ def _init_env_worker_service() -> None:
         logger.warning("Env-worker service initialization failed (non-fatal)", exc_info=True)
 
 
+async def _shutdown_background_work() -> None:
+    """Stop everything that polls or holds a socket, BEFORE the engine goes away.
+
+    Each step is best-effort and isolated: one subsystem failing to stop must not leave
+    the others running against a disposed engine. What the relay loses here is settled
+    by the boot sweep (``fail_unfinished_tasks``) on the next start.
+    """
+    job_scheduler = get_job_scheduler()
+    if job_scheduler:
+        try:
+            await job_scheduler.close()
+        except Exception:
+            logger.warning("JobScheduler did not stop cleanly", exc_info=True)
+        set_job_scheduler(None)
+    # JobScheduler.close() disconnected it; drop the reference so nothing hands out a dead client.
+    set_messaging_service(None)
+
+    compose_monitor = get_compose_job_monitor()
+    if compose_monitor:
+        try:
+            await compose_monitor.close()
+        except Exception:
+            logger.warning("ComposeJobMonitor did not stop cleanly", exc_info=True)
+        set_compose_job_monitor(None)
+
+    from viva_api.compose import env_worker_relay
+
+    if env_worker_relay.runner is not None:
+        try:
+            await env_worker_relay.runner.close()
+        except Exception:
+            logger.warning("env-worker TaskRunner did not stop cleanly", exc_info=True)
+        env_worker_relay.set_runner(None)
+    try:
+        env_worker_relay.registry.close_all()
+    except Exception:
+        logger.warning("env-worker relay sockets did not close cleanly", exc_info=True)
+
+
 async def shutdown_standalone() -> None:
+    await _shutdown_background_work()
+
     mongodb_service = get_database_service()
     if mongodb_service:
         await mongodb_service.close()
@@ -616,10 +674,3 @@ async def shutdown_standalone() -> None:
     set_file_service(None)
     set_ssh_session_service(None, name=SSHTarget.SLURM)
     set_ssh_session_service(None, name=SSHTarget.BUILD)
-
-    job_scheduler = get_job_scheduler()
-    if job_scheduler:
-        await job_scheduler.close()
-        set_job_scheduler(None)
-    # for dirpath in [p for p in Path(f"{REPO_ROOT}/.results_cache").rglob("*") if p.is_dir()]:
-    #     shutil.rmtree(dirpath)

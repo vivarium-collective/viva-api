@@ -18,10 +18,12 @@ class BiomodelsRunResult:
     """
     Attributes:
         submitted (list['ComposeSimulationExperiment']):
+        total_requested (int): Number of models attempted (len(submitted) + len(failed)).
         failed (Union[Unset, list[str]]): BioModel IDs that failed to submit.
     """
 
     submitted: list["ComposeSimulationExperiment"]
+    total_requested: int
     failed: Union[Unset, list[str]] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -31,6 +33,8 @@ class BiomodelsRunResult:
             submitted_item = submitted_item_data.to_dict()
             submitted.append(submitted_item)
 
+        total_requested = self.total_requested
+
         failed: Union[Unset, list[str]] = UNSET
         if not isinstance(self.failed, Unset):
             failed = self.failed
@@ -39,6 +43,7 @@ class BiomodelsRunResult:
         field_dict.update(self.additional_properties)
         field_dict.update({
             "submitted": submitted,
+            "total_requested": total_requested,
         })
         if failed is not UNSET:
             field_dict["failed"] = failed
@@ -57,10 +62,13 @@ class BiomodelsRunResult:
 
             submitted.append(submitted_item)
 
+        total_requested = d.pop("total_requested")
+
         failed = cast(list[str], d.pop("failed", UNSET))
 
         biomodels_run_result = cls(
             submitted=submitted,
+            total_requested=total_requested,
             failed=failed,
         )
 

@@ -45,7 +45,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, override
 
-import boto3
 from botocore.config import Config
 from pydantic import BaseModel
 
@@ -59,7 +58,6 @@ from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.common.simulator_defaults import DEFAULT_BRANCH, DEFAULT_REPO, RepoUrl
 from viva_api.common.storage import data_layout
 from viva_api.common.storage.file_paths import S3FilePath
-from viva_api.config import get_settings
 from viva_api.simulation import batch_build
 from viva_api.simulation.database_service import DatabaseService
 from viva_api.simulation.github_repo import (
@@ -80,6 +78,7 @@ from viva_api.simulation.models import (
     TaskRunRequest,
     VecoliSource,
 )
+from viva_api.simulation.ray import _seams
 from viva_api.simulation.simulation_service import SimulationService
 from viva_api.simulation.tables_orm import AnalysisStatusDB, TaskStatusDB
 
@@ -728,7 +727,7 @@ class SimulationServiceRay(SimulationService):
         self._k8s = k8s_job_service
 
     def _batch(self) -> Any:
-        return boto3.client("batch", region_name=get_settings().batch_region)
+        return _seams.boto3.client("batch", region_name=_seams.get_settings().batch_region)
 
     def cache_s3_uri(self, commit: str, *, variant: str | None = None) -> str:
         """Deterministic S3 URI for a commit's v2ecoli ParCa cache.
@@ -765,7 +764,7 @@ class SimulationServiceRay(SimulationService):
 
     def _image_uri(self, commit: str) -> str:
         """The TRUE commit image for a run: <account>.dkr.ecr.<region>/v2ecoli:<commit>."""
-        settings = get_settings()
+        settings = _seams.get_settings()
         registry = f"{settings.ecr_account_id}.dkr.ecr.{settings.batch_region}.amazonaws.com"
         return f"{registry}/{settings.ray_ecr_repository}:{commit}"
 
@@ -779,7 +778,7 @@ class SimulationServiceRay(SimulationService):
         register it as ``<base>-<commit>``. An existing active revision already pointing
         at this image is reused, so resubmits don't churn revisions.
         """
-        settings = get_settings()
+        settings = _seams.get_settings()
         batch = self._batch()
         name = f"{settings.ray_mnp_job_definition}-{commit}"
 
@@ -861,7 +860,7 @@ class SimulationServiceRay(SimulationService):
         every other existing call site in this class gets from the shared
         ``self._batch()`` factory.
         """
-        settings = get_settings()
+        settings = _seams.get_settings()
         # Per-node knobs every node acts on (stage cache in, sync results out, ship logs).
         shared_env = self._stage_out_env(
             prefix="RAY",
@@ -1062,7 +1061,7 @@ class SimulationServiceRay(SimulationService):
         ``<base>-<commit>``. An existing active revision already pointing at this
         image is reused, so resubmits don't churn revisions.
         """
-        settings = get_settings()
+        settings = _seams.get_settings()
         if not settings.ray_container_job_definition:
             # Matches this file's own compose_ray_image_tag precedent: fail loud with
             # the setting name rather than submit a doomed job with a blank job-def.
@@ -1130,7 +1129,7 @@ class SimulationServiceRay(SimulationService):
         replacement; genuinely multi-node Ray paths keep submitting through
         ``_submit_mnp`` unchanged.
         """
-        settings = get_settings()
+        settings = _seams.get_settings()
         if not settings.ray_container_queue:
             raise RuntimeError("ray_container_queue is not set; cannot submit a container-type Batch job.")
 
@@ -1317,7 +1316,7 @@ class SimulationServiceRay(SimulationService):
                 "bundle_manifest_path and build_combined_bundle_manifest are mutually exclusive -- "
                 "set one or the other, not both."
             )
-        settings = get_settings()
+        settings = _seams.get_settings()
         new_genes_flag = f" --new-genes {shlex.quote(new_genes)}" if new_genes and new_genes != "off" else ""
         bundle_overrides_list = (
             [bundle_overrides] if isinstance(bundle_overrides, str) else list(bundle_overrides or [])
@@ -1513,7 +1512,7 @@ class SimulationServiceRay(SimulationService):
         head image was never built fails at the Batch pull, which is why the
         submitter names the tag explicitly rather than reusing ``_image_uri``.
         """
-        settings = get_settings()
+        settings = _seams.get_settings()
         registry = f"{settings.ecr_account_id}.dkr.ecr.{settings.batch_region}.amazonaws.com"
         return f"{registry}/{settings.ray_ecr_repository}:{commit}-submit"
 
@@ -1539,7 +1538,7 @@ class SimulationServiceRay(SimulationService):
         it is a fact about THIS image, not about AWS Batch -- process-bigraph#204 keeps
         the profile free of any one consumer's layout.
         """
-        settings = get_settings()
+        settings = _seams.get_settings()
         missing = [
             name
             for name, value in (
@@ -1580,7 +1579,7 @@ class SimulationServiceRay(SimulationService):
         then reuses the outputs in the WORK DIR. Either one alone resumes
         nothing.
         """
-        settings = get_settings()
+        settings = _seams.get_settings()
         return f"s3://{settings.s3_work_bucket}/{settings.s3_work_prefix}/{experiment_id}/session"
 
     @staticmethod
@@ -1756,7 +1755,7 @@ class SimulationServiceRay(SimulationService):
             experiment_id=str(ecoli_simulation.experiment_id),
             sim_id=ecoli_simulation.database_id,
             backend="nextflow",
-            settings=get_settings(),
+            settings=_seams.get_settings(),
         )
 
         commit = simulator.git_commit_hash
@@ -1867,7 +1866,7 @@ class SimulationServiceRay(SimulationService):
         """
         from kubernetes import client as k8s_client
 
-        settings = get_settings()
+        settings = _seams.get_settings()
         return k8s_client.V1Job(
             metadata=k8s_client.V1ObjectMeta(
                 name=job_name,
@@ -2060,7 +2059,7 @@ class SimulationServiceRay(SimulationService):
         if not variant:
             raise ValueError("mbp_dispatch.variant is required")
 
-        settings = get_settings()
+        settings = _seams.get_settings()
         commit = simulator.git_commit_hash
         experiment_id = str(ecoli_simulation.config.experiment_id)
         cache_variant = mbp_dispatch.get("cache_variant") or None
@@ -2691,7 +2690,7 @@ class SimulationServiceRay(SimulationService):
                     sim_id=simulation.database_id,
                     backend="analysis",
                     tags={"phase": "analysis"},
-                    settings=get_settings(),
+                    settings=_seams.get_settings(),
                 ),
                 memory_class=memory_class,
             ),
@@ -2717,7 +2716,7 @@ class SimulationServiceRay(SimulationService):
         git_repo_url: str = DEFAULT_REPO,
         git_branch: str = DEFAULT_BRANCH,
     ) -> str:
-        return await fetch_latest_commit_hash(git_repo_url, git_branch, get_settings().github_token)
+        return await fetch_latest_commit_hash(git_repo_url, git_branch, _seams.get_settings().github_token)
 
     @override
     async def submit_build_image_job(
@@ -2798,7 +2797,7 @@ class SimulationServiceRay(SimulationService):
         """
         if stage_private_fork and not vecoli_private_commit:
             raise ValueError("vecoli_private_commit is required when stage_private_fork is True")
-        settings = get_settings()
+        settings = _seams.get_settings()
         commit = simulator_version.git_commit_hash
         branch = simulator_version.git_branch
         repo_url = simulator_version.git_repo_url
@@ -2893,7 +2892,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         vecoli_private_commit: str | None = None,
     ) -> None:
         """Submit the DooD v2ecoli image build to Batch (amd64 queue) and poll it."""
-        settings = get_settings()
+        settings = _seams.get_settings()
         commit = simulator_version.git_commit_hash
         job_id = await batch_build.submit_batch_build(
             job_name=batch_build.ray_build_job_name(commit),
@@ -3121,7 +3120,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         parsed = urlparse(stage_s3_prefix)
         bucket = parsed.netloc
         key = f"{parsed.path.strip('/')}/{filename}"
-        boto3.client("s3", region_name=get_settings().storage_s3_region).put_object(
+        _seams.boto3.client("s3", region_name=_seams.get_settings().storage_s3_region).put_object(
             Bucket=bucket, Key=key, Body=script_bytes
         )
 
@@ -3187,7 +3186,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         """The CloudWatch log group a container job writes to: the configured
         ``ray_batch_log_group`` if set, else the awslogs-group from the job
         definition's logConfiguration. None when neither is available."""
-        configured = get_settings().ray_batch_log_group
+        configured = _seams.get_settings().ray_batch_log_group
         if configured:
             return configured
         if not job_definition:
@@ -3210,7 +3209,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         or no group can be resolved, so a caller can poll until logs appear."""
         task = await database_service.get_task(task_id)
         result = TaskLogsDTO(task_id=task_id, job_id_ext=task.job_id_ext, status=task.status)
-        log_prefix = get_settings().ray_log_s3_prefix
+        log_prefix = _seams.get_settings().ray_log_s3_prefix
         if log_prefix and task.job_id_ext:
             result.report_uri = f"{log_prefix.rstrip('/')}/{task.job_id_ext}/report.json"
         if not task.job_id_ext:
@@ -3227,7 +3226,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
             return result
         result.log_stream = stream
         try:
-            logs_client = boto3.client("logs", region_name=get_settings().storage_s3_region)
+            logs_client = _seams.boto3.client("logs", region_name=_seams.get_settings().storage_s3_region)
             events = logs_client.get_log_events(
                 logGroupName=group, logStreamName=stream, startFromHead=True, limit=limit
             ).get("events", [])
@@ -3336,7 +3335,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         if simulator is None:
             raise ValueError(f"Simulator {ecoli_simulation.simulator_id} not found")
 
-        settings = get_settings()
+        settings = _seams.get_settings()
         commit = simulator.git_commit_hash
         experiment_id = ecoli_simulation.config.experiment_id
 
@@ -3679,9 +3678,9 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         to the resulting local path. A ``cache_dir`` that isn't an ``s3://`` URI
         (already local, or absent) passes through unchanged.
         """
-        dest_bucket = get_settings().s3_work_bucket
+        dest_bucket = _seams.get_settings().s3_work_bucket
         dest_prefix = data_layout.key_from_uri(cache_s3).rstrip("/")
-        s3_client = boto3.client("s3", region_name=get_settings().storage_s3_region)
+        s3_client = _seams.boto3.client("s3", region_name=_seams.get_settings().storage_s3_region)
         rewritten: dict[Any, dict[str, Any]] = {}
         for seed, seed_override in seed_overrides.items():
             seed_override = dict(seed_override)
@@ -3752,7 +3751,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
             experiment_id=str(ecoli_simulation.experiment_id),
             sim_id=ecoli_simulation.database_id,
             backend="mnp",
-            settings=get_settings(),
+            settings=_seams.get_settings(),
         )
         steps = int(mnp_dispatch.get("steps") or 1)
         # required_run_interval (item 105/#166, the K4-canary "under-run" empty-
@@ -3825,7 +3824,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         if simulator is None:
             raise ValueError(f"Simulator {ecoli_simulation.simulator_id} not found")
 
-        settings = get_settings()
+        settings = _seams.get_settings()
         commit = simulator.git_commit_hash
         experiment_id = ecoli_simulation.config.experiment_id
 
@@ -3969,7 +3968,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         ParCa job that precedes them, mirroring ``submit_ecoli_simulation_job``'s
         ``base_tags`` (composite/condition don't apply — chain dispatch is
         v2ecoli-only)."""
-        settings = get_settings()
+        settings = _seams.get_settings()
         return {
             "Project": "v2ecoli-comparison",
             "ExperimentId": str(simulation.config.experiment_id)[:255],
@@ -4088,9 +4087,9 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         seed's own ``submit_chain_generation`` call below.
         """
         pacer = _SubmitJobPacer()
-        submit_client = boto3.client(
+        submit_client = _seams.boto3.client(
             "batch",
-            region_name=get_settings().batch_region,
+            region_name=_seams.get_settings().batch_region,
             config=Config(retries={"mode": "standard", "max_attempts": _SUBMIT_JOB_MAX_ATTEMPTS}),
         )
         submitted: dict[int, str] = {}
@@ -4227,9 +4226,9 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         that seed omitted from the returned mapping — other seeds unaffected.
         """
         pacer = _SubmitJobPacer()
-        submit_client = boto3.client(
+        submit_client = _seams.boto3.client(
             "batch",
-            region_name=get_settings().batch_region,
+            region_name=_seams.get_settings().batch_region,
             config=Config(retries={"mode": "standard", "max_attempts": _SUBMIT_JOB_MAX_ATTEMPTS}),
         )
         submitted: dict[int, str] = {}
@@ -4492,7 +4491,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
                 sim_id=ecoli_simulation.database_id,
                 backend="chain",
                 tags={"phase": "parca"},
-                settings=get_settings(),
+                settings=_seams.get_settings(),
             ),
         )
 
@@ -4681,7 +4680,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         analysis_name = f"analysis-mnp-{experiment_id[:20]}-{_rand_suffix()}"
         results_uri = self._results_s3_uri(experiment_id).rstrip("/")
         result_uri = f"{results_uri}/analyses/{analysis_name}"
-        settings = get_settings()
+        settings = _seams.get_settings()
         container_job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
         tags = {
             "Project": "v2ecoli-multi-node-composite",
@@ -4764,12 +4763,12 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         allow_default_fallback: bool = False,
     ) -> str:
         return await fetch_config_template(
-            simulator_version, config_filename, get_settings().github_token, allow_default_fallback
+            simulator_version, config_filename, _seams.get_settings().github_token, allow_default_fallback
         )
 
     @override
     async def discover_repo_contents(self, simulator_version: SimulatorVersion) -> RepoDiscovery:
-        return await fetch_repo_discovery(simulator_version, get_settings().github_token)
+        return await fetch_repo_discovery(simulator_version, _seams.get_settings().github_token)
 
     @override
     async def get_job_status(self, job_id: JobId) -> JobStatusInfo | None:
@@ -4963,7 +4962,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
             return None
         stem = head_job_name[3:] if head_job_name.startswith("nf-") else head_job_name
         stem = stem.rsplit("-", 1)[0]  # drop _rand_suffix
-        settings = get_settings()
+        settings = _seams.get_settings()
         queues = [q for q in (settings.batch_amd64_queue, settings.batch_arm64_queue) if q]
         if not stem or not queues:
             return 0

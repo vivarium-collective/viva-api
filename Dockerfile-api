@@ -11,7 +11,16 @@ RUN apt-get update && \
     gcc \
     g++ \
     python3-dev \
-    postgresql-client && \
+    ca-certificates \
+    curl \
+    gnupg && \
+    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    | gpg --dearmor -o /usr/share/keyrings/pgdg.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+    > /etc/apt/sources.list.d/pgdg.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends postgresql-client-17 && \
+    apt-get purge -y --auto-remove curl gnupg && \
     rm -rf /var/lib/apt/lists/*
 
 # Set environment variables
@@ -67,6 +76,9 @@ RUN uv sync --frozen --no-install-project --no-default-groups
 
 # Copy the rest of the application code
 COPY --chown=appuser:appgroup viva_api /app/viva_api
+# The domain-neutral core (docs/plan-core.md). viva_api imports it, so the image is broken
+# without it -- tests/test_deploy_config.py asserts every shipped top-level package is copied.
+COPY --chown=appuser:appgroup viva_core /app/viva_core
 # Back-compat shim so deployed Jobs still invoking `python -m sms_api.*` keep
 # working across the sms_api -> viva_api rename (see sms_api/__init__.py).
 COPY --chown=appuser:appgroup sms_api /app/sms_api

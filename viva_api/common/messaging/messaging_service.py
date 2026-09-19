@@ -1,57 +1,16 @@
-"""Abstract messaging service interface for pub/sub messaging."""
+"""Moved to :mod:`viva_core.infra.messaging.messaging_service` (core split, ``docs/plan-core.md`` P1).
 
-from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
-from typing import Any
+This name stays importable, and at runtime it IS the new module -- the same object -- so
+patching an attribute through this path patches the one real attribute, and ``isinstance``
+checks agree across both names. New code should import from the new path.
+"""
 
-# Type alias for message handler callbacks
-MessageHandler = Callable[[bytes], Awaitable[None]]
+import sys
+from typing import TYPE_CHECKING
 
+from viva_core.infra.messaging import messaging_service as _moved
 
-class MessagingService(ABC):
-    """Abstract base class for messaging services (Redis, etc.)."""
+if TYPE_CHECKING:
+    from viva_core.infra.messaging.messaging_service import *  # noqa: F403
 
-    @abstractmethod
-    async def connect(self, host: str, port: int, **kwargs: Any) -> None:
-        """Connect to the messaging service.
-
-        Args:
-            host: Connection host for the messaging service
-            port: Connection port for the messaging service
-            **kwargs: Additional connection parameters
-        """
-        pass
-
-    @abstractmethod
-    async def disconnect(self) -> None:
-        """Disconnect from the messaging service."""
-        pass
-
-    @abstractmethod
-    async def publish(self, subject: str, data: bytes) -> None:
-        """Publish a message to a subject/channel.
-
-        Args:
-            subject: The subject/channel to publish to
-            data: The message data as bytes
-        """
-        pass
-
-    @abstractmethod
-    async def subscribe(self, subject: str, callback: MessageHandler) -> None:
-        """Subscribe to a subject/channel with a callback handler.
-
-        Args:
-            subject: The subject/channel to subscribe to
-            callback: Async function to handle received messages
-        """
-        pass
-
-    @abstractmethod
-    def is_connected(self) -> bool:
-        """Check if the messaging service is currently connected.
-
-        Returns:
-            True if connected, False otherwise
-        """
-        pass
+sys.modules[__name__] = _moved

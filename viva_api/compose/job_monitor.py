@@ -1,6 +1,7 @@
 """Async job monitor for compose simulation jobs — SLURM polling + optional NATS events."""
 
 import asyncio
+import contextlib
 import logging
 from asyncio import Queue
 from typing import Any
@@ -90,6 +91,8 @@ class ComposeJobMonitor:
         self._stop_event.set()
         if self._polling_task:
             await self._polling_task
+            self._polling_task = None
+            logger.info("Stopped compose job status polling task.")
 
     async def _polling_loop(self, interval_seconds: int) -> None:
         while not self._stop_event.is_set():
@@ -97,7 +100,10 @@ class ComposeJobMonitor:
                 await self.update_running_jobs()
             except Exception:
                 logger.exception("Error during compose job polling")
-            await asyncio.sleep(interval_seconds)
+            # Sleep on the stop event, not the clock: stop_polling() then returns at once
+            # instead of holding shutdown for the rest of a 30 s interval.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._stop_event.wait(), timeout=interval_seconds)
 
     async def update_running_jobs(self) -> None:
         running_jobs = await self.database_service.get_hpc_db().list_running_hpcruns()

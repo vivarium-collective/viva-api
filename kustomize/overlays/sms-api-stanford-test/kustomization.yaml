@@ -73,7 +73,7 @@ images:
   # conflict, logged rather than silent. Same root cause as #392/0.9.92 --
   # reconstructing the block instead of merging into it.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.142
+    newTag: 0.9.146
     # 2026-09-09: 0.9.131 -> 0.9.132, viva-api#558 -- _submit_multi_node_composite
     # now stages each seed_overrides[*].cache_dir S3 prefix under the dispatch's
     # own cache_s3 (server-side copy under a _seed_overrides/<seed>/ subpath),
@@ -178,11 +178,19 @@ images:
   #
   # ptools is now tagged off the sms-api version line (whatever version.py read
   # when it was rebuilt) instead of versioning independently. It therefore LAGS
-  # sms-api between rebuilds -- 0.9.53 is this build; sms-api has since moved to
-  # 0.9.55 on its own. Tag the next ptools rebuild with version.py as of then;
-  # do not bump this tag without actually building and pushing that image.
+  # sms-api between rebuilds. Tag the next ptools rebuild with version.py as of
+  # then; do not bump this tag without actually building and pushing that image.
+  #
+  # 0.9.144 (2026-09-15) rebuilds the vendor overlay to pick up viva-api #665:
+  # upstream aic-export-30.0 sms.js called a bare `createElement(...)` three
+  # times in populateAnalysisSelector()'s multi-analysis branch, and no global
+  # of that name exists anywhere in the PTools htdocs tree -- so the analysis
+  # selector threw ReferenceError for any simulation with more than one
+  # analysis, which is the shape of every backfilled CD2 experiment (n_tp
+  # 5/10/20). Image content verified after push: the sms.js inside
+  # ghcr:0.9.144 is byte-identical to the merged file on main.
   - name: ghcr.io/vivarium-collective/sms-ptools
-    newTag: 0.9.143
+    newTag: 0.9.144
   # vivarium-workbench: published by cutting a GitHub Release in the workbench
   # repo (build-and-push.yml → ghcr:<version>); pin that release tag here.
   # 0.3.0 builds on the 0.2.0 demo-migration release (workbench PR #453 + #466:
@@ -429,23 +437,40 @@ patches:
       kind: Deployment
       name: api
   # Remove SLURM/SSH infrastructure from base api.yaml — stanford-test uses
-  # K8s/AWS Batch exclusively.  Order: highest index first so removals don't
-  # shift the indices of subsequent operations.
+  # K8s/AWS Batch exclusively.
+  #
+  # BY NAME, not by index. This was a JSON patch removing env/5, volumeMounts/2..0 and
+  # volumes/2..0 -- correct only for as long as nobody reordered or inserted an entry
+  # in base/api.yaml, and silently wrong afterwards (it would delete whatever had moved
+  # into that slot). A strategic-merge `$patch: delete` names what it removes; the merge
+  # keys are `name` for env and volumes, `mountPath` for volumeMounts.
   - patch: |-
-      - op: remove
-        path: /spec/template/spec/containers/0/env/5
-      - op: remove
-        path: /spec/template/spec/containers/0/volumeMounts/2
-      - op: remove
-        path: /spec/template/spec/containers/0/volumeMounts/1
-      - op: remove
-        path: /spec/template/spec/containers/0/volumeMounts/0
-      - op: remove
-        path: /spec/template/spec/volumes/2
-      - op: remove
-        path: /spec/template/spec/volumes/1
-      - op: remove
-        path: /spec/template/spec/volumes/0
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: api
+      spec:
+        template:
+          spec:
+            containers:
+              - name: api
+                env:
+                  - name: SLURM_SUBMIT_KEY_PATH
+                    $patch: delete
+                volumeMounts:
+                  - mountPath: /home/FCAM/svc_vivarium
+                    $patch: delete
+                  - mountPath: /run/secrets/slurm_submit_key_file
+                    $patch: delete
+                  - mountPath: /run/secrets/ssh-known-hosts
+                    $patch: delete
+            volumes:
+              - name: vivarium-home-pvc
+                $patch: delete
+              - name: slurm-submit-key-file
+                $patch: delete
+              - name: ssh-known-hosts
+                $patch: delete
     target:
       kind: Deployment
       name: api

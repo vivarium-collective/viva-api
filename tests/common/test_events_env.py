@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from viva_api.common.dispatch_validation import DispatchValidationError, validate_task_env
-from viva_api.common.events_env import (
+from viva_core.events.events_env import (
     PBG_EVENT_SINKS,
     PBG_EVENT_TAGS,
     PBG_TRACE_BAGGAGE,
