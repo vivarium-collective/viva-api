@@ -1373,7 +1373,28 @@
 #            Also merged, nothing to deploy: atlantis smoke (#690, client side) and the
 #            no-real-AWS test guard (#693, tests only).
 #            Code-only: NO new migration, DB stays at e3a9c1d70b62.
-__version__ = "0.9.146"
+#           0.9.147 -- core split, deploy checkpoint B: the DATABASE checkpoint
+#            (docs/plan-core.md section 8). Deployed on its own -- one kind of plumbing change
+#            per deploy -- and the first release in this work that CHANGES THE SCHEMA.
+#            On an existing site (dev is at e3a9c1d70b62) three revisions run:
+#              b2f6d8e0a4c7  'ANALYSIS' added to the jobtypedb enum (#661; an enum label
+#                            cannot be removed -- irreversible, and harmless)
+#              c9a1e3f5b7d2  the dataset table, analysis.source/tags,
+#                            hpcrun.jobref_analysis_id (#661, data provenance slice 1)
+#              e7b3c9a1d5f2  env_worker_task.owner_instance (#702; reversible, round-trip
+#                            tested) -- the boot sweep is now scoped to one ROLE
+#            Two more exist in the chain and do NOT run here: b9e1d5a3c7f2 and c3f7a1e5b9d4
+#            (#700, viva-api#637) are INSERTED before d3f9a1c72b84 so that `upgrade head`
+#            works from an EMPTY database and builds the models' schema; an existing site is
+#            already past them.
+#            Configuration: DB_CREATE_ALL=false on both Stanford sites (#701) -- the app creates
+#            nothing at startup; /health reports db_revision / db_head / db_at_head, and
+#            `atlantis smoke` tier 0 fails a deploy that is not at head.
+#            Behaviour: /api/v1/datasets and the dataset WALK TICK (on by default: one S3 LIST
+#            per simulation per batch, 25 simulations a minute). Standalone analyses are traced
+#            runs. Also carries P2.0b (#696, settings/boto3 seam -- no behaviour change).
+#            MARKER: /app/viva_api/simulation/db_startup.py exists.
+__version__ = "0.9.147"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in
