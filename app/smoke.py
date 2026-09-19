@@ -49,7 +49,7 @@ import time
 import zipfile
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from importlib import resources
@@ -106,6 +106,21 @@ class SmokeOptions:
     simulator_id: int | None = None
     restart_command: str | None = None
     restart_wait_seconds: float = 300.0
+    #: A script that EXISTS IN THE IMAGE, for the repo-path task check, and text its output
+    #: must contain. The default is the script the service's own ParCa step already depends
+    #: on, asked for its usage -- cheap, and present in every simulator image.
+    repo_script: str = "scripts/build_cache.py"
+    repo_script_args: tuple[str, ...] = ("--help",)
+    repo_script_expect: str = "usage:"
+    #: ``token -> the still-ACTIVE AWS Batch jobs whose name or command carries it``. The
+    #: cancel checks need it: the API answers CANCELLED from its own database row whether or
+    #: not anything stopped, so only Batch can say. ``None`` = no AWS access from here; those
+    #: checks then SKIP rather than pass on a status.
+    active_batch_jobs: Callable[[str], list[dict[str, Any]]] | None = None
+    active_batch_jobs_unavailable: str = "no AWS Batch access was configured"
+    #: How long a cancelled run's Batch jobs may take to disappear. Covers the Nextflow
+    #: head's termination grace period plus a few scheduler ticks of the reaper.
+    cancel_settle_seconds: float = 900.0
     poll_seconds: float = 10.0
     timeout_seconds: float = 900.0
     simulation_timeout_seconds: float = 7200.0
@@ -130,6 +145,7 @@ class SmokeService(Protocol):
         commit: str | None,
         name: str | None,
     ) -> Any: ...
+    def run_task(self, request: Any) -> Any: ...
     def get_task_status(self, task_id: int) -> Any: ...
     def get_task_logs(self, task_id: int, limit: int = ...) -> Any: ...
     def worker_start(
@@ -160,6 +176,7 @@ class SmokeService(Protocol):
         extra_params: dict[str, object] | None = ...,
     ) -> Any: ...
     def get_workflow_status(self, simulation_id: int) -> Any: ...
+    def cancel_workflow(self, simulation_id: int) -> Any: ...
     def get_workflow_tasks(self, simulation_id: int) -> Sequence[Any]: ...
     def get_output_data_sync(self, simulation_id: int, dest: Path) -> Path: ...
     def run_analysis(self, simulation_id: int, modules: str | None = ...) -> dict[str, Any]: ...
@@ -215,8 +232,13 @@ def _poll(
     read_status: Callable[[], str],
     what: str,
     timeout_seconds: float | None = None,
+    terminal_ok: frozenset[str] | set[str] = TERMINAL_OK,
+    terminal_bad: frozenset[str] | set[str] = TERMINAL_BAD,
 ) -> str:
     """Poll until a terminal status. Returns it when good; raises when bad or out of time.
+
+    ``terminal_ok`` / ``terminal_bad`` let a check that EXPECTS a bad ending (a task made to
+    fail, a run it cancelled) say so: for it, FAILED is the good answer and COMPLETED is not.
 
     Failing to REACH the API is tolerated for ``UNREACHABLE_GRACE_SECONDS`` at a stretch; an
     answer -- any answer, including an error status -- resets that clock.
@@ -237,9 +259,9 @@ def _poll(
                     f"{what}: API unreachable for {UNREACHABLE_GRACE_SECONDS:.0f} s while polling ({type(e).__name__})"
                 ) from e
         else:
-            if last in TERMINAL_OK:
+            if last in terminal_ok:
                 return last
-            if last in TERMINAL_BAD:
+            if last in terminal_bad:
                 raise CheckFailed(f"{what} ended {last.upper()}")
         if opts.clock() >= deadline:
             raise CheckFailed(f"{what} still {last.upper()} after {limit:.0f} s")
@@ -496,16 +518,22 @@ def check_events(svc: SmokeService, _: SmokeOptions) -> tuple[str, dict[str, Any
 
 def check_task(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
     """An uploaded script on the container queue. Passes only when the nonce it prints is
-    read back from the task's own log -- COMPLETED alone proves nothing."""
+    read back from the task's own log -- COMPLETED alone proves nothing -- and when the
+    ``sim_data_refs`` it was submitted with reached the container's environment."""
     commit = _resolve_commit(svc, opts)
     nonce = f"smoke-{secrets.token_hex(6)}"
+    ref_value = f"s3://smoke/{nonce}"
     with tempfile.TemporaryDirectory() as tmp:
         script = Path(tmp) / "atlantis_smoke_task.py"
-        script.write_text(f'import sys\nprint("{nonce}", sys.argv[1:])\n', encoding="utf-8")
+        script.write_text(
+            f'import sys\nprint("{nonce}", sys.argv[1:])\n'
+            'import os\nprint("refs:", os.environ.get("TASK_SIM_DATA_REFS", "<unset>"))\n',
+            encoding="utf-8",
+        )
         task = svc.run_uploaded_task(
             local_path=str(script),
             args=["ok"],
-            sim_data_refs=None,
+            sim_data_refs={"smoke_ref": ref_value},
             memory_class="standard",
             commit=commit,
             name=f"atlantis-{nonce}",
@@ -516,7 +544,65 @@ def check_task(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, An
     lines = [str(line) for line in (getattr(svc.get_task_logs(task_id), "lines", None) or [])]
     if not any(nonce in line for line in lines):
         raise CheckFailed(f"task {task_id} COMPLETED but its log does not contain the nonce ({len(lines)} lines read)")
-    return f"task {task_id} ran on {commit}; nonce read back from its log", evidence
+    if not any(ref_value in line for line in lines):
+        seen = next((line for line in lines if line.startswith("refs:")), "no 'refs:' line")
+        raise CheckFailed(f"task {task_id} ran, but its sim_data_refs did not reach the container ({seen})")
+    return f"task {task_id} ran on {commit}; nonce and sim_data_refs read back from its log", evidence
+
+
+def check_task_fail(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
+    """A script that exits 3. Passes only when the task is reported FAILED **and** its log
+    shows it really ran: a task that fails because it never started proves nothing about
+    how a failure is reported, and one reported COMPLETED is a lie."""
+    commit = _resolve_commit(svc, opts)
+    nonce = f"smoke-{secrets.token_hex(6)}"
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "atlantis_smoke_task_fail.py"
+        script.write_text(f'import sys\nprint("{nonce}", sys.argv[1:])\nsys.exit(3)\n', encoding="utf-8")
+        task = svc.run_uploaded_task(
+            local_path=str(script),
+            args=["fail"],
+            sim_data_refs=None,
+            memory_class="standard",
+            commit=commit,
+            name=f"atlantis-{nonce}",
+        )
+    task_id = int(task.database_id)
+    evidence: dict[str, Any] = {"task_id": task_id, "commit": commit, "nonce": nonce}
+    ended = _poll(
+        opts,
+        lambda: _status_text(svc.get_task_status(task_id).status),
+        f"task {task_id} (made to exit 3)",
+        terminal_ok={"failed"},
+        terminal_bad=(TERMINAL_BAD - {"failed"}) | TERMINAL_OK,
+    )
+    evidence["status"] = ended
+    lines = [str(line) for line in (getattr(svc.get_task_logs(task_id), "lines", None) or [])]
+    if not any(nonce in line for line in lines):
+        raise CheckFailed(f"task {task_id} is FAILED, but its log lacks the nonce: it failed without running")
+    return f"task {task_id} exited 3 and is reported FAILED; nonce read back from its log", evidence
+
+
+def check_task_repo(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
+    """A script ALREADY IN THE IMAGE, by its repo path -- the other way in (`POST
+    /api/v1/tasks`, no upload, no stage-in). Passes only on text the script itself prints."""
+    from viva_api.simulation.models import TaskRunRequest
+
+    commit = _resolve_commit(svc, opts)
+    name = f"atlantis-smoke-repo-{secrets.token_hex(4)}"
+    task = svc.run_task(
+        TaskRunRequest(script=opts.repo_script, args=list(opts.repo_script_args), commit=commit, name=name)
+    )
+    task_id = int(task.database_id)
+    evidence: dict[str, Any] = {"task_id": task_id, "commit": commit, "script": opts.repo_script}
+    _poll(opts, lambda: _status_text(svc.get_task_status(task_id).status), f"task {task_id} ({opts.repo_script})")
+    lines = [str(line) for line in (getattr(svc.get_task_logs(task_id), "lines", None) or [])]
+    if not any(opts.repo_script_expect in line for line in lines):
+        raise CheckFailed(
+            f"task {task_id} COMPLETED but its log does not contain {opts.repo_script_expect!r} "
+            f"({len(lines)} lines read)"
+        )
+    return f"task {task_id} ran {opts.repo_script} from the image on {commit}", evidence
 
 
 @contextmanager
@@ -749,6 +835,187 @@ def check_sim_composite(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dic
     return f"simulation {simulation_id}: completed, {files} output files", evidence
 
 
+# ------------------------------------------------------------------- tier 2: cancel
+
+
+def _wait_for_batch(
+    opts: SmokeOptions,
+    token: str,
+    *,
+    want_active: bool,
+    limit: float,
+    what: str,
+    on_tick: Callable[[], None] | None = None,
+) -> list[dict[str, Any]]:
+    """Poll AWS Batch until jobs carrying ``token`` are active (``want_active``) or gone.
+    Returns the last listing. ``on_tick`` runs each round and may raise to abort the wait."""
+    assert opts.active_batch_jobs is not None  # noqa: S101 - callers SKIP before reaching here
+    deadline = opts.clock() + limit
+    while True:
+        jobs = opts.active_batch_jobs(token)
+        if bool(jobs) == want_active:
+            return jobs
+        if on_tick is not None:
+            on_tick()
+        if opts.clock() >= deadline:
+            names = sorted({str(j.get("jobName")) for j in jobs})
+            state = f"still active: {names}" if jobs else "none ever appeared"
+            raise CheckFailed(f"{what}: after {limit:.0f} s, Batch jobs for {token} -- {state}")
+        opts.sleep(opts.poll_seconds)
+
+
+def _cancel_and_verify(
+    svc: SmokeService, opts: SmokeOptions, kind: str, *, extra_params: dict[str, object] | None = None
+) -> tuple[str, dict[str, Any]]:
+    """Submit a run, wait until AWS Batch shows work for it, cancel it, and pass only when
+    Batch shows NONE of it still active -- and the run is still CANCELLED afterwards.
+
+    The API's answer cannot be the assertion: the cancel handler writes CANCELLED to its own
+    row whether or not anything stopped, and the status endpoint reads that row back.
+    """
+    if opts.active_batch_jobs is None:
+        raise SkipCheck(
+            f"needs to see AWS Batch to verify that anything actually stopped ({opts.active_batch_jobs_unavailable})"
+        )
+    simulator_id = _resolve_simulator(svc, opts)
+    experiment_id = f"smoke-{kind}-{secrets.token_hex(4)}"
+    simulation = svc.run_workflow(
+        experiment_id=experiment_id,
+        simulator_id=simulator_id,
+        num_generations=None if extra_params else 1,
+        num_seeds=None if extra_params else 1,
+        description=f"atlantis smoke: {kind} (submitted to be cancelled)",
+        tags=["smoke", f"smoke-{kind}"],
+        extra_params=extra_params,
+    )
+    simulation_id = int(simulation.database_id)
+    evidence: dict[str, Any] = {"simulation_id": simulation_id, "experiment_id": experiment_id}
+
+    def _still_cancellable() -> None:
+        status = _status_text(svc.get_workflow_status(simulation_id).status)
+        if status in TERMINAL_OK | TERMINAL_BAD:
+            raise CheckFailed(f"{kind} {simulation_id} ended {status.upper()} before there was anything to cancel")
+
+    def _drive() -> None:
+        before = _wait_for_batch(
+            opts,
+            experiment_id,
+            want_active=True,
+            limit=opts.timeout_seconds,
+            what=f"{kind} {simulation_id} waiting for work to appear",
+            on_tick=_still_cancellable,
+        )
+        evidence["active_before_cancel"] = sorted({str(j.get("jobName")) for j in before})
+        answered = _status_text(getattr(svc.cancel_workflow(simulation_id), "status", None))
+        evidence["cancel_answered"] = answered
+        if answered != "cancelled":
+            raise CheckFailed(f"cancel of {kind} {simulation_id} answered {answered.upper()}, not CANCELLED")
+        _wait_for_batch(
+            opts,
+            experiment_id,
+            want_active=False,
+            limit=opts.cancel_settle_seconds,
+            what=f"{kind} {simulation_id} was cancelled",
+        )
+
+    try:
+        _drive()
+    except BaseException:
+        # Never leave a smoke run burning compute because the check itself gave up.
+        with suppress(Exception):
+            svc.cancel_workflow(simulation_id)
+        raise
+    after = _status_text(svc.get_workflow_status(simulation_id).status)
+    evidence["status_after"] = after
+    if after != "cancelled":
+        raise CheckFailed(f"{kind} {simulation_id} was CANCELLED, and is now {after.upper()}")
+    stopped = len(evidence["active_before_cancel"])
+    return (
+        f"simulation {simulation_id}: {stopped} active Batch job(s) before cancel, none after; still CANCELLED",
+        evidence,
+    )
+
+
+def check_sim_cancel(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
+    """Cancel a default-path simulation: one ``terminate_job`` on its Batch job."""
+    return _cancel_and_verify(svc, opts, "cancel")
+
+
+def check_nextflow_cancel(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
+    """Cancel a Nextflow run. The API deletes the head Job; the tasks Nextflow submitted are
+    stopped by its own shutdown hook, or -- if any outlive the head -- by the scheduler's
+    reaper, which finds them by campaign across every task queue. Either way: none left."""
+    dispatch: dict[str, object] = {
+        "composite_id": NEXTFLOW_COMPOSITE_ID,
+        "executor": "awsbatch",
+        "launch": True,
+        "params": {"n_seeds": 1, "n_generations": 1},
+    }
+    summary, evidence = _cancel_and_verify(svc, opts, "nfcancel", extra_params={"nextflow_dispatch": dispatch})
+    events = _get_json(svc, f"/api/v1/simulations/{evidence['simulation_id']}/events", event="dispatch.reaped")
+    reaped = events.get("events", []) if isinstance(events, dict) else events
+    evidence["reaped_by_scheduler"] = len(reaped)
+    who = "the scheduler's reaper stepped in" if reaped else "Nextflow's own shutdown hook sufficed"
+    return f"{summary} ({who})", evidence
+
+
+class AwsBatchJobLister:
+    """The real ``SmokeOptions.active_batch_jobs``: every still-active job, on every queue
+    of the account, whose name or container command contains the token. Constructing it
+    raises if Batch cannot be reached with the caller's credentials -- the CLI turns that
+    into a SKIP reason.
+
+    Read-only (Describe*/List*). A default-path job carries the experiment id in its NAME;
+    a Nextflow task carries it only in its COMMAND (the campaign's work dir), hence both.
+    """
+
+    ACTIVE = ("SUBMITTED", "PENDING", "RUNNABLE", "STARTING", "RUNNING")
+
+    def __init__(self, region: str | None = None, client: Any = None) -> None:
+        if client is None:
+            import boto3
+
+            client = boto3.client("batch", region_name=region) if region else boto3.client("batch")
+        self._client = client
+        self._client.describe_job_queues(maxResults=1)  # fail here, with a reason, not mid-check
+
+    def _pages(self, call: Callable[..., dict[str, Any]], **kwargs: Any) -> Iterator[dict[str, Any]]:
+        while True:
+            page = call(**kwargs)
+            yield page
+            if not page.get("nextToken"):
+                return
+            kwargs["nextToken"] = page["nextToken"]
+
+    def _queues(self) -> list[str]:
+        return [
+            q["jobQueueName"]
+            for page in self._pages(self._client.describe_job_queues)
+            for q in page.get("jobQueues", [])
+        ]
+
+    def _matching(self, summaries: list[dict[str, Any]], token: str) -> Iterator[dict[str, Any]]:
+        by_command: list[str] = []
+        for job in summaries:
+            if token in str(job.get("jobName", "")):
+                yield job
+            else:
+                by_command.append(job["jobId"])
+        for i in range(0, len(by_command), 100):
+            for job in self._client.describe_jobs(jobs=by_command[i : i + 100]).get("jobs", []):
+                if token in " ".join((job.get("container") or {}).get("command") or []):
+                    yield job
+
+    def __call__(self, token: str) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        for queue in self._queues():
+            for status in self.ACTIVE:
+                for page in self._pages(self._client.list_jobs, jobQueue=queue, jobStatus=status):
+                    for job in self._matching(page.get("jobSummaryList", []), token):
+                        found.append({"jobId": job["jobId"], "jobName": job.get("jobName"), "status": status})
+        return found
+
+
 # --------------------------------------------------------------------------- tier R
 
 
@@ -818,6 +1085,8 @@ CHECKS: tuple[Check, ...] = (
     Check("lists", 0, "database-backed list endpoints answer", check_lists),
     Check("events", 0, "a simulation's events can be read", check_events),
     Check("task", 1, "a container task runs and its output is read back", check_task),
+    Check("task-fail", 1, "a task that exits 3 is reported FAILED, having really run", check_task_fail),
+    Check("task-repo", 1, "a script already in the image runs by its repo path", check_task_repo),
     Check("worker", 1, "a relayed env worker starts, answers, runs a task, stops", check_worker),
     Check("compose", 1, "a composite runs and returns the right number", check_compose),
     Check("analysis", 1, "a standalone analysis produces output (needs --simulation-id)", check_analysis),
@@ -826,8 +1095,18 @@ CHECKS: tuple[Check, ...] = (
     Check("sim-chain", 2, "chain dispatch: 2 seeds x 2 generations, every seed succeeds", check_sim_chain),
     Check("sim-nextflow", 2, "Nextflow head: every traced task completes", check_sim_nextflow),
     Check("sim-composite", 2, "multi-node composite on Ray completes and writes output", check_sim_composite),
+    Check("sim-cancel", 2, "a cancelled simulation leaves no active Batch job (needs AWS access)", check_sim_cancel),
+    Check(
+        "nextflow-cancel",
+        2,
+        "a cancelled Nextflow run leaves no active Batch task (needs AWS access)",
+        check_nextflow_cancel,
+    ),
     Check("restart", 3, "a job in flight survives a restart (needs --restart-command)", check_restart),
 )
+
+#: Checks that assert on AWS Batch directly and so need the operator's own AWS access.
+NEEDS_BATCH_ACCESS = frozenset({"sim-cancel", "nextflow-cancel"})
 
 #: Tier 2 checks spend their time waiting on AWS Batch, so they run side by side.
 CONCURRENT_TIERS = frozenset({2})

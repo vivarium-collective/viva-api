@@ -69,6 +69,10 @@ class FakeService:
         self.read_raises: Exception | None = None
         self.workflows: list[dict[str, Any]] = []
         self.simulation_status = "completed"
+        self.task_refs_reach_container = True
+        self.repo_tasks: list[Any] = []
+        self.cancelled: list[int] = []
+        self.cancel_answer = "cancelled"
         self.nextflow_task_states = ["COMPLETED", "COMPLETED"]
         self.output_seed_summaries = 2
 
@@ -101,7 +105,12 @@ class FakeService:
     ) -> Any:
         self.submitted_script = Path(local_path).read_text(encoding="utf-8")
         self.task_commit = commit
+        self.submitted_refs = sim_data_refs
         return SimpleNamespace(database_id=42)
+
+    def run_task(self, request: Any) -> Any:
+        self.repo_tasks.append(request)
+        return SimpleNamespace(database_id=43)
 
     def get_task_status(self, task_id: int) -> Any:
         status = self.task_statuses.pop(0) if len(self.task_statuses) > 1 else self.task_statuses[0]
@@ -111,7 +120,8 @@ class FakeService:
         if self.task_log_lines is not None:
             return SimpleNamespace(lines=self.task_log_lines)
         nonce = self.submitted_script.split('print("')[1].split('"')[0]
-        return SimpleNamespace(lines=["boot", f"{nonce} ['ok']"])
+        refs = json.dumps(self.submitted_refs) if self.task_refs_reach_container and self.submitted_refs else "<unset>"
+        return SimpleNamespace(lines=["boot", f"{nonce} ['ok']", f"refs: {refs}"])
 
     def worker_start(
         self,
@@ -161,6 +171,12 @@ class FakeService:
 
     def get_workflow_status(self, simulation_id: int) -> Any:
         return SimpleNamespace(status=self.simulation_status)
+
+    def cancel_workflow(self, simulation_id: int) -> Any:
+        self.cancelled.append(simulation_id)
+        if self.cancel_answer == "cancelled":
+            self.simulation_status = "cancelled"
+        return SimpleNamespace(status=self.cancel_answer)
 
     def get_workflow_tasks(self, simulation_id: int) -> list[Any]:
         return [SimpleNamespace(status=state) for state in self.nextflow_task_states]
@@ -673,3 +689,197 @@ def test_database_check() -> None:
 def test_database_check_says_when_create_all_is_still_on() -> None:
     result = _run("database", _health(db_revision="r9", db_head="r9", db_at_head="true", db_create_all="true"))
     assert result.outcome is smoke.Outcome.PASS and "create_all is still ON" in result.detail
+
+
+# ------------------------------------------------------------------ the task paths
+
+
+def test_task_fails_when_its_sim_data_refs_never_reach_the_container() -> None:
+    svc = FakeService()
+    svc.task_refs_reach_container = False
+    result = _run("task", svc)
+    assert result.outcome is smoke.Outcome.FAIL
+    assert "sim_data_refs did not reach the container" in result.detail
+    assert "<unset>" in result.detail
+
+
+def test_task_fail_passes_only_on_failed_with_proof_that_it_ran() -> None:
+    svc = FakeService()
+    svc.task_statuses = ["running", "failed"]
+    result = _run("task-fail", svc)
+    assert result.outcome is smoke.Outcome.PASS, result.detail
+    assert "sys.exit(3)" in svc.submitted_script
+
+
+def test_task_fail_treats_completed_as_the_wrong_answer() -> None:
+    svc = FakeService()
+    svc.task_statuses = ["completed"]
+    result = _run("task-fail", svc)
+    assert result.outcome is smoke.Outcome.FAIL
+    assert "COMPLETED" in result.detail
+
+
+def test_task_fail_rejects_a_task_that_failed_without_ever_running() -> None:
+    svc = FakeService()
+    svc.task_statuses = ["failed"]
+    svc.task_log_lines = []
+    result = _run("task-fail", svc)
+    assert result.outcome is smoke.Outcome.FAIL
+    assert "failed without running" in result.detail
+
+
+def test_task_repo_submits_a_repo_path_and_needs_the_scripts_own_output() -> None:
+    svc = FakeService()
+    svc.task_log_lines = ["usage: build_cache.py [-h]"]
+    result = _run("task-repo", svc)
+    assert result.outcome is smoke.Outcome.PASS, result.detail
+    [request] = svc.repo_tasks
+    assert (request.script, request.args, request.commit) == ("scripts/build_cache.py", ["--help"], "new")
+
+    svc.task_log_lines = ["Traceback (most recent call last):"]
+    assert _run("task-repo", svc).outcome is smoke.Outcome.FAIL
+
+
+# ------------------------------------------------------------------ cancel
+
+
+class FakeBatchJobs:
+    """``active_batch_jobs``: shows work for a run until the API has been asked to cancel it,
+    then for ``linger`` more looks (a task that outlives the cancel), then nothing."""
+
+    def __init__(self, svc: FakeService, *, appear_after: int = 1, linger: int = 1, never_stops: bool = False):
+        self.svc, self.appear_after, self.linger, self.never_stops = svc, appear_after, linger, never_stops
+        self.looks = 0
+        self.tokens: set[str] = set()
+
+    def __call__(self, token: str) -> list[dict[str, Any]]:
+        self.tokens.add(token)
+        self.looks += 1
+        job = {"jobId": "j-1", "jobName": f"ray-sim-{token}-abc123", "status": "RUNNING"}
+        if not self.svc.cancelled:
+            return [job] if self.looks > self.appear_after else []
+        if self.never_stops:
+            return [job]
+        self.linger -= 1
+        return [job] if self.linger >= 0 else []
+
+
+def _cancel_service() -> FakeService:
+    svc = FakeService()
+    svc.simulation_status = "running"
+    return svc
+
+
+@pytest.mark.parametrize("name", ["sim-cancel", "nextflow-cancel"])
+def test_cancel_checks_skip_without_a_view_of_batch_and_submit_nothing(name: str) -> None:
+    svc = _cancel_service()
+    result = _run(name, svc, active_batch_jobs_unavailable="NoCredentialsError: Unable to locate credentials")
+    assert result.outcome is smoke.Outcome.SKIP
+    assert "NoCredentialsError" in result.detail
+    assert svc.workflows == []
+
+
+def test_sim_cancel_passes_when_batch_shows_the_work_and_then_shows_none() -> None:
+    svc = _cancel_service()
+    batch = FakeBatchJobs(svc)
+    result = _run("sim-cancel", svc, active_batch_jobs=batch)
+    assert result.outcome is smoke.Outcome.PASS, result.detail
+    assert svc.cancelled == [901]
+    [token] = batch.tokens
+    assert token == svc.workflows[0]["experiment_id"] and token.startswith("smoke-cancel-")
+    assert result.evidence["active_before_cancel"] == [f"ray-sim-{token}-abc123"]
+
+
+def test_sim_cancel_fails_when_the_row_says_cancelled_and_batch_still_runs_it() -> None:
+    svc = _cancel_service()
+    result = _run("sim-cancel", svc, active_batch_jobs=FakeBatchJobs(svc, never_stops=True), cancel_settle_seconds=30.0)
+    assert result.outcome is smoke.Outcome.FAIL
+    assert "still active" in result.detail
+    assert svc.simulation_status == "cancelled"  # which is exactly why the status cannot be the assertion
+
+
+def test_sim_cancel_fails_when_the_api_does_not_answer_cancelled() -> None:
+    svc = _cancel_service()
+    svc.cancel_answer = "running"
+    result = _run("sim-cancel", svc, active_batch_jobs=FakeBatchJobs(svc))
+    assert result.outcome is smoke.Outcome.FAIL
+    assert "answered RUNNING" in result.detail
+
+
+def test_sim_cancel_fails_when_the_run_ends_before_there_is_anything_to_cancel() -> None:
+    svc = _cancel_service()
+    svc.simulation_status = "failed"
+    result = _run("sim-cancel", svc, active_batch_jobs=FakeBatchJobs(svc, appear_after=10_000))
+    assert result.outcome is smoke.Outcome.FAIL
+    assert "before there was anything to cancel" in result.detail
+
+
+def test_a_cancel_check_that_gives_up_still_cancels_what_it_submitted() -> None:
+    svc = _cancel_service()
+    result = _run("sim-cancel", svc, active_batch_jobs=FakeBatchJobs(svc, appear_after=10_000), timeout_seconds=30.0)
+    assert result.outcome is smoke.Outcome.FAIL
+    assert "none ever appeared" in result.detail
+    assert svc.cancelled == [901]
+
+
+def test_sim_cancel_fails_when_the_run_does_not_stay_cancelled() -> None:
+    svc = _cancel_service()
+
+    class Resurrecting(FakeBatchJobs):
+        def __call__(self, token: str) -> list[dict[str, Any]]:
+            jobs = super().__call__(token)
+            if svc.cancelled and not jobs:
+                svc.simulation_status = "running"
+            return jobs
+
+    result = _run("sim-cancel", svc, active_batch_jobs=Resurrecting(svc))
+    assert result.outcome is smoke.Outcome.FAIL
+    assert "is now RUNNING" in result.detail
+
+
+@pytest.mark.parametrize(
+    ("reaped", "who"), [([], "shutdown hook sufficed"), ([{"event": "dispatch.reaped"}], "reaper")]
+)
+def test_nextflow_cancel_says_who_stopped_the_tasks(reaped: list[dict[str, Any]], who: str) -> None:
+    svc = FakeService({("GET", "/api/v1/simulations/901/events"): httpx.Response(200, json={"events": reaped})})
+    svc.simulation_status = "running"
+    result = _run("nextflow-cancel", svc, active_batch_jobs=FakeBatchJobs(svc))
+    assert result.outcome is smoke.Outcome.PASS, result.detail
+    assert who in result.detail
+    assert "nextflow_dispatch" in svc.workflows[0]["extra_params"]
+    assert result.evidence["reaped_by_scheduler"] == len(reaped)
+
+
+def test_the_batch_lister_matches_by_name_or_by_command_across_queues_and_pages() -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class Client:
+        def describe_job_queues(self, **kw: Any) -> dict[str, Any]:
+            calls.append(("describe_job_queues", kw))
+            if kw.get("maxResults") == 1:
+                return {"jobQueues": []}
+            if "nextToken" not in kw:
+                return {"jobQueues": [{"jobQueueName": "q1"}], "nextToken": "more"}
+            return {"jobQueues": [{"jobQueueName": "q2"}]}
+
+        def list_jobs(self, **kw: Any) -> dict[str, Any]:
+            calls.append(("list_jobs", kw))
+            if kw["jobStatus"] != "RUNNING":
+                return {"jobSummaryList": []}
+            if kw["jobQueue"] == "q1":
+                return {
+                    "jobSummaryList": [{"jobId": "a", "jobName": "ray-sim-TOKEN-x"}, {"jobId": "b", "jobName": "other"}]
+                }
+            if "nextToken" not in kw:
+                return {"jobSummaryList": [{"jobId": "c", "jobName": "sim_gen"}], "nextToken": "p2"}
+            return {"jobSummaryList": [{"jobId": "d", "jobName": "sim_gen"}]}
+
+        def describe_jobs(self, **kw: Any) -> dict[str, Any]:
+            commands = {"b": ["echo"], "c": ["bash", "s3://b/nextflow/work/TOKEN/ab/cd"], "d": None}
+            return {
+                "jobs": [{"jobId": j, "jobName": "sim_gen", "container": {"command": commands[j]}} for j in kw["jobs"]]
+            }
+
+    lister = smoke.AwsBatchJobLister(client=Client())
+    assert sorted(job["jobId"] for job in lister("TOKEN")) == ["a", "c"]
+    assert {kw["jobQueue"] for name, kw in calls if name == "list_jobs"} == {"q1", "q2"}
