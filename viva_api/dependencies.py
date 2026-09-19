@@ -389,10 +389,11 @@ async def init_standalone(enable_ssl: bool = True) -> None:
                 pool_timeout=pg.postgres_pool_timeout,
                 pool_recycle=pg.postgres_pool_recycle,
             )
-            logger.info("Initializing database tables...")
-            await create_db(engine)
+            from viva_api.simulation.db_startup import create_tables_if_enabled
+
+            await create_tables_if_enabled(engine, create_db, enabled=_settings.db_create_all, what="simulation")
             set_postgres_engine(engine)
-            logger.info("✓ Postgres connection established and tables initialized")
+            logger.info("✓ Postgres connection established")
             db_service = DatabaseServiceSQL(engine)
             set_database_service(db_service)
 
@@ -433,6 +434,17 @@ async def init_standalone(enable_ssl: bool = True) -> None:
         # Initialize compose (process-bigraph) subsystem
         await _init_compose_subsystem(engine=get_postgres_engine())
 
+        # AFTER both create_all sites, so it reports the schema the app will actually run on.
+        # Read-only and best-effort: a broken check must never take the API down with it.
+        engine_for_check = get_postgres_engine()
+        if engine_for_check is not None:
+            try:
+                from viva_api.simulation.db_startup import check_schema
+
+                await check_schema(engine_for_check, create_all=_settings.db_create_all)
+            except Exception:
+                logger.warning("database schema check failed (non-fatal)", exc_info=True)
+
         # Env-worker service (image-as-worker, §2A.8) — same place, same
         # non-fatal posture as the compose subsystem above.
         _init_env_worker_service()
@@ -464,9 +476,9 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         from viva_api.compose.models import DEFAULT_COMPOSE_ALLOW_LIST
         from viva_api.compose.simulation_service import ComposeSimulationService, ComposeSimulationServiceHpc
         from viva_api.compose.tables_orm import create_compose_db
+        from viva_api.simulation.db_startup import create_tables_if_enabled
 
-        logger.info("Initializing compose subsystem tables...")
-        await create_compose_db(engine)
+        await create_tables_if_enabled(engine, create_compose_db, enabled=get_settings().db_create_all, what="compose")
 
         session_maker = async_sessionmaker(engine, expire_on_commit=True)
         compose_db = ComposeDatabaseService(session_maker)

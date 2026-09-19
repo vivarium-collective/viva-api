@@ -374,6 +374,26 @@ def check_version(svc: SmokeService, _: SmokeOptions) -> tuple[str, dict[str, An
     return f"{version} on {health.get('deployment_namespace')} ({health.get('compute_backend')})", evidence
 
 
+def check_database(svc: SmokeService, _: SmokeOptions) -> tuple[str, dict[str, Any]]:
+    """The database is at the Alembic head this image expects. A deploy whose migration Job
+    did not run looks healthy until the first query that touches what changed -- and with
+    ``DB_CREATE_ALL=false`` nothing will paper over it."""
+    health = _get_json(svc, "/health")
+    at_head = health.get("db_at_head")
+    evidence = {k: health.get(k) for k in ("db_revision", "db_head", "db_at_head", "db_create_all")}
+    if at_head is None:
+        raise SkipCheck("this server does not report its database revision in /health (older than the check)")
+    if at_head == "unknown":
+        raise SkipCheck(f"the server could not read its Alembic head (database revision {health.get('db_revision')})")
+    if at_head != "true":
+        raise CheckFailed(
+            f"database revision is {health.get('db_revision')}, this image expects {health.get('db_head')} "
+            "-- the alembic-migrate Job has not run for this deploy"
+        )
+    note = "" if health.get("db_create_all") == "false" else "; create_all is still ON at startup"
+    return f"at head {health.get('db_head')}{note}", evidence
+
+
 def check_routes(svc: SmokeService, _: SmokeOptions) -> tuple[str, dict[str, Any]]:
     """Every operation in the spec this client was built with must be served. Only
     meaningful when client and server are the same version; otherwise it SKIPs."""
@@ -791,6 +811,7 @@ def check_restart(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str,
 
 CHECKS: tuple[Check, ...] = (
     Check("version", 0, "/version and /health agree", check_version),
+    Check("database", 0, "the database is at the Alembic head this image expects", check_database),
     Check("routes", 0, "every spec operation is served", check_routes),
     Check("capabilities", 0, "the capability registry answers", check_capabilities),
     Check("relay", 0, "the env-worker relay is routed and live", check_relay),

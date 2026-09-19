@@ -292,8 +292,12 @@ head` then runs from base and fails re-`CREATE`-ing existing tables.
 - **Fingerprint maintenance contract**: while `create_all` still bootstraps prod
   DBs, **add a new fingerprint marker whenever you add a migration** (a create_all
   DB advanced past the top marker would otherwise stamp stale and re-apply an
-  already-made migration). Guarding `create_all` off in prod freezes the list —
-  the intended end state.
+  already-made migration). **`DB_CREATE_ALL=false` is now set on both Stanford sites**
+  (`kustomize/config/<ns>/api.env`), so the app creates nothing at startup there and the list is
+  frozen for them; the default stays `true` for laptops and tests. With the net gone, the app
+  reads the database's Alembic revision at startup, logs an ERROR naming the remedy if it is
+  not at head (it does NOT crash the pod), and reports `db_revision` / `db_head` / `db_at_head`
+  in `/health` — which `atlantis smoke` (Tier 0, `database`) fails a deploy on.
 - **Before deploying to a site**: run the read-only report first, then apply.
   Each site's RDS may sit at a different un-stamped point.
   ```bash

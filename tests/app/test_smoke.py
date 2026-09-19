@@ -649,3 +649,27 @@ def test_an_answer_resets_the_unreachable_clock() -> None:
         return str(answer)
 
     assert smoke._poll(_opts(timeout_seconds=10_000.0), read, "a job") == "completed"
+
+
+# ------------------------------------------------------------------ tier 0: the database is at head
+
+
+def _health(**fields: str) -> FakeService:
+    return FakeService({("GET", "/health"): httpx.Response(200, json={**HEALTH, **fields})})
+
+
+def test_database_check() -> None:
+    at_head = _health(db_revision="r9", db_head="r9", db_at_head="true", db_create_all="false")
+    assert _run("database", at_head).outcome is smoke.Outcome.PASS
+
+    behind = _run("database", _health(db_revision="r7", db_head="r9", db_at_head="false", db_create_all="false"))
+    assert behind.outcome is smoke.Outcome.FAIL
+    assert "r7" in behind.detail and "r9" in behind.detail and "alembic-migrate" in behind.detail
+
+    assert _run("database", _health()).outcome is smoke.Outcome.SKIP  # an older server
+    assert _run("database", _health(db_at_head="unknown", db_revision="r7")).outcome is smoke.Outcome.SKIP
+
+
+def test_database_check_says_when_create_all_is_still_on() -> None:
+    result = _run("database", _health(db_revision="r9", db_head="r9", db_at_head="true", db_create_all="true"))
+    assert result.outcome is smoke.Outcome.PASS and "create_all is still ON" in result.detail
