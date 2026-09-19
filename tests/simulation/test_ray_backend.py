@@ -14,6 +14,10 @@ from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.config import ComputeBackend
 from viva_api.simulation.models import AnalysisOptions, HpcRun, JobType
+from viva_api.simulation.ray.config_interpretation import (
+    injected_processes_from_config,
+    strain_from_config,
+)
 from viva_api.simulation.simulation_service_ray import (
     NEW_GENE_INDUCED_CACHE_DIR,
     PARCA_CACHE_DIR,
@@ -23,8 +27,6 @@ from viva_api.simulation.simulation_service_ray import (
     VARIANT_CACHE_DIR,
     SimulationServiceRay,
     analysis_modules_for,
-    injected_processes_from_config,
-    strain_from_config,
 )
 
 if TYPE_CHECKING:
@@ -3796,7 +3798,7 @@ class TestIsUpstreamVecoli:
     """The single routing predicate shared by submit_ecoli_simulation_job and _sim_command."""
 
     def test_only_vecoli_is_upstream(self) -> None:
-        from viva_api.simulation.simulation_service_ray import _is_upstream_vecoli
+        from viva_api.simulation.ray.config_interpretation import _is_upstream_vecoli
 
         assert _is_upstream_vecoli("vecoli") is True
         assert _is_upstream_vecoli("v2ecoli") is False

@@ -203,7 +203,21 @@ P2.0a guard caught. So:
   start as **mixins** of `SimulationServiceRay`: `self.` keeps working, private-method names
   that tests and `compose` reach for (`_parca_command` ×34, `_seed_generation_command` ×15,
   `_submit_container`, `_submit_mnp`, …) stay valid, and each PR is a pure move that a reviewer
-  can verify by diff. `simulation_service_ray.py` ends as the facade and re-exports.
+  can verify by diff. `simulation_service_ray.py` ends as the facade.
+  **No re-exports for module-level functions** (settled by cut 1): a moved function's importers
+  are pointed at its new home in the same PR. mypy strict already refuses the implicit
+  re-export, and an explicit one would keep `job_scheduler` importing a pure function from
+  the 4,800-line module it is being freed from. *Methods* are different — they stay reachable
+  as `self.` through the mixin, which is what keeps the test and `compose` call sites valid.
+  Each cut's PR carries its own proof of "move-only": every moved function's source compared
+  byte-for-byte with `origin/main`, and every class and remaining function in the service
+  file compared the same way.
+
+  | cut | concern | PR | lines out of the service file | state |
+  |---|---|---|---|---|
+  | 1 | config interpretation → `simulation/ray/config_interpretation.py` | **this PR** | 211 (5,019 → 4,815) | open |
+  | 2 | Batch engine → `viva_core/backends/batch.py` (`BatchJobClient`) | | | next |
+  | 3–10 | tasks · build · ParCa · analysis · Nextflow · mbp-tracked · MNP · chain | | | |
 - **P2.2 — mixins become strategies.** A `DispatchStrategy` Protocol (`applies`, `submit`,
   `cancel`, `progress`); each mechanism an object with explicit dependencies (`BatchJobClient`,
   layout, settings) instead of `self`; `submit_ecoli_simulation_job` shrinks to a router.
@@ -477,7 +491,7 @@ gating latency compared to the baseline.
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — **this PR**; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — **this PR** |
-| P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core) | | | | not started |
+| P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core). Cut 1, config interpretation — **this PR** | no bump: deploys with the rest of P2.1 at checkpoint C | — | — | **in progress** — cut 1 of 10 open |
 | P2.2 | mixins → `DispatchStrategy` objects; router | | | | not started |
 | P2.3 | core runtime image; K8s / SLURM / LOCAL adapters; `EnvironmentRef` | | | | not started |
 | P3 | | | | | |
@@ -502,6 +516,20 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — **P2.1 cut 1: config interpretation.** Five module-level functions
+  (`_is_upstream_vecoli`, `strain_from_config`, `injected_processes_from_config`,
+  `_thread_injected_processes_into_params`, `_batch_domain_overrides`; 211 lines) moved to
+  `viva_api/simulation/ray/config_interpretation.py`, byte-identical. Chosen first because
+  they are pure functions of a config — no settings, no AWS, no database, so the seam is not
+  even in play — and no test patches any of them by name. Two things the cut showed. (1) The
+  plan said the service file "ends as the facade **and re-exports**"; mypy strict rejected
+  the implicit re-export on the first run, and ruff removed `strain_from_config` from the
+  re-import because the service file **never used it** — it lived there only because
+  everything did. So importers move with the function (`job_scheduler`,
+  `scripts/cd2_nextflow_dispatches.py`, two imports in `test_ray_backend.py`), and the plan
+  now says so. (2) The one observable difference: the "nested … overrides the config's own
+  flat …" warning is now logged under `viva_api.simulation.ray.config_interpretation`
+  instead of `…simulation_service_ray`. Nothing in the repo keys on that name (tests, overlays), but a saved log query would.
 - **2026-09-19** — **Checkpoint B passed on dev (0.9.147, #703, tag `v0.9.147`)** — the first
   deploy in this work to change the schema. RDS snapshot first
   (`pre-0-9-147-checkpoint-b-20260919t1955z`); a read-only `--analyze` run **from the new

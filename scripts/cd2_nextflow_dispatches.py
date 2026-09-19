@@ -18,7 +18,7 @@ path and nothing here can touch the Ray/MNP/chain dispatchers.
 
 Mapping, and where each piece comes from:
 
-* ``injected_processes``  <- ``viva_api.simulation.simulation_service_ray
+* ``injected_processes``  <- ``viva_api.simulation.ray.config_interpretation
   .injected_processes_from_config`` -- the API's OWN reading of the config's flat
   (Runs 1/2/4: swap/exclude) or nested (Run 3: add_processes + process_configs
   + seed_bulk_species + ...) form. On the Nextflow path this rides INSIDE each
@@ -63,7 +63,8 @@ from pathlib import Path
 from typing import Any
 
 from viva_api.simulation.models import SimulationConfig
-from viva_api.simulation.simulation_service_ray import analysis_modules_for, injected_processes_from_config
+from viva_api.simulation.ray.config_interpretation import injected_processes_from_config
+from viva_api.simulation.simulation_service_ray import analysis_modules_for
 
 #: The product-axis listener pair Runs 1/2/4 dispatch with (met-eng Q6); Run 3 has none.
 VIOLACEIN_EXCHANGE_FLUXES: dict[str, str] = {"glucose_exchange": "GLC", "violacein_exchange": "VIOLACEIN"}
