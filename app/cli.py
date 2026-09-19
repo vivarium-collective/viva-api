@@ -240,6 +240,7 @@ composite_cli = typer.Typer(
     "multi_node_dispatch mechanism on POST /api/v1/simulations."
 )
 worker_cli = typer.Typer(help="Run and call env workers (a simulator image as a live process).")
+smoke_cli = typer.Typer(help="Smoke-test a DEPLOYED API: one real check per mechanism, asserting the effect.")
 demo_cli = typer.Typer(help="Demo and utility commands.")
 tui_cli = typer.Typer(help="TUI's command line interface.")
 gui_cli = typer.Typer(help="GUI's command line interface.")
@@ -253,6 +254,7 @@ cli.add_typer(task_cli, name="task")
 cli.add_typer(compose_cli, name="compose")
 cli.add_typer(composite_cli, name="composite")
 cli.add_typer(worker_cli, name="worker")
+cli.add_typer(smoke_cli, name="smoke")
 cli.add_typer(demo_cli, name="demo")
 cli.add_typer(tui_cli)
 cli.add_typer(gui_cli)
@@ -2602,6 +2604,73 @@ def compose_biomodels_regression(
 
 
 # -- Demo commands --
+
+
+# -- Smoke ---------------------------------------------------------------------------------
+
+
+@smoke_cli.command("list", help="List the smoke checks and their tiers.")
+def smoke_list() -> None:
+    from app import smoke
+
+    console = get_console()
+    for check in smoke.CHECKS:
+        console.print(f"  tier {check.tier}  [memphis.primary]{check.name:<13}[/] {check.summary}")
+
+
+@smoke_cli.command("run", help="Run smoke checks against a deployed API. Exits non-zero on any failure.")
+def smoke_run(
+    tier: int = Option(default=0, min=0, max=1, help="0 = read-only, seconds. 1 = adds one tiny real dispatch each."),
+    only: list[str] = Option(default=[], help="Run only these checks (repeatable); overrides --tier."),
+    skip: list[str] = Option(default=[], help="Skip these checks (repeatable)."),
+    commit: str | None = Option(default=None, help="Image commit for the task and worker checks."),
+    simulation_id: int | None = Option(default=None, help="A completed simulation WITH output: enables `analysis`."),
+    biomodel: str | None = Option(default=None, help="A BioModels id: enables `biomodels`."),
+    timeout: float = Option(default=900.0, help="Seconds to wait for any one dispatched job."),
+    json_out: Path | None = Option(default=None, help="Write the full result, with evidence, as JSON."),
+    url: str | None = Option(default=None, help="Any base URL (e.g. a port-forward); overrides --base-url."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    """Merged is not deployed: this is the check that a DEPLOYMENT does what the code says.
+
+    A check passes only on an observed EFFECT -- a nonce read back from a task's log, the
+    number a composite must compute -- never on a status alone. SKIP is reported separately
+    from PASS and says why. See docs/plan-core.md section 8 for which tier a deploy needs.
+    """
+    from app import smoke
+
+    console = get_console()
+    target = url or str(base_url.value if hasattr(base_url, "value") else base_url)
+    try:
+        checks = smoke.select_checks(tier, only=only, skip=skip)
+    except ValueError as e:
+        console.print(f"[memphis.error]{e}[/]")
+        raise typer.Exit(code=2) from e
+
+    service = E2EDataService(base_url=target, timeout=int(timeout) + 120)
+    options = smoke.SmokeOptions(
+        commit=commit, simulation_id=simulation_id, biomodel_id=biomodel, timeout_seconds=timeout
+    )
+    styles = {smoke.Outcome.PASS: "memphis.success", smoke.Outcome.FAIL: "memphis.error", smoke.Outcome.SKIP: "dim"}
+
+    def show(result: smoke.CheckResult) -> None:
+        style = styles[result.outcome]
+        label = result.outcome.value.upper()
+        console.print(
+            f"  [{style}]{label:<4}[/] t{result.tier} {result.name:<13} {result.seconds:>7.1f}s  {result.detail}"
+        )
+
+    console.print(f"[memphis.primary]atlantis smoke[/] -> {target}  ({len(checks)} checks)")
+    results = smoke.run_checks(service, checks, options, on_result=show)
+    summary = smoke.summarize(results)
+    console.print(f"  [bold]{summary['pass']} passed, {summary['fail']} failed, {summary['skip']} skipped[/]")
+    if json_out is not None:
+        json_out.write_text(
+            _json_mod.dumps(smoke.report(target, tier, results), indent=2, default=str), encoding="utf-8"
+        )
+        console.print(f"  wrote {json_out}")
+    if summary["fail"]:
+        raise typer.Exit(code=1)
 
 
 @demo_cli.command("get-data", help="Download S3 simulation outputs directly (mirrors test_outputs.py e2e test).")

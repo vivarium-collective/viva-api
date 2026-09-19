@@ -239,7 +239,8 @@ make test                  # Run all tests with coverage
 make gateway               # Start local dev server (port 8888, auto-reload)
 make spec                  # Regenerate OpenAPI spec
 make api_client            # Regenerate spec + OpenAPI client library
-make e2e                   # Run full simulation end-to-end test
+make smoke BASE_URL=<url>  # Smoke-test a DEPLOYED API, read-only (Tier 0); TIER=1 adds one tiny real dispatch per mechanism
+make e2e BASE_URL=<url>    # = make smoke TIER=1 (task, env worker, composite). `uv run atlantis smoke list` shows the checks
 
 uv run pytest              # Run all tests
 uv run pytest -x           # Stop on first failure

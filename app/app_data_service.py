@@ -70,7 +70,7 @@ def _parse_content_disposition_filename(header_value: str) -> str | None:
 
 
 @asynccontextmanager
-async def async_client(base_url: BaseUrl, timeout: int = 300) -> AsyncIterator[AsyncClient]:
+async def async_client(base_url: BaseUrl | str, timeout: int = 300) -> AsyncIterator[AsyncClient]:
     try:
         async with AsyncClient(base_url=base_url, timeout=timeout) as client:
             yield client
@@ -120,12 +120,12 @@ READ_CAPABILITIES = (
 
 
 class E2EDataService:
-    base_url: BaseUrl
+    base_url: BaseUrl | str
     client: httpx.Client
 
     def __init__(
         self,
-        base_url: BaseUrl,
+        base_url: BaseUrl | str,
         timeout: int = 300,
         identity: str | None = None,
         identity_header: str | None = None,

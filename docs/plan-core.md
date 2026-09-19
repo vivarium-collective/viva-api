@@ -140,7 +140,20 @@ copied). Verify: full `pytest`, `make check`, and on dev the marker grep is
 
 - **P2a.** `BatchJobClient` → `viva_core/backends/batch.py`; `SimulationServiceRay`
   delegates. Move-only PRs.
-- **P2b.** K8s, SLURM and LOCAL adapters behind `JobBackend`; `batch_build.py` →
+- **P2b, first piece — the core runtime image.** A small reference environment that is not
+  any application's science image: Python slim + process-bigraph + pbg-emitters + the Batch
+  container entrypoint (stage-in / stage-out contract) + the env-worker module. A few hundred
+  MB, built by CI from this repo (`Dockerfile-core-runtime`), pushed to its own ECR/ghcr
+  repository, versioned with `viva_core`.
+  *Why first:* tasks, compose and env workers take no image parameter today — all three
+  hard-wire `<ecr>/v2ecoli:<commit>` — so even a plumbing smoke test pulls a **5.74 GB**
+  (compressed) science image. Measured 2026-09-19 on dev: a Tier 1 task spent **320 s** in
+  queue + instance scale-up + image pull and **2 s** running. The explicit `EnvironmentRef`
+  below is what lets a request name this image; the image is what gives it something small
+  to name. Once it exists: Tier 1 smoke runs on it by default, `tests/core/` gets a real
+  non-application environment, and the public core has a default environment that carries no
+  domain code. (Instance scale-up from zero remains; only the pull shrinks.)
+- **P2b, rest.** K8s, SLURM and LOCAL adapters behind `JobBackend`; `batch_build.py` →
   `backends/build.py`; `LocalTaskService` over a `JobStore` Protocol; compose stops calling
   Ray privates; tasks and env-worker take an explicit `EnvironmentRef` with SMS supplying
   the defaults; a minimal `CoreContainer`.
@@ -347,6 +360,22 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 | I | P7 a, b, c — each separately | the table move | rehearse on a restored copy of the prod DB; RDS snapshot; (b) only with no campaign RUNNING; soak between steps |
 | J | P9 a, b, c — each separately | second Deployment and ALB routing | dark, then the flag flip (rollback = flip back), then `cdk deploy` |
 
+**The smoke suite (`atlantis smoke run`, `make smoke`).** Every checkpoint is proven with the
+same command rather than by hand. A check passes only on an observed **effect** — a nonce
+read back from a task's log, the number a composite must compute — never on a status; SKIP
+is reported separately from PASS and says why; `--json-out` is the record a release links.
+
+| Tier | Cost | What it proves |
+|---|---|---|
+| 0 | seconds, free, read-only | `/version` = `/health`; every spec operation is served; capabilities; the relay is routed and live (JSON 404, not the gateway's HTML); the database-backed list endpoints; an events read |
+| 1 | minutes, cents | one tiny real dispatch per mechanism: a container **task**; a relayed env **worker** (a K8s Job) + a task on its task tier, always stopped; a five-step **composite** that must return 1.1^5; opt-in: a standalone **analysis** (`--simulation-id`), a **BioModels** run (`--biomodel`) |
+| 2 | tens of minutes, dollars — *not built yet* | a Ray multi-node simulation with analysis; a 2x2 chain dispatch; a Nextflow head; the vEcoli qualification script; an image build |
+| R | *not built yet* | a pod restart with a Tier 1 job in flight: status still resolves; the terminated pod's log shows the shutdown order |
+
+Required: **A** = 0 + `task`. **B** = 0 + 1. **C** = 0 + 1 + 2 (P2a is the first change that
+can break dispatch — Tier 2 and R are built before it). **D** = 0 + 1 (`worker`, `task`
+especially). **E** = 0 + 1 + R. **F** = 0 + 1. **G** = 0 + 1 + R. **H** = 0 + 1 + 2. **I**, **J** = all.
+
 **Prod cadence.** Dev takes every checkpoint. Prod may skip code-only ones but follows dev on
 every **database** checkpoint (B, F, I) after a soak — letting migrations pile up for prod is
 the big-jump risk (§6 #3).
@@ -399,6 +428,26 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — **Core runtime image pulled forward to the front of P2b** (Jim). Trigger:
+  the first live Tier 1 run — 320 s of cold start for a 2 s task, because the only image a
+  task can run in is the 5.74 GB science image. The stopgap (a small image pushed under a
+  tag in the `v2ecoli` repository) was considered and rejected: it pollutes the science
+  repo's tags and bakes in the `/app/v2ecoli` path contract.
+- **2026-09-19** — First live Tier 1 run on dev (0.9.145): `task` PASS (nonce read back; 320 s
+  cold start, 2 s run), `worker` PASS (K8s Job started, read, task-tier task completed,
+  worker stopped), **`compose` FAIL — a real, pre-existing bug the suite found on its first
+  run**: `run_pbg.py` excludes in-memory emitters from output redirection by comparing the
+  whole address tail to `"RAMEmitter"`, but under the workspace core only the dotted name
+  (`process_bigraph.emitter.RAMEmitter`) resolves, so the emitter is "redirected", the
+  history fallback is skipped, and `PBG_REQUIRE_OUTPUT` fails the job. Any generic
+  in-memory composite fails on compose-on-Ray (since #276, 2026-08-25). Fixed in #689;
+  reproduced locally (original rc=1, fixed rc=0).
+  Also seen: a five-step toy composite provisions **3** multi-node instances and stages the
+  whole ParCa cache first — both go away with P2b's runtime image and P5's decoupling.
+- **2026-09-19** — `atlantis smoke` added (Tier 0 + Tier 1), at Jim's prompt: before it, the
+  only checks against a *deployment* were the vEcoli qualification script, the analysis-read
+  node tests and hand inspection; `make e2e` pointed at a test class that no longer exists
+  and passed by collecting nothing. Tier 2 and Tier R are built before checkpoint C.
 - **2026-09-18** — **Checkpoint A passed on dev (0.9.145, #687, tag `v0.9.145`).**
   `kubectl diff` = one line (api image); migration Job: *managed*, 16/16 markers, no-op;
   `viva_core` in the image and old/new module names identical inside the pod; the new
