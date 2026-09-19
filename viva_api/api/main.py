@@ -218,13 +218,18 @@ async def home(request: Request) -> templating._TemplateResponse:
 @app.get("/health", tags=["SMS API"])
 async def check_health() -> dict[str, str]:
     from viva_api.config import get_settings
+    from viva_api.simulation.db_startup import get_schema_state
 
     settings = get_settings()
+    schema = get_schema_state()
     return {
         "docs": f"{ACTIVE_URL}{app.docs_url}",
         "version": APP_VERSION,
         "deployment_namespace": settings.deployment_namespace,
         "compute_backend": settings.compute_backend,
+        # The database's Alembic revision against this image's head, as read at startup. Absent
+        # when no database is configured. `atlantis smoke` fails a deploy on db_at_head=false.
+        **(schema.as_health_fields() if schema is not None else {}),
     }
 
 

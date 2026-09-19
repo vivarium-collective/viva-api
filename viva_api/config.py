@@ -100,6 +100,10 @@ class Settings(CoreSettings):
     postgres_max_overflow: int = 5  # maximum number of connections that can be created beyond the pool size
     postgres_pool_timeout: int = 30  # timeout for acquiring a connection from the pool in seconds
     postgres_pool_recycle: int = 1800  # recycle connections every seconds
+    # Run Base/ComposeBase create_all at startup. True suits a laptop or a test; a DEPLOYED site
+    # sets it false, because there the schema belongs to the alembic-migrate Job alone -- see
+    # viva_api/simulation/db_startup.py for why create_all is corrosive in production.
+    db_create_all: bool = True
 
     slurm_submit_host: str = ""
     slurm_submit_user: str = ""  # "svc_vivarium"

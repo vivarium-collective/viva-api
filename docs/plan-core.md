@@ -94,7 +94,12 @@ Make the ground safe before moving anything.
   outgrew. Guarded by the empty-Postgres test the decision asked for **and** a
   chain-vs-`create_all` parity test. (This plan first proposed `create_all` + stamp; withdrawn —
   only Option 1 also makes bare `alembic upgrade head` work.)
-- `DB_CREATE_ALL=false` guard, set in the overlays — this is what freezes the fingerprint list.
+- `DB_CREATE_ALL` (default `true`; **`false` on both Stanford sites**) — the app creates nothing at
+  startup there, which is what freezes the fingerprint list. Safe only since #637: the chain can
+  now build every table itself. With the net gone, startup reads the database's Alembic revision,
+  logs an ERROR naming the remedy when it is not at head (without crashing the pod — a rolling
+  deploy can start a pod moments before the Job finishes), and `/health` reports it; smoke Tier 0
+  gains a `database` check that fails a deploy on it.
 - Replace positional kustomize JSON patches with named strategic-merge patches; verify
   `kustomize build` output is byte-identical before and after.
 - Stop `ComposeJobMonitor` and the relay `TaskRunner` at shutdown; scope
@@ -468,7 +473,7 @@ gating latency compared to the baseline.
 |---|---|---|---|---|---|
 | P-1 | #679 | — | — | — | merged 2026-09-18 (`21bd7296`); docs only |
 | P0 (first wave) | #680 import-linter contracts · #681 `set_messaging_service` · #682 reconciler `current_schema()` · #683 shutdown stops pollers · #684 kustomize by-name patches | 0.9.145 | **2026-09-18** (checkpoint A) | — | **merged 2026-09-18** (`ca67b43f`, `2f6d73b1`, `f99caa02`, `7f3f6777`, `86c5f292`); combined `main` verified: `make check` ×2, 378 tests. Not yet deployed — #681–#683 change runtime code and go out with the next version bump; #680 and #684 change nothing that runs |
-| P0 second wave | #637 fresh-database fix + parity test — **this PR** · `DB_CREATE_ALL` guard · `owner_instance` column scoping the env-worker boot sweep | | | | #661 merged 2026-09-19 (`d27544a3`), so unblocked; first of three open |
+| P0 second wave | #637 fresh-database fix + parity test — #700, merged 2026-09-19 (`833fcc8f`) · `DB_CREATE_ALL` guard + startup schema check — **this PR** · `owner_instance` column scoping the env-worker boot sweep | next DB deploy (checkpoint B) | | | two of three done |
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — **this PR**; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — **this PR** |
@@ -497,6 +502,12 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — `DB_CREATE_ALL` guard. Not fatal by design: a mismatch is an ERROR log and a
+  `/health` field, not a crash, because a rolling deploy can start a pod just before the
+  migration Job finishes and that must not become an outage; the smoke `database` check is what
+  fails the deploy. Turned off for BOTH Stanford sites in config — prod picks it up at its next
+  deploy, where its database (at `b4d7e9c02a15`) must go through the migration Job first, as it
+  must anyway.
 - **2026-09-19** — #637, three corrections in one. (1) It had been **closed by accident** the
   moment #661 merged, though #661's own text says `upgrade head` "still fails on an empty
   database"; re-verified failing on `main` and reopened. (2) **A decision was already on the
