@@ -17,7 +17,8 @@ from viva_api.common.handlers import simulations as handlers
 from viva_api.common.models import JobId, JobStatus
 from viva_api.simulation import event_ingest
 from viva_api.simulation.models import HpcRun, JobType, SimulationSpan
-from viva_api.simulation.simulation_service_ray import BatchJobDetail, SimulationServiceRay
+from viva_api.simulation.simulation_service_ray import SimulationServiceRay
+from viva_core.backends.batch import BatchJobDetail
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "events"
 TRACE = "4bf92f3577b34da6a3ce929d0e0e4736"

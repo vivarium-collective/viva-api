@@ -29,7 +29,6 @@ base (cloning its node properties, swapping the image to ``v2ecoli:<commit>``).
 """
 
 import asyncio
-import copy
 import functools
 import importlib.resources as _res
 import json
@@ -49,7 +48,7 @@ from botocore.config import Config
 from pydantic import BaseModel
 
 from viva_api.common import analysis_dag
-from viva_api.common.dispatch_validation import resolve_task_env, task_env_as_batch_list, validate_nextflow_dispatch
+from viva_api.common.dispatch_validation import resolve_task_env, validate_nextflow_dispatch
 from viva_api.common.events_env import with_events_env
 from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.hpc.k8s_job_service import K8sJobService
@@ -87,6 +86,15 @@ from viva_api.simulation.ray.config_interpretation import (
 )
 from viva_api.simulation.simulation_service import SimulationService
 from viva_api.simulation.tables_orm import AnalysisStatusDB, TaskStatusDB
+from viva_core.backends.batch import (
+    SUBMIT_JOB_MAX_ATTEMPTS,
+    BatchJobClient,
+    BatchJobDetail,
+    SubmitJobPacer,
+    batch_exit_code,
+    ecr_image_uri,
+    stage_out_env,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -277,66 +285,15 @@ def analysis_memory_class(
     return "standard"
 
 
-# ── Chain-dispatch campaign submission (backlog item 33) ────────────────────
-#
-# AWS Batch's SubmitJob is capped at 50 TPS per account, fixed -- not
-# adjustable via a quota increase (AWS Batch service quotas, verified this
-# session). A canonical 1000-seed x 10-generation campaign submits N*G=10,000
-# individual per-seed-per-generation jobs upfront (see
-# ``submit_chain_dispatch_job``), so that loop must stay safely under the cap.
-_SUBMIT_JOB_SAFE_RATE = 40.0  # jobs/sec; headroom below the 50 TPS account cap
-#                               for other concurrent Batch traffic in the same
-#                               account (ParCa/analysis jobs, other campaigns).
-_SUBMIT_JOB_MAX_ATTEMPTS = 5  # botocore "standard" retry attempts per submit_job
-#                               call, for whatever transient/throttling errors
-#                               proactive pacing alone doesn't fully prevent.
-# (Per-generation-job retry no longer needs a manual override here as of item 71
-# Phase 4: chain-dispatch generations now submit as container-type jobs, whose
-# job definition already bakes in retryStrategy.attempts=2 -- see sms-cdk's
-# RayContainerJobDef -- unlike the MNP job definition this superseded, which
-# declared none of its own.)
-# AWS Batch DescribeJobs accepts at most 100 job ids per call (verified against
-# the real API model this session) -- the analysis-fan-in poller must chunk a
-# campaign's up-to-1000 tracked job ids into batches this size.
-_DESCRIBE_JOBS_MAX_BATCH = 100
+# The SubmitJob pacer, its 50-TPS rationale and the DescribeJobs chunk size moved to
+# ``viva_core.backends.batch`` with the rest of the Batch engine (docs/plan-core.md P2.1,
+# cut 2). A canonical 1000-seed x 10-generation chain campaign submits N*G=10,000
+# individual per-seed-per-generation jobs upfront (see ``submit_chain_dispatch_job``),
+# which is why that loop is the pacer's main customer.
 
 
 def _rand_suffix() -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-
-
-class _SubmitJobPacer:
-    """Proactive client-side pacer for AWS Batch SubmitJob.
-
-    Caps outbound ``submit_job`` calls to ``max_per_second``, computed from
-    REAL elapsed wall-clock time since the previous call (not a fixed
-    per-call sleep, which either over-throttles once call latency is added on
-    top, or under-throttles if the guessed interval is even slightly off).
-    Deliberately proactive rather than reactive: botocore's own "adaptive"
-    retry mode only starts throttling client-side AFTER it has already
-    observed a real throttling response, so pacing every call up front is
-    what keeps a fresh several-thousand-call burst from front-loading
-    avoidable 429s in the first place. This pacer and the "standard" retry
-    mode configured on the submitting client (see
-    ``submit_chain_dispatch_job``) are complementary, not redundant: this
-    caps the steady-state rate; retry-on-throttle is the backstop for
-    whatever pacing alone doesn't prevent (concurrent campaigns, other Batch
-    traffic in the same account -- the 50 TPS cap is account-wide, not
-    per-campaign).
-    """
-
-    def __init__(self, max_per_second: float = _SUBMIT_JOB_SAFE_RATE) -> None:
-        self._min_interval = 1.0 / max_per_second
-        self._last_call_at: float | None = None
-
-    async def wait(self) -> None:
-        now = time.monotonic()
-        if self._last_call_at is not None:
-            deficit = self._min_interval - (now - self._last_call_at)
-            if deficit > 0:
-                await asyncio.sleep(deficit)
-                now = time.monotonic()
-        self._last_call_at = now
 
 
 def analysis_modules_for(config: Any) -> dict[str, dict[str, Any]] | str:
@@ -385,43 +342,6 @@ class ChainCampaignPollResult:
     terminal: bool
     succeeded_job_ids: list[str] = field(default_factory=list)
     failed_job_ids: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class BatchJobDetail:
-    """What ``describe_jobs`` says about one job, for reporting a failure by
-    name and reason rather than by id (``get_batch_job_details``)."""
-
-    job_id: str
-    job_name: str
-    status: JobStatus
-    status_reason: str | None = None
-    exit_code: int | None = None
-    attempts: int = 0
-
-    def describe(self) -> str:
-        parts = [self.job_name or self.job_id, self.status.value]
-        if self.exit_code is not None:
-            parts.append(f"exit {self.exit_code}")
-        if self.status_reason:
-            parts.append(self.status_reason)
-        return ": ".join(parts[:1]) + " (" + ", ".join(parts[1:]) + ")"
-
-
-def _batch_exit_code(job: dict[str, Any]) -> str | None:
-    """The container exit code from an AWS Batch ``describe_jobs`` job object,
-    as a string (JobStatusInfo.exit_code is ``str | None``), or None when Batch
-    has not reported one yet.
-
-    Batch surfaces it at ``job["container"]["exitCode"]`` for a single-container
-    job and at ``job["nodeProperties"]...["container"]["exitCode"]`` for a
-    multi-node (MNP) job's main node; the top-level ``container`` key carries the
-    main container for both shapes in ``describe_jobs`` output, so read it there.
-    Previously hardcoded to None, discarding the real exit status (CD2 audit
-    §2.4 / P1-13).
-    """
-    exit_code = (job.get("container") or {}).get("exitCode")
-    return str(exit_code) if exit_code is not None else None
 
 
 # Per-label resources for the Nextflow dispatch. NOT optional in practice: a
@@ -524,6 +444,16 @@ class SimulationServiceRay(SimulationService):
     def _batch(self) -> Any:
         return _seams.boto3.client("batch", region_name=_seams.get_settings().batch_region)
 
+    def _batch_jobs(self) -> BatchJobClient:
+        """The Batch engine (``viva_core.backends.batch``), composed, not inherited.
+
+        Built per call and handed ``self._batch`` LATE (the lambda), so a test that swaps
+        ``service._batch`` -- or patches the seam under it -- is what the engine gets. The
+        engine takes no settings; every method below reads them here, through the seam,
+        and passes values in.
+        """
+        return BatchJobClient(lambda: self._batch())
+
     def cache_s3_uri(self, commit: str, *, variant: str | None = None) -> str:
         """Deterministic S3 URI for a commit's v2ecoli ParCa cache.
 
@@ -560,8 +490,12 @@ class SimulationServiceRay(SimulationService):
     def _image_uri(self, commit: str) -> str:
         """The TRUE commit image for a run: <account>.dkr.ecr.<region>/v2ecoli:<commit>."""
         settings = _seams.get_settings()
-        registry = f"{settings.ecr_account_id}.dkr.ecr.{settings.batch_region}.amazonaws.com"
-        return f"{registry}/{settings.ray_ecr_repository}:{commit}"
+        return ecr_image_uri(
+            account_id=settings.ecr_account_id,
+            region=settings.batch_region,
+            repository=settings.ray_ecr_repository,
+            tag=commit,
+        )
 
     def _ensure_mnp_job_def(self, image: str, commit: str) -> str:
         """Return an MNP job definition (name:revision) whose image is the commit's image.
@@ -573,36 +507,9 @@ class SimulationServiceRay(SimulationService):
         register it as ``<base>-<commit>``. An existing active revision already pointing
         at this image is reused, so resubmits don't churn revisions.
         """
-        settings = _seams.get_settings()
-        batch = self._batch()
-        name = f"{settings.ray_mnp_job_definition}-{commit}"
-
-        # Reuse an existing active revision that already targets this exact image.
-        existing = batch.describe_job_definitions(jobDefinitionName=name, status="ACTIVE")
-        for jd in existing.get("jobDefinitions", []):
-            images = {
-                nr.get("container", {}).get("image")
-                for nr in jd.get("nodeProperties", {}).get("nodeRangeProperties", [])
-            }
-            if images == {image}:
-                return f"{name}:{jd['revision']}"
-
-        # Otherwise clone the base job def's node properties and swap the image.
-        base = batch.describe_job_definitions(jobDefinitionName=settings.ray_mnp_job_definition, status="ACTIVE")
-        base_defs = base.get("jobDefinitions", [])
-        if not base_defs:
-            raise RuntimeError(f"Base Ray MNP job definition {settings.ray_mnp_job_definition!r} not found")
-        node_properties = copy.deepcopy(max(base_defs, key=lambda d: d["revision"])["nodeProperties"])
-        for nr in node_properties.get("nodeRangeProperties", []):
-            nr.setdefault("container", {})["image"] = image
-
-        response = batch.register_job_definition(
-            jobDefinitionName=name,
-            type="multinode",
-            nodeProperties=node_properties,
+        return self._batch_jobs().ensure_mnp_job_definition(
+            base_definition=_seams.get_settings().ray_mnp_job_definition, image=image, suffix=commit
         )
-        logger.info("Registered Ray MNP job def %s:%s for image %s", name, response["revision"], image)
-        return f"{name}:{response['revision']}"
 
     def _submit_mnp(
         self,
@@ -669,48 +576,6 @@ class SimulationServiceRay(SimulationService):
             require_clean_chain=require_clean_chain,
             lineage_debug_division=lineage_debug_division,
         )
-        # Ray's own documented safety net (not a bespoke workaround): by default Ray
-        # refuses to start its plasma object store when the container's /dev/shm is
-        # smaller than the size it wants to request, which is a real, observed
-        # failure mode on this fleet -- a single-node lineage_ray_batch diagnostic
-        # (item 105/109, database_id=344, 2026-09-05) died in raylet bootstrap,
-        # before any application code ran, requesting ~10.2GB against ~9.66GB
-        # available. This flag makes Ray fall back to a disk-backed object store
-        # instead of erroring -- zero behavioral change on every node where shm is
-        # already sufficient (every other MNP dispatch to date), a graceful
-        # (slower, not silent) degradation instead of a hard crash on the ones
-        # that aren't. Every node runs its own raylet, so this belongs in
-        # shared_env, not head-only.
-        shared_env.append({"name": "RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE", "value": "1"})
-        # task_env (sms-ecoli#166): the request's own env, validated at the boundary
-        # (dispatch_validation.validate_task_env), reaching EVERY node -- e.g.
-        # V2ECOLI_SKIP_CACHE_VERIFY=1 after a cache-re-keying v2ecoli commit.
-        if task_env:
-            shared_env.extend(task_env_as_batch_list(task_env))
-            logger.info("MNP job %s: task_env passthrough %s", job_name, dict(task_env))
-
-        # The head additionally runs the workload (RAY_JOB_CMD) and writes the report.
-        # Workers receive these too but never act on them — the entrypoint branches on
-        # AWS_BATCH_JOB_NODE_INDEX and only the head executes RAY_JOB_CMD/writes the report.
-        head_env: list[dict[str, str]] = [
-            {"name": "RAY_JOB_CMD", "value": ray_job_cmd},
-            {"name": "RAY_REPORT_PATH", "value": REPORT_PATH},
-            *shared_env,
-        ]
-
-        # The CDK base job definition declares a SINGLE node range ("0:") — the entrypoint
-        # self-branches head vs. worker — so the submit-time override must target that same
-        # range. (Splitting into "0:0"/"1:" makes Batch reject: "NodeOverride targets should
-        # match job definition".) One override on "0:" with the full env reaches every node;
-        # the per-node staging/output knobs in shared_env are what workers need.
-        node_property_overrides: list[dict[str, Any]] = [
-            {"targetNodes": "0:", "containerOverrides": {"environment": head_env}},
-        ]
-
-        node_overrides: dict[str, Any] = {
-            "numNodes": num_nodes,
-            "nodePropertyOverrides": node_property_overrides,
-        }
         # Backlog item 65: a standalone (numNodes=1) submission has no inter-node
         # traffic to protect, so it gains nothing from ray_mnp_queue's cluster-
         # placement-group compute environment and pays its full concurrency cost
@@ -725,35 +590,26 @@ class SimulationServiceRay(SimulationService):
             if num_nodes == 1 and settings.ray_mnp_standalone_queue
             else settings.ray_mnp_queue
         )
-        kwargs: dict[str, Any] = {
-            "jobName": job_name,
-            "jobQueue": job_queue,
-            "jobDefinition": job_definition,
-            "nodeOverrides": node_overrides,
-        }
-        if depends_on:
-            kwargs["dependsOn"] = [
-                ({"jobId": jid, "type": depends_type} if depends_type else {"jobId": jid}) for jid in depends_on
-            ]
-        if tags:
-            # Cost-allocation tags: propagate to the underlying ECS tasks so the
-            # payer account's Cost Explorer can attribute compute per run/engine.
-            kwargs["tags"] = tags
-            kwargs["propagateTags"] = True
-        if retry_strategy:
-            kwargs["retryStrategy"] = retry_strategy
-
-        batch = batch_client if batch_client is not None else self._batch()
-        response = batch.submit_job(**kwargs)
-        batch_job_id = str(response["jobId"])
-        logger.info(
-            "Submitted Ray MNP job %s (id=%s, nodes=%d) to %s",
-            job_name,
-            batch_job_id,
-            num_nodes,
-            job_queue,
+        # The engine adds RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE and task_env
+        # (sms-ecoli#166: the request's own env, validated at the boundary by
+        # dispatch_validation.validate_task_env, reaching EVERY node -- e.g.
+        # V2ECOLI_SKIP_CACHE_VERIFY=1 after a cache-re-keying v2ecoli commit),
+        # composes the head env and the single "0:" node override, and submits.
+        return self._batch_jobs().submit_mnp(
+            job_name=job_name,
+            job_queue=job_queue,
+            job_definition=job_definition,
+            num_nodes=num_nodes,
+            job_cmd=ray_job_cmd,
+            report_path=REPORT_PATH,
+            shared_env=shared_env,
+            task_env=task_env,
+            depends_on=depends_on,
+            depends_type=depends_type,
+            tags=tags,
+            retry_strategy=retry_strategy,
+            client=batch_client,
         )
-        return batch_job_id
 
     def _stage_out_env(
         self,
@@ -815,15 +671,16 @@ class SimulationServiceRay(SimulationService):
         ``LineageProcess._run_until_division`` reads it directly via
         ``os.environ.get``. Opt-in diagnostic only; default ``False`` emits nothing.
         """
-        env: list[dict[str, str]] = [
-            {"name": f"{prefix}_OUT_DIR", "value": out_dir},
-            {"name": f"{prefix}_OUT_S3", "value": out_s3},
-        ]
-        if stage_s3 and stage_dir:
-            env.append({"name": f"{prefix}_STAGE_S3", "value": stage_s3})
-            env.append({"name": f"{prefix}_STAGE_DIR", "value": stage_dir})
-        if log_s3_prefix:
-            env.append({"name": f"{prefix}_LOG_S3_PREFIX", "value": log_s3_prefix})
+        # The generic half of the contract (OUT_*, STAGE_*, LOG_S3_PREFIX) is core's;
+        # everything appended below is this application telling ITS entrypoint more.
+        env = stage_out_env(
+            prefix=prefix,
+            out_dir=out_dir,
+            out_s3=out_s3,
+            stage_s3=stage_s3,
+            stage_dir=stage_dir,
+            log_s3_prefix=log_s3_prefix,
+        )
         # off/empty is wild-type -> no expectation to assert (matches the parca-side
         # normalization in build_cache.py and _parca_command's own flag guard).
         ng = (expect_new_genes or "").strip()
@@ -861,30 +718,9 @@ class SimulationServiceRay(SimulationService):
             # Matches this file's own compose_ray_image_tag precedent: fail loud with
             # the setting name rather than submit a doomed job with a blank job-def.
             raise RuntimeError("ray_container_job_definition is not set; cannot submit a container-type Batch job.")
-        batch = self._batch()
-        name = f"{settings.ray_container_job_definition}-{commit}"
-
-        # Reuse an existing active revision that already targets this exact image.
-        existing = batch.describe_job_definitions(jobDefinitionName=name, status="ACTIVE")
-        for jd in existing.get("jobDefinitions", []):
-            if jd.get("containerProperties", {}).get("image") == image:
-                return f"{name}:{jd['revision']}"
-
-        # Otherwise clone the base job def's container properties and swap the image.
-        base = batch.describe_job_definitions(jobDefinitionName=settings.ray_container_job_definition, status="ACTIVE")
-        base_defs = base.get("jobDefinitions", [])
-        if not base_defs:
-            raise RuntimeError(f"Base container job definition {settings.ray_container_job_definition!r} not found")
-        container_properties = copy.deepcopy(max(base_defs, key=lambda d: d["revision"])["containerProperties"])
-        container_properties["image"] = image
-
-        response = batch.register_job_definition(
-            jobDefinitionName=name,
-            type="container",
-            containerProperties=container_properties,
+        return self._batch_jobs().ensure_container_job_definition(
+            base_definition=settings.ray_container_job_definition, image=image, suffix=commit
         )
-        logger.info("Registered container job def %s:%s for image %s", name, response["revision"], image)
-        return f"{name}:{response['revision']}"
 
     def _submit_container(
         self,
@@ -946,10 +782,14 @@ class SimulationServiceRay(SimulationService):
                 job_queue,
             )
 
-        env: list[dict[str, str]] = [
-            {"name": "CONTAINER_JOB_CMD", "value": job_cmd},
-            {"name": "CONTAINER_REPORT_PATH", "value": REPORT_PATH},
-            *self._stage_out_env(
+        # task_env (sms-ecoli#166): see _submit_mnp -- same passthrough, one container.
+        return self._batch_jobs().submit_container(
+            job_name=job_name,
+            job_queue=job_queue,
+            job_definition=job_definition,
+            job_cmd=job_cmd,
+            report_path=REPORT_PATH,
+            stage_env=self._stage_out_env(
                 prefix="CONTAINER",
                 out_dir=out_dir,
                 out_s3=out_s3,
@@ -961,33 +801,13 @@ class SimulationServiceRay(SimulationService):
                 require_clean_chain=require_clean_chain,
                 lineage_debug_division=lineage_debug_division,
             ),
-        ]
-        # task_env (sms-ecoli#166): see _submit_mnp -- same passthrough, one container.
-        if task_env:
-            env.extend(task_env_as_batch_list(task_env))
-            logger.info("Container job %s: task_env passthrough %s", job_name, dict(task_env))
-
-        kwargs: dict[str, Any] = {
-            "jobName": job_name,
-            "jobQueue": job_queue,
-            "jobDefinition": job_definition,
-            "containerOverrides": {"environment": env},
-        }
-        if depends_on:
-            kwargs["dependsOn"] = [
-                ({"jobId": jid, "type": depends_type} if depends_type else {"jobId": jid}) for jid in depends_on
-            ]
-        if tags:
-            kwargs["tags"] = tags
-            kwargs["propagateTags"] = True
-        if retry_strategy:
-            kwargs["retryStrategy"] = retry_strategy
-
-        batch = batch_client if batch_client is not None else self._batch()
-        response = batch.submit_job(**kwargs)
-        batch_job_id = str(response["jobId"])
-        logger.info("Submitted container job %s (id=%s) to %s", job_name, batch_job_id, settings.ray_container_queue)
-        return batch_job_id
+            task_env=task_env,
+            depends_on=depends_on,
+            depends_type=depends_type,
+            tags=tags,
+            retry_strategy=retry_strategy,
+            client=batch_client,
+        )
 
     def _parca_command(
         self,
@@ -2986,14 +2806,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
             return configured
         if not job_definition:
             return None
-        try:
-            defs = self._batch().describe_job_definitions(jobDefinitions=[job_definition]).get("jobDefinitions", [])
-            options = defs[0].get("containerProperties", {}).get("logConfiguration", {}).get("options", {})
-            group = options.get("awslogs-group")
-            return group if isinstance(group, str) else None
-        except Exception:
-            logger.warning("could not resolve log group from job definition %s", job_definition, exc_info=True)
-            return None
+        return self._batch_jobs().job_definition_log_group(job_definition)
 
     async def get_task_logs(self, task_id: int, database_service: DatabaseService, *, limit: int = 1000) -> TaskLogsDTO:
         """The CloudWatch logs for a task's Batch job (viva-api#631 slice 3).
@@ -3862,7 +3675,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
     ) -> dict[int, str]:
         """Submit the SAME generation index for MULTIPLE seeds at once,
         TPS-paced below the account-wide ``SubmitJob`` rate limit (reuses
-        ``_SubmitJobPacer`` + a dedicated retry-configured client — the same
+        ``SubmitJobPacer`` + a dedicated retry-configured client — the same
         mechanism the superseded upfront-chain design used for its own N*G
         burst). Still needed for the one remaining genuine burst moment under
         the per-seed app-level-gated model: every seed's generation 0, fanned
@@ -3881,11 +3694,11 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         every seed in this batch — one campaign, one config — forwarded to each
         seed's own ``submit_chain_generation`` call below.
         """
-        pacer = _SubmitJobPacer()
+        pacer = SubmitJobPacer()
         submit_client = _seams.boto3.client(
             "batch",
             region_name=_seams.get_settings().batch_region,
-            config=Config(retries={"mode": "standard", "max_attempts": _SUBMIT_JOB_MAX_ATTEMPTS}),
+            config=Config(retries={"mode": "standard", "max_attempts": SUBMIT_JOB_MAX_ATTEMPTS}),
         )
         submitted: dict[int, str] = {}
         for seed in seeds:
@@ -4010,7 +3823,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         task_env: dict[str, str] | None = None,
     ) -> dict[int, str]:
         """Fan out ONE whole-lineage job per seed, TPS-paced below the
-        account-wide ``SubmitJob`` rate limit (same ``_SubmitJobPacer`` +
+        account-wide ``SubmitJob`` rate limit (same ``SubmitJobPacer`` +
         retry-configured client as ``submit_chain_generation_batch``).
 
         Replaces the per-generation ``submit_chain_generation_batch`` on the
@@ -4020,11 +3833,11 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         lineage job to resolution). A per-seed submission failure is logged and
         that seed omitted from the returned mapping — other seeds unaffected.
         """
-        pacer = _SubmitJobPacer()
+        pacer = SubmitJobPacer()
         submit_client = _seams.boto3.client(
             "batch",
             region_name=_seams.get_settings().batch_region,
-            config=Config(retries={"mode": "standard", "max_attempts": _SUBMIT_JOB_MAX_ATTEMPTS}),
+            config=Config(retries={"mode": "standard", "max_attempts": SUBMIT_JOB_MAX_ATTEMPTS}),
         )
         submitted: dict[int, str] = {}
         for seed in seeds:
@@ -4580,12 +4393,10 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
             # return an empty list and this would report None rather than fail.
             return self._k8s.get_job_status(job_id.value)
 
-        response = self._batch().describe_jobs(jobs=[job_id.value])
-        jobs = response.get("jobs", [])
-        if not jobs:
+        job = self._batch_jobs().describe_job(job_id.value)
+        if job is None:
             logger.warning("No Batch job found with id %s", job_id.value)
             return None
-        job = jobs[0]
         status = JobStatus.from_batch_state(job.get("status", ""))
         started = job.get("startedAt")
         stopped = job.get("stoppedAt")
@@ -4594,13 +4405,13 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
             status=status,
             start_time=str(started) if started else None,
             end_time=str(stopped) if stopped else None,
-            exit_code=_batch_exit_code(job),
+            exit_code=batch_exit_code(job),
             error_message=job.get("statusReason") if status == JobStatus.FAILED else None,
         )
 
     def get_batch_job_statuses(self, job_ids: list[str]) -> dict[str, JobStatus]:
         """Batched ``describe_jobs`` status lookup for arbitrary AWS Batch job
-        ids, chunked by ``_DESCRIBE_JOBS_MAX_BATCH`` (100/call, the real API
+        ids, chunked by ``DESCRIBE_JOBS_MAX_BATCH`` (100/call, the real API
         limit). An id absent from the response (not yet visible — brief
         eventual-consistency lag right after submission, or simply unknown) is
         simply absent from the returned mapping rather than raising; callers
@@ -4611,45 +4422,14 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         71 Phase 4), which needs the same batching for a campaign's
         ``chain_current_job_ids`` on every tick.
         """
-        if not job_ids:
-            return {}
-        batch = self._batch()
-        statuses: dict[str, JobStatus] = {}
-        for i in range(0, len(job_ids), _DESCRIBE_JOBS_MAX_BATCH):
-            chunk = job_ids[i : i + _DESCRIBE_JOBS_MAX_BATCH]
-            response = batch.describe_jobs(jobs=chunk)
-            for job in response.get("jobs", []):
-                jid = job.get("jobId")
-                if jid is not None:
-                    statuses[str(jid)] = JobStatus.from_batch_state(str(job.get("status", "")))
-        return statuses
+        return self._batch_jobs().job_statuses(job_ids)
 
     def get_batch_job_details(self, job_ids: list[str]) -> dict[str, BatchJobDetail]:
         """``get_batch_job_statuses`` plus what a failed job SAID: Batch's
         ``statusReason``, the container exit code and the attempt count. Used
         where a bare job id is not an answer -- a chain campaign's failed seeds
         (observability plan D4c). Same chunking, same missing-id semantics."""
-        if not job_ids:
-            return {}
-        batch = self._batch()
-        details: dict[str, BatchJobDetail] = {}
-        for i in range(0, len(job_ids), _DESCRIBE_JOBS_MAX_BATCH):
-            chunk = job_ids[i : i + _DESCRIBE_JOBS_MAX_BATCH]
-            response = batch.describe_jobs(jobs=chunk)
-            for job in response.get("jobs", []):
-                jid = job.get("jobId")
-                if jid is None:
-                    continue
-                exit_code = _batch_exit_code(job)
-                details[str(jid)] = BatchJobDetail(
-                    job_id=str(jid),
-                    job_name=str(job.get("jobName") or ""),
-                    status=JobStatus.from_batch_state(str(job.get("status", ""))),
-                    status_reason=job.get("statusReason"),
-                    exit_code=int(exit_code) if exit_code is not None else None,
-                    attempts=len(job.get("attempts") or []),
-                )
-        return details
+        return self._batch_jobs().job_details(job_ids)
 
     def get_chain_campaign_result(self, job_ids: list[str]) -> ChainCampaignPollResult:
         """Poll a chain-dispatch campaign's tracked final-generation job ids —
@@ -4729,7 +4509,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
             self._k8s.delete_job(job_id.value)
             logger.info("Deleted Nextflow head Job %s", job_id.value)
             return
-        self._batch().terminate_job(jobId=job_id.value, reason="cancelled via sms-api")
+        self._batch_jobs().terminate(job_id.value, reason="cancelled via sms-api")
         logger.info("Terminated Ray Batch job %s", job_id.value)
 
     async def reap_cancelled_campaign(self, head_job_name: str) -> int | None:
@@ -4764,26 +4544,13 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         return await asyncio.to_thread(self._terminate_campaign_tasks, queues, stem)
 
     def _terminate_campaign_tasks(self, queues: list[str], stem: str) -> int:
-        batch = self._batch()
-        terminated = 0
-        for queue in queues:
-            for status in ("SUBMITTED", "PENDING", "RUNNABLE", "STARTING", "RUNNING"):
-                kwargs: dict[str, Any] = {"jobQueue": queue, "jobStatus": status}
-                while True:
-                    response = batch.list_jobs(**kwargs)
-                    ids = [j["jobId"] for j in response.get("jobSummaryList", [])]
-                    for chunk in (ids[i : i + 100] for i in range(0, len(ids), 100)):
-                        for job in batch.describe_jobs(jobs=chunk).get("jobs", []):
-                            command = " ".join(job.get("container", {}).get("command", []) or [])
-                            if not _command_belongs_to_campaign(command, stem):
-                                continue
-                            batch.terminate_job(jobId=job["jobId"], reason=f"campaign {stem} cancelled via sms-api")
-                            terminated += 1
-                    next_token = response.get("nextToken")
-                    if not next_token:
-                        break
-                    kwargs["nextToken"] = next_token
-        return terminated
+        def _is_this_campaigns(job: dict[str, Any]) -> bool:
+            command = " ".join(job.get("container", {}).get("command", []) or [])
+            return _command_belongs_to_campaign(command, stem)
+
+        return self._batch_jobs().terminate_matching(
+            queues=queues, matches=_is_this_campaigns, reason=f"campaign {stem} cancelled via sms-api"
+        )
 
     async def cancel_chain_campaign(self, campaign: HpcRun) -> None:
         """Cancel every seed's current in-flight job for a chain-dispatch

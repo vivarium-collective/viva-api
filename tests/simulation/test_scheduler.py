@@ -671,7 +671,7 @@ class TestAdvanceChainCampaign:
                 terminal=True, succeeded_job_ids=["s0g1", "s1g1"], failed_job_ids=["s2g0"]
             )
         )
-        from viva_api.simulation.simulation_service_ray import BatchJobDetail
+        from viva_core.backends.batch import BatchJobDetail
 
         mock_ray.get_batch_job_details = MagicMock(
             return_value={
