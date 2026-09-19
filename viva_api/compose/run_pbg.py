@@ -206,6 +206,22 @@ _EMITTER_OUT_KEYS = ("out_dir", "out_uri")
 _NON_FILE_BACKED_EMITTER_CLASSES = ("RAMEmitter", "ConsoleEmitter")
 
 
+def _emitter_class_name(address: str) -> str:
+    """The CLASS an address names, whichever spelling registered it.
+
+    A link can be registered under its bare class name or its dotted import path, and a
+    document may use either: ``local:RAMEmitter`` and
+    ``local:process_bigraph.emitter.RAMEmitter`` are the same class. Under a workspace core
+    (``v2ecoli.core:build_core``) ONLY the dotted form resolves for process_bigraph's own
+    emitters -- so comparing the whole tail after ``:`` to a bare class name treated a
+    dotted in-memory emitter as file-backed: it was "redirected" (a meaningless ``out_dir``
+    stuffed into its config), which skipped the in-memory history fallback, and the
+    ``PBG_REQUIRE_OUTPUT`` gate then failed a run that had in fact emitted. Found by
+    ``atlantis smoke``'s compose check on its first live run (2026-09-19).
+    """
+    return address.split(":")[-1].rsplit(".", 1)[-1]
+
+
 def _flush_emitters(composite: Any) -> None:
     """Flush any ParquetEmitter steps' buffered rows before the process exits.
 
@@ -717,7 +733,7 @@ def _redirect_emitters(node: Any, results_dir: Path) -> tuple[int, list[str]]:
         is_file_backed = (
             isinstance(address, str)
             and "emitter" in address.lower()
-            and address.split(":")[-1] not in _NON_FILE_BACKED_EMITTER_CLASSES
+            and _emitter_class_name(address) not in _NON_FILE_BACKED_EMITTER_CLASSES
         )
         if is_file_backed:
             config = node.get("config")
@@ -735,7 +751,9 @@ def _redirect_emitters(node: Any, results_dir: Path) -> tuple[int, list[str]]:
             # that would silently mask a real xarray emitter behind the old local
             # redirect, exactly as silently as the bug this fix closes. Checking the
             # actual registered class name removes the guesswork entirely.
-            is_xarray = key == "out_uri" and isinstance(address, str) and address.split(":")[-1] == "XArrayEmitter"
+            is_xarray = (
+                key == "out_uri" and isinstance(address, str) and _emitter_class_name(address) == "XArrayEmitter"
+            )
             if isinstance(before, str) and before.startswith("s3://"):
                 s3_locations.append(before)
             if is_xarray and out_s3:

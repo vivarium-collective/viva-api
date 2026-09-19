@@ -312,6 +312,31 @@ repo and PyPI distribution, with the core CLI.
 7. The core CLI's name (`viva`?), and whether `atlantis` delegates its generic verbs to it
    or stays independent.
 
+## 7a. Migrations: proper, tested, and honest about reversibility
+
+Every schema change is an Alembic revision on the chain that owns the table (the SMS chain
+until P7, then SMS or `core`), with a fingerprint marker while `create_all` still
+bootstraps. Nothing merged through 0.9.145 contains a migration.
+
+**Standing rule for every revision in this plan:** a real `downgrade()`, and a
+Postgres-container test that runs **upgrade → downgrade → upgrade** and checks the schema
+each way. (Today only one migration test exercises a downgrade.) A revision that cannot meet
+that says so in its docstring *and* is listed below, gets its own deploy checkpoint, and an
+RDS snapshot comes first.
+
+| Phase | Change | Reversible? |
+|---|---|---|
+| — | existing chain: 14 of 16 revisions | yes — real downgrades |
+| — | `a1c3e5f7b9d2`, `44335812e447` (and #661's `b2f6d8e0a4c7`): enum `ADD VALUE` | **no** — Postgres cannot drop an enum label; the downgrade is a documented no-op. Benign: an unused label |
+| P0 second wave | `env_worker_task.owner_instance` | yes — drop column |
+| P4a | owner-ref columns on `hpcrun` / `dataset`, backfilled, dual-written | yes — old columns stay authoritative |
+| P4b | `task_script` table; task = job with `owner_kind = 'task'` | yes. **No `TASK` enum label is added** — the job kind rides in the new VARCHAR column, precisely so this stays reversible |
+| P5 | `environment` table | yes — dropping it loses only rows created since |
+| P7 (a) | `SET SCHEMA`, rename, compat view | yes — metadata only |
+| P7 (b) | `public.hpcrun` extension table + column copy | yes, with a reverse copy, while idle — `core.job` still holds the columns |
+| P7 (c) | drop SMS columns from `core.job`; enums → VARCHAR + CHECK | **one-way in practice.** A data-preserving `downgrade()` is written (the data lives on in `public.hpcrun`; statuses cast back by `upper()`), but no older *image* runs against the result. Rollback = snapshot. Soak (b) first |
+| P7, last | merge `compose_hpcrun` into `core.job` with new ids | **not reversible once new rows exist** — migrated rows rebuild from `legacy_compose_id`; rows created afterwards have no old id to return to |
+
 ## 8. Deploy checkpoints
 
 Merging is not deploying. A phase is *proven* only where the thing under test exists only in
@@ -324,7 +349,7 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 
 | # | After | Why it needs a deploy | Prove on dev |
 |---|---|---|---|
-| A | P0 first wave + P1a | new top-level package in the image; reconciler probes; shutdown order | `current_schema()` is `public`; migration Job classifies MANAGED; pod boots; `/app/viva_core/models.py` on the newest pod; EUTE smoke via `atlantis`; `vwb smoke`; one rolling restart's logs |
+| A ✅ 0.9.145, 2026-09-18 | P0 first wave + P1a | new top-level package in the image; reconciler probes; shutdown order | `current_schema()` is `public`; migration Job classifies MANAGED; pod boots; `/app/viva_core/models.py` on the newest pod; EUTE smoke via `atlantis`; `vwb smoke`; one rolling restart's logs |
 | B | P0 second wave | `create_all` off and the FRESH path changed — how every database bootstraps | alone; `--analyze` per site; migration Job; boot against an already-migrated DB |
 | C | P1b + P2a | core's first settings object; the Batch submit path moved | every dispatch path: Ray MNP sim, container analysis, task, compose, image build, Nextflow head |
 | D | P2b | env-worker and task image resolution | workbench through the relay; `vwb smoke`; `atlantis worker`, `task` |
@@ -375,9 +400,9 @@ gating latency compared to the baseline.
 | Phase | PRs | Version | Dev | Prod | Notes |
 |---|---|---|---|---|---|
 | P-1 | #679 | — | — | — | merged 2026-09-18 (`21bd7296`); docs only |
-| P0 (first wave) | #680 import-linter contracts · #681 `set_messaging_service` · #682 reconciler `current_schema()` · #683 shutdown stops pollers · #684 kustomize by-name patches | 0.9.145 | checkpoint A | — | **merged 2026-09-18** (`ca67b43f`, `2f6d73b1`, `f99caa02`, `7f3f6777`, `86c5f292`); combined `main` verified: `make check` ×2, 378 tests. Not yet deployed — #681–#683 change runtime code and go out with the next version bump; #680 and #684 change nothing that runs |
+| P0 (first wave) | #680 import-linter contracts · #681 `set_messaging_service` · #682 reconciler `current_schema()` · #683 shutdown stops pollers · #684 kustomize by-name patches | 0.9.145 | **2026-09-18** (checkpoint A) | — | **merged 2026-09-18** (`ca67b43f`, `2f6d73b1`, `f99caa02`, `7f3f6777`, `86c5f292`); combined `main` verified: `make check` ×2, 378 tests. Not yet deployed — #681–#683 change runtime code and go out with the next version bump; #680 and #684 change nothing that runs |
 | P0 (after #661) | #637 FRESH fix + `create_all`-vs-migrations parity test · `DB_CREATE_ALL` guard · `owner_instance` column scoping the env-worker boot sweep | | | | not started — each adds or tests a migration, so they wait for #661 to keep the chain at one head |
-| P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | checkpoint A | — | merged 2026-09-18 (`8c9f8e78`) |
+| P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
 | P1b | `file_paths` ↛ `config`; storage, ssh, slurm, nextflow_trace | | | | not started |
 | P2a | | | | | |
 | P2b | | | | | |
@@ -423,6 +448,18 @@ gating latency compared to the baseline.
   only checks against a *deployment* were the vEcoli qualification script, the analysis-read
   node tests and hand inspection; `make e2e` pointed at a test class that no longer exists
   and passed by collecting nothing. Tier 2 and Tier R are built before checkpoint C.
+- **2026-09-18** — **Checkpoint A passed on dev (0.9.145, #687, tag `v0.9.145`).**
+  `kubectl diff` = one line (api image); migration Job: *managed*, 16/16 markers, no-op;
+  `viva_core` in the image and old/new module names identical inside the pod; the new
+  shutdown order seen on a 0.9.145 pod (second rolling restart — the first only shows the OLD
+  pod's behaviour); 91 live operations; `atlantis task run --wait` COMPLETED with its output
+  confirmed in the log; new pod 0 restarts, 0 errors. Not run: a full simulation, a compose
+  run, `vwb smoke`. Found, pre-existing: one `env_worker_task` row with status
+  `WEIRD_UNKNOWN` and no `ended_at`, which the boot sweep does not settle.
+- **2026-09-18** — §7a added at Jim's question: migrations are proper Alembic revisions with
+  tested downgrades; three planned changes are not really reversible (enum labels; P7(c) in
+  practice; the `compose_hpcrun` id merge) and are named. P4b no longer adds a `TASK` enum
+  label, to stay reversible.
 - **2026-09-18** — Deploy checkpoints added (§8), at Jim's prompt: merged ≠ deployed, and
   several changes can only be proven live. Rule: one kind of plumbing change per deploy.
   Checkpoint A = 0.9.145 on dev, taken BEFORE P1b. Pre-flight on dev: `current_schema()` is
