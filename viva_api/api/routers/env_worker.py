@@ -27,6 +27,7 @@ from viva_api.compose.env_worker_service import (
     EnvWorkerService,
 )
 from viva_api.compose.models import ComposeJobStatus, EnvWorkerTask
+from viva_api.config import get_settings
 
 if TYPE_CHECKING:
     from viva_api.compose.database_service import EnvWorkerTaskDatabaseService
@@ -1080,6 +1081,7 @@ async def submit_task(request: Request, body: TaskSubmitRequest) -> TaskResponse
         params=body.params,
         correlation_id=f"env-worker-task-{secrets.token_hex(8)}",
         created_by=resolve_caller(request),
+        owner_instance=get_settings().owner_instance,
     )
     await runner_.submit(body.job_name, task.database_id)
     return _to_response(task)

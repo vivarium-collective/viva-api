@@ -119,6 +119,18 @@ Where it reaches into SMS:
 - Dispatch runs in a FastAPI `BackgroundTask`: the row says RUNNING before anything is
   submitted, and a pod death strands it. There is no orphan reconcile for compose.
 
+**How a composite and its environment are specified today — two models, on two endpoints:**
+
+| | the composite | the Python environment |
+|---|---|---|
+| `/compose/v1/simulation/run` (upload) and `/run-document` (JSON body) | **supplied by the client** — a process-bigraph document (or an OMEX). Its processes are *addresses* (`local:<registered name>`) resolved inside the job by a core built from `compose_pbg_core_builder`; the composite itself need not be in the image | optional **`simulator_id`** → a commit → `<ecr>/v2ecoli:<commit>`. Omitted, every compose run on the site uses one image pinned by `compose_ray_image_tag`. `extra_pip_deps` adds packages, gated by `compose_allow_list`. (The SLURM path instead *builds* a Singularity image from the packages the document needs — `compose_simulator`, keyed by the definition's hash) |
+| `/api/v1/simulations` with `extra_params.multi_node_dispatch` / `nextflow_dispatch` | **already in the container** — the request carries a `composite_id` (e.g. `v2ecoli.composites.lineage_ray_batch`) plus `params` overrides; `run_pbg.py --composite-id … --overrides …` builds the document from a composite generator the image registers | **`simulator_id`, required** — it decides both which code and which composites exist |
+
+Three weaknesses follow. `simulator_id` points at the SMS `simulator` table (the code calls it
+"the LEGACY simulator registry"). The default environment for a document is a site-wide pinned
+science image. And "run this document" and "run the composite this image knows, with these
+overrides" are one idea split across two endpoints — one of them an SMS endpoint.
+
 BioModels (consolidated by #678 into `identifiers`, `metadata` and one `/biomodels/run` that
 runs one or more models through one or more simulators) and the COPASI / Tellurium templates
 are **not SMS**. They are the seed of a separate application — reproducible-biology hosted
@@ -420,6 +432,29 @@ no such thing: every task, composite and env worker runs in `<ecr>/v2ecoli:<comm
 capabilities. Every transition is also written to a durable `core.job_transition` outbox, so
 the in-process hook and the later HTTP feed read one stream.
 
+**One way to run a composite.** `POST /viva/v1/composites` takes an **environment** and
+**exactly one** description of the composite:
+
+```jsonc
+{
+  "environment": {"repo_url": "…", "commit": "…", "variant": "…"},   // an EnvironmentRef; omitted = the core runtime image
+  // exactly one of:
+  "document":  { "state": { … } },                                     // the composite itself, as a process-bigraph document
+  "composite": {"id": "pkg.module.generator", "params": { … }},        // a composite the ENVIRONMENT registers, plus overrides
+  "steps": 5, "num_nodes": 1, "extra_packages": [ … ], "owner": { … }
+}
+```
+
+Both are the same operation — build a composite inside an environment, run it, record what it
+wrote — so they are one request, one job record and one results shape. `document` needs only
+the *classes* in the environment; `composite.id` needs the environment to register the
+generator, which is why the environment is part of the request rather than a site default.
+The two SMS dispatch shapes (`multi_node_dispatch`, `nextflow_dispatch`) become SMS facades
+that fill in `composite` and the SMS defaults; `/compose/v1/simulation/run` and
+`/run-document` stay as aliases that fill in `document`. How the job is *executed* (a
+multi-node Ray job, a Nextflow head, a single container) is a separate field of the request —
+the execution axis — not a different endpoint.
+
 **BioModels and the curated simulators — in core now, leaving later.** They move to core
 with the rest of compose (`viva_core/contrib/sysbio`, mounted by default at the existing
 `/compose/v1/biomodels/*` and `/compose/v1/curated/{copasi,tellurium}` URLs), and never to
@@ -527,3 +562,4 @@ Status: `planned` → `in progress` → `done (PR, version)`. Phases refer to `p
 | 22 | Auth and tenancy | seam only | enforced, quotas, allow-lists | P10 | planned |
 | 23 | Core CLI | none; generated client is test-only | standalone CLI on the generated core client | P8 | planned |
 | 24 | Runtime image | every task / composite / env worker runs in `<ecr>/v2ecoli:<commit>` (5.74 GB) | a small core runtime image, the default `EnvironmentRef`; Tier 1 smoke and `tests/core/` run on it | P2.3 (first piece) | planned |
+| 26 | Specifying a composite | two models on two endpoints: a client-supplied **document** on `/compose/v1`, a `composite_id` already in the image on `/api/v1/simulations` `extra_params`; environment = SMS `simulator_id` or a site-wide pinned image | one request on `/viva/v1/composites`: an `EnvironmentRef` + exactly one of `document` / `composite{id, params}`; execution is a field, not an endpoint | P5 | planned |

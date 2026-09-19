@@ -37,6 +37,7 @@ async def _new(
     job: str = "job-1",
     by: str | None = None,
     corr: str | None = None,
+    owner: str | None = None,
 ) -> EnvWorkerTask:
     import secrets
 
@@ -46,6 +47,7 @@ async def _new(
         params={"study": "s1"},
         correlation_id=corr or f"c-{secrets.token_hex(6)}",
         created_by=by,
+        owner_instance=owner,
     )
 
 
@@ -280,3 +282,50 @@ async def test_recognised_unfinished_statuses_are_still_settled(
 
     settled = {t.database_id for t in await task_db.fail_unfinished_tasks("restart")}
     assert set(ids) <= settled, f"missed: {set(ids) - settled}"
+
+
+# --- the boot sweep is scoped to the role that owns the task (docs/plan-core.md P0 / P9) ---
+
+
+@pytest.mark.asyncio
+async def test_the_boot_sweep_settles_only_its_own_roles_tasks(task_db: EnvWorkerTaskORMExecutor) -> None:
+    """Two processes share this table once core and SMS are separate Deployments. When one of
+    them boots, it must not fail the tasks the OTHER is running right now."""
+    mine = await _new(task_db, owner="api")
+    theirs = await _new(task_db, owner="core")
+    await task_db.start_task(theirs.database_id)
+
+    settled = await task_db.fail_unfinished_tasks("api restarted", owner_instance="api")
+
+    assert [t.database_id for t in settled] == [mine.database_id]
+    assert (await _get(task_db, mine.database_id)).status == ComposeJobStatus.FAILED
+    assert (await _get(task_db, theirs.database_id)).status == ComposeJobStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_the_boot_sweep_also_settles_tasks_with_no_owner(task_db: EnvWorkerTaskORMExecutor) -> None:
+    """Rows written before the column existed have no owner. Left out, the first boot after the
+    migration would leave whatever was already stranded unsettled for good."""
+    legacy = await _new(task_db, owner=None)
+    settled = await task_db.fail_unfinished_tasks("api restarted", owner_instance="api")
+    assert [t.database_id for t in settled] == [legacy.database_id]
+
+
+@pytest.mark.asyncio
+async def test_an_unscoped_sweep_still_settles_everything(task_db: EnvWorkerTaskORMExecutor) -> None:
+    """The worker-stop caller passes a job name and no owner; that path is unchanged."""
+    a = await _new(task_db, owner="api", job="job-x")
+    b = await _new(task_db, owner="core", job="job-x")
+    settled = await task_db.fail_unfinished_tasks("worker stopped", job_name="job-x")
+    assert {t.database_id for t in settled} == {a.database_id, b.database_id}
+
+
+@pytest.mark.asyncio
+async def test_the_router_stamps_tasks_with_this_processes_role() -> None:
+    """Pinned at the call site: a task inserted without its owner is invisible to the scoped
+    sweep's ownership rule and falls into the "no owner" bucket forever."""
+    import inspect
+
+    from viva_api.api.routers import env_worker
+
+    assert "owner_instance=get_settings().owner_instance" in inspect.getsource(env_worker.submit_task)

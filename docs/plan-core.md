@@ -399,7 +399,7 @@ RDS snapshot comes first.
 | — | existing chain: 14 of 16 revisions | yes — real downgrades |
 | P0 second wave | #637: `b9e1d5a3c7f2` (creates nine tables), `c3f7a1e5b9d4` (reshapes three baseline tables) — inserted, guarded | `b9e1…` yes, but its downgrade **drops the tables and their data** — only ever right on a database this chain built. `c3f7…` downgrade is a deliberate no-op: the baseline's shape is one the application cannot use. Both are no-ops on every existing (`create_all`) database |
 | — | `a1c3e5f7b9d2`, `44335812e447` (and #661's `b2f6d8e0a4c7`): enum `ADD VALUE` | **no** — Postgres cannot drop an enum label; the downgrade is a documented no-op. Benign: an unused label |
-| P0 second wave | `env_worker_task.owner_instance` | yes — drop column |
+| P0 second wave | `e7b3c9a1d5f2`: `env_worker_task.owner_instance` + index | yes — and proven: upgrade → downgrade → upgrade round-trips to an identical schema |
 | P4a | owner-ref columns on `hpcrun` / `dataset`, backfilled, dual-written | yes — old columns stay authoritative |
 | P4b | `task_script` table; task = job with `owner_kind = 'task'` | yes. **No `TASK` enum label is added** — the job kind rides in the new VARCHAR column, precisely so this stays reversible |
 | P5 | `environment` table | yes — dropping it loses only rows created since |
@@ -473,7 +473,7 @@ gating latency compared to the baseline.
 |---|---|---|---|---|---|
 | P-1 | #679 | — | — | — | merged 2026-09-18 (`21bd7296`); docs only |
 | P0 (first wave) | #680 import-linter contracts · #681 `set_messaging_service` · #682 reconciler `current_schema()` · #683 shutdown stops pollers · #684 kustomize by-name patches | 0.9.145 | **2026-09-18** (checkpoint A) | — | **merged 2026-09-18** (`ca67b43f`, `2f6d73b1`, `f99caa02`, `7f3f6777`, `86c5f292`); combined `main` verified: `make check` ×2, 378 tests. Not yet deployed — #681–#683 change runtime code and go out with the next version bump; #680 and #684 change nothing that runs |
-| P0 second wave | #637 fresh-database fix + parity test — #700, merged 2026-09-19 (`833fcc8f`) · `DB_CREATE_ALL` guard + startup schema check — **this PR** · `owner_instance` column scoping the env-worker boot sweep | next DB deploy (checkpoint B) | | | two of three done |
+| P0 second wave | #637 fresh-database fix + parity test — #700 (`833fcc8f`) · `DB_CREATE_ALL` guard + startup schema check — #701 (`2c898d19`) · `owner_instance` column scoping the env-worker boot sweep — **this PR** | checkpoint B | | | #700, #701 merged 2026-09-19; third open |
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — **this PR**; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — **this PR** |
@@ -502,6 +502,17 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — **One way to run a composite** (Jim asked how composites are specified; the
+  answer was "two ways, on two endpoints"). Recorded in `architecture-core.md`: core takes an
+  `EnvironmentRef` plus exactly one of a `document` or a `composite{id, params}`; execution
+  (multi-node, Nextflow head, single container) is a field of that request, not an endpoint.
+  The SMS `multi_node_dispatch` / `nextflow_dispatch` shapes become facades over it. Lands
+  with P5, where the environment registry arrives.
+- **2026-09-19** — `owner_instance` is a **role**, not a pod name: the boot sweep runs in the
+  *next* incarnation of the same role, which has to recognise its predecessor's rows, and a pod
+  name changes on every restart. Rows with no owner (written before the column) are swept too,
+  or the first boot after the migration would strand them for good. This is the first revision
+  the parity test checked on arrival — and it caught nothing, which is the point.
 - **2026-09-19** — `DB_CREATE_ALL` guard. Not fatal by design: a mismatch is an ERROR log and a
   `/health` field, not a crash, because a rolling deploy can start a pod just before the
   migration Job finishes and that must not become an outage; the smoke `database` check is what

@@ -280,6 +280,12 @@ class ORMEnvWorkerTask(ComposeBase):
     #: colleague's six-hour study -- not to withstand an adversary, who can set
     #: the header to anything. See viva_api/api/auth.py.
     created_by: Mapped[str | None] = mapped_column(nullable=True, index=True)
+    #: The ROLE of the process that accepted the task -- a stable name such as "api", never a pod
+    #: name. The boot sweep runs in the NEXT incarnation of that role and must recognise its
+    #: predecessor's rows; and it must NOT touch another role's, which is what stops a second
+    #: process sharing this database (docs/plan-core.md P9) from failing the first one's live
+    #: tasks. NULL on rows written before the column existed.
+    owner_instance: Mapped[str | None] = mapped_column(nullable=True, index=True)
 
     def to_task(self) -> "EnvWorkerTask":
         return EnvWorkerTask(

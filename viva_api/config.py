@@ -105,6 +105,12 @@ class Settings(CoreSettings):
     # viva_api/simulation/db_startup.py for why create_all is corrosive in production.
     db_create_all: bool = True
 
+    # This process's ROLE in the deployment: a stable name, NOT a pod name (pod names change on
+    # every restart, and the env-worker boot sweep has to recognise the rows its predecessor
+    # left behind). Tasks are stamped with it and the sweep settles only its own role's. One
+    # value per Deployment that accepts env-worker tasks; "api" is the only one today.
+    owner_instance: str = "api"
+
     slurm_submit_host: str = ""
     slurm_submit_user: str = ""  # "svc_vivarium"
     slurm_submit_key_path: str = ""  # "/Users/jimschaff/.ssh/id_rsa"
