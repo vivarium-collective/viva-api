@@ -274,6 +274,13 @@ head` then runs from base and fails re-`CREATE`-ing existing tables.
 - **Add a migration**: `uv run alembic revision -m "…"` (or hand-write one; see
   `c1a2b3d4e5f6_add_tags_to_simulation.py`). Set `down_revision` to the current
   head. Prefer PG-safe, idempotent ops.
+  **Every model change needs a migration, including a NEW TABLE** — `create_all` will
+  happily create it and hide the omission. `tests/simulation/test_fresh_database_migrations.py`
+  builds one database from the chain and one from `create_all` and fails, naming the
+  difference, if they are not the same schema. (That is how nine never-migrated tables and a
+  stale baseline were found — viva-api#637. `alembic upgrade head` from an empty database
+  works as of `b9e1d5a3c7f2` + `c3f7a1e5b9d4`; those two are guarded, inserted mid-chain, and
+  deliberately have no fingerprint marker — see `UNFINGERPRINTED_REVISIONS`.)
 - **The reconciler** (`viva_api/simulation/db_reconcile.py`, run by the
   `alembic-migrate` Job) classifies any DB and acts idempotently:
   - **FRESH** (no tables, no `alembic_version`) → `upgrade head` from base

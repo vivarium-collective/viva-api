@@ -1,7 +1,7 @@
 """add query/result columns to analysis
 
 Revision ID: d3f9a1c72b84
-Revises: c1a2b3d4e5f6
+Revises: c3f7a1e5b9d4
 Create Date: 2026-07-14
 
 Generalizes the ``analysis`` table for the analysis-result endpoints
@@ -21,7 +21,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "d3f9a1c72b84"
-down_revision: str | Sequence[str] | None = "c1a2b3d4e5f6"
+down_revision: str | Sequence[str] | None = "c3f7a1e5b9d4"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

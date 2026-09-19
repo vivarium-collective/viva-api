@@ -251,6 +251,22 @@ async def _marker_dataset_table(conn: AsyncConnection) -> bool:
 # are needed ONLY while create_all still bootstraps prod DBs (see module docstring):
 # a create_all DB advanced past the top marker would stamp stale and re-apply an
 # already-made migration. Guarding create_all off in prod freezes this list.
+#: Revisions that deliberately have NO fingerprint marker (viva-api#637).
+#:
+#: Both were INSERTED into the chain to make ``upgrade head`` work from an empty database:
+#: ``b9e1d5a3c7f2`` creates the nine tables only ``create_all`` ever created, ``c3f7a1e5b9d4``
+#: reshapes the three baseline tables the models outgrew. A marker must be FALSE below its
+#: revision -- that is what makes the LEGACY walk a contiguous True-then-False run -- and no
+#: honest marker for these two can be: on a ``create_all`` database those tables and columns
+#: exist from the first boot, at EVERY level, so "table 'analysis' exists" would read True on a
+#: database that is really at the baseline and classify it INCONSISTENT.
+#:
+#: They do not need one. A LEGACY database stamped below them is upgraded THROUGH them, and both
+#: are guarded no-ops on a database that already has the models' shape; one stamped above them
+#: never runs them. ``test_every_revision_is_fingerprinted_or_explicitly_exempt`` keeps this list
+#: from becoming a way to forget a marker.
+UNFINGERPRINTED_REVISIONS: frozenset[str] = frozenset({"b9e1d5a3c7f2", "c3f7a1e5b9d4"})
+
 LEGACY_FINGERPRINTS: list[tuple[str, str]] = [
     ("fb7621a73e24", "baseline: table 'simulation' exists"),
     ("0f991fad32ba", "hpcrun.job_id_ext present and hpcrun.slurmjobid dropped"),
