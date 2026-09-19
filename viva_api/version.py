@@ -1358,7 +1358,22 @@
 #            Also first dev deploy of what merged after 0.9.142: postgres-client 17 in
 #            the api image (#668), BioModels consolidated to /biomodels/run (#678).
 #            Code-only: NO new migration, DB stays at e3a9c1d70b62.
-__version__ = "0.9.145"
+#           0.9.146 -- core split, deploy checkpoint A2 (docs/plan-core.md section 8). Taken
+#            on its own so a regression bisects to ONE kind of plumbing change:
+#            * P1b (#691) -- CONFIGURATION plumbing. The storage (S3/GCS/Qumulo), local-cache
+#              and path-prefix settings now live in viva_core.settings.CoreSettings;
+#              viva_api.config.Settings INHERITS them and hands core its own object through a
+#              provider. storage/*, infra/ssh, backends/{slurm_service,nextflow_trace} moved
+#              to viva_core. Proof is a results download from S3 on a live pod.
+#              MARKER: /app/viva_core/settings.py exists.
+#            * #689 -- run_pbg matches an emitter by its CLASS, not by how its address is
+#              spelled. Before it, any generic composite with an in-memory emitter failed
+#              the PBG_REQUIRE_OUTPUT gate on compose-on-Ray. `atlantis smoke run --only
+#              compose` must flip from FAIL to PASS.
+#            Also merged, nothing to deploy: atlantis smoke (#690, client side) and the
+#            no-real-AWS test guard (#693, tests only).
+#            Code-only: NO new migration, DB stays at e3a9c1d70b62.
+__version__ = "0.9.146"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in
