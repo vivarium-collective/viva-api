@@ -82,7 +82,12 @@ class SkipCheck(Exception):
 
 
 class CheckFailed(Exception):
-    """The deployment answered, and the answer was wrong."""
+    """The deployment answered, and the answer was wrong. ``evidence`` is whatever the check
+    had gathered by then -- a failure is when it is wanted most."""
+
+    def __init__(self, message: str, evidence: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.evidence: dict[str, Any] = dict(evidence or {})
 
 
 @dataclass
@@ -858,10 +863,19 @@ def _wait_for_batch(
         if on_tick is not None:
             on_tick()
         if opts.clock() >= deadline:
-            names = sorted({str(j.get("jobName")) for j in jobs})
-            state = f"still active: {names}" if jobs else "none ever appeared"
-            raise CheckFailed(f"{what}: after {limit:.0f} s, Batch jobs for {token} -- {state}")
+            state = f"still active: {'; '.join(_describe_batch_job(j) for j in jobs)}" if jobs else "none ever appeared"
+            raise CheckFailed(f"{what}: after {limit:.0f} s, Batch jobs for {token} -- {state}", {"still_active": jobs})
         opts.sleep(opts.poll_seconds)
+
+
+def _describe_batch_job(job: dict[str, Any]) -> str:
+    """``name STATUS``, plus what it is waiting on -- a job that was terminated while PENDING
+    stays PENDING until its dependency finishes, and that dependency is the real leak."""
+    text = f"{job.get('jobName')} {job.get('status')}"
+    if job.get("terminated"):
+        text += " (terminate accepted)"
+    waiting = [f"{d.get('jobName')} {d.get('status')}" for d in job.get("waiting_on") or []]
+    return f"{text}, waiting on {', '.join(waiting)}" if waiting else text
 
 
 def _cancel_and_verify(
@@ -920,10 +934,12 @@ def _cancel_and_verify(
 
     try:
         _drive()
-    except BaseException:
+    except BaseException as e:
         # Never leave a smoke run burning compute because the check itself gave up.
         with suppress(Exception):
             svc.cancel_workflow(simulation_id)
+        if isinstance(e, CheckFailed):
+            e.evidence = {**evidence, **e.evidence}
         raise
     after = _status_text(svc.get_workflow_status(simulation_id).status)
     evidence["status_after"] = after
@@ -1025,6 +1041,28 @@ class AwsBatchJobLister:
                 for page in self._pages(self._client.list_jobs, jobQueue=queue, jobStatus=status):
                     for job in self._matching(page.get("jobSummaryList", []), token):
                         found.append({"jobId": job["jobId"], "jobName": job.get("jobName"), "status": status})
+        return self._with_dependencies(found) if found else found
+
+    def _with_dependencies(self, found: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Add ``terminated`` and ``waiting_on`` (the jobs each one depends on, with their
+        states). Only for what matched -- a handful -- so it costs two DescribeJobs calls."""
+        detail = {j["jobId"]: j for j in self._client.describe_jobs(jobs=[f["jobId"] for f in found]).get("jobs", [])}
+        wanted = sorted({d["jobId"] for j in detail.values() for d in j.get("dependsOn") or []})
+        parents = (
+            {j["jobId"]: j for j in self._client.describe_jobs(jobs=wanted[:100]).get("jobs", [])} if wanted else {}
+        )
+        for job in found:
+            described = detail.get(job["jobId"], {})
+            job["terminated"] = bool(described.get("isTerminated") or described.get("isCancelled"))
+            job["waiting_on"] = [
+                {
+                    "jobId": d["jobId"],
+                    "jobName": parents[d["jobId"]].get("jobName"),
+                    "status": parents[d["jobId"]].get("status"),
+                }
+                for d in described.get("dependsOn") or []
+                if d["jobId"] in parents
+            ]
         return found
 
 
@@ -1144,7 +1182,7 @@ def _run_one(svc: SmokeService, check: Check, opts: SmokeOptions) -> CheckResult
     except SkipCheck as e:
         outcome, detail = Outcome.SKIP, str(e)
     except CheckFailed as e:
-        outcome, detail = Outcome.FAIL, str(e)
+        outcome, detail, evidence = Outcome.FAIL, str(e), e.evidence
     except httpx.HTTPError as e:
         outcome, detail = Outcome.FAIL, f"{type(e).__name__}: {e}"
     except Exception as e:

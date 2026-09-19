@@ -875,7 +875,7 @@ def test_the_batch_lister_matches_by_name_or_by_command_across_queues_and_pages(
             return {"jobSummaryList": [{"jobId": "d", "jobName": "sim_gen"}]}
 
         def describe_jobs(self, **kw: Any) -> dict[str, Any]:
-            commands = {"b": ["echo"], "c": ["bash", "s3://b/nextflow/work/TOKEN/ab/cd"], "d": None}
+            commands = {"a": None, "b": ["echo"], "c": ["bash", "s3://b/nextflow/work/TOKEN/ab/cd"], "d": None}
             return {
                 "jobs": [{"jobId": j, "jobName": "sim_gen", "container": {"command": commands[j]}} for j in kw["jobs"]]
             }
@@ -883,3 +883,46 @@ def test_the_batch_lister_matches_by_name_or_by_command_across_queues_and_pages(
     lister = smoke.AwsBatchJobLister(client=Client())
     assert sorted(job["jobId"] for job in lister("TOKEN")) == ["a", "c"]
     assert {kw["jobQueue"] for name, kw in calls if name == "list_jobs"} == {"q1", "q2"}
+
+
+def test_a_failed_cancel_check_keeps_its_evidence_and_says_what_the_job_is_waiting_on() -> None:
+    """Found live on dev 0.9.147: cancel terminated the simulation's job and left the ParCa
+    job it depends on RUNNING, so the terminated job sat PENDING. The row said CANCELLED."""
+    svc = _cancel_service()
+
+    class WaitingOnParca(FakeBatchJobs):
+        def __call__(self, token: str) -> list[dict[str, Any]]:
+            jobs = super().__call__(token)
+            for job in jobs:
+                job.update(status="PENDING", terminated=True)
+                job["waiting_on"] = [{"jobId": "p-1", "jobName": "ray-parca-abc-xyz", "status": "RUNNING"}]
+            return jobs
+
+    batch = WaitingOnParca(svc, never_stops=True)
+    result = _run("sim-cancel", svc, active_batch_jobs=batch, cancel_settle_seconds=30.0)
+    assert result.outcome is smoke.Outcome.FAIL
+    assert "PENDING (terminate accepted), waiting on ray-parca-abc-xyz RUNNING" in result.detail
+    assert result.evidence["simulation_id"] == 901
+    assert result.evidence["cancel_answered"] == "cancelled"
+    assert result.evidence["still_active"][0]["waiting_on"][0]["jobName"] == "ray-parca-abc-xyz"
+
+
+def test_the_batch_lister_reports_what_a_matched_job_depends_on() -> None:
+    class Client:
+        def describe_job_queues(self, **kw: Any) -> dict[str, Any]:
+            return {"jobQueues": [] if kw.get("maxResults") == 1 else [{"jobQueueName": "q"}]}
+
+        def list_jobs(self, **kw: Any) -> dict[str, Any]:
+            hit = kw["jobStatus"] == "PENDING"
+            return {"jobSummaryList": [{"jobId": "sim", "jobName": "ray-sim-TOKEN-x"}] if hit else []}
+
+        def describe_jobs(self, **kw: Any) -> dict[str, Any]:
+            known = {
+                "sim": {"jobId": "sim", "isTerminated": True, "dependsOn": [{"jobId": "parca", "type": "SEQUENTIAL"}]},
+                "parca": {"jobId": "parca", "jobName": "ray-parca-abc-xyz", "status": "RUNNING"},
+            }
+            return {"jobs": [known[j] for j in kw["jobs"]]}
+
+    [job] = smoke.AwsBatchJobLister(client=Client())("TOKEN")
+    assert job["terminated"] is True
+    assert job["waiting_on"] == [{"jobId": "parca", "jobName": "ray-parca-abc-xyz", "status": "RUNNING"}]

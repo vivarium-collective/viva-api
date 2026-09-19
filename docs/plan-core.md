@@ -530,6 +530,23 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — **The new checks' first live run (dev 0.9.147, pre-carve) found a real
+  bug: #709.** `task` PASS (304 s, cold start; nonce and `sim_data_refs` read back),
+  `task-fail` PASS (12 s), `task-repo` PASS (22 s), `nextflow-cancel` PASS (216 s — and it
+  was **the scheduler's reaper** that stopped the task, `dispatch.reaped` = 1, so
+  `terminate_matching`'s path is genuinely exercised by this check), **`sim-cancel` FAIL**.
+  The failure is the deployment's, not the check's: cancelling a default-path simulation
+  terminates the simulation's Batch job only. The ParCa job submitted alongside it is
+  never recorded, so nothing can stop it — it ran to SUCCEEDED, 757 s, all after the API
+  had answered CANCELLED — and the terminated simulation job sat `PENDING` behind its
+  `dependsOn` for the whole time. **This predates the core split** (nothing of P2.1 is
+  deployed), so at checkpoint C `sim-cancel` is an *expected* FAIL until #709 is fixed; the
+  checkpoint's question for it is "same failure as the baseline", not PASS. The check was
+  then improved by what it found: a failure now keeps its evidence, and names each
+  lingering job's state and what it is waiting on (`… PENDING (terminate accepted), waiting
+  on ray-parca-… RUNNING`) — the first run caught the bug only through the zombie, since a
+  ParCa job's name carries the commit, not the experiment id. The fix belongs with the
+  ParCa cut (P2.1 cut 5) or before it; `hpcrun.external_job_ids` already exists for this.
 - **2026-09-19** — **Smoke grew four checks before checkpoint C** (Jim asked whether the
   smoke tests were rich enough for the paths P2.1 touches; they were not). Nothing in P2.1
   has been deployed, so no smoke check has run against it yet; and mapping cut 2's surface
