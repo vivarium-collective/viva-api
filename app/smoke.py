@@ -21,8 +21,16 @@ Tiers (``docs/plan-core.md`` section 8 says which a deploy checkpoint needs):
   relayed env worker (a K8s Job) plus a task on its task tier, a tiny composite; and, when
   asked for, a standalone analysis and a BioModels run.
 
-Tier 2 (full simulations, chain dispatch, Nextflow head, image build) and Tier R (restart
-resilience) are planned, not here.
+* **Tier 2** -- tens of minutes, dollars: one real simulation per DISPATCH MECHANISM, because
+  that is what a change to the dispatch code can break -- the default single-generation
+  path, chain dispatch (2 seeds x 2 generations), a Nextflow head, a multi-node composite.
+  They run CONCURRENTLY: their cost is waiting on AWS Batch, not on this client.
+* **Tier R** (``--tier 3``) -- restart resilience: a job is put in flight, the deployment is
+  restarted with the operator's own ``--restart-command``, and the job must still resolve and
+  still show its output. Status that lives only in a pod's memory fails this.
+
+Not covered: an image build, and the upstream K8s + Nextflow path -- ``scripts/qualification_test.sh``
+remains the check for that one.
 
 The checks take a small Protocol rather than ``E2EDataService`` itself, so each is unit-tested
 against a fake; ``E2EDataService`` satisfies it structurally.
@@ -33,11 +41,14 @@ from __future__ import annotations
 import io
 import json
 import secrets
+import shlex
+import subprocess
 import tarfile
 import tempfile
 import time
 import zipfile
 from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
@@ -92,8 +103,12 @@ class SmokeOptions:
     commit: str | None = None
     simulation_id: int | None = None
     biomodel_id: str | None = None
+    simulator_id: int | None = None
+    restart_command: str | None = None
+    restart_wait_seconds: float = 300.0
     poll_seconds: float = 10.0
     timeout_seconds: float = 900.0
+    simulation_timeout_seconds: float = 7200.0
     sleep: Callable[[float], None] = time.sleep
     clock: Callable[[], float] = time.monotonic
 
@@ -133,6 +148,20 @@ class SmokeService(Protocol):
     ) -> dict[str, Any]: ...
     def compose_get_simulation_status(self, simulation_id: int) -> dict[str, Any]: ...
     def compose_get_simulation_results(self, simulation_id: int, dest: Path) -> Path: ...
+    def run_workflow(
+        self,
+        *,
+        experiment_id: str | None = ...,
+        simulator_id: int | None = ...,
+        num_generations: int | None = ...,
+        num_seeds: int | None = ...,
+        description: str | None = ...,
+        tags: list[str] | None = ...,
+        extra_params: dict[str, object] | None = ...,
+    ) -> Any: ...
+    def get_workflow_status(self, simulation_id: int) -> Any: ...
+    def get_workflow_tasks(self, simulation_id: int) -> Sequence[Any]: ...
+    def get_output_data_sync(self, simulation_id: int, dest: Path) -> Path: ...
     def run_analysis(self, simulation_id: int, modules: str | None = ...) -> dict[str, Any]: ...
     def get_analysis_status(self, analysis_id: int) -> Any: ...
     def compose_biomodels_run(
@@ -175,22 +204,45 @@ def _status_text(value: Any) -> str:
     return str(raw).lower() if raw is not None else "none"
 
 
+#: How long a status poll may keep failing to REACH the API before the check gives up. A
+#: tier-2 poll runs for an hour; a port-forward restarts, an SSM tunnel has a 70-minute
+#: lifetime, a pod rolls. None of those is the deployment failing the check.
+UNREACHABLE_GRACE_SECONDS = 180.0
+
+
 def _poll(
     opts: SmokeOptions,
     read_status: Callable[[], str],
     what: str,
+    timeout_seconds: float | None = None,
 ) -> str:
-    """Poll until a terminal status. Returns it when good; raises when bad or out of time."""
-    deadline = opts.clock() + opts.timeout_seconds
+    """Poll until a terminal status. Returns it when good; raises when bad or out of time.
+
+    Failing to REACH the API is tolerated for ``UNREACHABLE_GRACE_SECONDS`` at a stretch; an
+    answer -- any answer, including an error status -- resets that clock.
+    """
+    limit = opts.timeout_seconds if timeout_seconds is None else timeout_seconds
+    deadline = opts.clock() + limit
     last = "none"
+    unreachable_since: float | None = None
     while True:
-        last = read_status()
-        if last in TERMINAL_OK:
-            return last
-        if last in TERMINAL_BAD:
-            raise CheckFailed(f"{what} ended {last.upper()}")
+        try:
+            last = read_status()
+            unreachable_since = None
+        except (httpx.TransportError, httpx.HTTPError) as e:
+            now = opts.clock()
+            unreachable_since = now if unreachable_since is None else unreachable_since
+            if now - unreachable_since >= UNREACHABLE_GRACE_SECONDS:
+                raise CheckFailed(
+                    f"{what}: API unreachable for {UNREACHABLE_GRACE_SECONDS:.0f} s while polling ({type(e).__name__})"
+                ) from e
+        else:
+            if last in TERMINAL_OK:
+                return last
+            if last in TERMINAL_BAD:
+                raise CheckFailed(f"{what} ended {last.upper()}")
         if opts.clock() >= deadline:
-            raise CheckFailed(f"{what} still {last.upper()} after {opts.timeout_seconds:.0f} s")
+            raise CheckFailed(f"{what} still {last.upper()} after {limit:.0f} s")
         opts.sleep(opts.poll_seconds)
 
 
@@ -549,6 +601,194 @@ def check_biomodels(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[st
     return f"{opts.biomodel_id}: compose simulation {simulation_id} completed", evidence
 
 
+# --------------------------------------------------------------------------- tier 2
+
+#: The composite ids the two composite-shaped dispatch mechanisms default to in the CLI.
+NEXTFLOW_COMPOSITE_ID = "v2ecoli.composites.workflow_nf.workflow_nf"
+MULTI_NODE_COMPOSITE_ID = "v2ecoli.composites.lineage_ray_batch"
+
+
+def _resolve_simulator(svc: SmokeService, opts: SmokeOptions) -> int:
+    """``--simulator-id``, else the newest registered container-path simulator."""
+    if opts.simulator_id is not None:
+        return opts.simulator_id
+    candidates = [
+        s
+        for s in svc.show_simulators()
+        if any(tag in str(getattr(s, "git_repo_url", "")).lower() for tag in ("sms-ecoli", "v2ecoli"))
+    ]
+    if not candidates:
+        raise SkipCheck("no --simulator-id given and no container-path simulator is registered")
+    return max(int(getattr(s, "database_id", 0) or 0) for s in candidates)
+
+
+def _run_simulation(
+    svc: SmokeService,
+    opts: SmokeOptions,
+    kind: str,
+    *,
+    generations: int | None = None,
+    seeds: int | None = None,
+    extra_params: dict[str, object] | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Submit one simulation exactly as the CLI would, and wait for it. Returns its id."""
+    simulator_id = _resolve_simulator(svc, opts)
+    experiment_id = f"smoke-{kind}-{secrets.token_hex(4)}"
+    simulation = svc.run_workflow(
+        experiment_id=experiment_id,
+        simulator_id=simulator_id,
+        num_generations=generations,
+        num_seeds=seeds,
+        description=f"atlantis smoke: {kind} dispatch path",
+        tags=["smoke", f"smoke-{kind}"],
+        extra_params=extra_params,
+    )
+    simulation_id = int(simulation.database_id)
+    evidence: dict[str, Any] = {
+        "simulation_id": simulation_id,
+        "experiment_id": experiment_id,
+        "simulator_id": simulator_id,
+    }
+    _poll(
+        opts,
+        lambda: _status_text(svc.get_workflow_status(simulation_id).status),
+        f"{kind} simulation {simulation_id}",
+        timeout_seconds=opts.simulation_timeout_seconds,
+    )
+    return simulation_id, evidence
+
+
+def _require_outputs(svc: SmokeService, simulation_id: int, evidence: dict[str, Any], expect_summaries: int) -> int:
+    """COMPLETED is a claim; the output is the fact. Download it and count the per-seed
+    ``summary.json`` files a finished lineage writes."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = svc.get_output_data_sync(simulation_id, Path(tmp))
+        files = [p for p in root.rglob("*") if p.is_file()]
+        summaries = [p for p in files if p.name == "summary.json" and p.parent != root]
+    evidence.update(output_files=len(files), seed_summaries=len(summaries))
+    if len(summaries) < expect_summaries:
+        raise CheckFailed(
+            f"simulation {simulation_id} COMPLETED but its output has {len(summaries)} per-seed summary.json "
+            f"file(s), expected {expect_summaries} ({len(files)} files in all)"
+        )
+    return len(files)
+
+
+def check_sim_default(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
+    """The default path: one seed, one generation."""
+    simulation_id, evidence = _run_simulation(svc, opts, "default", generations=1, seeds=1)
+    files = _require_outputs(svc, simulation_id, evidence, expect_summaries=1)
+    return f"simulation {simulation_id}: completed, {files} output files, 1 seed summary", evidence
+
+
+def check_sim_chain(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
+    """Chain dispatch -- selected by more than one generation: 2 seeds x 2 generations, one
+    Batch job per seed per generation, gated by the scheduler."""
+    simulation_id, evidence = _run_simulation(svc, opts, "chain", generations=2, seeds=2)
+    progress = _get_json(svc, f"/api/v1/simulations/{simulation_id}/chain-progress")
+    evidence["chain_progress"] = progress
+    if not progress.get("terminal") or progress.get("seeds_succeeded") != progress.get("seeds_total") != 0:
+        raise CheckFailed(f"chain {simulation_id} COMPLETED but chain-progress says {progress}")
+    if progress.get("seeds_total") != 2:
+        raise CheckFailed(f"chain {simulation_id}: expected 2 seeds, chain-progress says {progress}")
+    files = _require_outputs(svc, simulation_id, evidence, expect_summaries=2)
+    return f"simulation {simulation_id}: 2/2 seeds succeeded over 2 generations, {files} output files", evidence
+
+
+def check_sim_nextflow(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
+    """A Nextflow head (a K8s Job) driving one Batch task per lineage."""
+    dispatch: dict[str, object] = {
+        "composite_id": NEXTFLOW_COMPOSITE_ID,
+        "executor": "awsbatch",
+        "launch": True,
+        "params": {"n_seeds": 1, "n_generations": 1},
+    }
+    simulation_id, evidence = _run_simulation(svc, opts, "nextflow", extra_params={"nextflow_dispatch": dispatch})
+    tasks = list(svc.get_workflow_tasks(simulation_id))
+    states = sorted({_status_text(getattr(t, "status", None)) for t in tasks})
+    evidence.update(tasks=len(tasks), task_states=states)
+    if not tasks:
+        raise CheckFailed(f"nextflow {simulation_id} COMPLETED but its trace lists no tasks")
+    if states != ["completed"]:
+        raise CheckFailed(f"nextflow {simulation_id} COMPLETED but its tasks are {states}")
+    return f"simulation {simulation_id}: {len(tasks)} Nextflow task(s), all completed", evidence
+
+
+def check_sim_composite(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
+    """A multi-node process-bigraph composite on Ray actors inside one Batch MNP job."""
+    dispatch: dict[str, object] = {
+        "composite_id": MULTI_NODE_COMPOSITE_ID,
+        "num_nodes": 2,
+        "params": {"n_seeds": 1, "n_generations": 1},
+        "steps": 36000,
+    }
+    simulation_id, evidence = _run_simulation(svc, opts, "composite", extra_params={"multi_node_dispatch": dispatch})
+    files = _require_outputs(svc, simulation_id, evidence, expect_summaries=0)
+    if not files:
+        raise CheckFailed(f"composite {simulation_id} COMPLETED but its output is empty")
+    return f"simulation {simulation_id}: completed, {files} output files", evidence
+
+
+# --------------------------------------------------------------------------- tier R
+
+
+def check_restart(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
+    """Put a job in flight, restart the deployment, and require the job to still resolve.
+
+    The restart is the operator's own command (``kubectl rollout restart ...``, a deploy
+    script): this client has no cluster access and should not. The command must return only
+    once the API is reachable again AT THE SAME URL -- through a ``kubectl port-forward`` that
+    means re-establishing the forward too.
+    """
+    if not opts.restart_command:
+        raise SkipCheck('pass --restart-command "<how to restart this deployment>" to run this')
+    commit = _resolve_commit(svc, opts)
+    nonce = f"smoke-restart-{secrets.token_hex(6)}"
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "atlantis_smoke_restart.py"
+        script.write_text(f'print("{nonce}")\n', encoding="utf-8")
+        task = svc.run_uploaded_task(
+            local_path=str(script),
+            args=[],
+            sim_data_refs=None,
+            memory_class="standard",
+            commit=commit,
+            name=f"atlantis-{nonce}",
+        )
+    task_id = int(task.database_id)
+    version_before = _get_json(svc, "/version")
+    evidence: dict[str, Any] = {"task_id": task_id, "commit": commit, "version": version_before}
+
+    started = opts.clock()
+    completed = subprocess.run(  # noqa: S603 - the operator's own command, given on the command line
+        shlex.split(opts.restart_command), capture_output=True, text=True, check=False
+    )
+    evidence["restart_seconds"] = round(opts.clock() - started, 1)
+    if completed.returncode != 0:
+        raise CheckFailed(f"restart command exited {completed.returncode}: {completed.stderr.strip()[-300:]}")
+
+    deadline = opts.clock() + opts.restart_wait_seconds
+    while True:
+        try:
+            version_after = _get_json(svc, "/version")
+            break
+        except (CheckFailed, httpx.HTTPError) as e:
+            if opts.clock() >= deadline:
+                raise CheckFailed(f"API did not come back within {opts.restart_wait_seconds:.0f} s: {e}") from e
+            opts.sleep(opts.poll_seconds)
+    if version_after != version_before:
+        raise CheckFailed(f"/version changed across the restart: {version_before} -> {version_after}")
+
+    _poll(opts, lambda: _status_text(svc.get_task_status(task_id).status), f"task {task_id} (across a restart)")
+    lines = [str(line) for line in (getattr(svc.get_task_logs(task_id), "lines", None) or [])]
+    if not any(nonce in line for line in lines):
+        raise CheckFailed(f"task {task_id} resolved after the restart but its log lacks the nonce")
+    return (
+        f"task {task_id} submitted, deployment restarted ({evidence['restart_seconds']} s), task still resolved",
+        evidence,
+    )
+
+
 CHECKS: tuple[Check, ...] = (
     Check("version", 0, "/version and /health agree", check_version),
     Check("routes", 0, "every spec operation is served", check_routes),
@@ -561,7 +801,15 @@ CHECKS: tuple[Check, ...] = (
     Check("compose", 1, "a composite runs and returns the right number", check_compose),
     Check("analysis", 1, "a standalone analysis produces output (needs --simulation-id)", check_analysis),
     Check("biomodels", 1, "a BioModels model runs (needs --biomodel)", check_biomodels),
+    Check("sim-default", 2, "default dispatch: 1 seed x 1 generation completes and writes output", check_sim_default),
+    Check("sim-chain", 2, "chain dispatch: 2 seeds x 2 generations, every seed succeeds", check_sim_chain),
+    Check("sim-nextflow", 2, "Nextflow head: every traced task completes", check_sim_nextflow),
+    Check("sim-composite", 2, "multi-node composite on Ray completes and writes output", check_sim_composite),
+    Check("restart", 3, "a job in flight survives a restart (needs --restart-command)", check_restart),
 )
+
+#: Tier 2 checks spend their time waiting on AWS Batch, so they run side by side.
+CONCURRENT_TIERS = frozenset({2})
 
 
 def select_checks(tier: int, only: Sequence[str] = (), skip: Sequence[str] = ()) -> list[Check]:
@@ -575,33 +823,52 @@ def select_checks(tier: int, only: Sequence[str] = (), skip: Sequence[str] = ())
     return [c for c in chosen if c.name not in skip]
 
 
+def _run_one(svc: SmokeService, check: Check, opts: SmokeOptions) -> CheckResult:
+    started = opts.clock()
+    evidence: dict[str, Any] = {}
+    try:
+        detail, evidence = check.run(svc, opts)
+        outcome = Outcome.PASS
+    except SkipCheck as e:
+        outcome, detail = Outcome.SKIP, str(e)
+    except CheckFailed as e:
+        outcome, detail = Outcome.FAIL, str(e)
+    except httpx.HTTPError as e:
+        outcome, detail = Outcome.FAIL, f"{type(e).__name__}: {e}"
+    except Exception as e:
+        outcome, detail = Outcome.FAIL, f"check crashed -- {type(e).__name__}: {e}"
+    return CheckResult(check.name, check.tier, outcome, round(opts.clock() - started, 2), detail, evidence)
+
+
 def run_checks(
     svc: SmokeService,
     checks: Sequence[Check],
     opts: SmokeOptions,
     on_result: Callable[[CheckResult], None] | None = None,
 ) -> list[CheckResult]:
-    """Run each check in order. One check failing -- or raising something unexpected -- never
-    stops the rest: a smoke run's value is the whole picture."""
+    """Run the checks. One check failing -- or raising something unexpected -- never stops
+    the rest: a smoke run's value is the whole picture.
+
+    Tiers 0, 1 and R run in order. Tier 2 checks are submitted together and awaited together:
+    each is tens of minutes of AWS Batch time and seconds of this client's.
+    """
     results: list[CheckResult] = []
-    for check in checks:
-        started = opts.clock()
-        evidence: dict[str, Any] = {}
-        try:
-            detail, evidence = check.run(svc, opts)
-            outcome = Outcome.PASS
-        except SkipCheck as e:
-            outcome, detail = Outcome.SKIP, str(e)
-        except CheckFailed as e:
-            outcome, detail = Outcome.FAIL, str(e)
-        except httpx.HTTPError as e:
-            outcome, detail = Outcome.FAIL, f"{type(e).__name__}: {e}"
-        except Exception as e:
-            outcome, detail = Outcome.FAIL, f"check crashed -- {type(e).__name__}: {e}"
-        result = CheckResult(check.name, check.tier, outcome, round(opts.clock() - started, 2), detail, evidence)
+
+    def record(result: CheckResult) -> None:
         results.append(result)
         if on_result:
             on_result(result)
+
+    serial = [c for c in checks if c.tier not in CONCURRENT_TIERS]
+    concurrent = [c for c in checks if c.tier in CONCURRENT_TIERS]
+    for check in (c for c in serial if c.tier < min(CONCURRENT_TIERS)):
+        record(_run_one(svc, check, opts))
+    if concurrent:
+        with ThreadPoolExecutor(max_workers=len(concurrent)) as pool:
+            for result in pool.map(lambda c: _run_one(svc, c, opts), concurrent):
+                record(result)
+    for check in (c for c in serial if c.tier > max(CONCURRENT_TIERS)):
+        record(_run_one(svc, check, opts))
     return results
 
 

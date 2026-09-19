@@ -2620,13 +2620,25 @@ def smoke_list() -> None:
 
 @smoke_cli.command("run", help="Run smoke checks against a deployed API. Exits non-zero on any failure.")
 def smoke_run(
-    tier: int = Option(default=0, min=0, max=1, help="0 = read-only, seconds. 1 = adds one tiny real dispatch each."),
+    tier: int = Option(
+        default=0,
+        min=0,
+        max=3,
+        help="0 = read-only, seconds. 1 = one tiny real dispatch per mechanism. 2 = one real simulation per "
+        "DISPATCH PATH, run concurrently (tens of minutes, dollars). 3 = adds the restart check (tier R).",
+    ),
     only: list[str] = Option(default=[], help="Run only these checks (repeatable); overrides --tier."),
     skip: list[str] = Option(default=[], help="Skip these checks (repeatable)."),
     commit: str | None = Option(default=None, help="Image commit for the task and worker checks."),
     simulation_id: int | None = Option(default=None, help="A completed simulation WITH output: enables `analysis`."),
     biomodel: str | None = Option(default=None, help="A BioModels id: enables `biomodels`."),
+    simulator_id: int | None = Option(default=None, help="Simulator for the tier-2 simulations; default: the newest."),
+    restart_command: str | None = Option(
+        default=None,
+        help="Tier R: how to restart this deployment. Must return once the API answers again at the same URL.",
+    ),
     timeout: float = Option(default=900.0, help="Seconds to wait for any one dispatched job."),
+    sim_timeout: float = Option(default=7200.0, help="Seconds to wait for any one tier-2 simulation."),
     json_out: Path | None = Option(default=None, help="Write the full result, with evidence, as JSON."),
     url: str | None = Option(default=None, help="Any base URL (e.g. a port-forward); overrides --base-url."),
     base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
@@ -2647,9 +2659,15 @@ def smoke_run(
         console.print(f"[memphis.error]{e}[/]")
         raise typer.Exit(code=2) from e
 
-    service = E2EDataService(base_url=target, timeout=int(timeout) + 120)
+    service = E2EDataService(base_url=target, timeout=int(timeout) + 120)  # per REQUEST, not per job
     options = smoke.SmokeOptions(
-        commit=commit, simulation_id=simulation_id, biomodel_id=biomodel, timeout_seconds=timeout
+        commit=commit,
+        simulation_id=simulation_id,
+        biomodel_id=biomodel,
+        simulator_id=simulator_id,
+        restart_command=restart_command,
+        timeout_seconds=timeout,
+        simulation_timeout_seconds=sim_timeout,
     )
     styles = {smoke.Outcome.PASS: "memphis.success", smoke.Outcome.FAIL: "memphis.error", smoke.Outcome.SKIP: "dim"}
 

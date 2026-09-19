@@ -355,7 +355,7 @@ ui:
 	@uv run --no-cache marimo edit app/ui/$(id).py
 
 .PHONY: smoke
-smoke: ## Smoke-test a DEPLOYED API. BASE_URL=http://localhost:8080 TIER=0|1 [SMOKE_ARGS="--commit <sha>"]
+smoke: ## Smoke-test a DEPLOYED API. BASE_URL=http://localhost:8080 TIER=0|1|2|3 [SMOKE_ARGS="--commit <sha>"]
 	@uv run atlantis smoke run --tier $(or $(TIER),0) --url $(or $(BASE_URL),http://localhost:8080) $(SMOKE_ARGS)
 
 # `make e2e` used to run tests/api/ecoli/test_simulations.py::TestRunSimulationE2E, a class
