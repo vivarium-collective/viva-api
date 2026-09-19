@@ -168,7 +168,9 @@ is now `viva_core/backends/batch.py` — `BatchJobClient` (`ensure_mnp_job_defin
 settings**: every queue and base job definition is an argument and the boto3 client comes
 from a factory. The service keeps its method names (`_submit_mnp`, `_submit_container`,
 `_ensure_*_job_def`, `_image_uri`, `get_batch_job_statuses` / `_details`, `get_job_status`,
-`cancel_job`, `_resolve_log_group`) as thin delegations that read settings through `_seams`
+`cancel_job`, `_resolve_log_group`) as thin delegations — since cut 3 in the base class
+`RayBatchLayer` (`simulation/ray/batch_layer.py`), which every mixin of the service inherits
+(`RayTasksMixin` so far) — that read settings through `_seams`
 and choose the queue. Still SMS, and still in the file: ParCa, chain dispatch, new-gene and
 variant caches, the analysis DAG, and the strain entries `_stage_out_env` appends to core's
 generic env list.
@@ -548,7 +550,7 @@ Status: `planned` → `in progress` → `done (PR, version)`. Phases refer to `p
 | 2 | Generic modules | under `viva_api/common`, `api/` | `viva_core/{infra,storage,backends,events,api}` + aliasing shim | P1 | in progress — P1a: `models`, `infra/messaging`, `events/events_env`, `backends/{job_service,k8s_job_service,models,nextflow_weblog}` moved; old paths are self-replacing stubs. P1b: `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved |
 | 3 | Batch engine | private methods of `SimulationServiceRay` | `viva_core/backends/batch.py` (`BatchJobClient`, composed) | P2.1 | in progress — cut 2: the engine exists in core, settings-free, with its own tests (`tests/core/test_batch_backend.py`); `SimulationServiceRay` delegates through `_batch_jobs()`; `compose` still reaches it via the service's private methods (→ P2.3); not yet behind the `JobBackend` Protocol |
 | 4 | Backends | three SMS-shaped service classes | `JobBackend` adapters: batch, k8s, slurm, local | P2.3 | planned |
-| 25 | SMS Ray service | one class, 4,305 lines, ~75 methods, four dispatch mechanisms behind a 299-line router | `simulation/ray/`: a facade + router, one `DispatchStrategy` per mechanism, `parca`, `analysis`, `config_interpretation` | P2.0 → P2.2 | in progress — P2.0 done (`_seams` + ratchet); P2.1 cuts 1–2 of 10: `ray/config_interpretation.py` (5 pure functions) and the Batch engine (→ core, row 3) are out; 5,019 → 4,581 lines |
+| 25 | SMS Ray service | one class, 4,305 lines, ~75 methods, four dispatch mechanisms behind a 299-line router | `simulation/ray/`: a facade + router, one `DispatchStrategy` per mechanism, `parca`, `analysis`, `config_interpretation` | P2.0 → P2.2 | in progress — P2.0 done (`_seams` + ratchet); P2.1 cuts 1–3 of 10: `ray/config_interpretation.py`, the Batch engine (→ core, row 3), and `ray/{image_paths,batch_layer,tasks}.py` — `SimulationServiceRay(RayTasksMixin, RayBatchLayer)`; 5,019 → 3,984 lines, 55 of 74 methods still in the service class |
 | 5 | Image resolution | `<ecr>/v2ecoli:<commit>` hard-wired | explicit `EnvironmentRef` (see row 24 for the image it defaults to) | P2.3 / P5 | planned |
 | 6 | Settings | one flat `Settings` | `CoreSettings` + `SmsSettings`, same env names | P1b / P3 | in progress — P1b: `viva_core.settings.CoreSettings` holds the storage + path-prefix fields; `Settings` inherits them; the application registers a provider so core reads its object. P3 moves the rest |
 | 7 | Wiring | module globals, router setters, one `init_standalone` | `CoreContainer` + `SmsContainer`, `create_core_app()` | P3 | planned |

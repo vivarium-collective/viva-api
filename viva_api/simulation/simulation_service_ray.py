@@ -34,10 +34,8 @@ import importlib.resources as _res
 import json
 import logging
 import math
-import random
 import re
 import shlex
-import string
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -72,28 +70,31 @@ from viva_api.simulation.models import (
     RepoDiscovery,
     Simulation,
     SimulatorVersion,
-    TaskDTO,
-    TaskLogsDTO,
-    TaskRunRequest,
     VecoliSource,
 )
 from viva_api.simulation.ray import _seams
+from viva_api.simulation.ray.batch_layer import RayBatchLayer, _rand_suffix
 from viva_api.simulation.ray.config_interpretation import (
     _batch_domain_overrides,
     _is_upstream_vecoli,
     _thread_injected_processes_into_params,
     injected_processes_from_config,
 )
-from viva_api.simulation.simulation_service import SimulationService
-from viva_api.simulation.tables_orm import AnalysisStatusDB, TaskStatusDB
+from viva_api.simulation.ray.image_paths import (
+    ANALYSIS_OUT_DIR,
+    NEW_GENE_INDUCED_CACHE_DIR,
+    PARCA_CACHE_DIR,
+    PARCA_SIMDATA_DIR,
+    SIM_OUT_DIR,
+    V2ECOLI_DIR,
+    VARIANT_CACHE_DIR,
+)
+from viva_api.simulation.ray.tasks import RayTasksMixin
+from viva_api.simulation.tables_orm import AnalysisStatusDB
 from viva_core.backends.batch import (
     SUBMIT_JOB_MAX_ATTEMPTS,
-    BatchJobClient,
-    BatchJobDetail,
     SubmitJobPacer,
     batch_exit_code,
-    ecr_image_uri,
-    stage_out_env,
 )
 
 logger = logging.getLogger(__name__)
@@ -146,19 +147,6 @@ _RENDER_NF_SRC = (_res.files("viva_api.compose") / "render_nf.py").read_text()
 V2ECOLI_BATCH_BASELINE_COMPOSITE_ID = "v2ecoli.composites.ecoli_baseline.ecoli_baseline"
 V2ECOLI_CORE_BUILDER = "v2ecoli.core:build_core"
 
-# Absolute paths inside the v2ecoli Ray image (WORKDIR=/app/v2ecoli). The
-# entrypoint runs RAY_JOB_CMD on the head; v2ecoli reads the cache from
-# CACHE_DIR and writes the ensemble outputs under OUT_DIR.
-V2ECOLI_DIR = "/app/v2ecoli"
-PARCA_CACHE_DIR = f"{V2ECOLI_DIR}/out/cache"
-PARCA_SIMDATA_DIR = f"{V2ECOLI_DIR}/out/sim_data"
-# Backlog item 105: scripts/build_new_gene_cache.py's own output dir, mirroring
-# its DEFAULT_CACHE_DIR ("out/cache-new-genes") -- see submit_new_gene_cache_job.
-NEW_GENE_INDUCED_CACHE_DIR = f"{V2ECOLI_DIR}/out/cache-new-genes"
-# Backlog item 451: scripts/build_variant_cache.py's own output dir, mirroring
-# its DEFAULT_CACHE_DIR ("out/cache-variant") -- see submit_variant_cache_job.
-VARIANT_CACHE_DIR = f"{V2ECOLI_DIR}/out/cache-variant"
-SIM_OUT_DIR = f"{V2ECOLI_DIR}/.pbg/runs/phase0-xarray"
 # ecoli_baseline.baseline()'s injection branch (taken whenever injected_processes
 # is passed) does `from scripts._compare.inject import (...)` -- a bare absolute
 # import that only resolves when V2ECOLI_DIR (which DOES contain scripts/, copied
@@ -187,36 +175,7 @@ PBG_RUNNER_ENV = (
     f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER}"
     f" PYTHONPATH={V2ECOLI_DIR} PBG_REQUIRE_OUTPUT=1 PBG_MIN_GLOBAL_TIME={PBG_MIN_GLOBAL_TIME}"
 )
-# The analysis DAG node writes its outputs straight to S3 (see _analysis_command),
-# so this local dir normally never exists and the entrypoint's RAY_OUT_DIR sync is a
-# documented no-op ("no <dir>; nothing to upload"). It is still declared so anything
-# the analysis does drop locally lands under the run's own S3 prefix.
-ANALYSIS_OUT_DIR = f"{V2ECOLI_DIR}/.pbg/runs/analysis"
-# In-region task compute (viva-api#631 slice 1): an arbitrary repo-path script
-# run through the SAME standalone container path as ParCa/the analysis DAG
-# node. Mirrors ANALYSIS_OUT_DIR's own rationale — a script that writes only to
-# S3 leaves this empty (a documented sync no-op); declared so anything a
-# script drops locally still lands under the run's own S3 prefix.
-TASK_OUT_DIR = f"{V2ECOLI_DIR}/.pbg/runs/task"
-# Where the container entrypoint syncs an uploaded task script (viva-api#631
-# slice 2): submit_uploaded_task stages the script to an S3 prefix and passes it
-# as CONTAINER_STAGE_S3, which batch-container-entrypoint.sh `aws s3 sync`s into
-# CONTAINER_STAGE_DIR before running the command -- so the job_cmd runs
-# `python <TASK_STAGE_DIR>/<script>`.
-TASK_STAGE_DIR = f"{V2ECOLI_DIR}/.pbg/task_script"
 
-
-def _safe_task_name(raw: str) -> str:
-    """Reduce a task name to the Batch jobName charset ([A-Za-z0-9_-], <=128) so
-    it can't fail submit_job. A user-provided name already passed
-    TaskRunRequest's validator; this also sanitizes the auto-derived script stem
-    (which can carry dots and other characters)."""
-    cleaned = re.sub(r"[^A-Za-z0-9_-]", "-", raw)[:128].strip("-")
-    return cleaned or "task"
-
-
-# Where the head writes the entrypoint's metrics report (uploaded as report.json).
-REPORT_PATH = "/tmp/report.json"  # noqa: S108
 
 # The analysis scales a v2ecoli ``analysis_options`` map can carry. Everything else
 # in that (extra="allow") model — ``cpus``, ``memory_gb``, vEcoli-Nextflow-only keys —
@@ -290,10 +249,6 @@ def analysis_memory_class(
 # cut 2). A canonical 1000-seed x 10-generation chain campaign submits N*G=10,000
 # individual per-seed-per-generation jobs upfront (see ``submit_chain_dispatch_job``),
 # which is why that loop is the pacer's main customer.
-
-
-def _rand_suffix() -> str:
-    return "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
 
 
 def analysis_modules_for(config: Any) -> dict[str, dict[str, Any]] | str:
@@ -427,7 +382,7 @@ def _command_belongs_to_campaign(command: str, campaign_stem: str) -> bool:
     return False
 
 
-class SimulationServiceRay(SimulationService):
+class SimulationServiceRay(RayTasksMixin, RayBatchLayer):
     """Ray-on-Batch (MNP) implementation of SimulationService."""
 
     def __init__(
@@ -440,19 +395,6 @@ class SimulationServiceRay(SimulationService):
         # inherits the `batch-submit` ServiceAccount's IRSA identity. Every other
         # path here submits to Batch directly and needs no cluster access.
         self._k8s = k8s_job_service
-
-    def _batch(self) -> Any:
-        return _seams.boto3.client("batch", region_name=_seams.get_settings().batch_region)
-
-    def _batch_jobs(self) -> BatchJobClient:
-        """The Batch engine (``viva_core.backends.batch``), composed, not inherited.
-
-        Built per call and handed ``self._batch`` LATE (the lambda), so a test that swaps
-        ``service._batch`` -- or patches the seam under it -- is what the engine gets. The
-        engine takes no settings; every method below reads them here, through the seam,
-        and passes values in.
-        """
-        return BatchJobClient(lambda: self._batch())
 
     def cache_s3_uri(self, commit: str, *, variant: str | None = None) -> str:
         """Deterministic S3 URI for a commit's v2ecoli ParCa cache.
@@ -483,331 +425,6 @@ class SimulationServiceRay(SimulationService):
         real label here rather than ever writing to the shared bare-commit path.
         """
         return data_layout.RayLayout.parca_cache_uri(commit, upstream=True, variant=variant)
-
-    def _results_s3_uri(self, experiment_id: str) -> str:
-        return data_layout.RayLayout.results_uri(experiment_id)
-
-    def _image_uri(self, commit: str) -> str:
-        """The TRUE commit image for a run: <account>.dkr.ecr.<region>/v2ecoli:<commit>."""
-        settings = _seams.get_settings()
-        return ecr_image_uri(
-            account_id=settings.ecr_account_id,
-            region=settings.batch_region,
-            repository=settings.ray_ecr_repository,
-            tag=commit,
-        )
-
-    def _ensure_mnp_job_def(self, image: str, commit: str) -> str:
-        """Return an MNP job definition (name:revision) whose image is the commit's image.
-
-        Batch MNP can't override the image per-submission, so — symmetric with how K8s
-        sets the image per-Job — we derive a per-commit job-def revision: describe the
-        CDK base job def (``ray_mnp_job_definition``: roles, resources, shm, log config,
-        node count), swap ONLY every node range's container image to ``image``, and
-        register it as ``<base>-<commit>``. An existing active revision already pointing
-        at this image is reused, so resubmits don't churn revisions.
-        """
-        return self._batch_jobs().ensure_mnp_job_definition(
-            base_definition=_seams.get_settings().ray_mnp_job_definition, image=image, suffix=commit
-        )
-
-    def _submit_mnp(
-        self,
-        *,
-        job_name: str,
-        job_definition: str,
-        num_nodes: int,
-        ray_job_cmd: str,
-        out_s3: str,
-        out_dir: str,
-        stage_s3: str | None = None,
-        stage_dir: str | None = None,
-        depends_on: list[str] | None = None,
-        depends_type: str | None = "SEQUENTIAL",
-        tags: dict[str, str] | None = None,
-        retry_strategy: dict[str, Any] | None = None,
-        batch_client: Any = None,
-        expect_new_genes: str | None = None,
-        expect_bundle_overrides: str | list[str] | None = None,
-        require_clean_chain: bool = False,
-        lineage_debug_division: bool = False,
-        task_env: dict[str, str] | None = None,
-    ) -> str:
-        """Submit a Ray MNP job via boto3, mirroring sms-cdk scripts/ray_batch_submit.sh.
-
-        Env targeting matters: the entrypoint runs ``stage_inputs`` and the periodic
-        output sync on EVERY node, so the staging/output/log knobs must reach all
-        nodes — the workers need the ParCa cache to run seeds and must ship their own
-        zarr to S3. Only ``RAY_JOB_CMD`` (the driver) and ``RAY_REPORT_PATH`` are
-        head-only. So the shared env goes on node 0 (``0:0``) and, when there are
-        workers, also on the worker range (``1:``). Returns the AWS Batch job id.
-
-        ``depends_type`` selects the ``dependsOn`` shape. The default keeps the
-        long-standing ParCa→sim edge byte-identical (``{"jobId": …, "type":
-        "SEQUENTIAL"}``, live-verified). Pass ``None`` for a plain ``{"jobId": …}``
-        wait — required when the DEPENDENCY is an Array job, whose parent id AWS
-        Batch will not accept under a SEQUENTIAL type (real API rejection, hit live
-        2026-08-06; see ``_submit_array``).
-
-        ``retry_strategy``, passed through verbatim as ``SubmitJob.retryStrategy``,
-        overrides whatever the job definition itself declares (per the real AWS
-        Batch API — confirmed this session) — used by the per-seed chain-dispatch
-        path (backlog item 33) to restore per-job retry on the MNP job definition,
-        which (unlike the Array job definition) declares none of its own; omitted
-        (``None``) everywhere else, unchanged from existing behavior.
-
-        ``batch_client``, when given, is used INSTEAD of ``self._batch()`` for this
-        one call — lets a caller submitting many jobs in a tight loop (chain
-        dispatch) supply its own retry-configured client without changing what
-        every other existing call site in this class gets from the shared
-        ``self._batch()`` factory.
-        """
-        settings = _seams.get_settings()
-        # Per-node knobs every node acts on (stage cache in, sync results out, ship logs).
-        shared_env = self._stage_out_env(
-            prefix="RAY",
-            out_dir=out_dir,
-            out_s3=out_s3,
-            stage_s3=stage_s3,
-            stage_dir=stage_dir,
-            log_s3_prefix=settings.ray_log_s3_prefix,
-            expect_new_genes=expect_new_genes,
-            expect_bundle_overrides=expect_bundle_overrides,
-            require_clean_chain=require_clean_chain,
-            lineage_debug_division=lineage_debug_division,
-        )
-        # Backlog item 65: a standalone (numNodes=1) submission has no inter-node
-        # traffic to protect, so it gains nothing from ray_mnp_queue's cluster-
-        # placement-group compute environment and pays its full concurrency cost
-        # for nothing -- route it to the dedicated no-placement-group queue
-        # instead, when one is configured. Automatic and transparent to every
-        # caller (chain-dispatch, ParCa, compose): both already pass their real
-        # num_nodes here, no call-site changes needed. Falls back to
-        # ray_mnp_queue unchanged for a genuine multi-node request (num_nodes >
-        # 1, e.g. colony sims) or when ray_mnp_standalone_queue isn't set yet.
-        job_queue = (
-            settings.ray_mnp_standalone_queue
-            if num_nodes == 1 and settings.ray_mnp_standalone_queue
-            else settings.ray_mnp_queue
-        )
-        # The engine adds RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE and task_env
-        # (sms-ecoli#166: the request's own env, validated at the boundary by
-        # dispatch_validation.validate_task_env, reaching EVERY node -- e.g.
-        # V2ECOLI_SKIP_CACHE_VERIFY=1 after a cache-re-keying v2ecoli commit),
-        # composes the head env and the single "0:" node override, and submits.
-        return self._batch_jobs().submit_mnp(
-            job_name=job_name,
-            job_queue=job_queue,
-            job_definition=job_definition,
-            num_nodes=num_nodes,
-            job_cmd=ray_job_cmd,
-            report_path=REPORT_PATH,
-            shared_env=shared_env,
-            task_env=task_env,
-            depends_on=depends_on,
-            depends_type=depends_type,
-            tags=tags,
-            retry_strategy=retry_strategy,
-            client=batch_client,
-        )
-
-    def _stage_out_env(
-        self,
-        *,
-        prefix: str,
-        out_dir: str,
-        out_s3: str,
-        stage_s3: str | None = None,
-        stage_dir: str | None = None,
-        log_s3_prefix: str | None = None,
-        expect_new_genes: str | None = None,
-        expect_bundle_overrides: str | list[str] | None = None,
-        require_clean_chain: bool = False,
-        lineage_debug_division: bool = False,
-    ) -> list[dict[str, str]]:
-        """Shared stage/output/log env-var construction for both the MNP (``RAY_*``)
-        and container (``CONTAINER_*``) submission paths (backlog item 71) -- same
-        conditional logic (only emit STAGE_*/LOG_S3_PREFIX when configured), a
-        different env-var prefix per job shape, since each entrypoint script only
-        reads its own prefix -- the values can't literally share one env list.
-
-        ``expect_new_genes``/``expect_bundle_overrides`` (sms-ecoli#210 / #215): the
-        STRAIN this run requested. The entrypoint's ``stage_inputs`` already runs
-        ``verify_cache_version`` (schema + source-hash) on the staged cache; these
-        let it ALSO reject a WRONG-STRAIN cache (P1-6). Emitted as
-        ``{prefix}_EXPECT_NEW_GENES`` / ``{prefix}_EXPECT_BUNDLE_OVERRIDES`` only for
-        a real strain -- ``off``/empty is wild-type and emits nothing, so a
-        wild-type run is byte-identical to before and the entrypoint check stays
-        inert until a real strain is requested.
-
-        ``expect_bundle_overrides`` accepts a list (backlog items 93/104/106,
-        ``ParcaOptions.bundle_overrides`` accepts a list as of #486, for a strain
-        recipe that stacks multiple ``--bundle-overrides`` files) -- joined with
-        ``","`` for the single env var, same normalization ``strain_from_config``'s
-        own ``_norm`` helper already applies for the job-scheduler verification
-        path. Real, confirmed gap this closes: a caller reaching this helper
-        DIRECTLY with a list (e.g. via ``getattr(config.parca_options,
-        "bundle_overrides", None)``, not through ``strain_from_config``) crashed
-        with ``AttributeError: 'list' object has no attribute 'strip'`` -- caught
-        live firing a real K4/J3 chassis rebuild whose recipe genuinely needs two
-        stacked override files.
-
-        ``require_clean_chain`` (item 106/#166 chassis-provenance thread, v2ecoli#735):
-        emitted verbatim as ``V2E_REQUIRE_CLEAN_CHAIN`` -- UNPREFIXED, unlike every
-        other var this helper emits -- because it is read directly by v2ecoli's own
-        ``os.environ.get("V2E_REQUIRE_CLEAN_CHAIN")`` (``save_sim_input``/
-        ``save_cache``/``verify_cache_version``), not by the ``RAY_*``/``CONTAINER_*``
-        entrypoint scripts this helper otherwise targets. Default ``False`` emits
-        nothing -- byte-identical to before this param existed -- because most
-        existing callers (``new_gene_cache``, ``variant_cache``,
-        ``build_condition_cache``, ``run_comparison_ensemble``) don't pass
-        ``sources=`` yet (that wiring is v2ecoli's own PR 3); setting this
-        unconditionally would hard-fail every one of them the moment v2ecoli#735
-        lands, including Run 4's own already-built new-gene caches.
-
-        ``lineage_debug_division`` (item 106/#210, v2ecoli#733): emitted verbatim as
-        ``LINEAGE_DEBUG_DIVISION`` -- UNPREFIXED, same reasoning as
-        ``require_clean_chain`` above -- v2ecoli's own
-        ``LineageProcess._run_until_division`` reads it directly via
-        ``os.environ.get``. Opt-in diagnostic only; default ``False`` emits nothing.
-        """
-        # The generic half of the contract (OUT_*, STAGE_*, LOG_S3_PREFIX) is core's;
-        # everything appended below is this application telling ITS entrypoint more.
-        env = stage_out_env(
-            prefix=prefix,
-            out_dir=out_dir,
-            out_s3=out_s3,
-            stage_s3=stage_s3,
-            stage_dir=stage_dir,
-            log_s3_prefix=log_s3_prefix,
-        )
-        # off/empty is wild-type -> no expectation to assert (matches the parca-side
-        # normalization in build_cache.py and _parca_command's own flag guard).
-        ng = (expect_new_genes or "").strip()
-        if ng and ng != "off":
-            env.append({"name": f"{prefix}_EXPECT_NEW_GENES", "value": ng})
-        bo_raw = (
-            ",".join(expect_bundle_overrides) if isinstance(expect_bundle_overrides, list) else expect_bundle_overrides
-        )
-        bo = (bo_raw or "").strip()
-        if bo and bo != "off":
-            env.append({"name": f"{prefix}_EXPECT_BUNDLE_OVERRIDES", "value": bo})
-        if require_clean_chain:
-            env.append({"name": "V2E_REQUIRE_CLEAN_CHAIN", "value": "1"})
-        if lineage_debug_division:
-            env.append({"name": "LINEAGE_DEBUG_DIVISION", "value": "1"})
-        return env
-
-    def _ensure_container_job_def(self, image: str, commit: str) -> str:
-        """Return a container job definition (name:revision) whose image is the commit's image.
-
-        Mirrors ``_ensure_mnp_job_def`` exactly, for the plain (non-MNP, non-array)
-        standalone container job shape (backlog item 71 -- ParCa, the analysis DAG
-        node, and eventually chain-dispatch's per-seed-per-generation jobs, none of
-        which have any real inter-node traffic to protect). Plain container jobs
-        can't override the image at submission time either -- same limitation as
-        MNP -- so a per-commit job-def revision is derived the same way: describe
-        the CDK base container job def (``ray_container_job_definition``: roles,
-        resources, retry strategy, log config -- provisioned by sms-cdk's
-        RayContainerJobDef), swap ONLY its image, and register it as
-        ``<base>-<commit>``. An existing active revision already pointing at this
-        image is reused, so resubmits don't churn revisions.
-        """
-        settings = _seams.get_settings()
-        if not settings.ray_container_job_definition:
-            # Matches this file's own compose_ray_image_tag precedent: fail loud with
-            # the setting name rather than submit a doomed job with a blank job-def.
-            raise RuntimeError("ray_container_job_definition is not set; cannot submit a container-type Batch job.")
-        return self._batch_jobs().ensure_container_job_definition(
-            base_definition=settings.ray_container_job_definition, image=image, suffix=commit
-        )
-
-    def _submit_container(
-        self,
-        *,
-        job_name: str,
-        job_definition: str,
-        job_cmd: str,
-        out_s3: str,
-        out_dir: str,
-        stage_s3: str | None = None,
-        stage_dir: str | None = None,
-        depends_on: list[str] | None = None,
-        depends_type: str | None = "SEQUENTIAL",
-        tags: dict[str, str] | None = None,
-        retry_strategy: dict[str, Any] | None = None,
-        batch_client: Any = None,
-        expect_new_genes: str | None = None,
-        expect_bundle_overrides: str | list[str] | None = None,
-        require_clean_chain: bool = False,
-        lineage_debug_division: bool = False,
-        task_env: dict[str, str] | None = None,
-        memory_class: str = "standard",
-    ) -> str:
-        """Submit a plain, standalone AWS Batch container-type job (backlog item 71).
-
-        Sibling of ``_submit_mnp`` for the non-MNP, non-array job shape -- currently
-        ParCa (``submit_parca_job``) and the analysis DAG node
-        (``_submit_analysis_job``), both already ``num_nodes=1`` MNP jobs with no
-        real inter-node traffic; chain-dispatch's per-seed-per-generation jobs
-        migrate here too in a later phase. One task, one container: no node
-        overrides, no head/worker split -- every env var goes in a single
-        ``containerOverrides.environment`` list, matching
-        ``docker/batch-container-entrypoint.sh``'s ``CONTAINER_*`` contract exactly
-        (sms-ecoli). Returns the AWS Batch job id.
-
-        Do NOT modify ``_submit_mnp`` -- this is a parallel path, not a
-        replacement; genuinely multi-node Ray paths keep submitting through
-        ``_submit_mnp`` unchanged.
-        """
-        settings = _seams.get_settings()
-        if not settings.ray_container_queue:
-            raise RuntimeError("ray_container_queue is not set; cannot submit a container-type Batch job.")
-
-        # Memory-class routing (viva-api#625): a "large" job goes to the
-        # large-memory (200 GB r7i) queue when one is provisioned; otherwise it
-        # falls back to the standard queue (same convention as
-        # ray_mnp_standalone_queue), so behaviour is unchanged until sms-cdk sets
-        # ray_container_large_queue. Require a real non-empty string so a settings
-        # double's auto-attribute can't accidentally route.
-        job_queue = settings.ray_container_queue
-        large_queue = getattr(settings, "ray_container_large_queue", "")
-        if memory_class == "large" and isinstance(large_queue, str) and large_queue.strip():
-            job_queue = large_queue
-            logger.info("Container job %s: memory_class=large -> large-memory queue %s", job_name, job_queue)
-        elif memory_class == "large":
-            logger.info(
-                "Container job %s: memory_class=large but no ray_container_large_queue set; using standard queue %s",
-                job_name,
-                job_queue,
-            )
-
-        # task_env (sms-ecoli#166): see _submit_mnp -- same passthrough, one container.
-        return self._batch_jobs().submit_container(
-            job_name=job_name,
-            job_queue=job_queue,
-            job_definition=job_definition,
-            job_cmd=job_cmd,
-            report_path=REPORT_PATH,
-            stage_env=self._stage_out_env(
-                prefix="CONTAINER",
-                out_dir=out_dir,
-                out_s3=out_s3,
-                stage_s3=stage_s3,
-                stage_dir=stage_dir,
-                log_s3_prefix=settings.ray_log_s3_prefix,
-                expect_new_genes=expect_new_genes,
-                expect_bundle_overrides=expect_bundle_overrides,
-                require_clean_chain=require_clean_chain,
-                lineage_debug_division=lineage_debug_division,
-            ),
-            task_env=task_env,
-            depends_on=depends_on,
-            depends_type=depends_type,
-            tags=tags,
-            retry_strategy=retry_strategy,
-            client=batch_client,
-        )
 
     def _parca_command(
         self,
@@ -2651,198 +2268,6 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         )
         return JobId.ray(job_id)
 
-    async def submit_task(self, request: TaskRunRequest, database_service: DatabaseService) -> TaskDTO:
-        """Submit a self-contained repo-path script as a standalone AWS Batch
-        container job (viva-api#631 slice 1).
-
-        Same one-node container shape ``submit_parca_job``/the analysis DAG
-        node already use (``_ensure_container_job_def`` + ``_submit_container``)
-        — this method's only real job is building the ``python <script>
-        <args...>`` command line and recording the result on the ``task``
-        table (mirroring how ``_submit_analysis_job`` records to ``analysis``)
-        so ``GET /tasks/{id}/status`` has a row to poll.
-
-        ``request.commit`` pins the image commit the script runs in; ``None``
-        resolves to the default repo/branch's latest commit, the same
-        fallback every other Ray dispatch path here already uses.
-
-        ``request.sim_data_refs``, when present, rides in as a single JSON env
-        var (``TASK_SIM_DATA_REFS``) rather than individual vars — the shape
-        is caller-defined (script-specific reference names -> URIs), so there
-        is no fixed set of env-var names to emit.
-        """
-        commit = request.commit or await self.get_latest_commit_hash()
-        task_name = _safe_task_name(request.name or Path(request.script).stem)
-        job_cmd = self._task_job_cmd(request.script, request.args)
-        return await self._dispatch_task(
-            task_name=task_name,
-            script_label=request.script,
-            job_cmd=job_cmd,
-            request=request,
-            commit=commit,
-            database_service=database_service,
-        )
-
-    async def submit_uploaded_task(
-        self,
-        request: TaskRunRequest,
-        *,
-        script_bytes: bytes,
-        filename: str,
-        database_service: DatabaseService,
-    ) -> TaskDTO:
-        """Submit an UPLOADED script (viva-api#631 slice 2).
-
-        The script bytes are staged to an S3 prefix; the container entrypoint's
-        existing input-staging (``CONTAINER_STAGE_S3`` -> ``CONTAINER_STAGE_DIR``,
-        an ``aws s3 sync``) pulls it into the container before the command runs,
-        so the job_cmd is ``python <TASK_STAGE_DIR>/<script>``. No entrypoint
-        change is needed -- this reuses the same stage-in path ParCa's cache
-        staging already uses.
-        """
-        commit = request.commit or await self.get_latest_commit_hash()
-        safe_name = Path(filename).name  # never trust an uploaded path
-        if not safe_name:
-            raise ValueError("uploaded task script has no filename")
-        task_name = _safe_task_name(request.name or Path(safe_name).stem)
-        stage_s3 = self._results_s3_uri(f"tasks/scripts/{task_name}-{_rand_suffix()}").rstrip("/")
-        self._upload_task_script(stage_s3, safe_name, script_bytes)
-        job_cmd = self._task_job_cmd(f"{TASK_STAGE_DIR}/{safe_name}", request.args)
-        return await self._dispatch_task(
-            task_name=task_name,
-            script_label=f"{stage_s3}/{safe_name}",
-            job_cmd=job_cmd,
-            request=request,
-            commit=commit,
-            database_service=database_service,
-            stage_s3=stage_s3,
-            stage_dir=TASK_STAGE_DIR,
-        )
-
-    @staticmethod
-    def _task_job_cmd(script: str, args: list[str]) -> str:
-        cmd = "python " + shlex.quote(script)
-        if args:
-            cmd += " " + " ".join(shlex.quote(a) for a in args)
-        return cmd
-
-    def _upload_task_script(self, stage_s3_prefix: str, filename: str, script_bytes: bytes) -> None:
-        """Put the uploaded script under ``stage_s3_prefix`` so the container's
-        input staging syncs it in. Uses the instance/task S3 credentials, same as
-        every other S3 write on this service."""
-        from urllib.parse import urlparse
-
-        parsed = urlparse(stage_s3_prefix)
-        bucket = parsed.netloc
-        key = f"{parsed.path.strip('/')}/{filename}"
-        _seams.boto3.client("s3", region_name=_seams.get_settings().storage_s3_region).put_object(
-            Bucket=bucket, Key=key, Body=script_bytes
-        )
-
-    async def _dispatch_task(
-        self,
-        *,
-        task_name: str,
-        script_label: str,
-        job_cmd: str,
-        request: TaskRunRequest,
-        commit: str,
-        database_service: DatabaseService,
-        stage_s3: str | None = None,
-        stage_dir: str | None = None,
-    ) -> TaskDTO:
-        """Shared submit path for repo-path and uploaded tasks: one-node container
-        job (``_ensure_container_job_def`` + ``_submit_container``) recorded on the
-        ``task`` table so ``GET /tasks/{id}/status`` has a row to poll."""
-        job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
-        out_uri = self._results_s3_uri(f"tasks/{task_name}-{_rand_suffix()}").rstrip("/")
-        task_env: dict[str, str] | None = None
-        if request.sim_data_refs:
-            task_env = {"TASK_SIM_DATA_REFS": json.dumps(request.sim_data_refs)}
-        batch_job_id = self._submit_container(
-            job_name=f"task-{task_name}-{_rand_suffix()}"[:128],
-            job_definition=job_def,
-            job_cmd=job_cmd,
-            out_s3=out_uri,
-            out_dir=TASK_OUT_DIR,
-            stage_s3=stage_s3,
-            stage_dir=stage_dir,
-            task_env=task_env,
-            memory_class=request.memory_class,
-        )
-        return await database_service.record_task(
-            name=task_name,
-            script=script_label,
-            args=list(request.args),
-            sim_data_refs=request.sim_data_refs,
-            memory_class=request.memory_class,
-            status=TaskStatusDB.COMPUTING,
-            job_id_ext=str(batch_job_id),
-            out_uri=out_uri,
-        )
-
-    async def get_task_status(self, task_id: int, database_service: DatabaseService) -> TaskDTO:
-        """Poll a task's tracked Batch job (if any) and persist its mapped status.
-
-        A task with no ``job_id_ext`` yet (shouldn't happen post-``submit_task``,
-        but mirrors the defensive style elsewhere in this class) is returned
-        as-is rather than raising -- there is nothing to poll.
-        """
-        task = await database_service.get_task(task_id)
-        if task.job_id_ext is None:
-            return task
-        statuses = self.get_batch_job_statuses([task.job_id_ext])
-        batch_status = statuses.get(task.job_id_ext)
-        if batch_status is None:
-            return task
-        return await database_service.update_task_status(task_id, TaskStatusDB.from_job_status(batch_status))
-
-    def _resolve_log_group(self, job_definition: str | None) -> str | None:
-        """The CloudWatch log group a container job writes to: the configured
-        ``ray_batch_log_group`` if set, else the awslogs-group from the job
-        definition's logConfiguration. None when neither is available."""
-        configured = _seams.get_settings().ray_batch_log_group
-        if configured:
-            return configured
-        if not job_definition:
-            return None
-        return self._batch_jobs().job_definition_log_group(job_definition)
-
-    async def get_task_logs(self, task_id: int, database_service: DatabaseService, *, limit: int = 1000) -> TaskLogsDTO:
-        """The CloudWatch logs for a task's Batch job (viva-api#631 slice 3).
-
-        Resolves the job's log stream (``describe_jobs`` -> container.logStreamName)
-        and log group, then reads up to ``limit`` recent events. Returns an empty
-        ``lines`` (not an error) when the container hasn't started yet (no stream)
-        or no group can be resolved, so a caller can poll until logs appear."""
-        task = await database_service.get_task(task_id)
-        result = TaskLogsDTO(task_id=task_id, job_id_ext=task.job_id_ext, status=task.status)
-        log_prefix = _seams.get_settings().ray_log_s3_prefix
-        if log_prefix and task.job_id_ext:
-            result.report_uri = f"{log_prefix.rstrip('/')}/{task.job_id_ext}/report.json"
-        if not task.job_id_ext:
-            return result
-        jobs = self._batch().describe_jobs(jobs=[task.job_id_ext]).get("jobs", [])
-        if not jobs:
-            return result
-        job = jobs[0]
-        stream = job.get("container", {}).get("logStreamName")
-        if not stream:
-            return result  # container not started yet
-        group = self._resolve_log_group(job.get("jobDefinition"))
-        if not group:
-            return result
-        result.log_stream = stream
-        try:
-            logs_client = _seams.boto3.client("logs", region_name=_seams.get_settings().storage_s3_region)
-            events = logs_client.get_log_events(
-                logGroupName=group, logStreamName=stream, startFromHead=True, limit=limit
-            ).get("events", [])
-            result.lines = [str(e.get("message", "")) for e in events]
-        except Exception:
-            logger.warning("could not read CloudWatch logs for task %s (stream %s)", task_id, stream, exc_info=True)
-        return result
-
     @override
     async def submit_ecoli_simulation_job(
         self, ecoli_simulation: Simulation, database_service: DatabaseService, correlation_id: str
@@ -4408,28 +3833,6 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
             exit_code=batch_exit_code(job),
             error_message=job.get("statusReason") if status == JobStatus.FAILED else None,
         )
-
-    def get_batch_job_statuses(self, job_ids: list[str]) -> dict[str, JobStatus]:
-        """Batched ``describe_jobs`` status lookup for arbitrary AWS Batch job
-        ids, chunked by ``DESCRIBE_JOBS_MAX_BATCH`` (100/call, the real API
-        limit). An id absent from the response (not yet visible — brief
-        eventual-consistency lag right after submission, or simply unknown) is
-        simply absent from the returned mapping rather than raising; callers
-        should treat a missing id as not-yet-terminal, the same discipline
-        ``get_chain_campaign_result`` already established (and now reuses this
-        exact helper for). Shared by that method and
-        ``JobScheduler._advance_chain_campaign``'s per-seed poll (backlog item
-        71 Phase 4), which needs the same batching for a campaign's
-        ``chain_current_job_ids`` on every tick.
-        """
-        return self._batch_jobs().job_statuses(job_ids)
-
-    def get_batch_job_details(self, job_ids: list[str]) -> dict[str, BatchJobDetail]:
-        """``get_batch_job_statuses`` plus what a failed job SAID: Batch's
-        ``statusReason``, the container exit code and the attempt count. Used
-        where a bare job id is not an answer -- a chain campaign's failed seeds
-        (observability plan D4c). Same chunking, same missing-id semantics."""
-        return self._batch_jobs().job_details(job_ids)
 
     def get_chain_campaign_result(self, job_ids: list[str]) -> ChainCampaignPollResult:
         """Poll a chain-dispatch campaign's tracked final-generation job ids —

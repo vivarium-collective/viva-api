@@ -198,7 +198,7 @@ async def test_get_task_status_not_yet_visible_in_batch_leaves_status_unchanged(
 def test_submit_uploaded_task_stages_script_and_runs_staged_path() -> None:
     """slice 2: an uploaded script is put to S3 and run from the staged dir; the
     container's CONTAINER_STAGE_S3 -> CONTAINER_STAGE_DIR sync pulls it in."""
-    from viva_api.simulation.simulation_service_ray import TASK_STAGE_DIR
+    from viva_api.simulation.ray.image_paths import TASK_STAGE_DIR
 
     request = TaskRunRequest(script="ignored.py", args=["--x", "1"], memory_class="standard", commit="abc1234")
     database_service = AsyncMock()
@@ -241,7 +241,7 @@ def test_submit_uploaded_task_stages_script_and_runs_staged_path() -> None:
 
 def test_submit_uploaded_task_sanitizes_filename_to_basename() -> None:
     """A path-y upload filename never escapes the stage dir."""
-    from viva_api.simulation.simulation_service_ray import TASK_STAGE_DIR
+    from viva_api.simulation.ray.image_paths import TASK_STAGE_DIR
 
     request = TaskRunRequest(script="ignored.py", commit="abc1234")
     database_service = AsyncMock()

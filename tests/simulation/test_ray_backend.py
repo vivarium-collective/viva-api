@@ -18,13 +18,15 @@ from viva_api.simulation.ray.config_interpretation import (
     injected_processes_from_config,
     strain_from_config,
 )
-from viva_api.simulation.simulation_service_ray import (
+from viva_api.simulation.ray.image_paths import (
     NEW_GENE_INDUCED_CACHE_DIR,
     PARCA_CACHE_DIR,
     PARCA_SIMDATA_DIR,
     SIM_OUT_DIR,
     V2ECOLI_DIR,
     VARIANT_CACHE_DIR,
+)
+from viva_api.simulation.simulation_service_ray import (
     SimulationServiceRay,
     analysis_modules_for,
 )

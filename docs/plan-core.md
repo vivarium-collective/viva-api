@@ -204,6 +204,15 @@ P2.0a guard caught. So:
   that tests and `compose` reach for (`_parca_command` ×34, `_seed_generation_command` ×15,
   `_submit_container`, `_submit_mnp`, …) stay valid, and each PR is a pure move that a reviewer
   can verify by diff. `simulation_service_ray.py` ends as the facade.
+  **The shape, settled by cut 3:** mixins do not mix into a vacuum — each one calls
+  `_submit_container`, `_image_uri`, `_results_s3_uri`. So those live in a base class,
+  `RayBatchLayer(SimulationService)`, and every mixin *inherits* it:
+  `SimulationServiceRay(RayTasksMixin, …, RayBatchLayer)`. Real inheritance gives mypy the
+  real signatures; the alternative (a `Protocol` or `TYPE_CHECKING` stubs restating an
+  18-keyword signature per mixin) is a second copy that drifts. Constants a mixin needs
+  live in leaf modules with no imports (`image_paths.py`), because a module under
+  `simulation/ray/` cannot import from the service module that imports it. Ratchet:
+  `test_no_method_is_defined_twice_across_the_carved_classes`.
   **No re-exports for module-level functions** (settled by cut 1): a moved function's importers
   are pointed at its new home in the same PR. mypy strict already refuses the implicit
   re-export, and an explicit one would keep `job_scheduler` importing a pure function from
@@ -219,9 +228,10 @@ P2.0a guard caught. So:
 
   | cut | concern | PR | lines out of the service file | state |
   |---|---|---|---|---|
-  | 1 | config interpretation → `simulation/ray/config_interpretation.py` | #705 | 211 (5,019 → 4,815) | open |
-  | 2 | Batch engine → `viva_core/backends/batch.py` (`BatchJobClient`) — a **delegation**, not a move; see the decision log | #706 (stacked on #705) | 234 (4,815 → 4,581) | open |
-  | 3–10 | tasks · build · ParCa · analysis · Nextflow · mbp-tracked · MNP · chain | | | |
+  | 1 | config interpretation → `simulation/ray/config_interpretation.py` | #705 | 211 (5,019 → 4,815) | merged 2026-09-19 (`0d71e2a6`) |
+  | 2 | Batch engine → `viva_core/backends/batch.py` (`BatchJobClient`) — a **delegation**, not a move; see the decision log | #706 | 234 (4,815 → 4,581) | merged 2026-09-19 (`d5f965a4`) |
+  | 3 | tasks → `ray/tasks.py` (`RayTasksMixin`), on two prerequisites every later mixin shares: `ray/image_paths.py` (in-image path constants, a leaf) and `ray/batch_layer.py` (`RayBatchLayer`, the service's delegations to the engine) | #707 | 597 (4,581 → 3,984) | open |
+  | 4–10 | build · ParCa · analysis · Nextflow · mbp-tracked · MNP · chain | | | |
 - **P2.2 — mixins become strategies.** A `DispatchStrategy` Protocol (`applies`, `submit`,
   `cancel`, `progress`); each mechanism an object with explicit dependencies (`BatchJobClient`,
   layout, settings) instead of `self`; `submit_ecoli_simulation_job` shrinks to a router.
@@ -495,7 +505,7 @@ gating latency compared to the baseline.
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — #696; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — #698; all merged 2026-09-19 |
-| P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core). Cut 1, config interpretation — #705 · cut 2, Batch engine → `viva_core/backends/batch.py` — #706 | no bump: deploys with the rest of P2.1 at checkpoint C | — | — | **in progress** — cuts 1 and 2 of 10 open (stacked) |
+| P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core). Cut 1, config interpretation — #705 · cut 2, Batch engine → `viva_core/backends/batch.py` — #706 · cut 3, tasks + the shared base layer — #707 | no bump: deploys with the rest of P2.1 at checkpoint C | — | — | **in progress** — cuts 1–2 merged 2026-09-19, cut 3 open; nothing deployed (checkpoint C) |
 | P2.2 | mixins → `DispatchStrategy` objects; router | | | | not started |
 | P2.3 | core runtime image; K8s / SLURM / LOCAL adapters; `EnvironmentRef` | | | | not started |
 | P3 | | | | | |
@@ -541,6 +551,23 @@ gating latency compared to the baseline.
   only assert status; the functions are byte-identical with ~20 unit tests), the
   large-memory queue (no site provisions one), and an image build (~20 min, multi-GB —
   to be run once, by hand, before cut 4 deploys).
+- **2026-09-19** — **P2.1 cut 3: tasks, and the shape every later cut uses.** #705 and #706
+  merged on Jim's say-so; I had asked whether the settings-free engine and the no-re-export
+  rule were acceptable before building eight more cuts on them, and the answer was "merge,
+  then start on cut 3". Tasks could not move alone: a mixin calls `_submit_container`,
+  `_image_uri` and `_results_s3_uri`, which lived in the class that would inherit the mixin.
+  So this cut is three pure moves — `ray/image_paths.py` (ten path constants, no imports),
+  `ray/batch_layer.py` (`RayBatchLayer`: the twelve delegation methods + `_rand_suffix`),
+  `ray/tasks.py` (`RayTasksMixin`: seven methods + `_safe_task_name`). **Proof:** all 74
+  methods of the class compared with `origin/main` by source — 0 differ, none lost, none
+  defined twice (55 service / 12 layer / 7 tasks); module functions and constants likewise.
+  Rejected: typing the mixin's `self` with a Protocol — it restates signatures that already
+  exist. Side effect worth having: `compose` now imports its two constants from
+  `image_paths`, not from the 4,000-line service module. Tasks stay SMS for now, as a mixin:
+  the `task` table and the image they run in are still SMS; P4b gives them a `JobStore`
+  and an `EnvironmentRef` and moves them to `viva_core/tasks`. After this cut the only
+  direct `self._batch()` calls left are `get_task_logs` (now in `tasks.py`) and
+  `_mnp_node_vcpus`.
 - **2026-09-19** — **P2.1 cut 2: the Batch engine is in core** (`viva_core/backends/batch.py`:
   `BatchJobClient`, `SubmitJobPacer`, `BatchJobDetail`, `stage_out_env`, `ecr_image_uri`).
   Three decisions. (1) **The engine takes no settings** — every queue, base job definition
