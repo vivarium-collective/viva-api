@@ -18,7 +18,7 @@ new marker that nobody notices is exactly how a create_all database gets
 stamped stale.
 """
 
-from viva_api.simulation.db_reconcile import LEGACY_FINGERPRINTS, DbState, classify
+from viva_api.simulation.db_reconcile import LEGACY_FINGERPRINTS, UNFINGERPRINTED_REVISIONS, DbState, classify
 
 HEAD = "c9a1e3f5b7d2"
 # Mirrors LEGACY_FINGERPRINTS ordering.
@@ -721,3 +721,22 @@ def test_the_head_this_file_pins_is_the_real_head() -> None:
 
     script = ScriptDirectory.from_config(_alembic_config("postgresql+asyncpg://unused/unused"))
     assert script.get_heads() == [HEAD]
+
+
+def test_every_revision_is_fingerprinted_or_explicitly_exempt() -> None:
+    """The maintenance contract -- "add a marker whenever you add a migration" -- made
+    checkable. A revision without a marker lets a ``create_all`` database that has advanced past
+    it be stamped stale, and the migration it already has re-applied. The only exemptions are
+    the two revisions inserted for viva-api#637, for which no honest marker exists (see
+    ``UNFINGERPRINTED_REVISIONS``); they are guarded no-ops on such a database."""
+    from alembic.script import ScriptDirectory
+    from viva_api.simulation.db_reconcile import _alembic_config
+
+    script = ScriptDirectory.from_config(_alembic_config("postgresql+asyncpg://unused/unused"))
+    chain = {rev.revision for rev in script.walk_revisions()}
+    fingerprinted = {rev for rev, _label in LEGACY_FINGERPRINTS}
+
+    assert chain >= UNFINGERPRINTED_REVISIONS, "an exemption names a revision that does not exist"
+    assert not (UNFINGERPRINTED_REVISIONS & fingerprinted), "a revision is both fingerprinted and exempt"
+    unaccounted = sorted(chain - fingerprinted - UNFINGERPRINTED_REVISIONS)
+    assert not unaccounted, f"revisions with neither a fingerprint marker nor an exemption: {unaccounted}"

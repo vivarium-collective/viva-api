@@ -88,8 +88,12 @@ Make the ground safe before moving anything.
 - import-linter in `make check`, **report-only**.
 - Fix `set_messaging_service` (`dependencies.py` — it assigns a local; `get_messaging_service()` always returns None).
 - Reconciler `table_schema` filter.
-- Fix #637: FRESH = `create_all` on all bases + stamp heads, guarded by a
-  `create_all`-vs-migrations parity test.
+- Fix #637 **per the decision already on the issue (Option 1: make the chain honest)** — two
+  guarded revisions INSERTED before `d3f9a1c72b84`: `b9e1d5a3c7f2` creates the nine tables only
+  `create_all` ever created; `c3f7a1e5b9d4` reshapes the three baseline tables the models
+  outgrew. Guarded by the empty-Postgres test the decision asked for **and** a
+  chain-vs-`create_all` parity test. (This plan first proposed `create_all` + stamp; withdrawn —
+  only Option 1 also makes bare `alembic upgrade head` work.)
 - `DB_CREATE_ALL=false` guard, set in the overlays — this is what freezes the fingerprint list.
 - Replace positional kustomize JSON patches with named strategic-merge patches; verify
   `kustomize build` output is byte-identical before and after.
@@ -388,6 +392,7 @@ RDS snapshot comes first.
 | Phase | Change | Reversible? |
 |---|---|---|
 | — | existing chain: 14 of 16 revisions | yes — real downgrades |
+| P0 second wave | #637: `b9e1d5a3c7f2` (creates nine tables), `c3f7a1e5b9d4` (reshapes three baseline tables) — inserted, guarded | `b9e1…` yes, but its downgrade **drops the tables and their data** — only ever right on a database this chain built. `c3f7…` downgrade is a deliberate no-op: the baseline's shape is one the application cannot use. Both are no-ops on every existing (`create_all`) database |
 | — | `a1c3e5f7b9d2`, `44335812e447` (and #661's `b2f6d8e0a4c7`): enum `ADD VALUE` | **no** — Postgres cannot drop an enum label; the downgrade is a documented no-op. Benign: an unused label |
 | P0 second wave | `env_worker_task.owner_instance` | yes — drop column |
 | P4a | owner-ref columns on `hpcrun` / `dataset`, backfilled, dual-written | yes — old columns stay authoritative |
@@ -463,7 +468,7 @@ gating latency compared to the baseline.
 |---|---|---|---|---|---|
 | P-1 | #679 | — | — | — | merged 2026-09-18 (`21bd7296`); docs only |
 | P0 (first wave) | #680 import-linter contracts · #681 `set_messaging_service` · #682 reconciler `current_schema()` · #683 shutdown stops pollers · #684 kustomize by-name patches | 0.9.145 | **2026-09-18** (checkpoint A) | — | **merged 2026-09-18** (`ca67b43f`, `2f6d73b1`, `f99caa02`, `7f3f6777`, `86c5f292`); combined `main` verified: `make check` ×2, 378 tests. Not yet deployed — #681–#683 change runtime code and go out with the next version bump; #680 and #684 change nothing that runs |
-| P0 (after #661) | #637 FRESH fix + `create_all`-vs-migrations parity test · `DB_CREATE_ALL` guard · `owner_instance` column scoping the env-worker boot sweep | | | | not started — each adds or tests a migration, so they wait for #661 to keep the chain at one head |
+| P0 second wave | #637 fresh-database fix + parity test — **this PR** · `DB_CREATE_ALL` guard · `owner_instance` column scoping the env-worker boot sweep | | | | #661 merged 2026-09-19 (`d27544a3`), so unblocked; first of three open |
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — **this PR**; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — **this PR** |
@@ -492,6 +497,17 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — #637, three corrections in one. (1) It had been **closed by accident** the
+  moment #661 merged, though #661's own text says `upgrade head` "still fails on an empty
+  database"; re-verified failing on `main` and reopened. (2) **A decision was already on the
+  issue** (Eran, 2026-09-13: Option 1, guarded `CREATE TABLE`s + an empty-Postgres negative
+  control), and it differs from what this plan proposed — the plan is corrected to follow it.
+  (3) **Making the chain run exposed that it built the wrong schema**: a chain-vs-`create_all`
+  comparison found 20 differences, all in three baseline tables (`hpcrun` without
+  `correlation_id`; `simulation` and `worker_event` in a shape no real database has — checked
+  on dev). A second guarded revision reconciles them; parity is now exact but for one
+  irreversible, unused enum label. Neither inserted revision has a reconciler fingerprint, on
+  purpose: no marker for them can be false below its revision on a `create_all` database.
 - **2026-09-19** — **Tier 2 and Tier R passed live on dev (0.9.146).** Tier 2, four simulations
   submitted together: `sim-default` sim 1350 (29 min; 82 output files, 1 seed summary),
   `sim-chain` sim 1347 (52 min; 2/2 seeds succeeded over 2 generations), `sim-nextflow` sim
