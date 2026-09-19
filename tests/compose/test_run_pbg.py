@@ -1700,3 +1700,37 @@ def test_run_opens_a_task_span_named_from_the_composite_id(tmp_path: Path, monke
     assert [s.path for s in emitter._sinks if isinstance(s, _FakeFileSink)] == [
         str(tmp_path / "output" / "events.jsonl")
     ]
+
+
+# --- an emitter's CLASS is what matters, not how its address spells it ---
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["local:RAMEmitter", "local:process_bigraph.emitter.RAMEmitter", "local:process_bigraph.emitter.ConsoleEmitter"],
+)
+def test_redirect_emitters_leaves_in_memory_emitters_alone_in_either_spelling(address: str, tmp_path: Path) -> None:
+    """The dotted spelling is the ONLY one that resolves under a workspace core, and it used
+    to be "redirected": n == 1 skipped the in-memory history fallback, so a run that really
+    emitted failed the PBG_REQUIRE_OUTPUT gate (found by `atlantis smoke`, 2026-09-19)."""
+    doc: dict[str, Any] = {"state": {"emitter": {"_type": "step", "address": address, "config": {"emit": {}}}}}
+    n, s3_locations = run_pbg._redirect_emitters(doc, tmp_path / "out")
+    assert n == 0
+    assert s3_locations == []
+    assert "out_dir" not in doc["state"]["emitter"]["config"]
+
+
+def test_redirect_emitters_sends_a_dotted_xarray_emitter_to_s3(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAY_OUT_S3", "s3://bucket/prefix/")
+    doc: dict[str, Any] = {
+        "state": {"emitter": {"address": "local:pbg_emitters.XArrayEmitter", "config": {"out_uri": "local/path"}}}
+    }
+    n, _ = run_pbg._redirect_emitters(doc, tmp_path)
+    assert n == 1
+    assert doc["state"]["emitter"]["config"]["out_uri"] == "s3://bucket/prefix/"
+
+
+def test_emitter_class_name() -> None:
+    assert run_pbg._emitter_class_name("local:RAMEmitter") == "RAMEmitter"
+    assert run_pbg._emitter_class_name("local:process_bigraph.emitter.RAMEmitter") == "RAMEmitter"
+    assert run_pbg._emitter_class_name("RAMEmitter") == "RAMEmitter"
