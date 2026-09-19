@@ -81,10 +81,13 @@ from viva_api.simulation.models import (
 )
 from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
-pytestmark = pytest.mark.skipif(
-    not os.getenv("AWS_BATCH_INTEGRATION"),
-    reason="Set AWS_BATCH_INTEGRATION=1 to run real AWS Batch tests",
-)
+pytestmark = [
+    pytest.mark.real_aws,  # exempt from tests/fixtures/aws_guard.py: this file IS the real thing
+    pytest.mark.skipif(
+        not os.getenv("AWS_BATCH_INTEGRATION"),
+        reason="Set AWS_BATCH_INTEGRATION=1 to run real AWS Batch tests",
+    ),
+]
 
 # Deliberately small and cheap by default -- see module docstring. Override via
 # env for a bigger real run without editing this file.
