@@ -215,7 +215,7 @@ P2.0a guard caught. So:
 
   | cut | concern | PR | lines out of the service file | state |
   |---|---|---|---|---|
-  | 1 | config interpretation → `simulation/ray/config_interpretation.py` | **this PR** | 211 (5,019 → 4,815) | open |
+  | 1 | config interpretation → `simulation/ray/config_interpretation.py` | #705 | 211 (5,019 → 4,815) | open |
   | 2 | Batch engine → `viva_core/backends/batch.py` (`BatchJobClient`) | | | next |
   | 3–10 | tasks · build · ParCa · analysis · Nextflow · mbp-tracked · MNP · chain | | | |
 - **P2.2 — mixins become strategies.** A `DispatchStrategy` Protocol (`applies`, `submit`,
@@ -490,8 +490,8 @@ gating latency compared to the baseline.
 | P0 second wave | #637 fresh-database fix + parity test — #700 (`833fcc8f`) · `DB_CREATE_ALL` guard + startup schema check — #701 (`2c898d19`) · `owner_instance` column scoping the env-worker boot sweep — #702 (`2ab03b37`) | 0.9.147 | **2026-09-19** (checkpoint B) | — | all three merged 2026-09-19 — **P0 complete**; migrations `e3a9c1d70b62` → `e7b3c9a1d5f2` applied on dev |
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
-| P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — **this PR**; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — **this PR** |
-| P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core). Cut 1, config interpretation — **this PR** | no bump: deploys with the rest of P2.1 at checkpoint C | — | — | **in progress** — cut 1 of 10 open |
+| P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — #696; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — #698; all merged 2026-09-19 |
+| P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core). Cut 1, config interpretation — #705 | no bump: deploys with the rest of P2.1 at checkpoint C | — | — | **in progress** — cut 1 of 10 open |
 | P2.2 | mixins → `DispatchStrategy` objects; router | | | | not started |
 | P2.3 | core runtime image; K8s / SLURM / LOCAL adapters; `EnvironmentRef` | | | | not started |
 | P3 | | | | | |
