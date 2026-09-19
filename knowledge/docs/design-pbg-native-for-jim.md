@@ -4,7 +4,7 @@
 process-bigraph familiarity. Every claim here is traced to real, current source (file:line) or real
 dispatched output — nothing is illustrative or simplified for exposition. A companion document,
 `design-chain-dispatch-for-jim.md`, covers the OTHER mechanism this one is contrasted against; read
-both together, ideally side by side with `../assets/composites/*.json`.
+both together, ideally side by side with `../composites/*.json`.
 
 ## 1. What this is, in one paragraph
 
@@ -288,13 +288,18 @@ composite: `_redirect_emitters` finds no top-level emitter node in a `lineage_ra
 invisible to a static top-level scan), so `_persist_emitter_history`'s own `gather_emitter_results`
 call finds nothing to persist either.
 
-**Practical consequence, right now**: don't rely on this automatic analysis for a `lineage_ray_batch`
-dispatch's real `cd1_*`-shaped output — read the real parquet directly from wherever `out_dir`
-pointed (or the deployment-standard location if unset), the same way `run_standalone_analysis.py`
-already does correctly for chain-dispatch (`out_uri` straight into `run_duckdb_analyses`, real hive
-parquet, no local-download step). **The fix** (not yet built, correctly deferred behind higher CD2
-priorities): give `run_multi_node_analysis.py` an equivalent direct-S3-read path, mirroring
-`run_standalone_analysis.py`'s own approach, rather than its current flat-file-download design.
+**FIXED, 2026-09-04.** `run_multi_node_analysis.py` now tries a real hive-parquet read first (reusing
+`run_standalone_analysis.py`'s own already-proven `resolve_modules`/`run_duckdb_analyses` — the same
+DuckDB-httpfs mechanism, not a new one), falling through to the original flat-file path only when
+that finds nothing (preserving colony's own byte-identical existing behavior). `n_seeds`/
+`n_generations`/`modules` now thread from the original dispatch's own stored `multi_node_dispatch.params`
+through to this call — no new DB column needed, `analysis_options` resolves via `analysis_modules_for`,
+the same resolver chain-dispatch's own analysis node already uses. Shipped as v2ecoli
+[PR#673](https://github.com/vivarium-collective/v2ecoli/pull/673) + viva-api
+[PR#390](https://github.com/vivarium-collective/viva-api/pull/390), merged, tagged `v0.9.90`,
+released, built, deployed to `smsvpctest`, verified live via direct pod exec (not just a matching
+version string). A `lineage_ray_batch` dispatch's auto-triggered post-completion analysis now actually
+reads its real output — no manual workaround needed any more.
 
 A real, working invocation (defaults mirror the real dispatch that verified `out_dir`, `database_id=282`):
 
@@ -311,7 +316,7 @@ OUT_DIR="s3://<your-bucket>/my-first-pbg-native-run/" \
 **A real, complete example of the resulting composite document** — not simplified, not
 hand-written, produced by actually calling `build_lineage_ray_batch_document()` with these exact
 params against a real downloaded ParCa cache — is checked in at
-`../assets/composites/pbg-native-lineage-ray-batch-composite.json`. Reproduction steps: same file's
+`../composites/pbg-native-lineage-ray-batch-composite.json`. Reproduction steps: same file's
 sibling `README.md`.
 
 ## 10. Proven results — real evidence, not projections
@@ -354,7 +359,7 @@ intermediates_idx` not an int/bool array; a modeling-code bug, not a dispatch/pl
 
 A real, updated example composite document (this time WITH `injected_processes` set, matching
 dispatch 288's real content) is checked in at
-`../assets/composites/pbg-native-lineage-ray-batch-composite.json` (regenerated 2026-09-03 against
+`../composites/pbg-native-lineage-ray-batch-composite.json` (regenerated 2026-09-03 against
 the `feat/item109-lineage-ray-batch-injection-exposure` branch).
 
 **A companion PR, stacked on #663**: `v2ecoli` PR #662 adds `variant_grid` (a genuine (variant, seed)
@@ -367,10 +372,8 @@ elsewhere, and is the most likely fix for §6's own xarray-mystery, below).
 
 ## 11. Known, real, currently-open gaps
 
-- **The automatic post-completion analysis mechanism** — now DEFINITIVELY confirmed structurally
-  broken for `lineage_ray_batch` dispatches (§9's own updated subsection above, dispatch 283's real
-  result). Fix pattern known (mirror `run_standalone_analysis.py`'s direct-S3-read approach), not
-  built — correctly deferred behind higher CD2 priorities.
+- ~~The automatic post-completion analysis mechanism~~ — **CLOSED 2026-09-04**, see §9 above
+  (v2ecoli#673 + viva-api#390, `v0.9.90`, live on `smsvpctest`).
 - **Result aggregation across N lineages at 1000-seed scale** — not yet built, real safety finding: an
   originally-proposed "gather Step, triggered when every lineage reports complete" design was found
   UNSAFE against the real AWS Batch MNP entrypoint's own sync semantics (no shared filesystem across
@@ -395,12 +398,12 @@ elsewhere, and is the most likely fix for §6's own xarray-mystery, below).
   genuinely succeeded (confirmed: dispatch 283's own analysis job showed `running` for 90+ minutes
   after the real job had finished in ~41 seconds). Not yet root-caused or fixed.
 - **No workbench-UI dispatch path yet** — scoped in detail, not built:
-  `../report/report-gaps-ui-triggered-pbg-native-dispatch.md`. Headline: a real, mature remote-dispatch
+  `report-gaps-ui-triggered-pbg-native-dispatch.md`. Headline: a real, mature remote-dispatch
   mechanism already exists in the Study tab with a generic parameter passthrough that could carry a
   `multi_node_dispatch` payload with zero new server-side code — the real gap is narrower than
   building a new mechanism (no composite-id selector, no client-side form for these params yet).
 
-## Appendix A — the real script used to produce the composite document in `../assets/composites/`
+## Appendix A — the real script used to produce the composite document in `../composites/`
 
 ```python
 from process_bigraph.composite_generator import apply_core_extensions

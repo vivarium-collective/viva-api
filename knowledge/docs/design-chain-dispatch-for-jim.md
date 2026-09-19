@@ -2,7 +2,7 @@
 
 **Audience**: written for Jim, who is new to this system. No prior context assumed. Companion to
 `design-pbg-native-for-jim.md`; read both together, ideally side by side with
-`../assets/composites/*.json`. Every claim here is traced to real, current source (file:line) or
+`../composites/*.json`. Every claim here is traced to real, current source (file:line) or
 real dispatched output — this is the mechanism that has actually run this ecosystem's flagship
 1000-seed × 10-generation production campaign, and every number below is from that real run or its
 successors, not a projection.
@@ -95,7 +95,7 @@ single function with two entirely different document shapes depending on its arg
 ```
 
 **This is the real, complete, actual document** (not simplified) — see
-`../assets/composites/chain-dispatch-ecoli-baseline-composite.json` for the full, real output.
+`../composites/chain-dispatch-ecoli-baseline-composite.json` for the full, real output.
 
 The key architectural fact to absorb: **this top-level document has exactly ONE process-bigraph node
 of real substance, a single `Step` (`BatchBaselineRunner`)**. All of the actual seed-level fan-out —
@@ -235,7 +235,7 @@ NUM_SEEDS=1 NUM_GENERATIONS=3 RUN_PARCA=true \
 `run_pbg.py` builds and runs for a single chained job, produced by actually calling
 `ecoli_baseline.baseline()` with the exact overrides `_seed_generation_command` constructs, against a
 real downloaded ParCa cache — is checked in at
-`../assets/composites/chain-dispatch-ecoli-baseline-composite.json`. Reproduction steps: same file's
+`../composites/chain-dispatch-ecoli-baseline-composite.json`. Reproduction steps: same file's
 sibling `README.md`.
 
 ## 10. Proven results — real evidence, at real production scale
@@ -264,7 +264,7 @@ sibling `README.md`.
   app-level poll loop (§8) exists; it is not a limitation of the current design so much as the reason
   the current design looks the way it does.
 
-## Appendix A — the real script used to produce the composite document in `../assets/composites/`
+## Appendix A — the real script used to produce the composite document in `../composites/`
 
 ```python
 from process_bigraph.composite_generator import apply_core_extensions

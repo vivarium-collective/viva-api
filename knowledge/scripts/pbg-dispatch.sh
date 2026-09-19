@@ -32,18 +32,31 @@
 # time_step/media/emitter) and infers n_seeds from how many lineage_* nodes
 # exist, base_seed from the minimum seed among them.
 #
-# --- A REAL, DOCUMENTED, CURRENTLY-EXISTING GAP, not silently worked around ---
+# --- UPDATE 2026-09-06: the gap this section used to describe is closed ---
 # lineage_ray_batch's own registered @composite_generator `parameters` schema
-# (v2ecoli/composites/lineage_ray_batch.py) does NOT include `variants`,
-# `injected_processes`, or `config_overrides` -- even though the underlying
-# document-builder function (build_lineage_ray_batch_document) accepts all
-# three. process_bigraph.composite_spec.CompositeSpec._merged_params() raises
-# `KeyError: unknown override(s): [...]` for ANY key not in that registered
-# schema -- confirmed directly from source (composite_spec.py:330-337). A real
-# dispatch passing any of those three today would hard-fail before the
-# composite is even built. This script therefore does NOT expose them as
-# params (there is nothing real to wire them to yet) -- extending the
-# registered schema is real, undone follow-up work, not a scripting problem.
+# (v2ecoli/composites/lineage_ray_batch.py) DOES include `variants`,
+# `injected_processes`, and `config_overrides` as of v2ecoli#663 (`ad22c4d7`,
+# confirmed directly against current main). `INJECTED_PROCESSES` below is a
+# real, working env var, not aspirational -- verified end to end on real
+# infrastructure (Dispatch 368, smsvpctest, 2026-09-06): the real submitted
+# AWS Batch command carried the swap, and the composite genuinely built with
+# it. `variants`/`config_overrides` remain unwired here (nobody has needed
+# them from this script yet) -- add the same way if/when needed.
+#
+# --- CACHE_VARIANT gotcha, real and costly to get wrong (learned the hard
+# way, same session) ---
+# cache_variant is a DISPATCH-LEVEL directive (which S3 slot to stage the
+# ParCa cache from -- see SimulationServiceRay._submit_multi_node_composite),
+# NOT a composite parameter. It belongs at the TOP LEVEL of
+# multi_node_dispatch, a SIBLING of composite_id/num_nodes/steps -- NOT
+# nested inside `params`. Nesting it inside `params` (an easy mistake -- it
+# reads like it belongs with the other cache-ish fields) silently defeats the
+# item105/106 stock-cache guard (viva-api#437): `params.cache_variant` is
+# invisible to `mnp_dispatch.get("cache_variant")`, so the dispatch falls
+# through as if cache_variant were never set at all -- a real, unconditional
+# ParCa rebuild into the BARE per-commit path, reproducing the exact bug #437
+# exists to prevent, self-inflicted by the caller rather than caused by any
+# guard defect. `CACHE_VARIANT` below is wired at the correct (top) level.
 #
 # Prerequisite (not run by this script): a tunnel to the target env must
 # already be up, e.g.
@@ -128,6 +141,25 @@ OUT_DIR="${OUT_DIR-$(_cfg_default '.out_dir' '')}"
 # silently defeat the whole point of being able to pass N_WORKERS="" to omit.
 N_WORKERS="${N_WORKERS-}"
 
+# cache_variant: "" (default) omits the field, so cache_s3_uri's own
+# variant=None default applies unchanged (every existing caller's byte-for-
+# byte behavior). Set to a real staged variant name to reuse a pre-built
+# strain-specific ParCa cache instead of the plain per-commit one -- MUST
+# already be staged (POST /parca/new-gene-cache, or an explicit S3 sync) at
+# this exact commit before dispatching, or the request fails loud with a
+# ValueError (viva-api#437) rather than silently building a stock substitute
+# under the variant's name. See the header comment above for the top-level-
+# not-nested-in-params gotcha.
+CACHE_VARIANT="${CACHE_VARIANT-}"
+
+# injected_processes: "" (default) omits the field. Set to a real JSON object
+# (e.g. '{"swap_processes":{"ecoli-metabolism":"ecoli-metabolism-redux"},
+# "exclude_processes":["exchange_data"]}') to apply a real process swap/add/
+# exclude, verified end to end on real infra (Dispatch 368, 2026-09-06) --
+# this one DOES belong inside `params` (it's a real lineage_ray_batch
+# composite parameter, unlike cache_variant above).
+INJECTED_PROCESSES="${INJECTED_PROCESSES-}"
+
 workflow() {
   local n_workers_field=""
   if [[ -n "${N_WORKERS}" ]]; then
@@ -137,14 +169,22 @@ workflow() {
   if [[ -n "${OUT_DIR}" ]]; then
     out_dir_field=',"out_dir": "'"${OUT_DIR}"'"'
   fi
+  local cache_variant_field=""
+  if [[ -n "${CACHE_VARIANT}" ]]; then
+    cache_variant_field=',"cache_variant": "'"${CACHE_VARIANT}"'"'
+  fi
+  local injected_processes_field=""
+  if [[ -n "${INJECTED_PROCESSES}" ]]; then
+    injected_processes_field=',"injected_processes": '"${INJECTED_PROCESSES}"
+  fi
   curl -s -X POST "${VIVA_API_BASE}/api/v1/simulations?simulator_id=${SIMULATOR_ID}&experiment_id=${EXPERIMENT_ID}" \
     -H "Content-Type: application/json" \
     -d '{
       "extra_params": {
         "multi_node_dispatch": {
           "composite_id": "'"${COMPOSITE_ID}"'",
-          "num_nodes": '"${NUM_NODES}"',
-          "params": {
+          "num_nodes": '"${NUM_NODES}${cache_variant_field}"'
+          ,"params": {
             "n_seeds": '"${N_SEEDS}"',
             "n_generations": '"${N_GENERATIONS}"',
             "base_seed": '"${BASE_SEED}"',
@@ -153,7 +193,7 @@ workflow() {
             "emitter": "'"${EMITTER}"'",
             "max_duration_per_gen": '"${MAX_DURATION_PER_GEN}"',
             "time_step": '"${TIME_STEP}"',
-            "media": "'"${MEDIA}"'"'"${n_workers_field}${out_dir_field}"'
+            "media": "'"${MEDIA}"'"'"${n_workers_field}${out_dir_field}${injected_processes_field}"'
           },
           "steps": '"${STEPS}"'
         }
