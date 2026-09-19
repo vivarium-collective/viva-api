@@ -159,13 +159,19 @@ API** — a task can be cancelled only by the caller who created it.
 (`config.compute_backend_for_repo`, which hard-codes the `RepoUrl` enum).
 `deployment_namespace` is informational only.
 
-**The generic Batch engine lives inside the E. coli service.**
-`simulation/simulation_service_ray.py` is 5,020 lines. Inside it, and domain-neutral:
-`_ensure_mnp_job_def`, `_submit_mnp`, `_ensure_container_job_def`, `_submit_container`,
-`_SubmitJobPacer`, `get_batch_job_statuses` / `_details`, `_batch_exit_code`,
-`get_job_status`, `cancel_job`, `_resolve_log_group`, `_image_uri`. Everything else in the
-file is SMS: ParCa, chain dispatch, new-gene and variant caches, the analysis DAG, and the
-four strain keyword arguments of `_stage_out_env`.
+**The generic Batch engine lived inside the E. coli service; since P2.1 cut 2 it is in core.**
+`simulation/simulation_service_ray.py` was 5,019 lines with the engine inside it. The engine
+is now `viva_core/backends/batch.py` — `BatchJobClient` (`ensure_mnp_job_definition`,
+`ensure_container_job_definition`, `submit_mnp`, `submit_container`, `job_statuses`,
+`job_details`, `describe_job`, `job_definition_log_group`, `terminate`, `terminate_matching`),
+`SubmitJobPacer`, `BatchJobDetail`, `stage_out_env`, `ecr_image_uri`. It takes **no
+settings**: every queue and base job definition is an argument and the boto3 client comes
+from a factory. The service keeps its method names (`_submit_mnp`, `_submit_container`,
+`_ensure_*_job_def`, `_image_uri`, `get_batch_job_statuses` / `_details`, `get_job_status`,
+`cancel_job`, `_resolve_log_group`) as thin delegations that read settings through `_seams`
+and choose the queue. Still SMS, and still in the file: ParCa, chain dispatch, new-gene and
+variant caches, the analysis DAG, and the strain entries `_stage_out_env` appends to core's
+generic env list.
 
 | Dispatch path | Submitted as | Status | SMS content |
 |---|---|---|---|
@@ -192,7 +198,8 @@ own status enum.
 
 *Since P1a* there is a second top-level package, `viva_core/` (`models`, `infra/messaging`,
 `events/events_env`, `backends/{job_service,k8s_job_service,models,nextflow_weblog}`; since
-P1b also `settings`, `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}`), which
+P1b also `settings`, `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}`; since
+P2.1 `backends/batch` — the first core module that was *extracted* rather than moved), which
 imports nothing from `viva_api` or `app`. The old `viva_api.common.*` paths for those modules
 are self-replacing stubs — same module object under both names. The graph below is otherwise
 unchanged: everything still imports them through the old names.
@@ -539,9 +546,9 @@ Status: `planned` → `in progress` → `done (PR, version)`. Phases refer to `p
 |---|---|---|---|---|---|
 | 1 | Import boundary | none enforced | import-linter: core ↛ viva_api, app | P0 / P1 | in progress — seven contracts; **enforced:** `core-is-standalone` (P1a, transitive) and env workers + relay (#680); report-only: 5 (9 edges) |
 | 2 | Generic modules | under `viva_api/common`, `api/` | `viva_core/{infra,storage,backends,events,api}` + aliasing shim | P1 | in progress — P1a: `models`, `infra/messaging`, `events/events_env`, `backends/{job_service,k8s_job_service,models,nextflow_weblog}` moved; old paths are self-replacing stubs. P1b: `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved |
-| 3 | Batch engine | private methods of `SimulationServiceRay` | `viva_core/backends/batch.py` (`BatchJobClient`, composed) | P2.1 | planned |
+| 3 | Batch engine | private methods of `SimulationServiceRay` | `viva_core/backends/batch.py` (`BatchJobClient`, composed) | P2.1 | in progress — cut 2: the engine exists in core, settings-free, with its own tests (`tests/core/test_batch_backend.py`); `SimulationServiceRay` delegates through `_batch_jobs()`; `compose` still reaches it via the service's private methods (→ P2.3); not yet behind the `JobBackend` Protocol |
 | 4 | Backends | three SMS-shaped service classes | `JobBackend` adapters: batch, k8s, slurm, local | P2.3 | planned |
-| 25 | SMS Ray service | one class, 4,305 lines, ~75 methods, four dispatch mechanisms behind a 299-line router | `simulation/ray/`: a facade + router, one `DispatchStrategy` per mechanism, `parca`, `analysis`, `config_interpretation` | P2.0 → P2.2 | in progress — P2.0 done (`_seams` + ratchet); P2.1 cut 1 of 10: `ray/config_interpretation.py` (5 pure functions, 211 lines) is out; the class itself is untouched so far |
+| 25 | SMS Ray service | one class, 4,305 lines, ~75 methods, four dispatch mechanisms behind a 299-line router | `simulation/ray/`: a facade + router, one `DispatchStrategy` per mechanism, `parca`, `analysis`, `config_interpretation` | P2.0 → P2.2 | in progress — P2.0 done (`_seams` + ratchet); P2.1 cuts 1–2 of 10: `ray/config_interpretation.py` (5 pure functions) and the Batch engine (→ core, row 3) are out; 5,019 → 4,581 lines |
 | 5 | Image resolution | `<ecr>/v2ecoli:<commit>` hard-wired | explicit `EnvironmentRef` (see row 24 for the image it defaults to) | P2.3 / P5 | planned |
 | 6 | Settings | one flat `Settings` | `CoreSettings` + `SmsSettings`, same env names | P1b / P3 | in progress — P1b: `viva_core.settings.CoreSettings` holds the storage + path-prefix fields; `Settings` inherits them; the application registers a provider so core reads its object. P3 moves the rest |
 | 7 | Wiring | module globals, router setters, one `init_standalone` | `CoreContainer` + `SmsContainer`, `create_core_app()` | P3 | planned |

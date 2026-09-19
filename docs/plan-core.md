@@ -211,12 +211,16 @@ P2.0a guard caught. So:
   as `self.` through the mixin, which is what keeps the test and `compose` call sites valid.
   Each cut's PR carries its own proof of "move-only": every moved function's source compared
   byte-for-byte with `origin/main`, and every class and remaining function in the service
-  file compared the same way.
+  file compared the same way. A cut that crosses into `viva_core` cannot be byte-identical
+  (core takes no settings and no domain arguments), so its proof is a **differential run**
+  instead: `origin/main`'s service and the carved one, same inputs, a recording fake Batch
+  client, every boto3 call and return value compared — plus a mutation check that the
+  harness can see a difference at all.
 
   | cut | concern | PR | lines out of the service file | state |
   |---|---|---|---|---|
   | 1 | config interpretation → `simulation/ray/config_interpretation.py` | #705 | 211 (5,019 → 4,815) | open |
-  | 2 | Batch engine → `viva_core/backends/batch.py` (`BatchJobClient`) | | | next |
+  | 2 | Batch engine → `viva_core/backends/batch.py` (`BatchJobClient`) — a **delegation**, not a move; see the decision log | **this PR** (stacked on #705) | 234 (4,815 → 4,581) | open |
   | 3–10 | tasks · build · ParCa · analysis · Nextflow · mbp-tracked · MNP · chain | | | |
 - **P2.2 — mixins become strategies.** A `DispatchStrategy` Protocol (`applies`, `submit`,
   `cancel`, `progress`); each mechanism an object with explicit dependencies (`BatchJobClient`,
@@ -491,7 +495,7 @@ gating latency compared to the baseline.
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — #696; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — #698; all merged 2026-09-19 |
-| P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core). Cut 1, config interpretation — #705 | no bump: deploys with the rest of P2.1 at checkpoint C | — | — | **in progress** — cut 1 of 10 open |
+| P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core). Cut 1, config interpretation — #705 · cut 2, Batch engine → `viva_core/backends/batch.py` — **this PR** | no bump: deploys with the rest of P2.1 at checkpoint C | — | — | **in progress** — cuts 1 and 2 of 10 open (stacked) |
 | P2.2 | mixins → `DispatchStrategy` objects; router | | | | not started |
 | P2.3 | core runtime image; K8s / SLURM / LOCAL adapters; `EnvironmentRef` | | | | not started |
 | P3 | | | | | |
@@ -516,6 +520,35 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — **P2.1 cut 2: the Batch engine is in core** (`viva_core/backends/batch.py`:
+  `BatchJobClient`, `SubmitJobPacer`, `BatchJobDetail`, `stage_out_env`, `ecr_image_uri`).
+  Three decisions. (1) **The engine takes no settings** — every queue, base job definition
+  and prefix is an argument, and the boto3 client comes from a factory. Not a style choice:
+  205 tests isolate the service by patching `_seams.get_settings`, core may not import
+  `viva_api`, so an engine that read `get_core_settings()` for itself would run with the
+  developer's real queues while those tests passed — the exact hazard P2.0 was built
+  against. `SimulationServiceRay._batch_jobs()` builds the engine per call around
+  `lambda: self._batch()`, so a swapped `service._batch` still reaches it. (2) **What stayed
+  in SMS**, because it is a decision about *this* deployment or *this* science: which queue
+  (standalone vs placement-group; large-memory), the "setting not provisioned" guards, the
+  strain / clean-chain / lineage-debug entries `_stage_out_env` appends after core's generic
+  half, and the predicate that says which Batch jobs belong to a Nextflow campaign
+  (`terminate_matching(matches=…)`). This is the plan's "four strain kwargs become opaque
+  `extra_env`", done as *append to the list* so the env order is unchanged. (3) **Method
+  names did not move**: `_submit_mnp`, `_submit_container`, `_ensure_*_job_def`,
+  `_image_uri`, `get_batch_job_statuses/details` keep their signatures and delegate, because
+  ~110 test references and `compose`'s four private-method calls go through them. `compose`
+  switches to `BatchJobClient` directly in P2.3. **Proof:** 2,178 differential cases (every
+  combination of stage-in / dependency shape / tags / retry / strain / task_env × node count
+  × memory class × settings variants, plus definitions, statuses with 234 ids, details, log
+  group, terminate with pagination) — **0 differences**; mutating one env value in core
+  produced 864, so the harness sees what it should. **Two observable differences**, both
+  logs: the engine's messages are logged under `viva_core.backends.batch`; and "Submitted
+  container job … to <queue>" now names the queue the job actually went to — it used to
+  print `ray_container_queue` even when the job was routed to the large-memory queue.
+  Left for later cuts: `get_task_logs` (tasks, cut 3) and `_mnp_node_vcpus` (MNP, cut 9)
+  still call `self._batch()`; `batch_build.py` carries its own copy of the DescribeJobs
+  chunk size (build, cut 4).
 - **2026-09-19** — **P2.1 cut 1: config interpretation.** Five module-level functions
   (`_is_upstream_vecoli`, `strain_from_config`, `injected_processes_from_config`,
   `_thread_injected_processes_into_params`, `_batch_domain_overrides`; 211 lines) moved to

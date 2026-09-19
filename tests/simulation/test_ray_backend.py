@@ -5094,16 +5094,16 @@ class TestSubmitParcaJob:
 
 @pytest.mark.asyncio
 class TestSubmitJobPacer:
-    """_SubmitJobPacer proactively caps AWS Batch SubmitJob calls below the
+    """SubmitJobPacer proactively caps AWS Batch SubmitJob calls below the
     account-wide 50 TPS ceiling, computed from REAL elapsed wall-clock time
     (not a fixed guess) -- backing the chain-dispatch campaign's upfront N*G
     submission loop (backlog item 33 rework)."""
 
     @pytest.mark.asyncio
     async def test_first_call_never_sleeps(self) -> None:
-        from viva_api.simulation.simulation_service_ray import _SubmitJobPacer
+        from viva_core.backends.batch import SubmitJobPacer
 
-        pacer = _SubmitJobPacer(max_per_second=40.0)
+        pacer = SubmitJobPacer(max_per_second=40.0)
         with patch("viva_api.simulation.simulation_service_ray.asyncio.sleep", new=AsyncMock()) as mock_sleep:
             await pacer.wait()
         mock_sleep.assert_not_called()
@@ -5113,9 +5113,9 @@ class TestSubmitJobPacer:
         """Drives a FAKE monotonic clock so the computed sleep duration is
         exactly checkable, rather than asserting on real (flaky) wall-clock
         timing."""
-        from viva_api.simulation.simulation_service_ray import _SubmitJobPacer
+        from viva_core.backends.batch import SubmitJobPacer
 
-        pacer = _SubmitJobPacer(max_per_second=10.0)  # min_interval = 0.1s
+        pacer = SubmitJobPacer(max_per_second=10.0)  # min_interval = 0.1s
         clock = iter([100.0, 100.0, 100.02])
         with (
             patch("viva_api.simulation.simulation_service_ray.time.monotonic", side_effect=lambda: next(clock)),
@@ -5129,9 +5129,9 @@ class TestSubmitJobPacer:
 
     @pytest.mark.asyncio
     async def test_no_sleep_once_enough_real_time_has_elapsed(self) -> None:
-        from viva_api.simulation.simulation_service_ray import _SubmitJobPacer
+        from viva_core.backends.batch import SubmitJobPacer
 
-        pacer = _SubmitJobPacer(max_per_second=10.0)  # min_interval = 0.1s
+        pacer = SubmitJobPacer(max_per_second=10.0)  # min_interval = 0.1s
         clock = iter([100.0, 100.5])  # half a second later -- comfortably past the 0.1s floor
         with (
             patch("viva_api.simulation.simulation_service_ray.time.monotonic", side_effect=lambda: next(clock)),
@@ -5544,7 +5544,7 @@ class TestSubmitChainGeneration:
             patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
-            patch("viva_api.simulation.simulation_service_ray._SubmitJobPacer.wait", new=AsyncMock()),
+            patch("viva_core.backends.batch.SubmitJobPacer.wait", new=AsyncMock()),
         ):
             submitted = await service.submit_chain_generation_batch(
                 seeds=[0, 1],
@@ -5576,7 +5576,7 @@ class TestSubmitChainGeneration:
             patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
-            patch("viva_api.simulation.simulation_service_ray._SubmitJobPacer.wait", new=AsyncMock()),
+            patch("viva_core.backends.batch.SubmitJobPacer.wait", new=AsyncMock()),
         ):
             submitted = await service.submit_chain_generation_batch(
                 seeds=[0, 1],
@@ -5609,7 +5609,7 @@ class TestSubmitChainGeneration:
             patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
-            patch("viva_api.simulation.simulation_service_ray._SubmitJobPacer.wait", new=AsyncMock()),
+            patch("viva_core.backends.batch.SubmitJobPacer.wait", new=AsyncMock()),
         ):
             submitted = await service.submit_chain_generation_batch(
                 seeds=[0, 1],
@@ -5663,9 +5663,7 @@ class TestSubmitChainGeneration:
             patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
-            patch(
-                "viva_api.simulation.simulation_service_ray._SubmitJobPacer.wait", new=AsyncMock()
-            ) as mock_pacer_wait,
+            patch("viva_core.backends.batch.SubmitJobPacer.wait", new=AsyncMock()) as mock_pacer_wait,
         ):
             submitted = await service.submit_chain_generation_batch(
                 seeds=[0, 1, 2],
