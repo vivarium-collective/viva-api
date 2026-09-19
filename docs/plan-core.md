@@ -406,8 +406,9 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 | # | After | Why it needs a deploy | Prove on dev |
 |---|---|---|---|
 | A ✅ 0.9.145, 2026-09-18 | P0 first wave + P1a | new top-level package in the image; reconciler probes; shutdown order | `current_schema()` is `public`; migration Job classifies MANAGED; pod boots; `/app/viva_core/models.py` on the newest pod; EUTE smoke via `atlantis`; `vwb smoke`; one rolling restart's logs |
+| A2 | P1b + the `run_pbg` fix (#689) | configuration plumbing — how the storage settings reach the file services — kept apart from P2.1's dispatch change (one kind per deploy) | Tier 0 + Tier 1; `compose` flips FAIL → PASS; `atlantis simulation outputs` (the S3 file service end to end); marker `/app/viva_core/settings.py` |
 | B | P0 second wave | `create_all` off and the FRESH path changed — how every database bootstraps | alone; `--analyze` per site; migration Job; boot against an already-migrated DB |
-| C | P1b + P2.0–P2.1 | core's first settings object; the Batch submit path moved | every dispatch path: Ray MNP sim, container analysis, task, compose, image build, Nextflow head |
+| C | P2.0–P2.1 | core's first settings object; the Batch submit path moved | every dispatch path: Ray MNP sim, container analysis, task, compose, image build, Nextflow head |
 | D | P2.2–P2.3 | strategies; env-worker and task image resolution | workbench through the relay; `vwb smoke`; `atlantis worker`, `task` |
 | E | P3 | settings split, new wiring and lifespan, app factory | alone; diff redacted effective settings and the OpenAPI spec old pod vs new |
 | F | P4a, then P4b | additive migration with dual-write | SQL check that both column sets agree; `atlantis dataset` |
@@ -428,7 +429,7 @@ is reported separately from PASS and says why; `--json-out` is the record a rele
 | 2 | tens of minutes, dollars — *not built yet* | a Ray multi-node simulation with analysis; a 2x2 chain dispatch; a Nextflow head; the vEcoli qualification script; an image build |
 | R | *not built yet* | a pod restart with a Tier 1 job in flight: status still resolves; the terminated pod's log shows the shutdown order |
 
-Required: **A** = 0 + `task`. **B** = 0 + 1. **C** = 0 + 1 + 2 (P2.1 is the first change that
+Required: **A** = 0 + `task`. **A2** = 0 + 1 + an outputs download. **B** = 0 + 1. **C** = 0 + 1 + 2 (P2.1 is the first change that
 can break dispatch — Tier 2 and R are built before it). **D** = 0 + 1 (`worker`, `task`
 especially). **E** = 0 + 1 + R. **F** = 0 + 1. **G** = 0 + 1 + R. **H** = 0 + 1 + 2. **I**, **J** = all.
 
@@ -459,8 +460,8 @@ gating latency compared to the baseline.
 | P0 (first wave) | #680 import-linter contracts · #681 `set_messaging_service` · #682 reconciler `current_schema()` · #683 shutdown stops pollers · #684 kustomize by-name patches | 0.9.145 | **2026-09-18** (checkpoint A) | — | **merged 2026-09-18** (`ca67b43f`, `2f6d73b1`, `f99caa02`, `7f3f6777`, `86c5f292`); combined `main` verified: `make check` ×2, 378 tests. Not yet deployed — #681–#683 change runtime code and go out with the next version bump; #680 and #684 change nothing that runs |
 | P0 (after #661) | #637 FRESH fix + `create_all`-vs-migrations parity test · `DB_CREATE_ALL` guard · `owner_instance` column scoping the env-worker boot sweep | | | | not started — each adds or tests a migration, so they wait for #661 to keep the chain at one head |
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
-| P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | rides checkpoint C | | | merged 2026-09-19 (`c9fa2bd5`), not deployed |
-| P2.0 | (a) test guard vs real AWS — **this PR**; (b) `_seams` + retarget 298 patches; (c) smoke Tier 2 + R | test-only | — | — | (a) open; (b), (c) not started |
+| P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | checkpoint A2 | — | merged 2026-09-19 (`c9fa2bd5`) |
+| P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + retarget 298 patches; (c) smoke Tier 2 + R | test-only | — | — | (a) merged; (b), (c) not started |
 | P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core) | | | | not started |
 | P2.2 | mixins → `DispatchStrategy` objects; router | | | | not started |
 | P2.3 | core runtime image; K8s / SLURM / LOCAL adapters; `EnvironmentRef` | | | | not started |
@@ -486,6 +487,9 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — Checkpoint **A2** inserted (Jim asked whether to deploy now; yes): P1b is a
+  *configuration* change and P2.1 a *dispatch* change, so letting P1b ride checkpoint C broke
+  the one-kind-per-deploy rule this plan set. A2 = 0.9.146 = P1b + the `run_pbg` fix.
 - **2026-09-19** — P2.0(a), the no-real-AWS test guard, **found a live one on its first full
   run**: `test_submit_build_returns_local_job` issued a real `batch.SubmitJob`. Not a missing
   patch — a patch-LIFETIME race: `submit_build_image_job` starts the build as a background
