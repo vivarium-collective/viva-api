@@ -1120,7 +1120,10 @@ class E2EDataService:
         resp = self.client.get(f"/compose/v1/simulation/{simulation_id}/results")
         resp.raise_for_status()
         dest.mkdir(parents=True, exist_ok=True)
-        out_file = dest / f"compose_results_{simulation_id}.zip"
+        # Name the file for what it IS. The Ray path streams a gzipped tar and the SLURM path
+        # a zip; this used to save both as `.zip`, so `unzip` failed on every Ray result.
+        suffix = ".zip" if resp.content[:2] == b"PK" else ".tar.gz"
+        out_file = dest / f"compose_results_{simulation_id}{suffix}"
         out_file.write_bytes(resp.content)
         return out_file
 
