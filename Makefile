@@ -354,9 +354,16 @@ api_client:
 ui:
 	@uv run --no-cache marimo edit app/ui/$(id).py
 
+.PHONY: smoke
+smoke: ## Smoke-test a DEPLOYED API. BASE_URL=http://localhost:8080 TIER=0|1 [SMOKE_ARGS="--commit <sha>"]
+	@uv run atlantis smoke run --tier $(or $(TIER),0) --url $(or $(BASE_URL),http://localhost:8080) $(SMOKE_ARGS)
+
+# `make e2e` used to run tests/api/ecoli/test_simulations.py::TestRunSimulationE2E, a class
+# that no longer exists -- so it "passed" by collecting nothing. It now runs the Tier 1
+# smoke suite, which is the thing it claimed to be: an end-to-end check of a deployment.
 .PHONY: e2e
-e2e:
-	@uv run --no-cache pytest tests/api/ecoli/test_simulations.py::TestRunSimulationE2E -v -s
+e2e: ## End-to-end check of a deployed API (Tier 1 smoke). Same variables as `make smoke`.
+	@$(MAKE) --no-print-directory smoke TIER=1
 
 .PHONY: tui
 tui:
