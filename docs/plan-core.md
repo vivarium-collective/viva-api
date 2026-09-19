@@ -220,7 +220,7 @@ P2.0a guard caught. So:
   | cut | concern | PR | lines out of the service file | state |
   |---|---|---|---|---|
   | 1 | config interpretation → `simulation/ray/config_interpretation.py` | #705 | 211 (5,019 → 4,815) | open |
-  | 2 | Batch engine → `viva_core/backends/batch.py` (`BatchJobClient`) — a **delegation**, not a move; see the decision log | **this PR** (stacked on #705) | 234 (4,815 → 4,581) | open |
+  | 2 | Batch engine → `viva_core/backends/batch.py` (`BatchJobClient`) — a **delegation**, not a move; see the decision log | #706 (stacked on #705) | 234 (4,815 → 4,581) | open |
   | 3–10 | tasks · build · ParCa · analysis · Nextflow · mbp-tracked · MNP · chain | | | |
 - **P2.2 — mixins become strategies.** A `DispatchStrategy` Protocol (`applies`, `submit`,
   `cancel`, `progress`); each mechanism an object with explicit dependencies (`BatchJobClient`,
@@ -495,7 +495,7 @@ gating latency compared to the baseline.
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — #696; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — #698; all merged 2026-09-19 |
-| P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core). Cut 1, config interpretation — #705 · cut 2, Batch engine → `viva_core/backends/batch.py` — **this PR** | no bump: deploys with the rest of P2.1 at checkpoint C | — | — | **in progress** — cuts 1 and 2 of 10 open (stacked) |
+| P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core). Cut 1, config interpretation — #705 · cut 2, Batch engine → `viva_core/backends/batch.py` — #706 | no bump: deploys with the rest of P2.1 at checkpoint C | — | — | **in progress** — cuts 1 and 2 of 10 open (stacked) |
 | P2.2 | mixins → `DispatchStrategy` objects; router | | | | not started |
 | P2.3 | core runtime image; K8s / SLURM / LOCAL adapters; `EnvironmentRef` | | | | not started |
 | P3 | | | | | |
