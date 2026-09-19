@@ -415,7 +415,8 @@ gating latency compared to the baseline.
   whole address tail to `"RAMEmitter"`, but under the workspace core only the dotted name
   (`process_bigraph.emitter.RAMEmitter`) resolves, so the emitter is "redirected", the
   history fallback is skipped, and `PBG_REQUIRE_OUTPUT` fails the job. Any generic
-  in-memory composite fails on compose-on-Ray (since #276, 2026-08-25). Fixed separately.
+  in-memory composite fails on compose-on-Ray (since #276, 2026-08-25). Fixed in #689;
+  reproduced locally (original rc=1, fixed rc=0).
   Also seen: a five-step toy composite provisions **3** multi-node instances and stages the
   whole ParCa cache first — both go away with P2b's runtime image and P5's decoupling.
 - **2026-09-19** — `atlantis smoke` added (Tier 0 + Tier 1), at Jim's prompt: before it, the
