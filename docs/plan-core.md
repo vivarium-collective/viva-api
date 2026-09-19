@@ -422,7 +422,7 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 |---|---|---|---|
 | A ✅ 0.9.145, 2026-09-18 | P0 first wave + P1a | new top-level package in the image; reconciler probes; shutdown order | `current_schema()` is `public`; migration Job classifies MANAGED; pod boots; `/app/viva_core/models.py` on the newest pod; EUTE smoke via `atlantis`; `vwb smoke`; one rolling restart's logs |
 | A2 ✅ 0.9.146, 2026-09-19 | P1b + the `run_pbg` fix (#689) | configuration plumbing — how the storage settings reach the file services — kept apart from P2.1's dispatch change (one kind per deploy) | Tier 0 + Tier 1; `compose` flips FAIL → PASS; `atlantis simulation outputs` (the S3 file service end to end); marker `/app/viva_core/settings.py` |
-| B | P0 second wave | `create_all` off and the FRESH path changed — how every database bootstraps | alone; `--analyze` per site; migration Job; boot against an already-migrated DB |
+| B ✅ 0.9.147, 2026-09-19 | P0 second wave + #661 | `create_all` off and the FRESH path changed — how every database bootstraps | alone; `--analyze` per site; migration Job; boot against an already-migrated DB |
 | C | P2.0–P2.1 | core's first settings object; the Batch submit path moved | every dispatch path: Ray MNP sim, container analysis, task, compose, image build, Nextflow head |
 | D | P2.2–P2.3 | strategies; env-worker and task image resolution | workbench through the relay; `vwb smoke`; `atlantis worker`, `task` |
 | E | P3 | settings split, new wiring and lifespan, app factory | alone; diff redacted effective settings and the OpenAPI spec old pod vs new |
@@ -473,7 +473,7 @@ gating latency compared to the baseline.
 |---|---|---|---|---|---|
 | P-1 | #679 | — | — | — | merged 2026-09-18 (`21bd7296`); docs only |
 | P0 (first wave) | #680 import-linter contracts · #681 `set_messaging_service` · #682 reconciler `current_schema()` · #683 shutdown stops pollers · #684 kustomize by-name patches | 0.9.145 | **2026-09-18** (checkpoint A) | — | **merged 2026-09-18** (`ca67b43f`, `2f6d73b1`, `f99caa02`, `7f3f6777`, `86c5f292`); combined `main` verified: `make check` ×2, 378 tests. Not yet deployed — #681–#683 change runtime code and go out with the next version bump; #680 and #684 change nothing that runs |
-| P0 second wave | #637 fresh-database fix + parity test — #700 (`833fcc8f`) · `DB_CREATE_ALL` guard + startup schema check — #701 (`2c898d19`) · `owner_instance` column scoping the env-worker boot sweep — #702 (`2ab03b37`) | 0.9.147 | checkpoint B | — | all three merged 2026-09-19 — **P0 complete** |
+| P0 second wave | #637 fresh-database fix + parity test — #700 (`833fcc8f`) · `DB_CREATE_ALL` guard + startup schema check — #701 (`2c898d19`) · `owner_instance` column scoping the env-worker boot sweep — #702 (`2ab03b37`) | 0.9.147 | **2026-09-19** (checkpoint B) | — | all three merged 2026-09-19 — **P0 complete**; migrations `e3a9c1d70b62` → `e7b3c9a1d5f2` applied on dev |
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — **this PR**; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — **this PR** |
@@ -502,6 +502,27 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — **Checkpoint B passed on dev (0.9.147, #703, tag `v0.9.147`)** — the first
+  deploy in this work to change the schema. RDS snapshot first
+  (`pre-0-9-147-checkpoint-b-20260919t1955z`); a read-only `--analyze` run **from the new
+  image** as a one-off Job (the migration Job's manifest with `--apply` swapped for
+  `--analyze`) showed *managed*, exactly the three pending markers unchecked; the Job then ran
+  `b2f6d8e0a4c7`, `c9a1e3f5b7d2`, `e7b3c9a1d5f2` in 9 s. All rows preserved; the old pod stayed
+  healthy against the new schema; new pod creates nothing at startup and logs the schema at
+  head; smoke Tier 0 7/7 (`database` PASS, 100/100 operations) and Tier 1 3/3 — **`compose`
+  PASS live for the first time**, closing the loop on #689 and #695. First task under the new
+  code is stamped `owner_instance = api`. The walk registered 7,141 dataset rows in ~10 min.
+- **2026-09-19** — What 24x7 polling costs (Jim asked). Measured inputs: the walk is a fixed
+  25 S3 LISTs a minute whatever the number of simulations (~1.1–1.2 M a month → **about $5–6
+  a month per site** at $0.005 per 1,000); the event ingester is **zero when idle** (it skips
+  rows with no event in 10 minutes); `DescribeJobs` and CloudWatch reads are free APIs; RDS is
+  plain Postgres on a `db.t3.medium` with gp2 — no per-query or per-I/O charge; both VPCs have
+  an S3 **gateway endpoint**, so none of it crosses the NAT. Noise beside the always-on
+  infrastructure. Worth doing anyway: the walk re-LISTs finished simulations forever, whose
+  outputs cannot change — walking terminal simulations daily would cut it ~25x.
+- **2026-09-19** — Found on dev, not caused by this work: **153 simulation rows stuck RUNNING**,
+  started 2026-04-03 … 2026-09-11, none with a single event. They cost nothing (the pollers
+  skip them) but make "how many runs are active" meaningless. Not yet filed.
 - **2026-09-19** — **One way to run a composite** (Jim asked how composites are specified; the
   answer was "two ways, on two endpoints"). Recorded in `architecture-core.md`: core takes an
   `EnvironmentRef` plus exactly one of a `document` or a `composite{id, params}`; execution
