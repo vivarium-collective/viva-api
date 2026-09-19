@@ -2193,11 +2193,9 @@ async def _run_standalone_analysis_ray_native(
             **(modules if isinstance(modules, dict) else {}),
         },
     }
-    job_id = await sim_service.submit_ray_native_analysis(
-        experiment_id=experiment_id,
-        params=params,
-        commit=simulator.git_commit_hash,
-    )
+    # The RUN record exists before submit (docs/plan-data-provenance.md §2a): its id rides
+    # in the job's trace baggage, so every event -- and every file later registered from
+    # those events -- is attributable to this analysis. Datasets are never pre-created.
     record = await database_service.record_analysis(
         experiment_id=experiment_id,
         n_tp=None,
@@ -2206,14 +2204,55 @@ async def _run_standalone_analysis_ray_native(
         name=analysis_name,
         simulation_id=simulation.database_id,
         backend="ray",
-        job_id_ext=str(job_id),
         result_uri=result_uri,
+        source={
+            "kind": "simulation",
+            "ref": str(simulation.database_id),
+            "resolved_id": simulation.database_id,
+            "uri": out_uri,
+        },
+        tags=list(getattr(simulation, "tags", None) or []),
     )
+    analysis_id = record.database_id
+    correlation_id = f"analysis-{analysis_id}"
+    try:
+        job_id = await sim_service.submit_ray_native_analysis(
+            experiment_id=experiment_id,
+            params=params,
+            commit=simulator.git_commit_hash,
+            correlation_id=correlation_id,
+            sim_id=simulation.database_id,
+            analysis_id=analysis_id,
+        )
+    except Exception as exc:
+        await database_service.update_analysis_status(
+            analysis_id, AnalysisStatusDB.FAILED, error_message=f"submit failed: {exc}"
+        )
+        raise
+    await database_service.update_analysis_dispatch(analysis_id, str(job_id))
+
+    from viva_api.simulation.models import JobType
+
+    hpcrun_id: int | None = None
+    try:
+        hpc_run = await database_service.insert_hpcrun(
+            job_id=job_id, job_type=JobType.ANALYSIS, ref_id=analysis_id, correlation_id=correlation_id
+        )
+        hpcrun_id = hpc_run.database_id
+    except Exception:
+        # The job is already running, so failing the request would only invite a duplicate
+        # trigger. Without this row the run's events are not ingested -- say so loudly.
+        logging.getLogger(__name__).exception(
+            "analysis %s: submitted as %s but its HpcRun could not be recorded; its events will not be ingested",
+            analysis_id,
+            job_id,
+        )
     return {
         "job_id": str(job_id),
         "analysis_name": analysis_name,
         "config": params,
-        "database_id": record.database_id,
+        "database_id": analysis_id,
+        "hpcrun_id": hpcrun_id,
     }
 
 

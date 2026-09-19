@@ -87,7 +87,7 @@ name:      artifact.written
 component: v2ecoli.emitter | v2ecoli.analysis | v2ecoli.parca | task | <other producer>
 payload:
   uri:         s3://bucket/key            # a single object, or a prefix for multi-file kinds
-  kind:        parquet | parca-cache | ptools-analysis | analysis | figure | report | other
+  kind:        store | parca-cache | ptools-analysis | analysis | figure | report | other
   name:        basename (or last prefix segment)
   view:        optional — the analysis/view name (ptools_rna, mass_fraction, …)
   bytes:       optional
@@ -104,10 +104,19 @@ vocabulary is **skipped and counted**, never raised, so one malformed event cann
 run's other files from registering. Each row also records the `hpcrun_id` and `span_id` it
 came from, so provenance can walk back to the span.
 
-**Granularity rule:** one event per thing a consumer would fetch or mount as a unit. For
-parquet that is a **partition prefix** (a generation's `history/…` partition, a
-`daughter-state/` checkpoint), never a shard. For ptools it is one TSV. For a figure one
-HTML/SVG. For a ParCa cache the bundle prefix.
+**Granularity rule:** one event per thing a consumer would fetch or mount as a unit. For a
+`store` that is the store prefix itself (`…/v2ecoli_seed00.zarr`, or a generation's
+`history/…` parquet partition), never a chunk or a shard. For ptools it is one TSV. For a
+figure one HTML/SVG. For a ParCa cache the bundle prefix.
+
+**One `store` kind covers both formats (Jim, 2026-09-15; viva-api#672).** A run's trajectory
+output is a single kind with the format in attributes -- `kind = store`, `attributes.format =
+zarr | parquet` -- mirroring `observable_reader.StoreIndex.store`, so a consumer asks "where is
+the trajectory?" once and filters on format afterwards. *Superseded:* the earlier `parquet`
+kind, which named one format as though it were the concept. Slice 1 ships the old vocabulary
+(`DATASET_KINDS` still reads `parquet`); #672 makes the change, and registers stores by LISTing
+`<out_uri>/` rather than deriving a URI -- the flat `v2ecoli_seed{NN}.zarr` name holds only for
+phase0 and comparison-engine dispatch shapes.
 
 **Optional companion, `artifact.read`:** `{uri, kind?}` when a run opens an upstream object
 it did not write (a sim_data pickle, a store it aggregates). Best-effort; it lets the
@@ -128,9 +137,10 @@ implemented in slice 1.
   `workflow/events.py::_ObservedEmitter`, which knows the chunk index), at partition
   finalize; plus `write_run_identity` in `workflow/run.py` for `run_identity.json`, and the
   lineage's `daughter-state/` checkpoint write.
-- **Kinds/attributes:** `parquet` with `{store: <experiment_id>, table: history|config|…,
-  variant, seed, generation, chunk_range}`; `report` for `run_identity.json`,
-  `summary.json`, `final_state.json`; `other` for `daughter-state/<gen>/` checkpoints.
+- **Kinds/attributes:** `store` with `{format: zarr|parquet, store: <experiment_id>,
+  table: history|config|…, variant, seed, generation, chunk_range}`; `report` for
+  `run_identity.json`, `summary.json`, `final_state.json`; `other` for
+  `daughter-state/<gen>/` checkpoints.
 - **Producer FK:** `simulation_id` (the run's own reference).
 - **ParCa:** its own HpcRun (`job_type = PARCA`); the cache bundle is a `parca-cache`
   dataset with `attributes = {commit, inputs_hash, cache_variant}` and producer
@@ -256,10 +266,16 @@ filename. *Changed from extending `parse_partition_metadata`:* the walk has its 
 `analysis_runner` names files `f"{name}__{group}"` with the group key's `/` turned into `_`;
 the group's shape gives the protocol (`variant` = multiseed; `variant, seed` =
 multigeneration; `variant, seed, gen, agent` = single; `…, parent` = multidaughter; `all`),
-and a `_<scale>` suffix on the name (`ptools_rna_multiseed`) wins. `n_tp` comes from a ranged
-read of the header, re-read only when the object's size changes. Real ptools headers are
-`$  0m  124m … 870m  0m_sd  124m_sd …`: the timepoints are the columns after the first that
-do not end in `_sd`. `display_name` = `<experiment_id> · <view> · <protocol>[ · s3 g12]`.
+and a `_<scale>` suffix on the name (`ptools_rna_multiseed`) wins. `display_name` =
+`<experiment_id> · <view> · <protocol>[ · s3 g12]`.
+
+Everything above comes from the **listing** — key, size and the name. *Superseded
+(viva-api#675):* the walk used to read each ptools TSV's header with a ranged GET to count
+timepoint columns (those not ending in `_sd`) and record `n_tp`. It no longer opens objects at
+all. `n_tp` is a content feature and belongs to whoever knows the format: the producer reports it
+in the `artifact.written` payload (§4a), and a consumer needing it before the emit side ships
+already downloads the bytes. The reads it replaced cost one ranged GET per file with no timepoint
+row on **every** pass — 9,629 of them on the 2026-09-16 registry (#673).
 
 ## 6. Schema (two Alembic revisions on `e3a9c1d70b62`)
 
@@ -281,7 +297,7 @@ result"):
 | `analysis_id` | FK → `analysis.id`, nullable, indexed | producer: an analysis run |
 | *(slice 2 adds `task_id`)* | | |
 | | CHECK `ck_dataset_producer` | at least one producer FK non-null (writes keep exactly one) |
-| `kind` | TEXT NOT NULL | `parquet` \| `parca-cache` \| `ptools-analysis` \| `analysis` \| `figure` \| `report` \| `other` |
+| `kind` | TEXT NOT NULL | `store` \| `parca-cache` \| `ptools-analysis` \| `analysis` \| `figure` \| `report` \| `other` — free text, validated against `DATASET_KINDS`, which still reads `parquet` until #672 |
 | `view` | TEXT | `ptools_rna`, `ptools_rxns`, … (analysis kinds) |
 | `display_name` | TEXT | what a picker shows |
 | `uri` | TEXT NOT NULL, unique | the object, or the prefix for multi-file kinds |
@@ -331,7 +347,7 @@ As implemented in #661, except where marked *deferred*:
 | question | route |
 |---|---|
 | what datasets exist with these attributes / tags? | `GET /api/v1/datasets?kind=&view=&tag=&attr=<k>=<v>&simulation_id=&analysis_id=&parca_dataset_id=&source=sim:<id>&available=true\|false\|any&since=&limit=&offset=` (`attr` repeatable, `attr.<k>=<v>` also accepted; JSONB containment; ordered `updated_at` desc; `limit` ≤ 200; `next_offset` pages) |
-| one dataset / its bytes | `GET /api/v1/datasets/{id}`; `GET /api/v1/datasets/{id}/content` (streamed, media type by file; `parquet` / `parca-cache` kinds and objects outside the API's storage bucket are refused with 409) |
+| one dataset / its bytes | `GET /api/v1/datasets/{id}`; `GET /api/v1/datasets/{id}/content` (streamed, media type by file; `parquet` / `parca-cache` kinds — `store` inherits this, #672 — and objects outside the API's storage bucket are refused with 409) |
 | picker helpers | `GET /api/v1/datasets/attributes` (distinct values per key), `GET /api/v1/datasets/tags`, `POST /api/v1/datasets/{id}/tags` (union-merge, mirror of `/simulations/{id}/tags`) |
 | what produced this dataset, from what? | `GET /api/v1/datasets/{id}/provenance` → producer run (kind, id, name, status, `source`, tags, `hpcrun_id`, `trace_id`), the span the event came from, and registered datasets the producer's `source` names by `uri` (one hop; `?depth=` and slice 2's `task.command` / `script_sha256` / `image` / `commit` *deferred*) |
 | what did this run write? | `GET /api/v1/simulations/{id}/datasets` (the simulation's own and unclaimed bundles; `include_analyses=true` adds its analyses' datasets by `source`), `/analyses/{id}/datasets` (slice 2: `/tasks/{id}/datasets`); `GET /analyses/{id}` carries `status` and `n_datasets` separately (§2a) |
@@ -342,8 +358,11 @@ As implemented in #661, except where marked *deferred*:
 
 CLI: `atlantis dataset list | get | fetch | provenance | tags | tag | attributes`,
 `atlantis analysis list | datasets`, `atlantis simulation datasets <id> [--include-analyses]`
-(`dataset consumers` *deferred* with its route). The TUI and marimo GUI do not expose
-datasets yet.
+(`dataset consumers` *deferred* with its route). The **TUI** (a Datasets domain: list with a
+`key=value` filter string, record, provenance, fetch, tags, attributes; Analyses lists analyses
+and Simulations gains Datasets; selecting a row opens the next hop) and the **marimo GUI** (one
+Datasets & Analyses panel) carry the same operations as of `26d0f5b7`. All three read their
+wording from `app/dataset_views.py`, so "written by" and "found under" cannot drift apart.
 
 A standalone analysis run's events are stored but have no read route yet
 (`/simulations/{id}/events` reads the simulation's run); `docs/OBSERVABILITY.md` §5 records
@@ -388,8 +407,9 @@ that bundle's gather run.
 #661's commit order: schema; models + database service; standalone analysis as a traced run
 (`ANALYSIS` ingest candidacy moved here from the database-service commit, because the ingest
 tick's simulation lookup had to change with it); trace feeder; real-trace fixture; walk
-feeder; API; CLI; importer; no fabricated analysis rows; docs. The version bump is held until
-the plans are discussed (0.9.143 is already taken by #660).
+feeder; API; CLI; importer; no fabricated analysis rows; docs; TUI + GUI parity. The version
+bump is held until the plans are discussed; 0.9.143 (#660) and 0.9.144 (#663) are taken, so it
+takes the next free version (0.9.145 as of 2026-09-15).
 
 ## 10. Retention and durability
 
@@ -422,14 +442,27 @@ the plans are discussed (0.9.143 is already taken by #660).
    `create_all`, the reconciler adopting a current and a previous-release `create_all`
    database, and `create_all` vs migration agreeing on column types, defaults, indexes and
    constraints.
-3. `make check` twice; `uv run pytest` (full, minus `test_cli_e2e.py`): 1735 passed, 60
-   skipped on #661's head.
-4. On dev after deploy + importer, through the CLI (not yet run): `atlantis dataset list
+3. `make check`; `uv run pytest` (full, minus `test_cli_e2e.py`): 1802 passed, 58 skipped on
+   #661's head. The TUI is driven headless (Textual's pilot against a mocked service) and a
+   parity test pins that the CLI, TUI and GUI each reach every dataset call.
+4. **Against real S3 and a restored copy of the dev database (done 2026-09-15;
+   `docs/runbook-dataset-walk.md`, `scripts/survey_datasets.sql`).** The walk ran read-only
+   against the live dev bucket with the dev database COPYed into a local Postgres, and the
+   survey then checked what it wrote: 3,954 rows over 12 bundles from 4 simulations and 5
+   analysis runs; 0 duplicate `uri`; 0 missing `display_name`, `size_bytes` or `source`; both
+   "written by" and "found under" attribution exercised; and every apparent coordinate gap
+   accounted for exactly (a missing `seed` is a multiseed aggregate, a missing `n_tp` is a
+   `ptools_overview` header). Re-applying a simulation reported `0 registered, 449 unchanged`,
+   so idempotency holds on real data. It covered 4 of 1,319 simulations, so it validates shape,
+   not fleet coverage -- and it surfaced #672 (a run's own trajectory store gets no row) and
+   analyses that sit in `COMPUTING` while owning complete bundles.
+5. On dev after deploy + importer, through the clients (not yet run; the GUI has not been
+   launched at all): `atlantis dataset list
    --kind ptools-analysis --tag cd2 --view ptools_rna --attr protocol=multiseed` returns the
    filled stores' multiseed tables; `atlantis dataset fetch <id>` byte-equals the S3 object;
    `atlantis dataset provenance <id>` names the claiming analysis run or, for a fill, "found
    under" its simulation; `atlantis simulation datasets <id>` counts match the manifest.
-5. After step 4 of the PR map (emit side deployed): a fresh standalone analysis on dev
+6. After step 4 of the PR map (emit side deployed): a fresh standalone analysis on dev
    yields `origin = event` rows with `n_tp` from the payload, before any walk runs.
 
 ## 12. Open questions for reviewers
@@ -451,3 +484,6 @@ the plans are discussed (0.9.143 is already taken by #660).
 9. **`/analyses/{id}/data` filename aliasing without filters** changes `filename` for current
    callers when a bundle holds one file per view. Keep (the unpatched ptools page's need), or
    alias only when a coordinate filter is given?
+10. ~~How to model a run's trajectory store~~ — taken (2026-09-15): one `store` kind with
+    `attributes.format = zarr | parquet` (§3), registered by listing `<out_uri>/`. Implementation
+    is #672, not slice 1. The survey that found the gap is §11.4.

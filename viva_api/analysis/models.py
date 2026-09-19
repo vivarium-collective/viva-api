@@ -1,13 +1,15 @@
+import datetime
 import json
 import pathlib
 import random
-from typing import Any, ParamSpec, TypeVar
+from typing import Any, ParamSpec, TypedDict, TypeVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from viva_api.common import StrEnumBase
 from viva_api.common.models import DataId, JobStatus
 from viva_api.config import Settings, get_settings
+from viva_api.simulation.models import SimulationSpan
 
 MAX_ANALYSIS_CPUS = 3
 
@@ -57,7 +59,9 @@ class OutputFileMetadata(BaseModel):
 
 
 class TsvOutputFile(OutputFileMetadata):
-    pass
+    # GET /analyses/{id}/data: the file's key relative to the analysis result prefix. Set when
+    # ``filename`` is aliased to ``<view>.tsv`` so the real name is never lost.
+    path: str | None = None
 
 
 class OutputFile(BaseModel):
@@ -294,6 +298,12 @@ class ExperimentAnalysisDTO(BaseModel):
     backend: str | None = None
     error_message: str | None = None
     job_id_ext: str | None = None  # K8s job name (Ray-native standalone analysis)
+    # --- provenance (docs/plan-data-provenance.md §2a) ---
+    source: dict[str, Any] | None = None  # a ProvenanceRef: what this analysis run is OF
+    tags: list[str] = Field(default_factory=list)
+    # Set by GET /analyses/{id} only: how many available datasets the run has written so far.
+    # Reported apart from ``status`` so "running, 0 datasets" and "done, 0 datasets" differ.
+    n_datasets: int | None = None
 
 
 class AnalysisRun(BaseModel):
@@ -394,3 +404,152 @@ class JobId(int):
     def new(cls) -> "JobId":
         value = random.randint(JobId.start, JobId.end)
         return JobId(value)
+
+
+# --- datasets (docs/plan-data-provenance.md §2a, §3, §6) ---
+
+#: What a consumer can do with a dataset. Mirrors the ``artifact.written`` contract's
+#: ``kind`` vocabulary; the registry rejects anything else.
+DATASET_KINDS: tuple[str, ...] = ("parquet", "parca-cache", "ptools-analysis", "analysis", "figure", "report", "other")
+
+#: How a dataset row came to exist, recorded as ``attributes["origin"]``: scraped
+#: from a run's trace, or found by the reconciliation walk. A walk never overwrites
+#: an event-sourced row.
+DATASET_ORIGIN_EVENT = "event"
+DATASET_ORIGIN_WALK = "walk"
+DATASET_ORIGINS: tuple[str, ...] = (DATASET_ORIGIN_EVENT, DATASET_ORIGIN_WALK)
+
+#: Page-size ceiling for dataset listings.
+DATASET_LIST_MAX_LIMIT = 200
+
+#: A JSONB payload as it round-trips through the API and the database: `attributes`, `source`,
+#: a coordinate. `JsonValue` says "arbitrary JSON" precisely, where `Any` would say "unchecked".
+JsonDict = dict[str, JsonValue]
+
+
+class ProducerRef(TypedDict, total=False):
+    """The one producer id a dataset row carries, as keyword arguments for ``upsert_dataset``.
+
+    Exactly one key is set (the registry and the walk each decide which); the database enforces
+    it with ``ck_dataset_producer``. A ``TypedDict`` rather than a bare dict so that a misspelled
+    producer key is a type error rather than a runtime ``ValueError``."""
+
+    simulation_id: int
+    parca_dataset_id: int
+    analysis_id: int
+
+
+class DatasetFields(TypedDict, total=False):
+    """What a walked file contributes to ``upsert_dataset``: everything but uri, kind and producer."""
+
+    view: str | None
+    display_name: str | None
+    size_bytes: int | None
+    sha256: str | None
+    attributes: JsonDict
+    tags: list[str]
+    source: JsonDict | None
+
+
+class DatasetWrite(DatasetFields, total=False):
+    """A complete ``upsert_dataset`` call bar the producer: what the trace feeder derives."""
+
+    uri: str
+    kind: str
+    origin: str
+    available: bool
+
+
+class DatasetFilters(TypedDict):
+    """The listing filters every dataset route shares (``DatasetListParams.filters``)."""
+
+    kind: str | None
+    view: str | None
+    tags: list[str] | None
+    available: bool | None
+    since: datetime.datetime | None
+    uri_prefix: str | None
+    q: str | None
+    experiment_id: str | None
+
+
+class DatasetScope(TypedDict, total=False):
+    """A route's own narrowing on top of :class:`DatasetFilters`."""
+
+    attributes: JsonDict | None
+    source: JsonDict | None
+    simulation_id: int | None
+    analysis_id: int | None
+    parca_dataset_id: int | None
+
+
+class DatasetDTO(BaseModel):
+    """One consumable file set a run actually wrote (a ``dataset`` row).
+
+    Never pre-created: it exists only once a run's trace was scraped or the walk found
+    the object. Exactly one producer id is set by the registry. ``available`` is false
+    once the object is gone; the row itself is kept so provenance never dangles.
+    """
+
+    database_id: int
+    kind: str
+    uri: str
+    simulation_id: int | None = None
+    parca_dataset_id: int | None = None
+    analysis_id: int | None = None
+    view: str | None = None
+    display_name: str | None = None
+    size_bytes: int | None = None
+    sha256: str | None = None
+    attributes: JsonDict = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+    source: JsonDict | None = None
+    available: bool = True
+    created_at: str | None = None
+    updated_at: str | None = None
+
+    @property
+    def origin(self) -> str | None:
+        value = self.attributes.get("origin")
+        return value if isinstance(value, str) else None
+
+
+class DatasetListDTO(BaseModel):
+    """A page of datasets. ``next_offset`` is ``None`` on the last page.
+
+    ``total`` is how many rows match the filters, not how many this page holds, so a client can
+    say "1-100 of 43,182" and decide whether to narrow instead of paging. It counts with the
+    SAME clauses as the page (``count_datasets``), so the two can never disagree. It defaults to
+    0 only so a hand-built page in a test need not supply it; every route sets it."""
+
+    datasets: list[DatasetDTO]
+    limit: int
+    offset: int
+    next_offset: int | None = None
+    total: int = 0
+
+
+class DatasetProducerDTO(BaseModel):
+    """The run that wrote a dataset. ``kind`` is ``simulation``, ``analysis`` or ``parca``;
+    ``hpcrun_id``/``trace_id``/``correlation_id`` are set when the run has a run row (an
+    analysis row recorded by a backfill has none). A dataset the S3 walk found under a
+    simulation's output that no analysis run claims names the simulation."""
+
+    kind: str
+    id: int
+    name: str | None = None
+    status: str | None = None
+    source: dict[str, Any] | None = None
+    tags: list[str] = Field(default_factory=list)
+    hpcrun_id: int | None = None
+    trace_id: str | None = None
+    correlation_id: str | None = None
+
+
+class DatasetProvenanceDTO(BaseModel):
+    """``GET /datasets/{id}/provenance``: one hop back from a dataset."""
+
+    dataset: DatasetDTO
+    producer: DatasetProducerDTO | None = None
+    span: SimulationSpan | None = None  # the span the artifact.written event came from
+    inputs: list[DatasetDTO] = Field(default_factory=list)  # registered datasets the producer's source names

@@ -858,3 +858,39 @@ class TaskDTO(BaseModel):
     out_uri: str | None = None
     result_uri: str | None = None
     error_message: str | None = None
+
+
+# --- data provenance (docs/plan-data-provenance.md §2, §6) ---
+
+ProvenanceKind = Literal["simulation", "task", "analysis", "s3"]
+
+
+class ProvenanceCoordinate(BaseModel):
+    """Where inside a producer's output something sits. Every axis is optional: an
+    aggregate over seeds has no ``seed``, a whole-store read has none at all."""
+
+    variant: int | None = None
+    seed: int | None = None
+    generation: int | None = None
+    agent: str | None = None
+    protocol: str | None = None  # single | multiseed | multigeneration | ...
+
+
+class ProvenanceRef(BaseModel):
+    """A declared, best-effort reference to an upstream (plan §2b).
+
+    ``kind`` + ``ref`` are what the caller (or the registry) said. ``resolved_id``,
+    ``uri``, ``resolved_at`` and ``verified_at`` are what the server found, and stay
+    ``None`` when it found nothing -- an unresolvable reference is recorded, never
+    rejected, because the upstream may be a sub-store with no row or data a lifecycle
+    rule has since removed. Stored as JSONB on ``analysis.source`` and
+    ``dataset.source`` (and, in slice 2, ``task.inputs``).
+    """
+
+    kind: ProvenanceKind
+    ref: str
+    coordinate: ProvenanceCoordinate | None = None
+    resolved_id: int | None = None
+    uri: str | None = None
+    resolved_at: str | None = None
+    verified_at: str | None = None

@@ -12,7 +12,11 @@ those objects into rows a person can query without AWS credentials:
   ``span.end`` (a ``span.end`` whose start was never seen still creates the row
   from the ``start_ts`` the end event repeats);
 * the run row's ``stage`` / ``generation`` / ``last_event_at`` -- folded from
-  every event seen, heartbeats included, so "is it progressing?" is one column.
+  every event seen, heartbeats included, so "is it progressing?" is one column;
+* ``dataset`` rows -- one per ``artifact.written`` event, registered once per pass
+  by :mod:`viva_api.simulation.dataset_registry` (docs/plan-data-provenance.md §5).
+  If registration fails the pass does not advance the cursor, so the next tick
+  re-reads those objects (event inserts are idempotent, registration is an upsert).
 
 Cost is bounded per scheduler tick (``events_ingest_max_objects_per_tick``);
 an object whose size has not changed since the last pass is skipped without a
@@ -38,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 from viva_api.common.events_env import events_s3_prefix
 from viva_api.common.storage.file_paths import S3FilePath
+from viva_api.simulation.dataset_registry import is_artifact_written, register_datasets
 from viva_api.simulation.models import SimulationEvent, SimulationSpan, SpanTree
 
 if TYPE_CHECKING:
@@ -382,6 +387,9 @@ class IngestResult:
     last_event_at: datetime.datetime | None = None
     skipped_reason: str | None = None
     keys: list[str] = field(default_factory=list)
+    artifacts_registered: int = 0
+    artifacts_unchanged: int = 0
+    artifacts_skipped: int = 0
 
 
 def resolve_events_prefix(hpc_run: HpcRun, simulation: Simulation | None, settings: Any) -> str | None:
@@ -415,6 +423,7 @@ class _Pass:
     progress: Progress = field(default_factory=Progress)
     changed_spans: set[str] = field(default_factory=set)
     cursor_changed: bool = False
+    artifacts: list[SimulationEvent] = field(default_factory=list)
 
 
 def storable_events(events: list[Any], settings: Any) -> list[Any]:
@@ -472,6 +481,7 @@ async def _ingest_object(
     result.events_parsed += len(events)
     result.bad_lines += bad
     state.progress = fold_progress(events, state.progress)
+    state.artifacts.extend(event for event in events if is_artifact_written(event))
     storable = storable_events(events, settings)
     if storable:
         result.events_inserted += await db.insert_hpcrun_events(hpc_run.database_id, trace_id, storable)
@@ -491,6 +501,43 @@ async def _close_open_spans_if_terminal(
         if span.end_ts is None:
             span.end_ts = now.isoformat(timespec="milliseconds") + "Z"
             span.status = "unknown"
+
+
+async def _register_artifacts(
+    state: _Pass,
+    result: IngestResult,
+    *,
+    hpc_run: HpcRun,
+    simulation: Simulation | None,
+    db: DatabaseService,
+) -> None:
+    """Register this pass's ``artifact.written`` events as datasets (plan §5).
+
+    A failure withholds the cursor (``state.cursor_changed = False``) so the next
+    tick re-reads these objects: event inserts are idempotent and registration is an
+    upsert, so the retry is safe."""
+    if not state.artifacts:
+        return
+    try:
+        registration = await register_datasets(state.artifacts, hpc_run=hpc_run, simulation=simulation, db=db)
+    except Exception:
+        logger.exception(
+            "events: registering %d artifact(s) failed for HpcRun %s; their objects will be re-read next tick",
+            len(state.artifacts),
+            hpc_run.database_id,
+        )
+        state.cursor_changed = False
+        return
+    result.artifacts_registered = registration.registered
+    result.artifacts_unchanged = registration.unchanged
+    result.artifacts_skipped = registration.skipped
+    if registration.skipped:
+        logger.warning(
+            "events: HpcRun %s skipped %d artifact(s): %s",
+            hpc_run.database_id,
+            registration.skipped,
+            "; ".join(registration.reasons),
+        )
 
 
 async def ingest_run_events(
@@ -554,6 +601,8 @@ async def ingest_run_events(
         await db.upsert_hpcrun_spans(hpc_run.database_id, trace_id, [spans[s] for s in sorted(state.changed_spans)])
         result.spans_changed = len(state.changed_spans)
     await _close_open_spans_if_terminal(hpc_run, spans, db, now)
+
+    await _register_artifacts(state, result, hpc_run=hpc_run, simulation=simulation, db=db)
 
     result.stage = stage_from_spans(spans)
     result.generation = state.progress.generation if state.progress.generation is not None else hpc_run.generation

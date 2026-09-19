@@ -12,9 +12,18 @@ from pathlib import Path
 
 import httpx
 from httpx import AsyncClient
+from pydantic import JsonValue
 from tqdm import tqdm
 
-from viva_api.analysis.models import AnalysisRun, ExperimentAnalysisDTO, OutputFile, TsvOutputFile
+from viva_api.analysis.models import (
+    AnalysisRun,
+    DatasetDTO,
+    DatasetListDTO,
+    DatasetProvenanceDTO,
+    ExperimentAnalysisDTO,
+    OutputFile,
+    TsvOutputFile,
+)
 from viva_api.common.simulator_defaults import SimulationConfigFilename
 from viva_api.simulation.models import (
     HpcRun,
@@ -67,6 +76,48 @@ def _parse_content_disposition_filename(header_value: str) -> str | None:
             value = value[1:-1]
         return value or None
     return None
+
+
+def _query(**values: object) -> dict[str, str | int | list[str]]:
+    """Query parameters with the unset ones dropped: ``None`` and empty lists go, booleans are
+    sent as ``true``/``false``, and a list repeats its parameter.
+
+    ``object`` rather than ``Any`` for the input: these values are whatever a caller passes, and
+    ``object`` makes the checker enforce the narrowing this body already does. What comes back is
+    not unknown -- every caller passes ``str | int | bool | list[str] | None``, the ``None``s are
+    dropped and the bools stringified."""
+    params: dict[str, str | int | list[str]] = {}
+    for key, value in values.items():
+        if value is None or (isinstance(value, list) and not value):
+            continue
+        if isinstance(value, bool):
+            params[key] = str(value).lower()
+        elif isinstance(value, str | int):
+            params[key] = value
+        elif isinstance(value, list):
+            params[key] = [str(item) for item in value]
+        else:
+            raise TypeError(f"query parameter {key!r} is {type(value).__name__}, expected str, int, bool or list")
+    return params
+
+
+def _ok(response: httpx.Response) -> httpx.Response:
+    """The response, or an ``httpx.HTTPError`` carrying the server's status and body."""
+    if response.status_code != 200:
+        raise httpx.HTTPError(f"Server returned {response.status_code}: {response.text}")
+    return response
+
+
+def _download_target(dest: str | Path | None, filename: str) -> Path:
+    """Where a download lands: ``dest`` itself, or ``filename`` inside it when ``dest`` is a
+    directory (or ends in ``/``), or in the current directory when there is no ``dest``. Only
+    the server filename's last component is used, so it cannot point outside ``dest``."""
+    name = Path(filename).name or "dataset"
+    if dest is None:
+        return Path.cwd() / name
+    if (isinstance(dest, str) and dest.endswith(("/", os.sep))) or Path(dest).is_dir():
+        return Path(dest) / name
+    return Path(dest)
 
 
 @asynccontextmanager
@@ -716,6 +767,156 @@ class E2EDataService:
             raise
         except Exception as e:
             raise httpx.HTTPError(f"Could not load analysis plots for id {analysis_id}") from e
+
+    # -- Datasets and analysis listings (data provenance, docs/plan-data-provenance.md §7) --
+
+    def list_analyses(
+        self,
+        *,
+        experiment_id: str | None = None,
+        simulation_id: int | None = None,
+        status: str | None = None,
+        backend: str | None = None,
+        source: str | None = None,
+        tag: str | None = None,
+        since: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[ExperimentAnalysisDTO]:
+        params = _query(
+            experiment_id=experiment_id,
+            simulation_id=simulation_id,
+            status=status,
+            backend=backend,
+            source=source,
+            tag=tag,
+            since=since,
+            limit=limit,
+            offset=offset or None,
+        )
+        response = _ok(self.client.get(url="/api/v1/analyses", params=params))
+        return [ExperimentAnalysisDTO(**row) for row in response.json()]
+
+    def list_datasets(
+        self,
+        *,
+        kind: str | None = None,
+        view: str | None = None,
+        tag: str | None = None,
+        attrs: list[str] | None = None,
+        simulation_id: int | None = None,
+        analysis_id: int | None = None,
+        parca_dataset_id: int | None = None,
+        source: str | None = None,
+        available: str = "true",
+        since: str | None = None,
+        uri_prefix: str | None = None,
+        q: str | None = None,
+        experiment_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> DatasetListDTO:
+        params = _query(
+            kind=kind,
+            view=view,
+            tag=tag,
+            attr=list(attrs or []),
+            simulation_id=simulation_id,
+            analysis_id=analysis_id,
+            parca_dataset_id=parca_dataset_id,
+            source=source,
+            available=available,
+            since=since,
+            uri_prefix=uri_prefix,
+            q=q,
+            experiment_id=experiment_id,
+            limit=limit,
+            offset=offset,
+        )
+        return DatasetListDTO(**_ok(self.client.get(url="/api/v1/datasets", params=params)).json())
+
+    def list_simulation_datasets(
+        self,
+        simulation_id: int,
+        *,
+        include_analyses: bool = False,
+        kind: str | None = None,
+        view: str | None = None,
+        tag: str | None = None,
+        available: str = "true",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> DatasetListDTO:
+        params = _query(
+            include_analyses=include_analyses,
+            kind=kind,
+            view=view,
+            tag=tag,
+            available=available,
+            limit=limit,
+            offset=offset,
+        )
+        response = _ok(self.client.get(url=f"/api/v1/simulations/{simulation_id}/datasets", params=params))
+        return DatasetListDTO(**response.json())
+
+    def list_analysis_datasets(
+        self,
+        analysis_id: int,
+        *,
+        kind: str | None = None,
+        view: str | None = None,
+        tag: str | None = None,
+        available: str = "true",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> DatasetListDTO:
+        params = _query(kind=kind, view=view, tag=tag, available=available, limit=limit, offset=offset)
+        response = _ok(self.client.get(url=f"/api/v1/analyses/{analysis_id}/datasets", params=params))
+        return DatasetListDTO(**response.json())
+
+    def get_dataset(self, dataset_id: int) -> DatasetDTO:
+        return DatasetDTO(**_ok(self.client.get(url=f"/api/v1/datasets/{dataset_id}")).json())
+
+    def get_dataset_provenance(self, dataset_id: int) -> DatasetProvenanceDTO:
+        response = _ok(self.client.get(url=f"/api/v1/datasets/{dataset_id}/provenance"))
+        return DatasetProvenanceDTO(**response.json())
+
+    def list_dataset_tags(self, kind: str | None = None) -> dict[str, int]:
+        tags: dict[str, int] = _ok(self.client.get(url="/api/v1/datasets/tags", params=_query(kind=kind))).json()
+        return tags
+
+    def list_dataset_attributes(self, kind: str | None = None) -> dict[str, list[JsonValue]]:
+        """The distinct values of each dataset attribute: JSON scalars, so ``JsonValue``."""
+        response = _ok(self.client.get(url="/api/v1/datasets/attributes", params=_query(kind=kind)))
+        values: dict[str, list[JsonValue]] = response.json()
+        return values
+
+    def tag_dataset(self, dataset_id: int, tags: list[str]) -> DatasetDTO:
+        response = _ok(self.client.post(url=f"/api/v1/datasets/{dataset_id}/tags", json={"tags": tags}))
+        return DatasetDTO(**response.json())
+
+    def fetch_dataset(self, dataset_id: int, dest: str | Path | None = None) -> Path:
+        """Stream one dataset's bytes to disk and return where they landed (see ``_download_target``).
+
+        Bytes go to ``<target>.part``, renamed once the stream completes, so an interrupted
+        download never leaves a file that looks whole."""
+        with self.client.stream("GET", f"/api/v1/datasets/{dataset_id}/content") as response:
+            if response.status_code != 200:
+                response.read()
+                raise httpx.HTTPError(f"Server returned {response.status_code}: {response.text}")
+            filename = _parse_content_disposition_filename(response.headers.get("content-disposition", ""))
+            target = _download_target(dest, filename or f"dataset-{dataset_id}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            partial = target.with_name(target.name + ".part")
+            try:
+                with partial.open("wb") as out:
+                    for chunk in response.iter_bytes():
+                        out.write(chunk)
+            except BaseException:
+                partial.unlink(missing_ok=True)
+                raise
+            partial.replace(target)
+        return target
 
     # -- Low-level HTTP methods: Tasks (viva-api#631) --
 

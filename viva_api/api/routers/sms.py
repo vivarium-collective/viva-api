@@ -7,6 +7,7 @@
 #   IE: where do we provide this special config: in vEcoli or API?
 # TODO: what does a "configuration endpoint" actually mean (can we configure via the simulation?)
 # TODO: labkey preprocessing
+import datetime
 import json
 import logging
 from collections.abc import Sequence
@@ -21,6 +22,8 @@ from viva_api.analysis.analysis_service import AnalysisServiceSlurm
 from viva_api.analysis.models import (
     AnalysisJobFailedException,
     AnalysisRun,
+    DatasetListDTO,
+    DatasetScope,
     ExperimentAnalysisDTO,
     ExperimentAnalysisRequest,
     OutputFile,
@@ -32,6 +35,7 @@ from viva_api.api import request_examples
 from viva_api.common import handlers
 from viva_api.common.dispatch_validation import DispatchValidationError
 from viva_api.common.gateway.utils import get_router_config
+from viva_api.common.models import JobStatus
 from viva_api.common.storage import data_layout
 from viva_api.config import ComputeBackend, compute_backend_for_repo, get_job_backend, get_settings
 from viva_api.dependencies import get_database_service, get_simulation_service
@@ -57,6 +61,7 @@ from viva_api.simulation.models import (
     VecoliSource,
 )
 from viva_api.simulation.observable_reader import list_observables_async, read_observables_async
+from viva_api.simulation.tables_orm import AnalysisStatusDB
 
 
 def _validate_simulation_config_filename(simulation_config_filename: str) -> None:
@@ -662,6 +667,39 @@ async def list_simulation_analyses(
 
 
 @config.router.get(
+    path="/simulations/{id}/datasets",
+    response_model=DatasetListDTO,
+    operation_id="list-simulation-datasets",
+    tags=["Datasets"],
+    dependencies=[Depends(get_database_service)],
+    summary="Datasets attributed to a simulation (optionally with those of its analyses)",
+)
+async def list_simulation_datasets(
+    id: int = FastAPIPath(description="Database ID of the simulation"),
+    include_analyses: bool = Query(
+        default=False,
+        description="Also datasets attributed to analyses OF this simulation (matched on the dataset's source).",
+    ),
+    params: handlers.datasets.DatasetListParams = Depends(handlers.datasets.dataset_list_params),
+) -> DatasetListDTO:
+    """docs/plan-data-provenance.md §7. The simulation is the producer of what its run wrote and of
+    bundles the S3 walk found under its output that no analysis run claims (``origin = walk``).
+    Rows lag ingestion. 404 for an unknown simulation."""
+    db_service = get_database_service()
+    if db_service is None:
+        raise HTTPException(status_code=500, detail="Database service is not initialized")
+    if await db_service.get_simulation(simulation_id=id) is None:
+        raise HTTPException(status_code=404, detail=f"Simulation {id} not found")
+    scope: DatasetScope = (
+        {"source": {"kind": "simulation", "ref": str(id)}} if include_analyses else {"simulation_id": id}
+    )
+    try:
+        return await handlers.datasets.list_page(db_service, params, **scope)
+    except handlers.datasets.DatasetQueryError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@config.router.get(
     path="/simulations",
     operation_id="list-ecoli-simulations",
     tags=["Simulations"],
@@ -915,17 +953,45 @@ async def run_analysis(
     operation_id="list-analyses",
     tags=["Analyses"],
     dependencies=[Depends(get_database_service)],
-    summary="List all analyses across all simulations (exhaustive; filtering/paging to come)",
+    summary="List analyses across all simulations, newest change first, with filters and paging",
 )
 async def list_analyses(
     experiment_id: str | None = Query(default=None, description="Optional: filter by experiment_id."),
     simulation_id: int | None = Query(default=None, description="Optional: filter by simulation database id."),
+    status: JobStatus | None = Query(
+        default=None,
+        description="Filter by reported status: 'completed' (ready), 'failed' (or 'cancelled'); "
+        "any other value means still computing.",
+    ),
+    backend: str | None = Query(default=None, description="Filter by backend, e.g. 'ray', 'k8s', 'batch'."),
+    source: str | None = Query(
+        default=None, description="What the analysis is OF: 'sim:1002', or a JSON ProvenanceRef fragment."
+    ),
+    tag: str | None = Query(default=None, description="Comma-separated tags; an analysis must carry all of them."),
+    since: datetime.datetime | None = Query(default=None, description="Only analyses changed at or after this time."),
+    limit: int | None = Query(default=None, ge=1, description="Page size; omit to return every match."),
+    offset: int = Query(default=0, ge=0, description="Rows to skip (pagination, with limit)."),
 ) -> list[ExperimentAnalysisDTO]:
     db_service = get_database_service()
     if db_service is None:
         raise HTTPException(status_code=500, detail="Database service is not initialized")
     try:
-        return await db_service.list_analyses(experiment_id=experiment_id, simulation_id=simulation_id)
+        source_filter = handlers.datasets.parse_source_filter(source)
+    except handlers.datasets.DatasetQueryError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    try:
+        return await db_service.list_analyses(
+            experiment_id=experiment_id,
+            simulation_id=simulation_id,
+            status=AnalysisStatusDB.from_job_status(status) if status is not None else None,
+            backend=backend,
+            tags=handlers.datasets.parse_tags(tag),
+            source=source_filter,
+            since=handlers.datasets.naive_utc(since),
+            limit=limit,
+            offset=offset,
+            newest_first=True,
+        )
     except Exception as e:
         logger.exception("Error listing analyses")
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -943,10 +1009,38 @@ async def get_analysis_spec(id: int) -> ExperimentAnalysisDTO:
     if db_service is None:
         raise HTTPException(status_code=404, detail="Database not found")
     try:
-        return await handlers.analyses.handle_get_analysis(db_service=db_service, id=id)
+        analysis = await handlers.analyses.handle_get_analysis(db_service=db_service, id=id)
+        analysis.n_datasets = await db_service.count_datasets(analysis_id=id, available=True)
+        return analysis
     except Exception as e:
         logger.exception("Error fetching the simulation analysis file.")
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@config.router.get(
+    path="/analyses/{id}/datasets",
+    response_model=DatasetListDTO,
+    operation_id="list-analysis-datasets",
+    tags=["Datasets"],
+    dependencies=[Depends(get_database_service)],
+    summary="Datasets an analysis run wrote",
+)
+async def list_analysis_datasets(
+    id: int = FastAPIPath(description="Database ID of the analysis"),
+    params: handlers.datasets.DatasetListParams = Depends(handlers.datasets.dataset_list_params),
+) -> DatasetListDTO:
+    """docs/plan-data-provenance.md §7. Rows lag ingestion; 404 for an unknown analysis."""
+    db_service = get_database_service()
+    if db_service is None:
+        raise HTTPException(status_code=500, detail="Database service is not initialized")
+    try:
+        await db_service.get_analysis(database_id=id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=404, detail=f"Analysis {id} not found") from e
+    try:
+        return await handlers.datasets.list_page(db_service, params, analysis_id=id)
+    except handlers.datasets.DatasetQueryError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @config.router.get(
@@ -1055,17 +1149,29 @@ async def get_analysis_plots(
 )
 async def get_analysis_data(
     id: int = FastAPIPath(..., description="Database ID of the analysis"),
+    view: str | None = Query(default=None, description="Only files of this view, e.g. 'ptools_rna'."),
+    protocol: str | None = Query(
+        default=None, description="Only files of this protocol: single, multigeneration, multiseed, multidaughter, all."
+    ),
+    variant: int | None = Query(default=None, description="Only files of this variant."),
+    seed: int | None = Query(default=None, description="Only files of this lineage seed."),
+    generation: int | None = Query(default=None, description="Only files of this generation."),
 ) -> list[TsvOutputFile]:
     """Pure retrieval of a pre-computed analysis's files by id (never computes).
 
-    Returns the same ``list[TsvOutputFile]`` shape as the legacy ``POST /analyses``.
-    409 if the analysis is not READY; 404 if the analysis id is unknown.
+    Returns the same ``list[TsvOutputFile]`` shape as the legacy ``POST /analyses``. The
+    coordinate filters select files before any is downloaded. When the selection holds one file
+    per view, ``filename`` is aliased to ``<view>.tsv`` (what an unpatched ptools page expects)
+    and ``path`` carries the real name. 409 if the analysis is not READY; 404 if the id is unknown.
     """
     db_service = get_database_service()
     if db_service is None:
         raise HTTPException(status_code=404, detail="Database not found")
+    selection = handlers.analyses.AnalysisFileSelection(
+        view=view, protocol=protocol, variant=variant, seed=seed, generation=generation
+    )
     try:
-        return await handlers.analyses.fetch_analysis_data(db_service=db_service, analysis_id=id)
+        return await handlers.analyses.fetch_analysis_data(db_service=db_service, analysis_id=id, selection=selection)
     except handlers.analyses.AnalysisNotReadyError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     except RuntimeError as e:

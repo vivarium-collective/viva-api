@@ -1,0 +1,93 @@
+{
+  "generated_at": "2026-09-14T20:45:08.334229+00:00",
+  "what_this_is": "A four-store slice shaped like the CD2 campaign's cd2_ptools_manifest.json, for tests/scripts/test_import_cd2_datasets.py. The bucket and store names are synthetic; '@' is replaced with a per-test prefix.",
+  "stores": [
+    {
+      "store": "@run2-store",
+      "s3_uri": "s3://cd2-bucket/vecoli-output/@run2-store/",
+      "n_objects_hint": 0,
+      "family": "run2",
+      "unit": "sim201",
+      "sim_data_policy": "explicit: cand2_j3_lam075_simData.cPickle",
+      "fill_jobs": [
+        "cd2fill-run2-multiseed"
+      ],
+      "fill_bundles": {
+        "analysis-multiseed-run2j3": {
+          "kind": "dedicated-fill",
+          "s3_uri": "s3://cd2-bucket/vecoli-output/@run2-store/analyses/analysis-multiseed-run2j3/",
+          "ptools_tsv": 2,
+          "viz": 1,
+          "view_types": [
+            "ptools_rna_multiseed",
+            "ptools_rxns_multiseed"
+          ],
+          "objects": 4,
+          "bytes": 1000,
+          "last_modified": "2026-09-14 18:54:56+00:00"
+        }
+      }
+    },
+    {
+      "store": "@run4-store",
+      "experiment_id": "@run4-exp",
+      "s3_uri": "s3://cd2-bucket/vecoli-output/@run4-store/",
+      "n_objects_hint": 0,
+      "family": "run4min-native",
+      "unit": "1",
+      "sim_data_policy": "explicit: same Run-4-minimal base",
+      "fill_jobs": [
+        "cd2fill-run4-percell"
+      ],
+      "fill_bundles": {
+        "analysis-mnp-sim201-cd2-run4-nati-mhh2hv": {
+          "kind": "append-metabolites(into sim-time analysis)",
+          "s3_uri": "s3://cd2-bucket/vecoli-output/@run4-store/analyses/analysis-mnp-sim201-cd2-run4-nati-mhh2hv/",
+          "ptools_tsv": 1,
+          "viz": 1,
+          "view_types": [
+            "ptools_metabolites"
+          ],
+          "objects": 3,
+          "bytes": 500,
+          "last_modified": "2026-09-14 09:24:49+00:00"
+        }
+      }
+    },
+    {
+      "store": "@run1-store",
+      "s3_uri": "s3://cd2-bucket/vecoli-output/@run1-store/",
+      "fill_bundles": {},
+      "n_objects_hint": 0,
+      "family": "run1",
+      "unit": "0",
+      "sim_data_policy": "per-seed cache (staged)",
+      "fill_jobs": []
+    },
+    {
+      "store": "@run3-unregistered",
+      "s3_uri": "s3://cd2-bucket/vecoli-output/@run3-unregistered/",
+      "n_objects_hint": 0,
+      "family": "run3",
+      "unit": "combo21",
+      "sim_data_policy": "run_identity.json",
+      "fill_jobs": [
+        "cd2fill-run3-percell-s8-11"
+      ],
+      "fill_bundles": {
+        "analysis-percellfill": {
+          "kind": "dedicated-fill",
+          "s3_uri": "s3://cd2-bucket/vecoli-output/@run3-unregistered/analyses/analysis-percellfill/",
+          "ptools_tsv": 1,
+          "viz": 0,
+          "view_types": [
+            "ptools_rna"
+          ],
+          "objects": 1,
+          "bytes": 100,
+          "last_modified": "2026-09-14 12:00:00+00:00"
+        }
+      }
+    }
+  ]
+}

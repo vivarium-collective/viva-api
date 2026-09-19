@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.144
+  version: 0.9.146
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -832,6 +832,168 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/simulations/{id}/datasets:
+    get:
+      tags:
+      - Datasets
+      summary: Datasets attributed to a simulation (optionally with those of its analyses)
+      description: "docs/plan-data-provenance.md \xA77. The simulation is the producer\
+        \ of what its run wrote and of\nbundles the S3 walk found under its output\
+        \ that no analysis run claims (``origin = walk``).\nRows lag ingestion. 404\
+        \ for an unknown simulation."
+      operationId: list-simulation-datasets
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of the simulation
+          title: Id
+        description: Database ID of the simulation
+      - name: include_analyses
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Also datasets attributed to analyses OF this simulation (matched
+            on the dataset's source).
+          default: false
+          title: Include Analyses
+        description: Also datasets attributed to analyses OF this simulation (matched
+          on the dataset's source).
+      - name: kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Dataset kind: parquet, parca-cache, ptools-analysis, analysis,
+            figure, report, other.'
+          title: Kind
+        description: 'Dataset kind: parquet, parca-cache, ptools-analysis, analysis,
+          figure, report, other.'
+      - name: view
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Logical view, e.g. 'ptools_rna'.
+          title: View
+        description: Logical view, e.g. 'ptools_rna'.
+      - name: tag
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Comma-separated tags; a dataset must carry all of them.
+          title: Tag
+        description: Comma-separated tags; a dataset must carry all of them.
+      - name: available
+        in: query
+        required: false
+        schema:
+          enum:
+          - 'true'
+          - 'false'
+          - any
+          type: string
+          description: '''true'' (default): datasets whose object exists; ''false'':
+            those whose object is gone; ''any''.'
+          default: 'true'
+          title: Available
+        description: '''true'' (default): datasets whose object exists; ''false'':
+          those whose object is gone; ''any''.'
+      - name: since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Only datasets changed at or after this time.
+          title: Since
+        description: Only datasets changed at or after this time.
+      - name: uri_prefix
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Datasets whose uri starts with this, e.g. a bundle directory
+            's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards
+            are literal.
+          title: Uri Prefix
+        description: Datasets whose uri starts with this, e.g. a bundle directory
+          's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards are
+          literal.
+      - name: q
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Free text: a case-insensitive substring of the display name
+            or the uri.'
+          title: Q
+        description: 'Free text: a case-insensitive substring of the display name
+          or the uri.'
+      - name: experiment_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Datasets of this experiment, whichever run wrote them (a simulation''s
+            own output and the bundles its analyses produced). Unknown experiment:
+            an empty page.'
+          title: Experiment Id
+        description: 'Datasets of this experiment, whichever run wrote them (a simulation''s
+          own output and the bundles its analyses produced). Unknown experiment: an
+          empty page.'
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          description: Page size.
+          default: 100
+          title: Limit
+        description: Page size.
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Rows to skip (pagination, with limit).
+          default: 0
+          title: Offset
+        description: Rows to skip (pagination, with limit).
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetListDTO'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/simulations/{id}/tags:
     post:
       tags:
@@ -1052,8 +1214,8 @@ paths:
     get:
       tags:
       - Analyses
-      summary: List all analyses across all simulations (exhaustive; filtering/paging
-        to come)
+      summary: List analyses across all simulations, newest change first, with filters
+        and paging
       operationId: list-analyses
       parameters:
       - name: experiment_id
@@ -1076,6 +1238,82 @@ paths:
           description: 'Optional: filter by simulation database id.'
           title: Simulation Id
         description: 'Optional: filter by simulation database id.'
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - $ref: '#/components/schemas/JobStatus'
+          - type: 'null'
+          description: 'Filter by reported status: ''completed'' (ready), ''failed''
+            (or ''cancelled''); any other value means still computing.'
+          title: Status
+        description: 'Filter by reported status: ''completed'' (ready), ''failed''
+          (or ''cancelled''); any other value means still computing.'
+      - name: backend
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Filter by backend, e.g. 'ray', 'k8s', 'batch'.
+          title: Backend
+        description: Filter by backend, e.g. 'ray', 'k8s', 'batch'.
+      - name: source
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'What the analysis is OF: ''sim:1002'', or a JSON ProvenanceRef
+            fragment.'
+          title: Source
+        description: 'What the analysis is OF: ''sim:1002'', or a JSON ProvenanceRef
+          fragment.'
+      - name: tag
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Comma-separated tags; an analysis must carry all of them.
+          title: Tag
+        description: Comma-separated tags; an analysis must carry all of them.
+      - name: since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Only analyses changed at or after this time.
+          title: Since
+        description: Only analyses changed at or after this time.
+      - name: limit
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          description: Page size; omit to return every match.
+          title: Limit
+        description: Page size; omit to return every match.
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Rows to skip (pagination, with limit).
+          default: 0
+          title: Offset
+        description: Rows to skip (pagination, with limit).
       responses:
         '200':
           description: Successful Response
@@ -1112,6 +1350,155 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ExperimentAnalysisDTO'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analyses/{id}/datasets:
+    get:
+      tags:
+      - Datasets
+      summary: Datasets an analysis run wrote
+      description: "docs/plan-data-provenance.md \xA77. Rows lag ingestion; 404 for\
+        \ an unknown analysis."
+      operationId: list-analysis-datasets
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of the analysis
+          title: Id
+        description: Database ID of the analysis
+      - name: kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Dataset kind: parquet, parca-cache, ptools-analysis, analysis,
+            figure, report, other.'
+          title: Kind
+        description: 'Dataset kind: parquet, parca-cache, ptools-analysis, analysis,
+          figure, report, other.'
+      - name: view
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Logical view, e.g. 'ptools_rna'.
+          title: View
+        description: Logical view, e.g. 'ptools_rna'.
+      - name: tag
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Comma-separated tags; a dataset must carry all of them.
+          title: Tag
+        description: Comma-separated tags; a dataset must carry all of them.
+      - name: available
+        in: query
+        required: false
+        schema:
+          enum:
+          - 'true'
+          - 'false'
+          - any
+          type: string
+          description: '''true'' (default): datasets whose object exists; ''false'':
+            those whose object is gone; ''any''.'
+          default: 'true'
+          title: Available
+        description: '''true'' (default): datasets whose object exists; ''false'':
+          those whose object is gone; ''any''.'
+      - name: since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Only datasets changed at or after this time.
+          title: Since
+        description: Only datasets changed at or after this time.
+      - name: uri_prefix
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Datasets whose uri starts with this, e.g. a bundle directory
+            's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards
+            are literal.
+          title: Uri Prefix
+        description: Datasets whose uri starts with this, e.g. a bundle directory
+          's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards are
+          literal.
+      - name: q
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Free text: a case-insensitive substring of the display name
+            or the uri.'
+          title: Q
+        description: 'Free text: a case-insensitive substring of the display name
+          or the uri.'
+      - name: experiment_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Datasets of this experiment, whichever run wrote them (a simulation''s
+            own output and the bundles its analyses produced). Unknown experiment:
+            an empty page.'
+          title: Experiment Id
+        description: 'Datasets of this experiment, whichever run wrote them (a simulation''s
+          own output and the bundles its analyses produced). Unknown experiment: an
+          empty page.'
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          description: Page size.
+          default: 100
+          title: Limit
+        description: Page size.
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Rows to skip (pagination, with limit).
+          default: 0
+          title: Offset
+        description: Rows to skip (pagination, with limit).
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetListDTO'
         '422':
           description: Validation Error
           content:
@@ -1218,8 +1605,16 @@ paths:
 
 
         Returns the same ``list[TsvOutputFile]`` shape as the legacy ``POST /analyses``.
+        The
 
-        409 if the analysis is not READY; 404 if the analysis id is unknown.'
+        coordinate filters select files before any is downloaded. When the selection
+        holds one file
+
+        per view, ``filename`` is aliased to ``<view>.tsv`` (what an unpatched ptools
+        page expects)
+
+        and ``path`` carries the real name. 409 if the analysis is not READY; 404
+        if the id is unknown.'
       operationId: get-analysis-data
       parameters:
       - name: id
@@ -1230,6 +1625,58 @@ paths:
           description: Database ID of the analysis
           title: Id
         description: Database ID of the analysis
+      - name: view
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Only files of this view, e.g. 'ptools_rna'.
+          title: View
+        description: Only files of this view, e.g. 'ptools_rna'.
+      - name: protocol
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Only files of this protocol: single, multigeneration, multiseed,
+            multidaughter, all.'
+          title: Protocol
+        description: 'Only files of this protocol: single, multigeneration, multiseed,
+          multidaughter, all.'
+      - name: variant
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: Only files of this variant.
+          title: Variant
+        description: Only files of this variant.
+      - name: seed
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: Only files of this lineage seed.
+          title: Seed
+        description: Only files of this lineage seed.
+      - name: generation
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: Only files of this generation.
+          title: Generation
+        description: Only files of this generation.
       responses:
         '200':
           description: Successful Response
@@ -1589,7 +2036,7 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-09-18T00:30:55.946154'
+                  created_at: '2026-09-19T11:14:22.944054'
                 parca_config:
                   outdir: .
                   operons: true
@@ -1775,6 +2222,418 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TaskLogsDTO'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/datasets:
+    get:
+      tags:
+      - Datasets
+      summary: List registered datasets by kind, view, tags, attributes, producer
+        run or source
+      description: 'Newest change first; ``next_offset`` pages. Unavailable datasets
+        (object gone) are
+
+        excluded unless ``available=false`` or ``available=any``.'
+      operationId: list-datasets
+      parameters:
+      - name: attr
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+          description: 'Attribute filter <key>=<value>, repeatable (all must match).
+            A JSON scalar keeps its type: variant=0 matches the integer, variant="0"
+            the string; a non-JSON value such as agent=000 is a string. attr.<key>=<value>
+            parameters mean the same.'
+          default: []
+          title: Attr
+        description: 'Attribute filter <key>=<value>, repeatable (all must match).
+          A JSON scalar keeps its type: variant=0 matches the integer, variant="0"
+          the string; a non-JSON value such as agent=000 is a string. attr.<key>=<value>
+          parameters mean the same.'
+      - name: simulation_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: Written by this simulation run.
+          title: Simulation Id
+        description: Written by this simulation run.
+      - name: analysis_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: Written by this analysis run.
+          title: Analysis Id
+        description: Written by this analysis run.
+      - name: parca_dataset_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: Written by this ParCa run.
+          title: Parca Dataset Id
+        description: Written by this ParCa run.
+      - name: source
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'What the data is OF: ''sim:1002'', ''analysis:7'', or a JSON
+            ProvenanceRef fragment.'
+          title: Source
+        description: 'What the data is OF: ''sim:1002'', ''analysis:7'', or a JSON
+          ProvenanceRef fragment.'
+      - name: kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Dataset kind: parquet, parca-cache, ptools-analysis, analysis,
+            figure, report, other.'
+          title: Kind
+        description: 'Dataset kind: parquet, parca-cache, ptools-analysis, analysis,
+          figure, report, other.'
+      - name: view
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Logical view, e.g. 'ptools_rna'.
+          title: View
+        description: Logical view, e.g. 'ptools_rna'.
+      - name: tag
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Comma-separated tags; a dataset must carry all of them.
+          title: Tag
+        description: Comma-separated tags; a dataset must carry all of them.
+      - name: available
+        in: query
+        required: false
+        schema:
+          enum:
+          - 'true'
+          - 'false'
+          - any
+          type: string
+          description: '''true'' (default): datasets whose object exists; ''false'':
+            those whose object is gone; ''any''.'
+          default: 'true'
+          title: Available
+        description: '''true'' (default): datasets whose object exists; ''false'':
+          those whose object is gone; ''any''.'
+      - name: since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Only datasets changed at or after this time.
+          title: Since
+        description: Only datasets changed at or after this time.
+      - name: uri_prefix
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Datasets whose uri starts with this, e.g. a bundle directory
+            's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards
+            are literal.
+          title: Uri Prefix
+        description: Datasets whose uri starts with this, e.g. a bundle directory
+          's3://bucket/vecoli-output/<experiment>/analyses/<bundle>/'. Wildcards are
+          literal.
+      - name: q
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Free text: a case-insensitive substring of the display name
+            or the uri.'
+          title: Q
+        description: 'Free text: a case-insensitive substring of the display name
+          or the uri.'
+      - name: experiment_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Datasets of this experiment, whichever run wrote them (a simulation''s
+            own output and the bundles its analyses produced). Unknown experiment:
+            an empty page.'
+          title: Experiment Id
+        description: 'Datasets of this experiment, whichever run wrote them (a simulation''s
+          own output and the bundles its analyses produced). Unknown experiment: an
+          empty page.'
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          description: Page size.
+          default: 100
+          title: Limit
+        description: Page size.
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Rows to skip (pagination, with limit).
+          default: 0
+          title: Offset
+        description: Rows to skip (pagination, with limit).
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetListDTO'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/datasets/attributes:
+    get:
+      tags:
+      - Datasets
+      summary: Distinct values of every dataset attribute (for building pickers)
+      operationId: list-dataset-attributes
+      parameters:
+      - name: kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Only datasets of this kind.
+          title: Kind
+        description: Only datasets of this kind.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: array
+                  items: {}
+                title: Response List-Dataset-Attributes
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/datasets/tags:
+    get:
+      tags:
+      - Datasets
+      summary: Every tag present on datasets, with how many datasets carry it
+      operationId: list-dataset-tags
+      parameters:
+      - name: kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Only datasets of this kind.
+          title: Kind
+        description: Only datasets of this kind.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: integer
+                title: Response List-Dataset-Tags
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/datasets/{id}:
+    get:
+      tags:
+      - Datasets
+      summary: One registered dataset
+      operationId: get-dataset
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of the dataset
+          title: Id
+        description: Database ID of the dataset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetDTO'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/datasets/{id}/content:
+    get:
+      tags:
+      - Datasets
+      summary: Stream one dataset's bytes (a ptools TSV, a figure, a report) through
+        the API
+      description: 'Serves single objects without storage credentials. Store-like
+        kinds (a parquet prefix, a
+
+        ParCa cache) are refused with 409: read those from the dataset''s ``uri``.'
+      operationId: get-dataset-content
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of the dataset
+          title: Id
+        description: Database ID of the dataset
+      responses:
+        '200':
+          description: The dataset's bytes, streamed; the media type follows the file
+            (TSV as text/plain)
+          content:
+            application/json:
+              schema: {}
+            text/plain: {}
+            text/html: {}
+            application/octet-stream: {}
+        '404':
+          description: Unknown dataset, or its object is gone
+        '409':
+          description: A store kind (parquet, parca-cache) or an object outside the
+            API's storage bucket
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/datasets/{id}/tags:
+    post:
+      tags:
+      - Datasets
+      summary: Attach one or more free-form tags to a dataset
+      operationId: add-dataset-tags
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of the dataset
+          title: Id
+        description: Database ID of the dataset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Body_add-dataset-tags'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetDTO'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/datasets/{id}/provenance:
+    get:
+      tags:
+      - Datasets
+      summary: 'What wrote a dataset: its producer run, trace and span, and the datasets
+        that run read'
+      description: 'One hop. ``producer`` is the run row (simulation, analysis or
+        ParCa) with its ``source``
+
+        and, when the run was traced, its ``hpcrun_id``/``trace_id``; ``span`` is
+        the span the
+
+        ``artifact.written`` event came from (walk-found datasets have none); ``inputs``
+        are
+
+        registered datasets the producer''s declared source names by ``uri``.'
+      operationId: get-dataset-provenance
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Database ID of the dataset
+          title: Id
+        description: Database ID of the dataset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetProvenanceDTO'
         '422':
           description: Validation Error
           content:
@@ -3633,6 +4492,18 @@ components:
       - submitted
       - total_requested
       title: BiomodelsRunResult
+    Body_add-dataset-tags:
+      properties:
+        tags:
+          items:
+            type: string
+          type: array
+          title: Tags
+          description: Tags to add (union-merged with existing tags).
+      type: object
+      required:
+      - tags
+      title: Body_add-dataset-tags
     Body_add-simulation-tags:
       properties:
         tags:
@@ -4079,6 +4950,222 @@ components:
       title: ContainerizationFileRepr
       description: A textual container-definition file (e.g. a Singularity/apptainer
         def).
+    DatasetDTO:
+      properties:
+        database_id:
+          type: integer
+          title: Database Id
+        kind:
+          type: string
+          title: Kind
+        uri:
+          type: string
+          title: Uri
+        simulation_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Simulation Id
+        parca_dataset_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Parca Dataset Id
+        analysis_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Analysis Id
+        view:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: View
+        display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Display Name
+        size_bytes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Size Bytes
+        sha256:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sha256
+        attributes:
+          additionalProperties:
+            $ref: '#/components/schemas/JsonValue'
+          type: object
+          title: Attributes
+        tags:
+          items:
+            type: string
+          type: array
+          title: Tags
+        source:
+          anyOf:
+          - additionalProperties:
+              $ref: '#/components/schemas/JsonValue'
+            type: object
+          - type: 'null'
+          title: Source
+        available:
+          type: boolean
+          title: Available
+          default: true
+        created_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created At
+        updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated At
+      type: object
+      required:
+      - database_id
+      - kind
+      - uri
+      title: DatasetDTO
+      description: 'One consumable file set a run actually wrote (a ``dataset`` row).
+
+
+        Never pre-created: it exists only once a run''s trace was scraped or the walk
+        found
+
+        the object. Exactly one producer id is set by the registry. ``available``
+        is false
+
+        once the object is gone; the row itself is kept so provenance never dangles.'
+    DatasetListDTO:
+      properties:
+        datasets:
+          items:
+            $ref: '#/components/schemas/DatasetDTO'
+          type: array
+          title: Datasets
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+        next_offset:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Next Offset
+        total:
+          type: integer
+          title: Total
+          default: 0
+      type: object
+      required:
+      - datasets
+      - limit
+      - offset
+      title: DatasetListDTO
+      description: 'A page of datasets. ``next_offset`` is ``None`` on the last page.
+
+
+        ``total`` is how many rows match the filters, not how many this page holds,
+        so a client can
+
+        say "1-100 of 43,182" and decide whether to narrow instead of paging. It counts
+        with the
+
+        SAME clauses as the page (``count_datasets``), so the two can never disagree.
+        It defaults to
+
+        0 only so a hand-built page in a test need not supply it; every route sets
+        it.'
+    DatasetProducerDTO:
+      properties:
+        kind:
+          type: string
+          title: Kind
+        id:
+          type: integer
+          title: Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+        source:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Source
+        tags:
+          items:
+            type: string
+          type: array
+          title: Tags
+        hpcrun_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Hpcrun Id
+        trace_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trace Id
+        correlation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Correlation Id
+      type: object
+      required:
+      - kind
+      - id
+      title: DatasetProducerDTO
+      description: 'The run that wrote a dataset. ``kind`` is ``simulation``, ``analysis``
+        or ``parca``;
+
+        ``hpcrun_id``/``trace_id``/``correlation_id`` are set when the run has a run
+        row (an
+
+        analysis row recorded by a backfill has none). A dataset the S3 walk found
+        under a
+
+        simulation''s output that no analysis run claims names the simulation.'
+    DatasetProvenanceDTO:
+      properties:
+        dataset:
+          $ref: '#/components/schemas/DatasetDTO'
+        producer:
+          anyOf:
+          - $ref: '#/components/schemas/DatasetProducerDTO'
+          - type: 'null'
+        span:
+          anyOf:
+          - $ref: '#/components/schemas/SimulationSpan'
+          - type: 'null'
+        inputs:
+          items:
+            $ref: '#/components/schemas/DatasetDTO'
+          type: array
+          title: Inputs
+      type: object
+      required:
+      - dataset
+      title: DatasetProvenanceDTO
+      description: '``GET /datasets/{id}/provenance``: one hop back from a dataset.'
     EnvWorkerStartRequest:
       properties:
         commit:
@@ -4225,6 +5312,22 @@ components:
           - type: string
           - type: 'null'
           title: Job Id Ext
+        source:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Source
+        tags:
+          items:
+            type: string
+          type: array
+          title: Tags
+        n_datasets:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: N Datasets
       type: object
       required:
       - database_id
@@ -4527,6 +5630,7 @@ components:
       - parca
       - build_image
       title: JobType
+    JsonValue: {}
     NewGeneCacheJob:
       properties:
         job_id:
@@ -5187,7 +6291,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-09-18 00:30:55.896110'
+          default: '2026-09-19 11:14:21.556301'
         job_id:
           anyOf:
           - type: string
@@ -6074,6 +7178,11 @@ components:
           - type: string
           - type: 'null'
           title: Content
+        path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Path
       type: object
       required:
       - filename
