@@ -274,6 +274,7 @@ composite_cli = typer.Typer(
     "multi_node_dispatch mechanism on POST /api/v1/simulations."
 )
 worker_cli = typer.Typer(help="Run and call env workers (a simulator image as a live process).")
+smoke_cli = typer.Typer(help="Smoke-test a DEPLOYED API: one real check per mechanism, asserting the effect.")
 demo_cli = typer.Typer(help="Demo and utility commands.")
 tui_cli = typer.Typer(help="TUI's command line interface.")
 gui_cli = typer.Typer(help="GUI's command line interface.")
@@ -288,6 +289,7 @@ cli.add_typer(dataset_cli, name="dataset")
 cli.add_typer(compose_cli, name="compose")
 cli.add_typer(composite_cli, name="composite")
 cli.add_typer(worker_cli, name="worker")
+cli.add_typer(smoke_cli, name="smoke")
 cli.add_typer(demo_cli, name="demo")
 cli.add_typer(tui_cli)
 cli.add_typer(gui_cli)
@@ -2879,6 +2881,36 @@ def compose_biomodels_meta(
     display_json(result, console)
 
 
+def _print_biomodels_result(console: Console, result: dict[str, Any], label: str) -> None:
+    submitted = result.get("submitted", [])
+    failed = result.get("failed", [])
+    total = result.get("total_requested", len(submitted) + len(failed))
+    console.print(f"[bold]{label} complete:[/bold] {len(submitted)}/{total} submitted, {len(failed)} failed")
+    if failed:
+        console.print(f"[yellow]Failed IDs:[/yellow] {', '.join(failed)}")
+    display_json(result, console)
+
+
+def _poll_biomodels_submission(console: Console, data_service: E2EDataService, result: dict[str, Any]) -> None:
+    submitted = result.get("submitted", [])
+    first = submitted[0] if submitted else None
+    sim_id = first.get("simulation_database_id") if isinstance(first, dict) else None
+    if sim_id is None:
+        console.print("[yellow]No submitted simulation to poll.[/yellow]")
+        return
+    import time
+
+    while True:
+        time.sleep(5)
+        with console.status(f"[memphis.spinner]Polling status for simulation {sim_id}..."):
+            status_data = data_service.compose_get_simulation_status(simulation_id=sim_id)
+        status = status_data.get("status", "unknown")
+        console.print(f"  Status: {status}")
+        if status in ("completed", "failed", "cancelled", "timeout"):
+            break
+    display_json(status_data, console)
+
+
 @compose_cli.command("biomodels-run", help="Run a BioModels database model via Copasi or Tellurium.")
 def compose_biomodels_run(
     biomodel_id: str = Argument(help="BioModel ID (e.g. BIOMD0000000001)."),
@@ -2889,24 +2921,10 @@ def compose_biomodels_run(
     console = get_console()
     data_service = get_data_service(base_url=base_url)
     with console.status(f"[memphis.spinner]Submitting {biomodel_id} via {simulator}..."):
-        result = data_service.compose_biomodels_run(biomodel_id=biomodel_id, simulator=simulator)
+        result = data_service.compose_biomodels_run(model_ids=[biomodel_id], simulators=[simulator])
     display_json(result, console)
     if poll:
-        sim_id = result.get("simulation_database_id")
-        if sim_id is None:
-            console.print("[yellow]No simulation_database_id in response; cannot poll.[/yellow]")
-            return
-        import time
-
-        while True:
-            time.sleep(5)
-            with console.status(f"[memphis.spinner]Polling status for simulation {sim_id}..."):
-                status_data = data_service.compose_get_simulation_status(simulation_id=sim_id)
-            status = status_data.get("status", "unknown")
-            console.print(f"  Status: {status}")
-            if status in ("completed", "failed", "cancelled", "timeout"):
-                break
-        display_json(status_data, console)
+        _poll_biomodels_submission(console, data_service, result)
 
 
 @compose_cli.command("biomodels-batch", help="Run a batch of BioModels database models.")
@@ -2920,12 +2938,12 @@ def compose_biomodels_batch(
     data_service = get_data_service(base_url=base_url)
     model_ids = [i.strip() for i in ids.split(",") if i.strip()] if ids else None
     with console.status("[memphis.spinner]Submitting BioModels batch..."):
-        result = data_service.compose_biomodels_batch(
-            simulator=simulator,
+        result = data_service.compose_biomodels_run(
             model_ids=model_ids,
             n_models=n if model_ids is None else None,
+            simulators=[simulator],
         )
-    display_json(result, console)
+    _print_biomodels_result(console, result, "Batch")
 
 
 @compose_cli.command("biomodels-audit", help="Run a BioModel on multiple simulators for cross-validation.")
@@ -2939,25 +2957,10 @@ def compose_biomodels_audit(
     data_service = get_data_service(base_url=base_url)
     sim_list = [s.strip() for s in simulators.split(",") if s.strip()]
     with console.status(f"[memphis.spinner]Submitting audit for {biomodel_id} ({', '.join(sim_list)})..."):
-        result = data_service.compose_biomodels_audit(biomodel_id=biomodel_id, simulators=sim_list)
+        result = data_service.compose_biomodels_run(model_ids=[biomodel_id], simulators=sim_list)
     display_json(result, console)
     if poll:
-        experiment = result.get("experiment", result)
-        sim_id = experiment.get("simulation_database_id") if isinstance(experiment, dict) else None
-        if sim_id is None:
-            console.print("[yellow]No simulation_database_id in response; cannot poll.[/yellow]")
-            return
-        import time
-
-        while True:
-            time.sleep(5)
-            with console.status(f"[memphis.spinner]Polling audit simulation {sim_id}..."):
-                status_data = data_service.compose_get_simulation_status(simulation_id=sim_id)
-            status = status_data.get("status", "unknown")
-            console.print(f"  Status: {status}")
-            if status in ("completed", "failed", "cancelled", "timeout"):
-                break
-        display_json(status_data, console)
+        _poll_biomodels_submission(console, data_service, result)
 
 
 @compose_cli.command("biomodels-regression", help="Run a BioModels regression suite.")
@@ -2972,21 +2975,82 @@ def compose_biomodels_regression(
     model_ids = [i.strip() for i in ids.split(",") if i.strip()] if ids else None
     sim_list = [s.strip() for s in simulators.split(",") if s.strip()]
     with console.status("[memphis.spinner]Submitting BioModels regression suite..."):
-        result = data_service.compose_biomodels_regression(
-            n_models=n,
+        result = data_service.compose_biomodels_run(
             model_ids=model_ids,
+            n_models=n if model_ids is None else None,
             simulators=sim_list,
         )
-    submitted = result.get("submitted", [])
-    failed = result.get("failed", [])
-    total = result.get("total_requested", n)
-    console.print(f"[bold]Regression complete:[/bold] {len(submitted)}/{total} submitted, {len(failed)} failed")
-    if failed:
-        console.print(f"[yellow]Failed IDs:[/yellow] {', '.join(failed)}")
-    display_json(result, console)
+    _print_biomodels_result(console, result, "Regression")
 
 
 # -- Demo commands --
+
+
+# -- Smoke ---------------------------------------------------------------------------------
+
+
+@smoke_cli.command("list", help="List the smoke checks and their tiers.")
+def smoke_list() -> None:
+    from app import smoke
+
+    console = get_console()
+    for check in smoke.CHECKS:
+        console.print(f"  tier {check.tier}  [memphis.primary]{check.name:<13}[/] {check.summary}")
+
+
+@smoke_cli.command("run", help="Run smoke checks against a deployed API. Exits non-zero on any failure.")
+def smoke_run(
+    tier: int = Option(default=0, min=0, max=1, help="0 = read-only, seconds. 1 = adds one tiny real dispatch each."),
+    only: list[str] = Option(default=[], help="Run only these checks (repeatable); overrides --tier."),
+    skip: list[str] = Option(default=[], help="Skip these checks (repeatable)."),
+    commit: str | None = Option(default=None, help="Image commit for the task and worker checks."),
+    simulation_id: int | None = Option(default=None, help="A completed simulation WITH output: enables `analysis`."),
+    biomodel: str | None = Option(default=None, help="A BioModels id: enables `biomodels`."),
+    timeout: float = Option(default=900.0, help="Seconds to wait for any one dispatched job."),
+    json_out: Path | None = Option(default=None, help="Write the full result, with evidence, as JSON."),
+    url: str | None = Option(default=None, help="Any base URL (e.g. a port-forward); overrides --base-url."),
+    base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
+) -> None:
+    """Merged is not deployed: this is the check that a DEPLOYMENT does what the code says.
+
+    A check passes only on an observed EFFECT -- a nonce read back from a task's log, the
+    number a composite must compute -- never on a status alone. SKIP is reported separately
+    from PASS and says why. See docs/plan-core.md section 8 for which tier a deploy needs.
+    """
+    from app import smoke
+
+    console = get_console()
+    target = url or str(base_url.value if hasattr(base_url, "value") else base_url)
+    try:
+        checks = smoke.select_checks(tier, only=only, skip=skip)
+    except ValueError as e:
+        console.print(f"[memphis.error]{e}[/]")
+        raise typer.Exit(code=2) from e
+
+    service = E2EDataService(base_url=target, timeout=int(timeout) + 120)
+    options = smoke.SmokeOptions(
+        commit=commit, simulation_id=simulation_id, biomodel_id=biomodel, timeout_seconds=timeout
+    )
+    styles = {smoke.Outcome.PASS: "memphis.success", smoke.Outcome.FAIL: "memphis.error", smoke.Outcome.SKIP: "dim"}
+
+    def show(result: smoke.CheckResult) -> None:
+        style = styles[result.outcome]
+        label = result.outcome.value.upper()
+        console.print(
+            f"  [{style}]{label:<4}[/] t{result.tier} {result.name:<13} {result.seconds:>7.1f}s  {result.detail}"
+        )
+
+    console.print(f"[memphis.primary]atlantis smoke[/] -> {target}  ({len(checks)} checks)")
+    results = smoke.run_checks(service, checks, options, on_result=show)
+    summary = smoke.summarize(results)
+    console.print(f"  [bold]{summary['pass']} passed, {summary['fail']} failed, {summary['skip']} skipped[/]")
+    if json_out is not None:
+        json_out.write_text(
+            _json_mod.dumps(smoke.report(target, tier, results), indent=2, default=str), encoding="utf-8"
+        )
+        console.print(f"  wrote {json_out}")
+    if summary["fail"]:
+        raise typer.Exit(code=1)
 
 
 @demo_cli.command("get-data", help="Download S3 simulation outputs directly (mirrors test_outputs.py e2e test).")

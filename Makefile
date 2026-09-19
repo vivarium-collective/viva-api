@@ -28,6 +28,23 @@ check: ## Run code quality tools.
 	@uv run mypy
 	@echo "🚀 Checking for obsolete dependencies: Running deptry"
 	@uv run deptry .
+	@echo "🚀 Core-split import contracts: enforcing the ones that already hold"
+	@uv run lint-imports $(addprefix --contract ,$(ENFORCED_IMPORT_CONTRACTS)) > /dev/null || (uv run lint-imports $(addprefix --contract ,$(ENFORCED_IMPORT_CONTRACTS)); exit 1)
+	@echo "🚀 Core-split import contracts: the rest, REPORT-ONLY (see docs/plan-core.md P0)"
+	@$(MAKE) --no-print-directory imports
+
+# Contracts in [tool.importlinter] that hold today and therefore FAIL `make check` if broken.
+# A contract moves onto this list in the phase that fixes it -- never off it.
+ENFORCED_IMPORT_CONTRACTS := core-is-standalone env-worker-is-domain-free
+
+.PHONY: imports
+imports: ## Report the core-split import contracts (never fails; see [tool.importlinter]).
+	@uv run lint-imports --no-cache | sed -n '/^Contracts$$/,$$p' || true
+	@echo "⚠️  REPORT-ONLY: a broken contract above is a seam still to cut (docs/architecture-core.md Part 3)"
+
+.PHONY: imports-strict
+imports-strict: ## Same contracts, failing on any breakage.
+	@uv run lint-imports
 
 .PHONY: clean_cache
 clean_cache:
@@ -337,9 +354,16 @@ api_client:
 ui:
 	@uv run --no-cache marimo edit app/ui/$(id).py
 
+.PHONY: smoke
+smoke: ## Smoke-test a DEPLOYED API. BASE_URL=http://localhost:8080 TIER=0|1 [SMOKE_ARGS="--commit <sha>"]
+	@uv run atlantis smoke run --tier $(or $(TIER),0) --url $(or $(BASE_URL),http://localhost:8080) $(SMOKE_ARGS)
+
+# `make e2e` used to run tests/api/ecoli/test_simulations.py::TestRunSimulationE2E, a class
+# that no longer exists -- so it "passed" by collecting nothing. It now runs the Tier 1
+# smoke suite, which is the thing it claimed to be: an end-to-end check of a deployment.
 .PHONY: e2e
-e2e:
-	@uv run --no-cache pytest tests/api/ecoli/test_simulations.py::TestRunSimulationE2E -v -s
+e2e: ## End-to-end check of a deployed API (Tier 1 smoke). Same variables as `make smoke`.
+	@$(MAKE) --no-print-directory smoke TIER=1
 
 .PHONY: tui
 tui:

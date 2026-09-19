@@ -80,7 +80,7 @@ async def test_absent_axis_leaves_every_other_route_untouched() -> None:
 async def test_missing_composite_id_fails_rather_than_guessing() -> None:
     service = SimulationServiceRay()
     with (
-        patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
         pytest.raises(ValueError, match="composite_id is required"),
     ):
         await service._submit_nextflow_dispatch(_sim(), _db(), {})
@@ -91,7 +91,7 @@ async def test_missing_composite_id_fails_rather_than_guessing() -> None:
 
 def _command(**dispatch: Any) -> str:
     service = SimulationServiceRay()
-    with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+    with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
         return service._render_nf_command(
             runner_s3_uri="s3://b/exp/render_nf.py",
             composite_id="v2ecoli.composites.workflow_nf",
@@ -154,7 +154,7 @@ def test_head_image_is_the_submit_tag_not_the_task_image() -> None:
     Java, so dispatching Nextflow against it would fail inside the container
     rather than at submit time."""
     service = SimulationServiceRay()
-    with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+    with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
         assert service._submit_image_uri("abc1234").endswith("/v2ecoli:abc1234-submit")
 
 
@@ -182,7 +182,7 @@ def _nf_params(**overrides: Any) -> dict[str, Any]:
     settings = _ray_settings()
     for key, value in overrides.items():
         setattr(settings, key, value)
-    with patch("viva_api.simulation.simulation_service_ray.get_settings", lambda: settings):
+    with patch("viva_api.simulation.ray._seams.get_settings", lambda: settings):
         return service._awsbatch_nf_params("abc1234", "exp-nf")
 
 
@@ -250,7 +250,7 @@ async def _dispatch(**dispatch: Any) -> tuple[Any, MagicMock]:
     service, k8s = _svc_with_k8s()
     sim = _sim()
     with (
-        patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
         patch.object(service, "stage_render_nf", new=AsyncMock(return_value="s3://b/e/render_nf.py")),
         patch.object(service, "stage_runner", new=AsyncMock(return_value="s3://b/e/run_pbg.py")),
     ):
@@ -296,7 +296,7 @@ async def test_head_job_name_is_a_valid_dns_label() -> None:
     sim = _sim()
     sim.experiment_id = "Test_Experiment_NF_2026"
     with (
-        patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
         patch.object(service, "stage_render_nf", new=AsyncMock(return_value="s3://b/e/r.py")),
         patch.object(service, "stage_runner", new=AsyncMock(return_value="s3://b/e/run_pbg.py")),
     ):
@@ -319,7 +319,7 @@ async def test_head_job_is_not_retried_by_kubernetes() -> None:
 async def test_dispatch_without_a_cluster_fails_loudly() -> None:
     service = SimulationServiceRay()  # no K8sJobService
     with (
-        patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
         pytest.raises(RuntimeError, match="k8s_job_namespace"),
     ):
         await service._submit_nextflow_dispatch(_sim(), _db(), {"composite_id": "v2ecoli.composites.workflow_nf"})
@@ -437,7 +437,7 @@ async def test_resources_reach_the_rendered_command() -> None:
     """The defaults are useless if the dispatcher does not pass them."""
     service, k8s = _svc_with_k8s()
     with (
-        patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
         patch.object(service, "stage_render_nf", new=AsyncMock(return_value="s3://b/e/r.py")),
         patch.object(service, "stage_runner", new=AsyncMock(return_value="s3://b/e/run_pbg.py")),
     ):
@@ -483,7 +483,7 @@ def test_session_and_work_dir_are_keyed_the_same() -> None:
     """They are only useful together: -resume matches a task by hash in the
     SESSION, then reuses outputs in the WORK DIR. Either alone resumes nothing."""
     service = SimulationServiceRay()
-    with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+    with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
         session = service._nf_session_s3_uri("exp-nf")
         work = service._awsbatch_nf_params("abc1234", "exp-nf")["work_dir"]
     assert session.rsplit("/", 1)[0] == work.rsplit("/", 1)[0]
@@ -535,7 +535,7 @@ async def test_two_dispatches_of_one_config_do_not_share_a_work_dir() -> None:
         sim = _sim()
         sim.experiment_id = run
         with (
-            patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
             patch.object(service, "stage_render_nf", new=AsyncMock(return_value="s3://b/e/r.py")),
             patch.object(service, "stage_runner", new=AsyncMock(return_value="s3://b/e/run_pbg.py")),
         ):
@@ -630,7 +630,7 @@ async def test_publish_dir_points_at_the_runs_own_results_prefix() -> None:
     """`publishDir` reads `params.publish_dir`; without it set, v2ecoli's fallback
     publishes to a task-local `results` dir that dies with the pod."""
     service, _ = _svc_with_k8s()
-    with patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings):
+    with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
         expected = service._results_s3_uri("sim133-exp-nf-a1b2").rstrip("/")
     _, k8s = await _dispatch(executor="awsbatch")
     assert _dispatched_nf_params(k8s)["publish_dir"] == expected
@@ -722,7 +722,7 @@ async def test_cancel_deletes_the_head_and_does_NOT_reap_inline() -> None:
 
     service, k8s = _svc_with_k8s()
     with (
-        patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
         patch.object(service, "reap_cancelled_campaign", new=AsyncMock()) as reap,
         patch.object(service, "_terminate_campaign_tasks") as terminate,
     ):
@@ -739,7 +739,7 @@ async def test_reap_defers_while_the_head_still_exists() -> None:
     service, k8s = _svc_with_k8s()
     k8s.get_job_status.return_value = MagicMock()  # 404 would be None
     with (
-        patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
         patch.object(service, "_batch") as batch,
     ):
         assert await service.reap_cancelled_campaign("nf-sim159-run-a1b2-xyz123") is None
@@ -780,7 +780,7 @@ async def test_reap_paginates_and_scans_every_queue() -> None:
     batch.describe_jobs.side_effect = describe_jobs
     settings = MagicMock(batch_amd64_queue="q-amd", batch_arm64_queue="q-arm", batch_region="r")
     with (
-        patch("viva_api.simulation.simulation_service_ray.get_settings", return_value=settings),
+        patch("viva_api.simulation.ray._seams.get_settings", return_value=settings),
         patch.object(service, "_batch", return_value=batch),
     ):
         reaped = await service.reap_cancelled_campaign("nf-sim159-run-a1b2-xyz123")
@@ -831,7 +831,7 @@ async def test_dispatch_threads_the_runs_identity_env_into_every_batch_task() ->
     service, k8s = _svc_with_k8s()
     sim = _sim()
     with (
-        patch("viva_api.simulation.simulation_service_ray.get_settings", _ray_settings),
+        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
         patch.object(service, "stage_render_nf", new=AsyncMock(return_value="s3://b/e/render_nf.py")),
         patch.object(service, "stage_runner", new=AsyncMock(return_value="s3://b/e/run_pbg.py")),
     ):

@@ -51,20 +51,36 @@ class TestBiomodelsMeta:
 # ---------------------------------------------------------------------------
 
 
+# All four verbs (run / batch / audit / regression) now call the one
+# consolidated ``compose_biomodels_run(model_ids, n_models, simulators)``.
+
+
 class TestBiomodelsRun:
     def test_default_simulator(self) -> None:
-        svc = _mock_data_service({"compose_biomodels_run": {"simulation_database_id": 1, "simulator_database_id": 1}})
+        svc = _mock_data_service({
+            "compose_biomodels_run": {
+                "submitted": [{"simulation_database_id": 1, "simulator_database_id": 1}],
+                "failed": [],
+                "total_requested": 1,
+            }
+        })
         with patch("app.cli.get_data_service", return_value=svc):
             result = runner.invoke(cli_app, ["compose", "biomodels-run", "BIOMD001"])
         assert result.exit_code == 0
-        svc.compose_biomodels_run.assert_called_once_with(biomodel_id="BIOMD001", simulator="copasi")
+        svc.compose_biomodels_run.assert_called_once_with(model_ids=["BIOMD001"], simulators=["copasi"])
 
     def test_tellurium_simulator(self) -> None:
-        svc = _mock_data_service({"compose_biomodels_run": {"simulation_database_id": 2, "simulator_database_id": 1}})
+        svc = _mock_data_service({
+            "compose_biomodels_run": {
+                "submitted": [{"simulation_database_id": 2, "simulator_database_id": 1}],
+                "failed": [],
+                "total_requested": 1,
+            }
+        })
         with patch("app.cli.get_data_service", return_value=svc):
             result = runner.invoke(cli_app, ["compose", "biomodels-run", "BIOMD001", "--simulator", "tellurium"])
         assert result.exit_code == 0
-        svc.compose_biomodels_run.assert_called_once_with(biomodel_id="BIOMD001", simulator="tellurium")
+        svc.compose_biomodels_run.assert_called_once_with(model_ids=["BIOMD001"], simulators=["tellurium"])
 
 
 # ---------------------------------------------------------------------------
@@ -74,19 +90,20 @@ class TestBiomodelsRun:
 
 class TestBiomodelsBatch:
     def test_default(self) -> None:
-        svc = _mock_data_service({"compose_biomodels_batch": {"submitted": [], "failed": []}})
+        svc = _mock_data_service({"compose_biomodels_run": {"submitted": [], "failed": [], "total_requested": 0}})
         with patch("app.cli.get_data_service", return_value=svc):
             result = runner.invoke(cli_app, ["compose", "biomodels-batch"])
         assert result.exit_code == 0
-        svc.compose_biomodels_batch.assert_called_once()
+        svc.compose_biomodels_run.assert_called_once_with(model_ids=None, n_models=5, simulators=["copasi"])
 
     def test_with_ids(self) -> None:
-        svc = _mock_data_service({"compose_biomodels_batch": {"submitted": [], "failed": []}})
+        svc = _mock_data_service({"compose_biomodels_run": {"submitted": [], "failed": [], "total_requested": 0}})
         with patch("app.cli.get_data_service", return_value=svc):
             result = runner.invoke(cli_app, ["compose", "biomodels-batch", "--ids", "BIOMD001,BIOMD002"])
         assert result.exit_code == 0
-        call_kwargs = svc.compose_biomodels_batch.call_args
+        call_kwargs = svc.compose_biomodels_run.call_args
         assert call_kwargs.kwargs.get("model_ids") == ["BIOMD001", "BIOMD002"]
+        assert call_kwargs.kwargs.get("n_models") is None
 
 
 # ---------------------------------------------------------------------------
@@ -97,27 +114,29 @@ class TestBiomodelsBatch:
 class TestBiomodelsAudit:
     def test_default_simulators(self) -> None:
         svc = _mock_data_service({
-            "compose_biomodels_audit": {
-                "experiment": {"simulation_database_id": 10, "simulator_database_id": 1},
-                "simulators_used": ["copasi", "tellurium"],
+            "compose_biomodels_run": {
+                "submitted": [{"simulation_database_id": 10, "simulator_database_id": 1}],
+                "failed": [],
+                "total_requested": 1,
             }
         })
         with patch("app.cli.get_data_service", return_value=svc):
             result = runner.invoke(cli_app, ["compose", "biomodels-audit", "BIOMD001"])
         assert result.exit_code == 0
-        svc.compose_biomodels_audit.assert_called_once_with(biomodel_id="BIOMD001", simulators=["copasi", "tellurium"])
+        svc.compose_biomodels_run.assert_called_once_with(model_ids=["BIOMD001"], simulators=["copasi", "tellurium"])
 
     def test_custom_simulators(self) -> None:
         svc = _mock_data_service({
-            "compose_biomodels_audit": {
-                "experiment": {"simulation_database_id": 11, "simulator_database_id": 1},
-                "simulators_used": ["copasi"],
+            "compose_biomodels_run": {
+                "submitted": [{"simulation_database_id": 11, "simulator_database_id": 1}],
+                "failed": [],
+                "total_requested": 1,
             }
         })
         with patch("app.cli.get_data_service", return_value=svc):
             result = runner.invoke(cli_app, ["compose", "biomodels-audit", "BIOMD001", "--simulators", "copasi"])
         assert result.exit_code == 0
-        svc.compose_biomodels_audit.assert_called_once_with(biomodel_id="BIOMD001", simulators=["copasi"])
+        svc.compose_biomodels_run.assert_called_once_with(model_ids=["BIOMD001"], simulators=["copasi"])
 
 
 # ---------------------------------------------------------------------------
@@ -127,37 +146,34 @@ class TestBiomodelsAudit:
 
 class TestBiomodelsRegression:
     def test_default(self) -> None:
-        svc = _mock_data_service({
-            "compose_biomodels_regression": {"submitted": [], "failed": [], "total_requested": 10}
-        })
+        svc = _mock_data_service({"compose_biomodels_run": {"submitted": [], "failed": [], "total_requested": 10}})
         with patch("app.cli.get_data_service", return_value=svc):
             result = runner.invoke(cli_app, ["compose", "biomodels-regression"])
         assert result.exit_code == 0
-        svc.compose_biomodels_regression.assert_called_once()
+        svc.compose_biomodels_run.assert_called_once_with(
+            model_ids=None, n_models=10, simulators=["copasi", "tellurium"]
+        )
 
     def test_custom_n(self) -> None:
-        svc = _mock_data_service({
-            "compose_biomodels_regression": {"submitted": [], "failed": [], "total_requested": 3}
-        })
+        svc = _mock_data_service({"compose_biomodels_run": {"submitted": [], "failed": [], "total_requested": 3}})
         with patch("app.cli.get_data_service", return_value=svc):
             result = runner.invoke(cli_app, ["compose", "biomodels-regression", "--n", "3"])
         assert result.exit_code == 0
-        call_kwargs = svc.compose_biomodels_regression.call_args
+        call_kwargs = svc.compose_biomodels_run.call_args
         assert call_kwargs.kwargs.get("n_models") == 3
 
     def test_with_ids(self) -> None:
-        svc = _mock_data_service({
-            "compose_biomodels_regression": {"submitted": [], "failed": [], "total_requested": 2}
-        })
+        svc = _mock_data_service({"compose_biomodels_run": {"submitted": [], "failed": [], "total_requested": 2}})
         with patch("app.cli.get_data_service", return_value=svc):
             result = runner.invoke(cli_app, ["compose", "biomodels-regression", "--ids", "BIOMD001,BIOMD002"])
         assert result.exit_code == 0
-        call_kwargs = svc.compose_biomodels_regression.call_args
+        call_kwargs = svc.compose_biomodels_run.call_args
         assert call_kwargs.kwargs.get("model_ids") == ["BIOMD001", "BIOMD002"]
+        assert call_kwargs.kwargs.get("n_models") is None
 
     def test_output_shows_counts(self) -> None:
         svc = _mock_data_service({
-            "compose_biomodels_regression": {
+            "compose_biomodels_run": {
                 "submitted": [{"simulation_database_id": 1, "simulator_database_id": 1}],
                 "failed": ["BIOMD003"],
                 "total_requested": 2,

@@ -85,6 +85,7 @@ from tests.fixtures.api_fixtures import (  # noqa: F401
     workflow_request_payload,
     workspace_image_hash,
 )
+from tests.fixtures.aws_guard import no_real_aws  # noqa: F401  (autouse: no unit test may reach AWS)
 from tests.fixtures.data_fixtures import analysis_service, data_fixture, simulation_data  # noqa: F401
 from tests.fixtures.file_service_fixtures import (  # noqa: F401
     file_service_gcs,

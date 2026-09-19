@@ -13,9 +13,6 @@ from .bi_graph_step import BiGraphStep
 from .biomodel_info import BiomodelInfo
 from .biomodel_info_metadata import BiomodelInfoMetadata
 from .biomodel_simulator import BiomodelSimulator
-from .biomodels_audit_result import BiomodelsAuditResult
-from .biomodels_regression_request import BiomodelsRegressionRequest
-from .biomodels_regression_result import BiomodelsRegressionResult
 from .biomodels_run_request import BiomodelsRunRequest
 from .biomodels_run_result import BiomodelsRunResult
 from .body_add_dataset_tags import BodyAddDatasetTags
@@ -170,10 +167,7 @@ __all__ = (
     "BiGraphStep",
     "BiomodelInfo",
     "BiomodelInfoMetadata",
-    "BiomodelsAuditResult",
     "BiomodelSimulator",
-    "BiomodelsRegressionRequest",
-    "BiomodelsRegressionResult",
     "BiomodelsRunRequest",
     "BiomodelsRunResult",
     "BodyAddDatasetTags",

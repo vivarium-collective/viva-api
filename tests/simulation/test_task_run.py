@@ -51,9 +51,9 @@ def _submit_task(
     batch = _fake_container_batch(submit_ids)
     service = SimulationServiceRay()
     with (
-        patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+        patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
         patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-        patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=batch),
+        patch("viva_api.simulation.ray._seams.boto3.client", return_value=batch),
     ):
         import asyncio
 
@@ -101,9 +101,9 @@ def test_submit_task_routes_large_memory_class_to_large_queue() -> None:
     service = SimulationServiceRay()
     settings = _container_settings(ray_container_large_queue="smscdk-ray-standalone-large")
     with (
-        patch("viva_api.simulation.simulation_service_ray.get_settings", lambda: settings),
+        patch("viva_api.simulation.ray._seams.get_settings", lambda: settings),
         patch("viva_api.common.storage.data_layout.get_settings", lambda: settings),
-        patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=batch),
+        patch("viva_api.simulation.ray._seams.boto3.client", return_value=batch),
     ):
         import asyncio
 
@@ -209,9 +209,9 @@ def test_submit_uploaded_task_stages_script_and_runs_staged_path() -> None:
     batch = _fake_container_batch(["c-9"])
     service = SimulationServiceRay()
     with (
-        patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+        patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
         patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-        patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=batch),
+        patch("viva_api.simulation.ray._seams.boto3.client", return_value=batch),
     ):
         import asyncio
 
@@ -250,9 +250,9 @@ def test_submit_uploaded_task_sanitizes_filename_to_basename() -> None:
     batch = _fake_container_batch(["c-10"])
     service = SimulationServiceRay()
     with (
-        patch("viva_api.simulation.simulation_service_ray.get_settings", _container_settings),
+        patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
         patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-        patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=batch),
+        patch("viva_api.simulation.ray._seams.boto3.client", return_value=batch),
     ):
         import asyncio
 
@@ -314,8 +314,8 @@ def test_get_task_logs_reads_cloudwatch_stream() -> None:
     settings = _container_settings(ray_batch_log_group="", ray_log_s3_prefix="s3://b/logs")
     service = SimulationServiceRay()
     with (
-        patch("viva_api.simulation.simulation_service_ray.get_settings", lambda: settings),
-        patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=fake),
+        patch("viva_api.simulation.ray._seams.get_settings", lambda: settings),
+        patch("viva_api.simulation.ray._seams.boto3.client", return_value=fake),
     ):
         import asyncio
 
@@ -335,8 +335,8 @@ def test_get_task_logs_empty_before_container_starts() -> None:
     settings = _container_settings(ray_batch_log_group="", ray_log_s3_prefix="")
     service = SimulationServiceRay()
     with (
-        patch("viva_api.simulation.simulation_service_ray.get_settings", lambda: settings),
-        patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=fake),
+        patch("viva_api.simulation.ray._seams.get_settings", lambda: settings),
+        patch("viva_api.simulation.ray._seams.boto3.client", return_value=fake),
     ):
         import asyncio
 
@@ -352,8 +352,8 @@ def test_get_task_logs_prefers_configured_log_group() -> None:
     settings = _container_settings(ray_batch_log_group="/configured/group", ray_log_s3_prefix="")
     service = SimulationServiceRay()
     with (
-        patch("viva_api.simulation.simulation_service_ray.get_settings", lambda: settings),
-        patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=fake),
+        patch("viva_api.simulation.ray._seams.get_settings", lambda: settings),
+        patch("viva_api.simulation.ray._seams.boto3.client", return_value=fake),
     ):
         import asyncio
 

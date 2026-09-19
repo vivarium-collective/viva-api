@@ -79,20 +79,36 @@ ALEMBIC_INI = REPO_ROOT / "alembic.ini"
 # false again once true.
 
 
+# Every probe is scoped to ``current_schema()`` -- the schema the app's own DDL lands in
+# (the first existing schema on the search_path; ``public`` on every deployment today).
+# Unscoped, a same-named object in ANY other schema answers the question: once the core
+# split (docs/plan-core.md) puts a ``core.task`` or ``core.dataset`` beside the ``public``
+# ones, an unscoped marker would read a core table as this chain's progress and stamp
+# the wrong revision. Each chain fingerprints its own schema.
+
+
 async def _table_exists(conn: AsyncConnection, name: str) -> bool:
-    q = text("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = :n)")
+    q = text(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = current_schema() AND table_name = :n)"
+    )
     return bool((await conn.execute(q, {"n": name})).scalar())
 
 
 async def _column_exists(conn: AsyncConnection, table: str, column: str) -> bool:
-    q = text("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = :t AND column_name = :c)")
+    q = text(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = :t AND column_name = :c)"
+    )
     return bool((await conn.execute(q, {"t": table, "c": column})).scalar())
 
 
 async def _enum_has_value(conn: AsyncConnection, enum_name: str, value: str) -> bool:
     q = text(
-        "SELECT EXISTS (SELECT 1 FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid "
-        "WHERE t.typname = :t AND e.enumlabel = :v)"
+        "SELECT EXISTS (SELECT 1 FROM pg_type t "
+        "JOIN pg_namespace n ON n.oid = t.typnamespace "
+        "JOIN pg_enum e ON e.enumtypid = t.oid "
+        "WHERE n.nspname = current_schema() AND t.typname = :t AND e.enumlabel = :v)"
     )
     return bool((await conn.execute(q, {"t": enum_name, "v": value})).scalar())
 

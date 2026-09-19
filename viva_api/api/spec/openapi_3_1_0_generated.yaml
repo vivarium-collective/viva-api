@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.144
+  version: 0.9.146
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -2036,7 +2036,7 @@ paths:
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
                   database_id: 25
-                  created_at: '2026-09-16T08:31:06.206192'
+                  created_at: '2026-09-19T11:14:22.944054'
                 parca_config:
                   outdir: .
                   operons: true
@@ -3146,46 +3146,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /compose/v1/biomodels/{biomodel_id}/run:
+  /compose/v1/biomodels/run:
     post:
       tags:
       - Compose BioModels
-      summary: Run a BioModels database model through Copasi or Tellurium
-      operationId: compose-run-biomodel
-      parameters:
-      - name: biomodel_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Biomodel Id
-      - name: simulator
-        in: query
-        required: false
-        schema:
-          $ref: '#/components/schemas/BiomodelSimulator'
-          description: Simulator to use.
-          default: copasi
-        description: Simulator to use.
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ComposeSimulationExperiment'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /compose/v1/biomodels/batch:
-    post:
-      tags:
-      - Compose BioModels
-      summary: Run a batch of BioModels database models
-      operationId: compose-run-biomodels-batch
+      summary: Run one or more BioModels through one or more simulators
+      description: "Single entry point for BioModels runs \u2014 subsumes the former\n\
+        single/batch/audit/regression endpoints.\n\n- ``model_ids`` (or the first\
+        \ ``n_models``) selects which models to run.\n- ``simulators``: one runs each\
+        \ model on that simulator; several wire all of\n  them into one PB document\
+        \ per model for cross-validation.\n\nEach model is submitted independently;\
+        \ one that fails to load or submit is\ncollected in ``failed`` rather than\
+        \ aborting the run."
+      operationId: compose-run-biomodels
       requestBody:
         content:
           application/json:
@@ -3199,70 +3172,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BiomodelsRunResult'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /compose/v1/biomodels/{biomodel_id}/audit:
-    post:
-      tags:
-      - Compose BioModels
-      summary: Run a BioModel on multiple simulators for cross-validation
-      operationId: compose-audit-biomodel
-      parameters:
-      - name: biomodel_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Biomodel Id
-      - name: simulators
-        in: query
-        required: false
-        schema:
-          type: array
-          items:
-            $ref: '#/components/schemas/BiomodelSimulator'
-          description: Simulators to run. Both are wired into a single PB document.
-          default:
-          - copasi
-          - tellurium
-          title: Simulators
-        description: Simulators to run. Both are wired into a single PB document.
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BiomodelsAuditResult'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /compose/v1/biomodels/regression:
-    post:
-      tags:
-      - Compose BioModels
-      summary: "Run a BioModels regression suite \u2014 submit N models, collect results"
-      operationId: compose-biomodels-regression
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BiomodelsRegressionRequest'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BiomodelsRegressionResult'
         '422':
           description: Validation Error
           content:
@@ -4529,29 +4438,8 @@ components:
       - copasi
       - tellurium
       title: BiomodelSimulator
-    BiomodelsAuditResult:
+    BiomodelsRunRequest:
       properties:
-        experiment:
-          $ref: '#/components/schemas/ComposeSimulationExperiment'
-        simulators_used:
-          items:
-            $ref: '#/components/schemas/BiomodelSimulator'
-          type: array
-          title: Simulators Used
-      type: object
-      required:
-      - experiment
-      - simulators_used
-      title: BiomodelsAuditResult
-    BiomodelsRegressionRequest:
-      properties:
-        n_models:
-          type: integer
-          maximum: 1000.0
-          minimum: 1.0
-          title: N Models
-          description: Number of models to run. Ignored if model_ids set.
-          default: 10
         model_ids:
           anyOf:
           - items:
@@ -4559,16 +4447,30 @@ components:
             type: array
           - type: 'null'
           title: Model Ids
-          description: Specific BioModel IDs to run. Overrides n_models.
+          description: Specific BioModel IDs to run. Mutually exclusive with n_models.
+        n_models:
+          anyOf:
+          - type: integer
+            maximum: 1000.0
+            minimum: 1.0
+          - type: 'null'
+          title: N Models
+          description: Run the first N BioModels. Ignored if model_ids is set.
         simulators:
           items:
             $ref: '#/components/schemas/BiomodelSimulator'
           type: array
           title: Simulators
-          description: Simulators to wire into each model's PB document.
+          description: Simulators to run for each model. A single simulator runs the
+            model on it; several are wired into one PB document per model for cross-validation
+            (the former 'audit'/'regression' behavior).
       type: object
-      title: BiomodelsRegressionRequest
-    BiomodelsRegressionResult:
+      title: BiomodelsRunRequest
+      description: "One request shape for every BioModels run \u2014 subsumes the\
+        \ former\nsingle/batch/audit/regression endpoints. Cardinality comes from\n\
+        ``model_ids``/``n_models``; per-model cross-validation comes from listing\n\
+        more than one simulator."
+    BiomodelsRunResult:
       properties:
         submitted:
           items:
@@ -4584,51 +4486,11 @@ components:
         total_requested:
           type: integer
           title: Total Requested
+          description: Number of models attempted (len(submitted) + len(failed)).
       type: object
       required:
       - submitted
       - total_requested
-      title: BiomodelsRegressionResult
-    BiomodelsRunRequest:
-      properties:
-        model_ids:
-          anyOf:
-          - items:
-              type: string
-            type: array
-          - type: 'null'
-          title: Model Ids
-          description: Specific BioModel IDs to run. Mutually exclusive with n_models.
-        n_models:
-          anyOf:
-          - type: integer
-            maximum: 50.0
-            minimum: 1.0
-          - type: 'null'
-          title: N Models
-          description: Run the first N BioModels. Ignored if model_ids is set.
-        simulator:
-          $ref: '#/components/schemas/BiomodelSimulator'
-          description: Simulator to use for each model.
-          default: copasi
-      type: object
-      title: BiomodelsRunRequest
-    BiomodelsRunResult:
-      properties:
-        submitted:
-          items:
-            $ref: '#/components/schemas/ComposeSimulationExperiment'
-          type: array
-          title: Submitted
-        failed:
-          items:
-            type: string
-          type: array
-          title: Failed
-          description: BioModel IDs that failed to submit.
-      type: object
-      required:
-      - submitted
       title: BiomodelsRunResult
     Body_add-dataset-tags:
       properties:
@@ -6429,7 +6291,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-09-16 08:31:06.120546'
+          default: '2026-09-19 11:14:21.556301'
         job_id:
           anyOf:
           - type: string
