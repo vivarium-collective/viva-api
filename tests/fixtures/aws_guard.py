@@ -1,12 +1,20 @@
 """No unit test may reach AWS -- and one that tries fails, loudly, even if the code under
 test swallows the error.
 
-Why this exists (``docs/plan-core.md`` P2.0). Tests isolate the AWS-facing code by patching
-NAMES inside the module under test -- ``simulation_service_ray.boto3`` alone is patched 93
-times. That isolation is positional: move a function to another module and it looks
-``boto3`` up THERE, the patch no longer reaches it, and the function runs against a real
-client while its test still passes. With a logged-in developer profile that is a real,
-billable Batch submission from ``pytest``. Nothing in the suite would notice.
+Why this exists (``docs/plan-core.md`` P2.0). Two ways a unit test can reach AWS, and the
+suite had no defence against either:
+
+* **Patch lifetime.** Code that spawns a background task can outlive the test's
+  ``with patch(...)`` block; the task then runs against the real client. This is the one the
+  guard actually caught on its first run (a real ``batch.SubmitJob`` from a unit test).
+* **Patch position.** ``get_settings`` is patched by NAME inside the module under test, and a
+  name patch reaches only that module: move a function to another file and it silently runs
+  with the developer's real settings -- real region, real queues, real bucket. (The
+  ``boto3.client`` patches are NOT positional -- ``patch("<module>.boto3.client")`` resolves
+  to the shared ``boto3`` module and replaces ``client`` for everyone -- so they survive a
+  move. But a test that patches only settings, or nothing, has no such cover.)
+
+With a logged-in developer profile either one is a real, billable AWS call from ``pytest``.
 
 So the guard sits at the one place every AWS API call passes through, whatever created the
 client and wherever the code lives: ``BaseClient._make_api_call`` (boto3) and

@@ -573,7 +573,7 @@ async def test_ray_canonical_batch_baseline_routes_through_real_entrypoint_to_ch
         fake_file_service.upload_file = AsyncMock()
 
         with (
-            patch("viva_api.simulation.simulation_service_ray.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
             patch("viva_api.simulation.simulation_service_ray.asyncio.sleep", new=AsyncMock()),
             patch.object(settings, "ray_container_queue", "smscdk-ray-standalone"),

@@ -168,20 +168,25 @@ extraction is the first cut.
 | **The router** — `submit_ecoli_simulation_job`, one 299-line method choosing among the four | 299 | SMS `ray/service.py`, reduced to selecting a strategy |
 | Config interpretation (`strain_from_config`, `injected_processes_from_config`, …) | 200 | SMS `ray/config_interpretation.py` |
 
-**The hazard that dictates the staging.** Tests patch this module's *names*: **309** string
-patches, **205** of `simulation_service_ray.get_settings` and **93** of
-`simulation_service_ray.boto`. Code moved to another file looks those names up in *its own*
-module, so the patches stop reaching it — silently. A naively moved `_submit_container` runs
-with real settings and a **real boto client** while its test still passes. The suite has no
-guard against reaching AWS today. So:
+**The hazard that dictates the staging.** Tests patch this module's *names*: **298** string
+patches. The **205** of `get_settings` are *positional* — a name patch reaches only the module
+it names, so code moved to another file silently runs with the developer's **real settings**
+(region, queues, bucket) while its test still passes. The **93** of `boto3.client` are not:
+`patch("<module>.boto3.client")` resolves to the shared `boto3` module and replaces `client`
+globally, so they survive a move. (An earlier version of this section said both were
+positional; measuring P2.0b showed otherwise.) What *does* let a unit test reach AWS is patch
+**lifetime** — a background task outliving its `with patch(...)` block — which is what the
+P2.0a guard caught. So:
 
 - **P2.0 — make it safe to move (no code moves).**
   (a) An autouse test guard: creating a real boto3 client or session in a unit test fails
   loudly; the genuine integration tests opt out with a marker.
-  (b) One seam: `viva_api/simulation/ray/_seams.py` owns `get_settings` and `boto`; this file
-  reads them through it; the 298 patch strings are retargeted there mechanically, in one PR,
-  while the code is still in one place — so the PR proves the patches still bite (break the
-  seam, the tests must fail).
+  (b) One seam: `viva_api/simulation/ray/_seams.py` owns `get_settings` and `boto3`; every
+  Ray-service module reads them through it at call time; the 298 patch strings are retargeted
+  there mechanically, in one PR, while the code is still in one place. **Done:** bypass the
+  seam and 82 of 267 tests fail; restore it and all pass. `tests/simulation/test_ray_seams.py`
+  is the ratchet — no Ray-service module may import either name itself (including
+  `from …_seams import get_settings`, which looks like using the seam and defeats it).
   (c) Smoke **Tier 2** and **Tier R** (§8): this is the first phase that can break dispatch.
 - **P2.1 — carve, move-only, one concern per PR**, leaves first: config interpretation →
   Batch engine (**straight into `viva_core`** as `BatchJobClient`, composed, not inherited) →
@@ -461,7 +466,7 @@ gating latency compared to the baseline.
 | P0 (after #661) | #637 FRESH fix + `create_all`-vs-migrations parity test · `DB_CREATE_ALL` guard · `owner_instance` column scoping the env-worker boot sweep | | | | not started — each adds or tests a migration, so they wait for #661 to keep the chain at one head |
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
-| P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + retarget 298 patches; (c) smoke Tier 2 + R | test-only | — | — | (a) merged; (b), (c) not started |
+| P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — **this PR**; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) merged; (b) open; (c) not started |
 | P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core) | | | | not started |
 | P2.2 | mixins → `DispatchStrategy` objects; router | | | | not started |
 | P2.3 | core runtime image; K8s / SLURM / LOCAL adapters; `EnvironmentRef` | | | | not started |
@@ -487,6 +492,11 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — P2.0b corrected a claim of mine. I had written that the `boto3` patches
+  were positional too. They are not: all 93 are `patch("….boto3.client")`, which patches the
+  shared module globally. Only the 205 `get_settings` patches are positional. The seam is
+  still right (one place to patch, and it is what lets P2.1's modules share it), but the AWS
+  exposure during a carve is real *settings*, plus patch lifetime — not unpatched clients.
 - **2026-09-19** — **Checkpoint A2 passed on dev (0.9.146, #694).** `kubectl diff` = one line;
   migration Job *managed*, 16/16, no-op; marker `/app/viva_core/settings.py`; inside the pod
   `get_core_settings() is get_settings()` with the S3 bucket and region populated; startup 0
