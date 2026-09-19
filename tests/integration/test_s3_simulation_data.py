@@ -52,10 +52,13 @@ _TEST_BUCKET = _parsed.netloc  # e.g. smsvpctest-shared-...
 _TEST_PREFIX = _parsed.path.strip("/")  # e.g. vecoli-output/baseline_20260331-210125
 _TEST_EXPERIMENT_ID = _TEST_PREFIX.rsplit("/", 1)[-1] if "/" in _TEST_PREFIX else _TEST_PREFIX
 
-pytestmark = pytest.mark.skipif(
-    not _TEST_OUTDIR,
-    reason="TEST_BUCKET_EXPERIMENT_OUTDIR not set — skipping S3 simulation data tests",
-)
+pytestmark = [
+    pytest.mark.real_aws,  # exempt from tests/fixtures/aws_guard.py: this file IS the real thing
+    pytest.mark.skipif(
+        not _TEST_OUTDIR,
+        reason="TEST_BUCKET_EXPERIMENT_OUTDIR not set — skipping S3 simulation data tests",
+    ),
+]
 
 
 # ---------------------------------------------------------------------------

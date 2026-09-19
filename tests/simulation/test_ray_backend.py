@@ -4378,6 +4378,11 @@ class TestSimulationServiceRayBuildSubmit:
             patch("viva_api.simulation.simulation_service_ray.batch_build.poll_batch_jobs", new=AsyncMock()),
         ):
             job_id = await service.submit_build_image_job(_v2ecoli_simulator())
+            # The build runs as a BACKGROUND task that outlives this call. Wait for it INSIDE
+            # the patches: leaving the block first let it run against the real
+            # batch_build.submit_batch_build -- a real Batch SubmitJob from a unit test,
+            # found by tests/fixtures/aws_guard.py.
+            await service._local.wait_finalized(job_id.value)
         assert job_id.backend == JobBackend.LOCAL
 
     @pytest.mark.asyncio

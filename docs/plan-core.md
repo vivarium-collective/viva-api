@@ -460,7 +460,7 @@ gating latency compared to the baseline.
 | P0 (after #661) | #637 FRESH fix + `create_all`-vs-migrations parity test · `DB_CREATE_ALL` guard · `owner_instance` column scoping the env-worker boot sweep | | | | not started — each adds or tests a migration, so they wait for #661 to keep the chain at one head |
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | rides checkpoint C | | | merged 2026-09-19 (`c9fa2bd5`), not deployed |
-| P2.0 | test guard vs real AWS; `_seams`; smoke Tier 2 + R | | | | not started |
+| P2.0 | (a) test guard vs real AWS — **this PR**; (b) `_seams` + retarget 298 patches; (c) smoke Tier 2 + R | test-only | — | — | (a) open; (b), (c) not started |
 | P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core) | | | | not started |
 | P2.2 | mixins → `DispatchStrategy` objects; router | | | | not started |
 | P2.3 | core runtime image; K8s / SLURM / LOCAL adapters; `EnvironmentRef` | | | | not started |
@@ -486,6 +486,14 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — P2.0(a), the no-real-AWS test guard, **found a live one on its first full
+  run**: `test_submit_build_returns_local_job` issued a real `batch.SubmitJob`. Not a missing
+  patch — a patch-LIFETIME race: `submit_build_image_job` starts the build as a background
+  task and returns, the test left its `with patch(...)` block, and the pending task then ran
+  against the real `batch_build.submit_batch_build`. With a logged-in profile that is a real
+  image-build submission from `pytest`; without credentials the task's own error handler
+  swallowed it, so nobody saw. The guard therefore also FAILS A TEST AT TEARDOWN for any
+  refused call, because a swallowed refusal must not read as a pass.
 - **2026-09-19** — **P2 rewritten as a decomposition** (Jim: the module was extended for
   several dispatch mechanisms and should have been broken up even on the SMS side). Measured:
   one class, 4,305 lines, ~75 methods, eleven concerns, four dispatch mechanisms behind one
