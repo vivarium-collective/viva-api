@@ -569,7 +569,7 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 | A2 ✅ 0.9.146, 2026-09-19 | P1b + the `run_pbg` fix (#689) | configuration plumbing — how the storage settings reach the file services — kept apart from P2.1's dispatch change (one kind per deploy) | Tier 0 + Tier 1; `compose` flips FAIL → PASS; `atlantis simulation outputs` (the S3 file service end to end); marker `/app/viva_core/settings.py` |
 | B ✅ 0.9.147, 2026-09-19 | P0 second wave + #661 | `create_all` off and the FRESH path changed — how every database bootstraps | alone; `--analyze` per site; migration Job; boot against an already-migrated DB |
 | C1 ✅ 0.9.148, 2026-09-20 | P2.1 cuts 1–3 + the #709 fix (#710) | the first **dispatch** checkpoint, taken early: the Batch engine now lives in core and every submit goes through it; cancel now stops a run's ParCa job | Tier 0 + 1 + 2, including `sim-cancel` and `chain-cancel`, which must flip FAIL → PASS; markers `/app/viva_core/backends/batch.py` and `cancel_companion_jobs` |
-| B2 | the write-once marker (D11): migration `f4c8a2e6d0b3` adds `simulator.temporary / label / image_tag` | a **database** change, so on its own before C2 (one kind per deploy). `main` also carries undeployed dispatch changes that #722 sits on top of, so B2 and C2 cannot be two images; they are **one image (0.9.149) and two deploys**: B2 runs only the migration Job and leaves the API on 0.9.148, which the additive migration allows; C2 rolls the API | `--analyze`, then the migration Job; Tier 0 + Tier 1 against the **old** API on the new schema (`database` reports the schema ahead of 0.9.148's head: expected); `force` → 409 is checked at C2, when the code that refuses it is running; on dev only, mark simulator 214 (the unmarked smoke artifact of 2026-09-20) temporary by hand |
+| B2 ✅ 2026-09-20 (migration Job from 0.9.149; API still 0.9.148) | the write-once marker (D11): migration `f4c8a2e6d0b3` adds `simulator.temporary / label / image_tag` | a **database** change, so on its own before C2 (one kind per deploy). `main` also carries undeployed dispatch changes that #722 sits on top of, so B2 and C2 cannot be two images; they are **one image (0.9.149) and two deploys**: B2 runs only the migration Job and leaves the API on 0.9.148, which the additive migration allows; C2 rolls the API | `--analyze`, then the migration Job; Tier 0 + Tier 1 against the **old** API on the new schema (`database` still says "at head `e7b3c9a1d5f2`": `/health` reads the revision **at startup** and the pod was not restarted, so between B2 and C2 that check is stale, not evidence); `force` → 409 is checked at C2, when the code that refuses it is running; on dev only, mark simulator 214 (the unmarked smoke artifact of 2026-09-20) temporary by hand |
 | C2 | cuts 4–5, build + tasks as services (#712–#714), PR 2's smoke checks | the image build and the task path were rewired and are merged but undeployed | Tier 0 + 1 + 2, `sim-mbp`, and the opt-in **`build`** check: a real image build of a **marked-temporary** simulator, which Tier 2 then runs on |
 | C3 | PRs 3–8 (analysis spec, ParCa split, the composed Batch layer, `compose` on it, the mbp-tracked and Nextflow strategies) | every submit now goes through a composed object; two mechanisms are strategies | Tier 0 + 1 + 2; `compose`, `sim-mbp`, `sim-nextflow`, `nextflow-cancel` especially |
 | C | PRs 9–11 (composite, ensemble, chain strategies); the end of P2.1 | the last three mechanisms, chain among them | Tier 0 + 1 + 2, **plus a real 2 x 2 chain campaign** and `chain-cancel`: chain bills real money and fakes share their author's blind spots |
@@ -665,6 +665,8 @@ split; each has an owner-less issue or a named moment.
 | The dataset walk re-lists every simulation forever (~$5–6 / month / site); walking terminal simulations once a day would cut it ~10x | decision log, 2026-09-19 | P4a, when the walker moves to core |
 | Draft #670 conflicts with P1's move of `gcs_aio.py`; a resolution was offered | #670 | when its author picks it up |
 | RDS snapshot `pre-0-9-147-checkpoint-b-20260919t1955z` | dev | delete once 0.9.148 has soaked |
+| RDS snapshot `pre-0-9-149-checkpoint-b2-20260920t1433z` | dev | delete once C2 has passed and soaked |
+| `/health` reports the database revision **as read at startup**, so smoke's `database` check cannot see a migration applied under a running pod (seen at B2) | viva-api | read it per request, or label it `db_revision_at_startup` |
 | `CLAUDE.md` still says backend selection is by `deployment_namespace` and that tests use SQLite | `CLAUDE.md` | any docs PR |
 | `scripts/prove_ray_carve_is_move_only.py` | — | delete in PR 11 |
 | `job_scheduler.py` (1,370 lines), `handlers/simulations.py` (2,463), `routers/env_worker.py` (1,170), `dependencies.py` (691) have no detailed plan yet | P3, P6 | before those phases start |
@@ -695,6 +697,30 @@ split; each has an owner-less issue or a named moment.
 
 ## Decision log
 
+- **2026-09-20** — **Checkpoint B2 passed on dev: the D11 migration, and nothing else.** Image
+  0.9.149 built from `79fb0b21` (#723). RDS snapshot
+  `pre-0-9-149-checkpoint-b2-20260920t1433z`; `--analyze` from the new image (a one-off Job:
+  the migration Job's manifest with `--apply` swapped) said MANAGED at `e7b3c9a1d5f2`, 19 of 20
+  markers, one pending revision; the migration Job ran `e7b3c9a1d5f2 -> f4c8a2e6d0b3`. Only the
+  `-db-migration` overlay was applied: the API pod is the same one, 0.9.148, 0 restarts, no
+  `UndefinedColumn` / `ProgrammingError` in its log.
+  **Provenance check, before and after:** 205 simulator rows both times, and an md5 over
+  `id:commit:repo:branch` of every simulator with id ≤ 213 (everything created before
+  2026-09-19) is identical — `39b92a7f…`. Every existing row reads `temporary=false, label=NULL,
+  image_tag=NULL`, so `environment_key` is the commit, exactly as before.
+  **Simulator 214** (`d01dc07`, created 2026-09-20 by the unmarked `build` baseline) was marked
+  `temporary=true` with a label by a single guarded `UPDATE … WHERE id=214 AND
+  git_commit_hash='d01dc07' AND created_at >= '2026-09-19' AND temporary=false` that rolls back
+  unless it matches exactly one row. Its `image_tag` stays NULL: its image *is* `:d01dc07`.
+  Smoke Tier 0 + 1 against 0.9.148 on the new schema: **11 passed, 0 failed, 4 skipped**
+  (`routes` — client 0.9.149 vs server 0.9.148; `build`, `analysis`, `biomodels` — opt-in).
+  **Two things the old API cannot do, which is why C2 should not wait long:** it does not
+  return `temporary`, so every client still shows 214 as authoritative (the smoke `task` checks
+  picked it: "ran on d01dc07"); and `force` still overwrites. Both are closed by the API roll.
+  **A flaw found in the `database` check:** it passed with "at head `e7b3c9a1d5f2`" *after* the
+  database had moved to `f4c8a2e6d0b3`, because `/health` reports the revision read at startup.
+  Harmless in a normal deploy (the pod restarts after the Job) but it means the check cannot
+  see a migration applied under a running pod. Deferred list.
 - **2026-09-20** — **B2 and C2 are one image and two deploys.** I had promised B2 "on its own,
   before C2". By the time #722 merged, `main` also held cuts 4–5 and #714, undeployed, and
   #722 is written on top of them (it edits `ray/build.py` and `ray/parca.py`, which exist
