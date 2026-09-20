@@ -48,6 +48,8 @@ from viva_api.common import analysis_dag
 from viva_api.common.dispatch_validation import resolve_task_env, validate_nextflow_dispatch
 from viva_api.common.events_env import with_events_env
 from viva_api.common.hpc.job_service import JobStatusInfo
+from viva_api.common.hpc.k8s_job_service import K8sJobService
+from viva_api.common.hpc.local_task_service import LocalTaskService
 from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.common.simulator_defaults import DEFAULT_BRANCH, DEFAULT_REPO
 from viva_api.common.storage import data_layout
@@ -86,9 +88,11 @@ from viva_api.simulation.ray.image_paths import (
 )
 from viva_api.simulation.ray.parca import RayParcaService
 from viva_api.simulation.ray.tasks import RayTaskService
+from viva_api.simulation.simulation_service import SimulationService
 from viva_api.simulation.tables_orm import AnalysisStatusDB
 from viva_core.backends.batch import (
     SUBMIT_JOB_MAX_ATTEMPTS,
+    BatchJobDetail,
     SubmitJobPacer,
     batch_exit_code,
 )
@@ -287,8 +291,35 @@ def _command_belongs_to_campaign(command: str, campaign_stem: str) -> bool:
     return False
 
 
-class SimulationServiceRay(RayBatchLayer):
+class SimulationServiceRay(SimulationService):
     """Ray-on-Batch (MNP) implementation of SimulationService."""
+
+    def __init__(
+        self,
+        local_task_service: LocalTaskService | None = None,
+        k8s_job_service: "K8sJobService | None" = None,
+        batch: RayBatchLayer | None = None,
+    ) -> None:
+        self._local = local_task_service or LocalTaskService()
+        # Only the Nextflow dispatch uses this: its HEAD runs as a K8s Job so it
+        # inherits the `batch-submit` ServiceAccount's IRSA identity. Every other
+        # path here submits to Batch directly and needs no cluster access.
+        self._k8s = k8s_job_service
+        # The Batch layer, COMPOSED (it was this class's base until P2.1 PR 5). One instance
+        # for the service's lifetime: everything that submits -- this class, the ParCa and
+        # task services, soon the dispatch strategies -- is handed THIS object, so a test
+        # that patches ``service.batch.submit_container`` is what all of them get.
+        self.batch = batch or RayBatchLayer()
+
+    def get_batch_job_statuses(self, job_ids: list[str]) -> dict[str, JobStatus]:
+        """``self.batch.get_batch_job_statuses``, kept on the service because the scheduler
+        asks the SERVICE for it (that ends in P6, with the scheduler's split)."""
+        return self.batch.get_batch_job_statuses(job_ids)
+
+    def get_batch_job_details(self, job_ids: list[str]) -> dict[str, BatchJobDetail]:
+        """``self.batch.get_batch_job_details`` -- the scheduler and the chain-progress handler
+        ask the SERVICE for it; see ``get_batch_job_statuses``."""
+        return self.batch.get_batch_job_details(job_ids)
 
     async def stage_render_nf(self, experiment_id: str) -> str:
         """Upload the Nextflow compiler beside the run_pbg runner; return its URI.
@@ -351,7 +382,7 @@ class SimulationServiceRay(RayBatchLayer):
                 f"without them the profile renders with nulls and fails at submission."
             )
         return {
-            "container_image": self._image_uri(commit),
+            "container_image": self.batch.image_uri(commit),
             "queue": settings.batch_amd64_queue,
             "aws_region": settings.batch_region,
             # GovCloud's S3 endpoint. Emitting it natively is what retires the `sed`
@@ -609,7 +640,7 @@ class SimulationServiceRay(RayBatchLayer):
             # artifacts in the results prefix (viva-api#439's verification).
             # The RUN's prefix, not the campaign's: a resumed run reuses another
             # run's cached TASKS, but its results are its own.
-            nf_params["publish_dir"] = self._results_s3_uri(run_id).rstrip("/")
+            nf_params["publish_dir"] = data_layout.RayLayout.results_uri(run_id).rstrip("/")
         command = self._render_nf_command(
             runner_s3_uri=runner_s3_uri,
             pbg_runner_s3_uri=pbg_runner_s3_uri,
@@ -624,7 +655,7 @@ class SimulationServiceRay(RayBatchLayer):
             resources=_merge_nf_resources(nf_dispatch.get("resources")),
             work_dir=work_dir,
             resume=resume,
-            stage_out_s3=self._results_s3_uri(run_id),
+            stage_out_s3=data_layout.RayLayout.results_uri(run_id),
             session_s3=self._nf_session_s3_uri(campaign_key),
             nextflow_args=nf_dispatch.get("nextflow_args"),
         )
@@ -691,7 +722,7 @@ class SimulationServiceRay(RayBatchLayer):
                         containers=[
                             k8s_client.V1Container(
                                 name="nextflow-head",
-                                image=self._submit_image_uri(commit),
+                                image=self.batch.submit_image_uri(commit),
                                 command=["/bin/bash", "-c", command],
                                 env=[
                                     k8s_client.V1EnvVar(name="AWS_DEFAULT_REGION", value=settings.batch_region),
@@ -870,7 +901,7 @@ class SimulationServiceRay(RayBatchLayer):
         )
         cache_s3 = self.cache_s3_uri(commit, variant=cache_variant)
 
-        job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
+        job_def = self.batch.ensure_container_job_def(self.batch.image_uri(commit), commit)
 
         base_tags = {
             "Project": "v2ecoli-mbp-tracked",
@@ -901,7 +932,7 @@ class SimulationServiceRay(RayBatchLayer):
                 )
             parca_job_id = None
         else:
-            parca_job_id = self._submit_container(
+            parca_job_id = self.batch.submit_container(
                 job_name=f"mbp-parca-{commit}-{_rand_suffix()}",
                 job_definition=job_def,
                 job_cmd=parca_spec.parca_command(),
@@ -929,11 +960,11 @@ class SimulationServiceRay(RayBatchLayer):
             aeration_schedule=mbp_dispatch.get("aeration_schedule"),
             aeration_trigger=mbp_dispatch.get("aeration_trigger"),
         )
-        job_id = self._submit_container(
+        job_id = self.batch.submit_container(
             job_name=f"mbp-tracked-{experiment_id}-{_rand_suffix()}"[:128],
             job_definition=job_def,
             job_cmd=command,
-            out_s3=self._results_s3_uri(experiment_id),
+            out_s3=data_layout.RayLayout.results_uri(experiment_id),
             out_dir=SIM_OUT_DIR,
             stage_s3=cache_s3,
             stage_dir=PARCA_CACHE_DIR,
@@ -1389,7 +1420,7 @@ class SimulationServiceRay(RayBatchLayer):
         caller before #448) is unaffected, matching the dispatch-side guard's own
         `cache_variant=None` default.
         """
-        out_uri = self._results_s3_uri(experiment_id).rstrip("/")
+        out_uri = data_layout.RayLayout.results_uri(experiment_id).rstrip("/")
         sim_data_uri = f"{data_layout.RayLayout.parca_cache_uri(commit, variant=cache_variant)}simData.cPickle"
         result_out_dir = f"{out_uri}/analyses/{analysis_name}"
         config = analysis_dag.build_analysis_config(
@@ -1449,7 +1480,7 @@ class SimulationServiceRay(RayBatchLayer):
         """
         experiment_id = simulation.config.experiment_id
         analysis_name = f"analysis-{experiment_id[:20]}-{_rand_suffix()}"
-        out_uri = self._results_s3_uri(experiment_id).rstrip("/")
+        out_uri = data_layout.RayLayout.results_uri(experiment_id).rstrip("/")
         result_uri = f"{out_uri}/analyses/{analysis_name}"
         modules = analysis_modules_for(simulation.config)
         sim_data_uri = f"{data_layout.RayLayout.parca_cache_uri(commit, variant=cache_variant)}simData.cPickle"
@@ -1487,7 +1518,7 @@ class SimulationServiceRay(RayBatchLayer):
             # threaded from the scheduler's HpcRun row; when it is None ``events_env``
             # seeds from experiment_id instead, which still groups the run's own tasks.
             submit_container=functools.partial(
-                self._submit_container,
+                self.batch.submit_container,
                 task_env=with_events_env(
                     resolve_task_env(simulation.config),
                     correlation_id=correlation_id,
@@ -1501,7 +1532,7 @@ class SimulationServiceRay(RayBatchLayer):
             ),
             job_definition=job_definition,
             job_name=f"ray-analysis-{experiment_id}-{_rand_suffix()}"[:128],
-            out_s3=self._results_s3_uri(experiment_id),
+            out_s3=data_layout.RayLayout.results_uri(experiment_id),
             container_out_dir=ANALYSIS_OUT_DIR,
             depends_on_job_id=sim_job_id,
             depends_type=depends_type,
@@ -1520,7 +1551,7 @@ class SimulationServiceRay(RayBatchLayer):
         """The ParCa cache jobs (a commit's cache, a new-gene cache, a variant cache), composed:
         handed this service as the thing that dispatches container jobs for them. Built per
         access; it holds no state of its own."""
-        return RayParcaService(self)
+        return RayParcaService(self.batch)
 
     @override
     async def submit_parca_job(self, parca_dataset: ParcaDataset) -> JobId:
@@ -1537,7 +1568,11 @@ class SimulationServiceRay(RayBatchLayer):
         """The task service (``POST /api/v1/tasks`` and friends), composed: it is handed this
         service as the thing that dispatches container jobs for it. Built per access; it
         holds no state of its own."""
-        return RayTaskService(self)
+        return RayTaskService(
+            self.batch,
+            latest_commit=lambda: self.get_latest_commit_hash(),
+            results_uri=data_layout.RayLayout.results_uri,
+        )
 
     def _image_builder(self) -> RayImageBuilder:
         """The build service, composed. Built per call around ``self._local`` so that a test
@@ -1680,7 +1715,7 @@ class SimulationServiceRay(RayBatchLayer):
 
         # Run the TRUE commit image: derive a per-commit MNP job-def revision pointing at
         # v2ecoli:<commit> (both ParCa and the sim run the same image).
-        job_def = self._ensure_mnp_job_def(self._image_uri(commit), commit)
+        job_def = self.batch.ensure_mnp_job_def(self.batch.image_uri(commit), commit)
 
         # SimulationConfig is a vEcoli passthrough (extra="allow"); the comparison
         # knobs are validated at the API boundary (Literal Query params) and ride
@@ -1798,7 +1833,7 @@ class SimulationServiceRay(RayBatchLayer):
                 settings=settings,
             )
 
-        parca_job_id = self._submit_mnp(
+        parca_job_id = self.batch.submit_mnp(
             job_name=f"ray-parca-{commit}-{_rand_suffix()}",
             job_definition=job_def,
             num_nodes=1,
@@ -1817,7 +1852,7 @@ class SimulationServiceRay(RayBatchLayer):
         # still reaches this point either sets composite (the comparison
         # ensemble, which genuinely fans out via Ray actors) or requests a
         # single generation (the phase0 ensemble).
-        sim_job_id = self._submit_mnp(
+        sim_job_id = self.batch.submit_mnp(
             job_name=f"ray-sim-{experiment_id}-{_rand_suffix()}"[:128],
             job_definition=job_def,
             num_nodes=settings.ray_num_nodes,
@@ -1846,7 +1881,7 @@ class SimulationServiceRay(RayBatchLayer):
                 exchange_fluxes=getattr(config, "exchange_fluxes", None),
                 exchange_flux_basis=getattr(config, "exchange_flux_basis", None),
             ),
-            out_s3=self._results_s3_uri(experiment_id),
+            out_s3=data_layout.RayLayout.results_uri(experiment_id),
             out_dir=SIM_OUT_DIR,
             stage_s3=cache_s3,
             stage_dir=PARCA_CACHE_DIR,
@@ -1913,7 +1948,7 @@ class SimulationServiceRay(RayBatchLayer):
         ``_VCPU_LOOKUP_RETRIES`` above -- before giving up.
         """
         name, _, revision = job_definition.partition(":")
-        batch = self._batch()
+        batch = self.batch.client()
         for attempt in range(self._VCPU_LOOKUP_RETRIES):
             defs: list[dict[str, Any]] = []
             try:
@@ -2177,7 +2212,7 @@ class SimulationServiceRay(RayBatchLayer):
         commit = simulator.environment_key
         experiment_id = ecoli_simulation.config.experiment_id
 
-        job_def = self._ensure_mnp_job_def(self._image_uri(commit), commit)
+        job_def = self.batch.ensure_mnp_job_def(self.batch.image_uri(commit), commit)
         n_shards_default = self._mnp_node_vcpus(job_def)
         if n_shards_default:
             n_shards_default *= num_nodes
@@ -2233,7 +2268,7 @@ class SimulationServiceRay(RayBatchLayer):
                 )
             parca_job_id = None
         else:
-            parca_job_id = self._submit_mnp(
+            parca_job_id = self.batch.submit_mnp(
                 job_name=f"ray-parca-{commit}-{_rand_suffix()}",
                 job_definition=job_def,
                 num_nodes=1,
@@ -2264,7 +2299,7 @@ class SimulationServiceRay(RayBatchLayer):
                 stage_dir=PARCA_CACHE_DIR,
             )
 
-        composite_job_id = self._submit_mnp(
+        composite_job_id = self.batch.submit_mnp(
             job_name=f"ray-mnp-composite-{experiment_id}-{_rand_suffix()}"[:128],
             job_definition=job_def,
             num_nodes=num_nodes,
@@ -2276,7 +2311,7 @@ class SimulationServiceRay(RayBatchLayer):
                 n_shards_default=n_shards_default,
                 experiment_id=str(experiment_id),
             ),
-            out_s3=self._results_s3_uri(experiment_id),
+            out_s3=data_layout.RayLayout.results_uri(experiment_id),
             out_dir=SIM_OUT_DIR,
             stage_s3=cache_s3,
             stage_dir=PARCA_CACHE_DIR,
@@ -2369,8 +2404,8 @@ class SimulationServiceRay(RayBatchLayer):
         campaign's own ``Simulation.config`` every tick (restart-safe, same as
         every other piece of per-tick state here).
         """
-        job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
-        return self._submit_container(
+        job_def = self.batch.ensure_container_job_def(self.batch.image_uri(commit), commit)
+        return self.batch.submit_container(
             job_name=f"chain-seed{seed}-gen{generation_index}-{experiment_id}-{_rand_suffix()}"[:128],
             job_definition=job_def,
             job_cmd=self._seed_generation_command(
@@ -2518,8 +2553,8 @@ class SimulationServiceRay(RayBatchLayer):
         # long lineage loses the partial run's job success even though gens
         # 0..N-1 are durably on disk; resume-from-generation is a possible
         # follow-up -- see docs/design-chain-one-lineageprocess.md.)
-        job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
-        return self._submit_container(
+        job_def = self.batch.ensure_container_job_def(self.batch.image_uri(commit), commit)
+        return self.batch.submit_container(
             job_name=f"chain-seed{seed}-lineage-{experiment_id}-{_rand_suffix()}"[:128],
             job_definition=job_def,
             job_cmd=self._seed_lineage_command(
@@ -2808,7 +2843,7 @@ class SimulationServiceRay(RayBatchLayer):
         experiment_id = str(ecoli_simulation.config.experiment_id)
         cache_s3 = self.cache_s3_uri(commit)
         base_tags = self.chain_base_tags(simulation=ecoli_simulation, commit=commit)
-        container_job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
+        container_job_def = self.batch.ensure_container_job_def(self.batch.image_uri(commit), commit)
 
         # Backlog item 93: a legacy config's own parca_options.new_genes (e.g.
         # a custom strain's new-gene insertion) is a real SimulationConfig
@@ -2826,7 +2861,7 @@ class SimulationServiceRay(RayBatchLayer):
         # Fixed BEFORE the ParCa job is submitted so the job's PBG_* identity env
         # and the campaign row's correlation_id derive the same trace id.
         campaign_correlation_id = correlation_id or f"chain-campaign-{experiment_id}-{_rand_suffix()}"
-        parca_job_id = self._submit_container(
+        parca_job_id = self.batch.submit_container(
             job_name=f"ray-parca-{commit}-{_rand_suffix()}",
             job_definition=container_job_def,
             job_cmd=parca_spec.parca_command(
@@ -2896,7 +2931,7 @@ class SimulationServiceRay(RayBatchLayer):
         base_tags = self.chain_base_tags(simulation=simulation, commit=commit)
         # Backlog item 71: _submit_analysis_job now submits via _submit_container,
         # so this must resolve a container job def, not an MNP one.
-        container_job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
+        container_job_def = self.batch.ensure_container_job_def(self.batch.image_uri(commit), commit)
         # viva-api#448: same getattr(simulation.config, "cache_variant", ...)
         # pattern job_scheduler.py's own chain-dispatch cache-staging already uses
         # — without it, a strain-specific campaign's analysis silently reads the
@@ -3029,10 +3064,10 @@ class SimulationServiceRay(RayBatchLayer):
         cache_variant = mnp_dispatch.get("cache_variant") if isinstance(mnp_dispatch, dict) else None
         sim_data_uri = f"{self.cache_s3_uri(commit, variant=cache_variant)}simData.cPickle"
         analysis_name = f"analysis-mnp-{experiment_id[:20]}-{_rand_suffix()}"
-        results_uri = self._results_s3_uri(experiment_id).rstrip("/")
+        results_uri = data_layout.RayLayout.results_uri(experiment_id).rstrip("/")
         result_uri = f"{results_uri}/analyses/{analysis_name}"
         settings = _seams.get_settings()
-        container_job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
+        container_job_def = self.batch.ensure_container_job_def(self.batch.image_uri(commit), commit)
         tags = {
             "Project": "v2ecoli-multi-node-composite",
             "ExperimentId": experiment_id[:255],
@@ -3053,7 +3088,7 @@ class SimulationServiceRay(RayBatchLayer):
             "analysis_options": {"experiment_id": [experiment_id]},
         }
         try:
-            analysis_job_id = self._submit_container(
+            analysis_job_id = self.batch.submit_container(
                 job_name=f"ray-mnp-analysis-{experiment_id}-{_rand_suffix()}"[:128],
                 job_definition=container_job_def,
                 job_cmd=self._multi_node_analysis_command(
@@ -3066,7 +3101,7 @@ class SimulationServiceRay(RayBatchLayer):
                     modules=modules,
                     sim_data_uri=sim_data_uri,
                 ),
-                out_s3=self._results_s3_uri(experiment_id),
+                out_s3=data_layout.RayLayout.results_uri(experiment_id),
                 out_dir=ANALYSIS_OUT_DIR,
                 depends_on=None,
                 depends_type=None,
@@ -3136,7 +3171,7 @@ class SimulationServiceRay(RayBatchLayer):
             # return an empty list and this would report None rather than fail.
             return self._k8s.get_job_status(job_id.value)
 
-        job = self._batch_jobs().describe_job(job_id.value)
+        job = self.batch.engine().describe_job(job_id.value)
         if job is None:
             logger.warning("No Batch job found with id %s", job_id.value)
             return None
@@ -3230,7 +3265,7 @@ class SimulationServiceRay(RayBatchLayer):
             self._k8s.delete_job(job_id.value)
             logger.info("Deleted Nextflow head Job %s", job_id.value)
             return
-        self._batch_jobs().terminate(job_id.value, reason="cancelled via sms-api")
+        self.batch.engine().terminate(job_id.value, reason="cancelled via sms-api")
         logger.info("Terminated Ray Batch job %s", job_id.value)
 
     async def _record_run_with_companions(
@@ -3321,7 +3356,7 @@ class SimulationServiceRay(RayBatchLayer):
             command = " ".join(job.get("container", {}).get("command", []) or [])
             return _command_belongs_to_campaign(command, stem)
 
-        return self._batch_jobs().terminate_matching(
+        return self.batch.engine().terminate_matching(
             queues=queues, matches=_is_this_campaigns, reason=f"campaign {stem} cancelled via sms-api"
         )
 

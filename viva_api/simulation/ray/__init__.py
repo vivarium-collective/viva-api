@@ -15,18 +15,20 @@ is a composed service, a dispatch mechanism will be a strategy object. Nothing i
 * :mod:`.parca_spec` -- pure functions: where ParCa caches live in S3 and the commands that
   build them. Every dispatch mechanism needs these two things from ParCa and nothing else.
 * :mod:`.batch_layer` -- ``RayBatchLayer``, the service's half of the Batch seam (settings,
-  queue choice, this application's env entries) over ``viva_core.backends.batch``. Today the
-  base class of ``SimulationServiceRay``; to be composed as ``service.batch``.
+  queue choice, this application's env entries) over ``viva_core.backends.batch``. Composed:
+  one instance lives on the service as ``service.batch``. Consumers take the narrowest of its
+  two Protocols, ``ContainerSubmitter`` and ``MnpSubmitter``, not the class.
 
 Three concerns are composed SERVICES: each is a common capability that works one way
 whatever the dispatch mechanism, and each is handed the one collaborator it needs:
 
 * :mod:`.build` -- ``RayImageBuilder(local_task_service)``: build a simulator image.
-* :mod:`.tasks` -- ``RayTaskService(dispatch)``: run a script in the image, follow it, read its
-  logs. ``TaskDispatch`` is the Protocol of what it asks of whatever runs container jobs.
-* :mod:`.parca` -- ``RayParcaService(dispatch)``: the three ParCa cache jobs (a commit's cache,
+* :mod:`.tasks` -- ``RayTaskService(batch, latest_commit=, results_uri=)``: run a script in the
+  image, follow it, read its logs. ``TaskBatch`` (a ``ContainerSubmitter`` that can also say what
+  became of a job) is the whole of what it asks of the Batch layer.
+* :mod:`.parca` -- ``RayParcaService(batch)``: the three ParCa cache jobs (a commit's cache,
   a new-gene cache, a variant cache). Submitting ParCa as part of a RUN is not here: it is a
   container job in two mechanisms and an MNP job in two others, so it stays with each.
 
-``SimulationServiceRay`` inherits the Batch layer and composes the services.
+``SimulationServiceRay`` inherits nothing from this package: it composes all of it.
 """

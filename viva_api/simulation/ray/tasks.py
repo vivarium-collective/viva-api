@@ -19,6 +19,7 @@ import json
 import logging
 import re
 import shlex
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -26,7 +27,7 @@ from viva_api.common.models import JobStatus
 from viva_api.simulation.database_service import DatabaseService
 from viva_api.simulation.models import TaskDTO, TaskLogsDTO, TaskRunRequest
 from viva_api.simulation.ray import _seams
-from viva_api.simulation.ray.batch_layer import _rand_suffix
+from viva_api.simulation.ray.batch_layer import ContainerSubmitter, _rand_suffix
 from viva_api.simulation.ray.image_paths import TASK_OUT_DIR, TASK_STAGE_DIR
 from viva_api.simulation.tables_orm import TaskStatusDB
 
@@ -42,37 +43,34 @@ def _safe_task_name(raw: str) -> str:
     return cleaned or "task"
 
 
-class TaskDispatch(Protocol):
-    """What a task needs from whatever dispatches container jobs for it. Only the keyword
-    arguments tasks actually pass are declared; the implementation may accept more."""
+class TaskBatch(ContainerSubmitter, Protocol):
+    """What a task needs of the Batch layer: to submit one container job, and then to ask
+    what became of it and where its log went."""
 
-    async def get_latest_commit_hash(self) -> str: ...
-    def _image_uri(self, commit: str) -> str: ...
-    def _ensure_container_job_def(self, image: str, commit: str) -> str: ...
-    def _results_s3_uri(self, experiment_id: str) -> str: ...
-    def _submit_container(
-        self,
-        *,
-        job_name: str,
-        job_definition: str,
-        job_cmd: str,
-        out_s3: str,
-        out_dir: str,
-        stage_s3: str | None = ...,
-        stage_dir: str | None = ...,
-        task_env: dict[str, str] | None = ...,
-        memory_class: str = ...,
-    ) -> str: ...
     def get_batch_job_statuses(self, job_ids: list[str]) -> dict[str, JobStatus]: ...
-    def _batch(self) -> Any: ...
-    def _resolve_log_group(self, job_definition: str | None) -> str | None: ...
+
+    def client(self) -> Any: ...
+
+    def resolve_log_group(self, job_definition: str | None) -> str | None: ...
 
 
 class RayTaskService:
-    def __init__(self, dispatch: TaskDispatch) -> None:
-        # Held, not copied: every call below looks the method up on ``dispatch`` when it
-        # runs, so a test that swaps ``service._submit_container`` is what a task gets.
-        self._dispatch = dispatch
+    def __init__(
+        self,
+        batch: TaskBatch,
+        *,
+        latest_commit: Callable[[], Awaitable[str]],
+        results_uri: Callable[[str], str],
+    ) -> None:
+        # Held, not copied: every call below looks the method up on ``batch`` when it runs,
+        # so a test that swaps ``service.batch.submit_container`` is what a task gets.
+        self._batch = batch
+        # "Which commit, when the request names none" is the simulation service's question
+        # (it asks the database), not the Batch layer's: handed in as a callable.
+        self._latest_commit = latest_commit
+        # Likewise "where does a task's output go": this application's data layout, not
+        # something a task service should know. Core's version is handed a different one.
+        self._results_uri = results_uri
 
     async def submit_task(self, request: TaskRunRequest, database_service: DatabaseService) -> TaskDTO:
         """Submit a self-contained repo-path script as a standalone AWS Batch
@@ -94,7 +92,7 @@ class RayTaskService:
         is caller-defined (script-specific reference names -> URIs), so there
         is no fixed set of env-var names to emit.
         """
-        commit = request.commit or await self._dispatch.get_latest_commit_hash()
+        commit = request.commit or await self._latest_commit()
         task_name = _safe_task_name(request.name or Path(request.script).stem)
         job_cmd = self._task_job_cmd(request.script, request.args)
         return await self._dispatch_task(
@@ -123,12 +121,12 @@ class RayTaskService:
         change is needed -- this reuses the same stage-in path ParCa's cache
         staging already uses.
         """
-        commit = request.commit or await self._dispatch.get_latest_commit_hash()
+        commit = request.commit or await self._latest_commit()
         safe_name = Path(filename).name  # never trust an uploaded path
         if not safe_name:
             raise ValueError("uploaded task script has no filename")
         task_name = _safe_task_name(request.name or Path(safe_name).stem)
-        stage_s3 = self._dispatch._results_s3_uri(f"tasks/scripts/{task_name}-{_rand_suffix()}").rstrip("/")
+        stage_s3 = self._results_uri(f"tasks/scripts/{task_name}-{_rand_suffix()}").rstrip("/")
         self._upload_task_script(stage_s3, safe_name, script_bytes)
         job_cmd = self._task_job_cmd(f"{TASK_STAGE_DIR}/{safe_name}", request.args)
         return await self._dispatch_task(
@@ -177,12 +175,12 @@ class RayTaskService:
         """Shared submit path for repo-path and uploaded tasks: one-node container
         job (``_ensure_container_job_def`` + ``_submit_container``) recorded on the
         ``task`` table so ``GET /tasks/{id}/status`` has a row to poll."""
-        job_def = self._dispatch._ensure_container_job_def(self._dispatch._image_uri(commit), commit)
-        out_uri = self._dispatch._results_s3_uri(f"tasks/{task_name}-{_rand_suffix()}").rstrip("/")
+        job_def = self._batch.ensure_container_job_def(self._batch.image_uri(commit), commit)
+        out_uri = self._results_uri(f"tasks/{task_name}-{_rand_suffix()}").rstrip("/")
         task_env: dict[str, str] | None = None
         if request.sim_data_refs:
             task_env = {"TASK_SIM_DATA_REFS": json.dumps(request.sim_data_refs)}
-        batch_job_id = self._dispatch._submit_container(
+        batch_job_id = self._batch.submit_container(
             job_name=f"task-{task_name}-{_rand_suffix()}"[:128],
             job_definition=job_def,
             job_cmd=job_cmd,
@@ -214,7 +212,7 @@ class RayTaskService:
         task = await database_service.get_task(task_id)
         if task.job_id_ext is None:
             return task
-        statuses = self._dispatch.get_batch_job_statuses([task.job_id_ext])
+        statuses = self._batch.get_batch_job_statuses([task.job_id_ext])
         batch_status = statuses.get(task.job_id_ext)
         if batch_status is None:
             return task
@@ -234,14 +232,14 @@ class RayTaskService:
             result.report_uri = f"{log_prefix.rstrip('/')}/{task.job_id_ext}/report.json"
         if not task.job_id_ext:
             return result
-        jobs = self._dispatch._batch().describe_jobs(jobs=[task.job_id_ext]).get("jobs", [])
+        jobs = self._batch.client().describe_jobs(jobs=[task.job_id_ext]).get("jobs", [])
         if not jobs:
             return result
         job = jobs[0]
         stream = job.get("container", {}).get("logStreamName")
         if not stream:
             return result  # container not started yet
-        group = self._dispatch._resolve_log_group(job.get("jobDefinition"))
+        group = self._batch.resolve_log_group(job.get("jobDefinition"))
         if not group:
             return result
         result.log_stream = stream

@@ -1920,9 +1920,9 @@ class TestSubmitMultiNodeAnalysisExtraction:
 
         with (
             patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch.object(service, "_submit_container", side_effect=fake_submit_container),
-            patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
-            patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
+            patch.object(service.batch, "submit_container", side_effect=fake_submit_container),
+            patch.object(service.batch, "ensure_container_job_def", return_value="job-def:1"),
+            patch.object(service.batch, "image_uri", return_value="ghcr.io/example/image:abc"),
         ):
             job_id = await service.submit_multi_node_analysis(
                 simulation=simulation,
@@ -1965,9 +1965,9 @@ class TestSubmitMultiNodeAnalysisExtraction:
 
         with (
             patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch.object(service, "_submit_container", side_effect=fake_submit_container),
-            patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
-            patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
+            patch.object(service.batch, "submit_container", side_effect=fake_submit_container),
+            patch.object(service.batch, "ensure_container_job_def", return_value="job-def:1"),
+            patch.object(service.batch, "image_uri", return_value="ghcr.io/example/image:abc"),
         ):
             await service.submit_multi_node_analysis(
                 simulation=simulation,
@@ -2015,9 +2015,9 @@ class TestSubmitMultiNodeAnalysisExtraction:
         with (
             patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch.object(service, "_submit_container", side_effect=fake_submit_container),
-            patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
-            patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
+            patch.object(service.batch, "submit_container", side_effect=fake_submit_container),
+            patch.object(service.batch, "ensure_container_job_def", return_value="job-def:1"),
+            patch.object(service.batch, "image_uri", return_value="ghcr.io/example/image:abc"),
         ):
             await service.submit_multi_node_analysis(
                 simulation=simulation,
@@ -2056,9 +2056,9 @@ class TestSubmitMultiNodeAnalysisExtraction:
         with (
             patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch.object(service, "_submit_container", side_effect=fake_submit_container),
-            patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
-            patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
+            patch.object(service.batch, "submit_container", side_effect=fake_submit_container),
+            patch.object(service.batch, "ensure_container_job_def", return_value="job-def:1"),
+            patch.object(service.batch, "image_uri", return_value="ghcr.io/example/image:abc"),
         ):
             await service.submit_multi_node_analysis(
                 simulation=simulation,
@@ -2091,9 +2091,9 @@ class TestNewGeneCacheSourceVariant:
         with (
             patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch.object(service, "_submit_container", side_effect=fake_submit_container),
-            patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
-            patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
+            patch.object(service.batch, "submit_container", side_effect=fake_submit_container),
+            patch.object(service.batch, "ensure_container_job_def", return_value="job-def:1"),
+            patch.object(service.batch, "image_uri", return_value="ghcr.io/example/image:abc"),
         ):
             job_id = await service.parca.submit_new_gene_cache_job(
                 commit="abc123",
@@ -2121,9 +2121,9 @@ class TestNewGeneCacheSourceVariant:
         with (
             patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch.object(service, "_submit_container", side_effect=fake_submit_container),
-            patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
-            patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
+            patch.object(service.batch, "submit_container", side_effect=fake_submit_container),
+            patch.object(service.batch, "ensure_container_job_def", return_value="job-def:1"),
+            patch.object(service.batch, "image_uri", return_value="ghcr.io/example/image:abc"),
         ):
             await service.parca.submit_new_gene_cache_job(
                 commit="abc123",
@@ -2174,7 +2174,7 @@ class TestSubmitMnpStandaloneQueueRouting:
         mock_batch.submit_job.return_value = {"jobId": "job-1"}
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", return_value=settings):
-            service._submit_mnp(
+            service.batch.submit_mnp(
                 job_name="standalone-test",
                 job_definition="smscdk-ray-mnp",
                 num_nodes=1,
@@ -2195,7 +2195,7 @@ class TestSubmitMnpStandaloneQueueRouting:
         mock_batch.submit_job.return_value = {"jobId": "job-1"}
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", return_value=settings):
-            service._submit_mnp(
+            service.batch.submit_mnp(
                 job_name="standalone-test",
                 job_definition="smscdk-ray-mnp",
                 num_nodes=1,
@@ -2216,7 +2216,7 @@ class TestSubmitMnpStandaloneQueueRouting:
         mock_batch.submit_job.return_value = {"jobId": "job-1"}
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", return_value=settings):
-            service._submit_mnp(
+            service.batch.submit_mnp(
                 job_name="multinode-test",
                 job_definition="smscdk-ray-mnp",
                 num_nodes=4,
@@ -2242,7 +2242,7 @@ class TestSubmitMnpAllowsSlowStorage:
         mock_batch.submit_job.return_value = {"jobId": "job-1"}
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", return_value=settings):
-            service._submit_mnp(
+            service.batch.submit_mnp(
                 job_name="shm-test",
                 job_definition="smscdk-ray-mnp",
                 num_nodes=2,
@@ -3053,7 +3053,7 @@ def test_stage_out_env_emits_expect_vars_for_a_real_strain() -> None:
     """Wrong-strain guard companion (sms-ecoli#210 / #215): the staged-cache env
     carries the requested strain so the entrypoint can reject a wrong-strain cache."""
     svc = SimulationServiceRay()
-    env = svc._stage_out_env(
+    env = svc.batch._stage_out_env(
         prefix="RAY",
         out_dir="/o",
         out_s3="s3://o",
@@ -3076,7 +3076,7 @@ def test_stage_out_env_expect_bundle_overrides_accepts_a_list() -> None:
     stacks two --bundle-overrides files. Joined with "," matching _norm's own
     convention for the single env var."""
     svc = SimulationServiceRay()
-    env = svc._stage_out_env(
+    env = svc.batch._stage_out_env(
         prefix="RAY",
         out_dir="/o",
         out_s3="s3://o",
@@ -3097,7 +3097,7 @@ def test_stage_out_env_expect_bundle_overrides_empty_list_is_wild_type() -> None
     """An empty list joins to "" -- same wild-type/no-expectation behavior as
     None or "", not a crash or a spurious empty EXPECT_BUNDLE_OVERRIDES var."""
     svc = SimulationServiceRay()
-    env = svc._stage_out_env(
+    env = svc.batch._stage_out_env(
         prefix="RAY",
         out_dir="/o",
         out_s3="s3://o",
@@ -3110,7 +3110,7 @@ def test_stage_out_env_expect_bundle_overrides_empty_list_is_wild_type() -> None
 def test_stage_out_env_omits_expect_vars_for_wild_type(wild: str | None) -> None:
     """off/empty/None is wild-type -> no expectation, byte-identical to before."""
     svc = SimulationServiceRay()
-    env = svc._stage_out_env(
+    env = svc.batch._stage_out_env(
         prefix="RAY",
         out_dir="/o",
         out_s3="s3://o",
@@ -3125,7 +3125,7 @@ def test_stage_out_env_omits_expect_vars_for_wild_type(wild: str | None) -> None
 def test_stage_out_env_expect_vars_follow_the_prefix() -> None:
     """CONTAINER path gets CONTAINER_EXPECT_* (future-proofs the chain-dispatch path)."""
     svc = SimulationServiceRay()
-    env = svc._stage_out_env(
+    env = svc.batch._stage_out_env(
         prefix="CONTAINER",
         out_dir="/o",
         out_s3="s3://o",
@@ -3139,7 +3139,7 @@ def test_stage_out_env_omits_require_clean_chain_by_default() -> None:
     to before this param existed, for both prefixes."""
     svc = SimulationServiceRay()
     for prefix in ("RAY", "CONTAINER"):
-        env = svc._stage_out_env(prefix=prefix, out_dir="/o", out_s3="s3://o")
+        env = svc.batch._stage_out_env(prefix=prefix, out_dir="/o", out_s3="s3://o")
         assert "V2E_REQUIRE_CLEAN_CHAIN" not in _env_names(env)
 
 
@@ -3149,7 +3149,7 @@ def test_stage_out_env_require_clean_chain_is_unprefixed() -> None:
     os.environ.get("V2E_REQUIRE_CLEAN_CHAIN"), not by the entrypoint scripts."""
     svc = SimulationServiceRay()
     for prefix in ("RAY", "CONTAINER"):
-        env = svc._stage_out_env(prefix=prefix, out_dir="/o", out_s3="s3://o", require_clean_chain=True)
+        env = svc.batch._stage_out_env(prefix=prefix, out_dir="/o", out_s3="s3://o", require_clean_chain=True)
         d = _env_names(env)
         assert d["V2E_REQUIRE_CLEAN_CHAIN"] == "1"
         assert f"{prefix}_REQUIRE_CLEAN_CHAIN" not in d
@@ -4469,7 +4469,7 @@ class TestEnsureMnpJobDef:
             patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
             patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
         ):
-            jd = service._ensure_mnp_job_def(image, "abc1234")
+            jd = service.batch.ensure_mnp_job_def(image, "abc1234")
         assert jd == "smscdk-ray-mnp-abc1234:5"
         mock_batch.register_job_definition.assert_not_called()
 
@@ -4489,7 +4489,7 @@ class TestEnsureContainerJobDef:
             patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
             patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
         ):
-            jd = service._ensure_container_job_def(image, "abc1234")
+            jd = service.batch.ensure_container_job_def(image, "abc1234")
         assert jd == "smscdk-ray-container-abc1234:5"
         mock_batch.register_job_definition.assert_not_called()
 
@@ -4501,7 +4501,7 @@ class TestEnsureContainerJobDef:
             patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
             patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
         ):
-            jd = service._ensure_container_job_def(image, "def5678")
+            jd = service.batch.ensure_container_job_def(image, "def5678")
         assert jd == "smscdk-ray-container-def5678:1"
         registered = mock_batch.register_job_definition.call_args.kwargs
         assert registered["type"] == "container"
@@ -4517,7 +4517,7 @@ class TestEnsureContainerJobDef:
             patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
             pytest.raises(RuntimeError, match="ray_container_job_definition"),
         ):
-            service._ensure_container_job_def("some-image", "abc1234")
+            service.batch.ensure_container_job_def("some-image", "abc1234")
 
 
 class TestSubmitContainer:
@@ -4530,7 +4530,7 @@ class TestSubmitContainer:
         mock_batch.submit_job.return_value = {"jobId": "job-1"}
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _container_settings):
-            job_id = service._submit_container(
+            job_id = service.batch.submit_container(
                 job_name="container-test",
                 job_definition="smscdk-ray-container-abc:1",
                 job_cmd="echo hi",
@@ -4555,7 +4555,7 @@ class TestSubmitContainer:
         mock_batch.submit_job.return_value = {"jobId": "job-1"}
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _container_settings):
-            service._submit_container(
+            service.batch.submit_container(
                 job_name="container-test",
                 job_definition="jd:1",
                 job_cmd="echo hi",
@@ -4574,7 +4574,7 @@ class TestSubmitContainer:
         mock_batch.submit_job.return_value = {"jobId": "job-1"}
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _container_settings):
-            service._submit_container(
+            service.batch.submit_container(
                 job_name="container-test",
                 job_definition="jd:1",
                 job_cmd="echo hi",
@@ -4594,7 +4594,7 @@ class TestSubmitContainer:
             patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
             pytest.raises(RuntimeError, match="ray_container_queue"),
         ):
-            service._submit_container(
+            service.batch.submit_container(
                 job_name="x", job_definition="jd:1", job_cmd="echo hi", out_s3="s3://b/", out_dir="/o"
             )
 
@@ -4603,7 +4603,7 @@ class TestSubmitContainer:
         mock_batch.submit_job.return_value = {"jobId": "job-2"}
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _container_settings):
-            service._submit_container(
+            service.batch.submit_container(
                 job_name="container-test",
                 job_definition="jd:1",
                 job_cmd="echo hi",

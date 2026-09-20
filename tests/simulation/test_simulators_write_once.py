@@ -233,10 +233,10 @@ def test_a_temporary_simulators_image_job_definition_and_cache_are_its_own() -> 
         patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
         patch("viva_api.simulation.ray._seams.boto3.client", return_value=_fake_container_batch([])),
     ):
-        assert service._image_uri(key).endswith(":tmp-abc1234-0a1b2c")
+        assert service.batch.image_uri(key).endswith(":tmp-abc1234-0a1b2c")
         assert "tmp-abc1234-0a1b2c" in service.cache_s3_uri(key)
         assert service.cache_s3_uri(key) != service.cache_s3_uri("abc1234")
-        assert "tmp-abc1234-0a1b2c" in service._ensure_container_job_def(service._image_uri(key), key)
+        assert "tmp-abc1234-0a1b2c" in service.batch.ensure_container_job_def(service.batch.image_uri(key), key)
 
 
 # ------------------------------------------------------------------ the rule, as a guard

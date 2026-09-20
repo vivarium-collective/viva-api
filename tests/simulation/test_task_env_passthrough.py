@@ -31,7 +31,7 @@ def _mnp_submit(task_env: dict[str, str] | None) -> Any:
     batch.submit_job.return_value = {"jobId": "mnp-1"}
     service = SimulationServiceRay()
     with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-        service._submit_mnp(
+        service.batch.submit_mnp(
             job_name="ray-sim-x",
             job_definition="smscdk-ray-mnp-abc1234:1",
             num_nodes=2,
@@ -68,7 +68,7 @@ def _container_submit(task_env: dict[str, str] | None) -> Any:
     batch = _fake_container_batch(["c-1"])
     service = SimulationServiceRay()
     with patch("viva_api.simulation.ray._seams.get_settings", _container_settings):
-        service._submit_container(
+        service.batch.submit_container(
             job_name="chain-seed0-gen0-x",
             job_definition="smscdk-ray-container-abc1234:1",
             job_cmd="python run.py",

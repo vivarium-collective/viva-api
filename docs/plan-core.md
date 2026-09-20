@@ -266,7 +266,7 @@ P2.0a guard caught. So:
   | 2 | smoke: `sim-mbp` and an opt-in `build` check (#720); then deploy the merged-but-undeployed build cuts (**C2**) | no check builds an image or exercises mbp, and both are about to be rewired |
   | 3 ✅ | pure `ray/analysis_spec.py` + the static-guard glob fix; the two analysis submitters stay in the class until their mechanisms move. **#715 is closed, not reshaped:** it was never merged, so on `main` the submitters had never left the class and `job_scheduler.py` still calls them there — there is nothing for a `service.analysis` shim to delegate to, and none was added | analysis is a spec + a pattern + per-mechanism glue, not one service |
   | 4 ✅ | ParCa: commands and cache URIs → `ray/parca_spec.py` (pure); `RayParcaService` (`service.parca`) holds only the three cache jobs; `_stage_seed_override_caches` back in the class (the multi-node composite's) | half of it is pure; only the cache jobs work one way |
-  | 5 | **`RayBatchLayer` stops being a base class** and becomes a composed `service.batch`, behind two small SMS Protocols, `ContainerSubmitter` and `MnpSubmitter`, replacing `TaskDispatch` / `AnalysisDispatch`. `local` and `k8s` are constructor arguments of the strategies that need them, never Protocol members | done **first**, so every strategy is handed a real object; done last, each strategy would be rewired twice (~80 call sites, ~24 `patch.object`) |
+  | 5 ✅ | **`RayBatchLayer` stops being a base class** and becomes a composed `service.batch`, behind two small SMS Protocols, `ContainerSubmitter` and `MnpSubmitter`, replacing `TaskDispatch` / `AnalysisDispatch`. `local` and `k8s` are constructor arguments of the strategies that need them, never Protocol members | done **first**, so every strategy is handed a real object; done last, each strategy would be rewired twice (~80 call sites, ~24 `patch.object`) |
   | 6 | `compose` uses `RayBatchLayer` directly, not a whole `SimulationServiceRay()` | one of the three broken `compose-is-domain-free` edges goes |
   | 7 | strategy: **mbp-tracked** | smallest (225 lines); first use of the shape |
   | 8 | strategy: **Nextflow** (needs `k8s`; `reap_cancelled_campaign` travels with it); then **C3** | 464 lines |
@@ -684,7 +684,7 @@ split; each has an owner-less issue or a named moment.
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — #696; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — #698; all merged 2026-09-19 |
 | D11 | write-once simulators + the marked-temporary exception: migration `f4c8a2e6d0b3`, `environment_key`, `force` guarded (409), the marker in all three clients, smoke `build` on a temporary simulator — #722 | — | — (checkpoint **B2**, a database deploy, before C2) | — | open |
-| P2.1 | carve `simulation_service_ray.py` (5,019 → 3,360 lines so far; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `ray/analysis_spec.py` — PR 3 (#726) · ParCa split → `ray/parca_spec.py` + `RayParcaService` — PR 4. Remaining: PRs 5–11 of the 2026-09-20 sequence; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.149 carries cuts 1–5, #710, #714, #722 | **2026-09-20** (checkpoints C1, B2, C2) | — | **in progress.** Deployed to dev: everything through #722. Merged after C2 (→ C3): PR 3 (a pure move), PR 4 (a rewiring of the three cache jobs). Next: PR 5 (`RayBatchLayer` → a composed `service.batch`) |
+| P2.1 | carve `simulation_service_ray.py` (5,019 → 3,395 lines so far; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `ray/analysis_spec.py` — PR 3 (#726) · ParCa split → `ray/parca_spec.py` + `RayParcaService` — PR 4 (#727) · `RayBatchLayer` composed as `service.batch` — PR 5. Remaining: PRs 6–11 of the 2026-09-20 sequence; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.149 carries cuts 1–5, #710, #714, #722 | **2026-09-20** (checkpoints C1, B2, C2) | — | **in progress.** Deployed to dev: everything through #722. Merged after C2 (→ C3): PR 3 (a pure move), PR 4 (the three cache jobs rewired), PR 5 (every Batch call respelled through `service.batch`). Next: PR 6 (compose uses `RayBatchLayer` directly) |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image | | | | not started (checkpoint D) |
 | P3 | | | | | not started (checkpoint E) |
@@ -698,6 +698,49 @@ split; each has an owner-less issue or a named moment.
 | P10 | | | | | not started (checkpoint —) |
 
 ## Decision log
+
+- **2026-09-20** — **PR 5: the Batch layer is composed — `service.batch` — and the class inherits
+  nothing from `simulation/ray/`.** Measured first: 13 members, 43 call sites in the service,
+  19 in the package, 5 in compose, ~100 lines of tests. Decisions:
+  *one instance, built in the constructor* — not a property that builds one per access,
+  because `patch.object(service.batch, "submit_container")` has to reach every consumer, and
+  because PR 6 (compose) and the strategies are handed that object;
+  *public names* (`submit_container`, `image_uri`, `engine()`, `client()` …) — a private
+  method called across an object boundary is a lie about what is private;
+  *`_results_s3_uri` deleted, not moved* — it was a one-line wrapper of
+  `data_layout.RayLayout.results_uri` and had nothing to do with Batch; the task service is
+  handed a `results_uri` callable instead of learning this application's data layout, which
+  is what it will be handed in core;
+  *two delegates kept on the service*, `get_batch_job_statuses` / `_details`, because the
+  scheduler and a handler ask the service (until P6) — a test pins that set at exactly two;
+  *Protocols*: `ContainerSubmitter`, `MnpSubmitter`; `TaskDispatch` and `ParcaDispatch` are
+  gone (`TaskBatch` extends `ContainerSubmitter` with the three status/log questions a task
+  asks). `_local` and `_k8s` stay the service's own constructor arguments.
+  **What the type checker could not see, and what caught it instead.** mypy strict was the
+  net for the 145 scripted respellings (8 errors on the first pass, all real). Three things it
+  is blind to: (1) **a `hasattr` capability probe** — `capabilities.py` advertised
+  `container-jobs` iff the service had `_submit_container`; after the move every deployment
+  would have silently stopped advertising it (smoke Tier 0 would have said so, at C3). Every
+  existing test used a fake, which a rename does not touch. Fixed, and a new test runs the
+  probes against the **real** class; mutation: restore the old probe → 3 tests fail.
+  (2) **a wrong member with the same signature** — `image_uri` ↔ `submit_image_uri` at a call
+  site type-checks; the proof script catches it (`differing: ['_awsbatch_nf_params']`).
+  (3) **a consumer built around its own `RayBatchLayer()`** — identical against real AWS,
+  blind to a patch; invisible to a differential by construction, so it is a unit test
+  (mutation → it fails).
+  **Proof.** The proof script was rewritten around the claim that fits a rewiring: *every
+  difference is one of a short list of named changes* — 9 renames, the respellings undone
+  and compared as AST + comment lines (17 service methods), 3 rewired, 1 gone, 2 delegates —
+  `differing / lost / added: []`. Differential against `origin/main` with recording fakes at
+  the boto3 seam: **465 cases, 0 differences** (130 `submit_container` and 130 `submit_mnp`
+  option combinations over 5 settings variants, job definitions, statuses, details, cancel,
+  log groups, and the task and ParCa services end to end; 104 + 26 `RuntimeError` on an
+  unset queue, identically). My first run of it was **invalid and said so loudly** — 410
+  differences — because BSD `sed` has no `\b` and the "old" copy imported the new layer;
+  rebuilt in Python, and the old class's MRO is now asserted before the run. Mutations caught:
+  10, 5, 18 differences; the fourth (own layer) 0, as predicted, and caught by the unit test.
+  The obsolete guard "no method is defined twice across the carved classes" (it asserted the
+  service *inherits* from the package) became its opposite: it inherits nothing from it.
 
 - **2026-09-20** — **PR 4: `RayParcaMixin` dissolved — the last mixin.** Measured first: of its ten
   methods, **six never touched `self`** (the two cache URIs, the four command builders), three

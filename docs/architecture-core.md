@@ -168,26 +168,29 @@ is now `viva_core/backends/batch.py` — `BatchJobClient` (`ensure_mnp_job_defin
 `job_details`, `describe_job`, `job_definition_log_group`, `terminate`, `terminate_matching`),
 `SubmitJobPacer`, `BatchJobDetail`, `stage_out_env`, `ecr_image_uri`. It takes **no
 settings**: every queue and base job definition is an argument and the boto3 client comes
-from a factory. The service keeps its method names (`_submit_mnp`, `_submit_container`,
-`_ensure_*_job_def`, `_image_uri`, `get_batch_job_statuses` / `_details`, `get_job_status`,
-`cancel_job`, `_resolve_log_group`) as thin delegations that read settings through `_seams`
-and choose the queue. Since cut 3 those live in `RayBatchLayer`
-(`simulation/ray/batch_layer.py`), today a **base class**; the plan recomposes it as a
-`service.batch` object (plan-core P2.1, PR 5).
+from a factory. SMS's half of the seam — read settings through `_seams`, choose the queue, add this
+application's env entries — is `RayBatchLayer` (`simulation/ray/batch_layer.py`):
+`image_uri`, `submit_image_uri`, `ensure_container_job_def`, `ensure_mnp_job_def`,
+`submit_container`, `submit_mnp`, `resolve_log_group`, `get_batch_job_statuses` / `_details`,
+`engine()`, `client()`. A base class from cut 3 until P2.1 PR 5; now **composed**: one
+instance, `service.batch`, for the service's lifetime, handed to everything that submits.
+Consumers take the narrowest of two SMS Protocols, `ContainerSubmitter` and `MnpSubmitter`.
+The service keeps `get_job_status` / `cancel_job` (its own interface) and two delegates,
+`get_batch_job_statuses` / `_details`, because the scheduler still asks the service (until P6).
 
-**What `SimulationServiceRay` is as of 2026-09-20** (`SimulationServiceRay(RayBatchLayer)` —
-no mixin left; the file is 3,360 lines, from 5,019):
+**What `SimulationServiceRay` is as of 2026-09-20** (`SimulationServiceRay(SimulationService)` —
+it inherits nothing from `simulation/ray/`; the file is 3,395 lines, from 5,019):
 
 | Piece | Where | Shape |
 |---|---|---|
 | config interpretation | `ray/config_interpretation.py` | pure functions |
 | in-image paths | `ray/image_paths.py` | constants, no imports |
 | analysis specification (which modules, which memory class) | `ray/analysis_spec.py` | pure functions; shared with the Nextflow handler and `scripts/cd2_nextflow_dispatches.py` |
-| SMS's half of the Batch seam | `ray/batch_layer.py` (`RayBatchLayer`) | base class, to be composed |
+| SMS's half of the Batch seam | `ray/batch_layer.py` (`RayBatchLayer`; Protocols `ContainerSubmitter`, `MnpSubmitter`) | composed object, `service.batch` |
 | where ParCa caches live, and the commands that build them | `ray/parca_spec.py` | pure functions (one reads two ParCa settings through `_seams`); every mechanism calls them |
-| the three ParCa cache jobs | `ray/parca.py` (`RayParcaService`, `ParcaDispatch` Protocol) | composed service, reached as `service.parca` |
+| the three ParCa cache jobs | `ray/parca.py` (`RayParcaService`, takes a `ContainerSubmitter`) | composed service, reached as `service.parca` |
 | image build | `ray/build.py` (`RayImageBuilder`) | composed service |
-| tasks | `ray/tasks.py` (`RayTaskService`, `TaskDispatch` Protocol) | composed service |
+| tasks | `ray/tasks.py` (`RayTaskService`, `TaskBatch` Protocol) | composed service |
 | the two analysis **submitters** (chain's, the multi-node composite's), `_stage_seed_override_caches` (the multi-node composite's), five dispatch mechanisms, the router, the facade | still in the class | each submitter moves with its mechanism; see below |
 
 **Five dispatch mechanisms, none of which calls another** (measured 2026-09-20). The router
