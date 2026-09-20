@@ -7,7 +7,7 @@ Two-phase execution model:
 
 import json
 import logging
-from typing import override
+from typing import TYPE_CHECKING, override
 
 from kubernetes import client as k8s_client
 
@@ -28,6 +28,10 @@ from viva_api.simulation.github_repo import (
 )
 from viva_api.simulation.models import ParcaDataset, RepoDiscovery, Simulation, Simulator, SimulatorVersion
 from viva_api.simulation.simulation_service import SimulationService
+
+if TYPE_CHECKING:
+    # ``types-boto3`` is a dev dependency (annotations only): never imported at runtime.
+    from types_boto3_batch.type_defs import KeyValuePairTypeDef
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +153,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ecr_repository}:{image_tag}-s
     async def _submit_batch_build(self, job_name: str, queue: str, command: list[str], commit: str) -> str:
         """Submit a DooD build job to AWS Batch. Returns the Batch job ID."""
         settings = get_settings()
-        env = [{"name": "IMAGE_TAG", "value": commit}]
+        env: list[KeyValuePairTypeDef] = [{"name": "IMAGE_TAG", "value": commit}]
         if settings.ecoli_sources_repo_url:
             env.append({"name": "ECOLI_SOURCES_REPO_URL", "value": settings.ecoli_sources_repo_url})
         if settings.ecoli_sources_ref:

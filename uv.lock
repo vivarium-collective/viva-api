@@ -3525,6 +3525,69 @@ wheels = [
 ]
 
 [[package]]
+name = "types-boto3"
+version = "1.43.98"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "botocore-stubs" },
+    { name = "types-s3transfer" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1b/d5/757b9ca97575edefb8d694a303c5ca5afc1033867f4e8ef8b0deeb777b3a/types_boto3-1.43.98.tar.gz", hash = "sha256:3daf7572508e610dda99084eb70d4147d5f7dd388655f88fd397064708d0ef2c", size = 104923, upload-time = "2026-09-18T22:36:24.272Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fc/d5/19f58b169ad8ef1d517df1ef83f29a60a673120bcf97efa792496262c760/types_boto3-1.43.98-py3-none-any.whl", hash = "sha256:a28e0481acd55ecc210757c602467460318d41b0cfab2114e789438ba3744395", size = 71415, upload-time = "2026-09-18T22:36:21.174Z" },
+]
+
+[package.optional-dependencies]
+batch = [
+    { name = "types-boto3-batch" },
+]
+ecr = [
+    { name = "types-boto3-ecr" },
+]
+logs = [
+    { name = "types-boto3-logs" },
+]
+s3 = [
+    { name = "types-boto3-s3" },
+]
+
+[[package]]
+name = "types-boto3-batch"
+version = "1.43.93"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d0/7e/2ce213069a9d5df875a7eab6bdfb16740cf7a0bdc38bffc4d23e1c138f26/types_boto3_batch-1.43.93.tar.gz", hash = "sha256:d452061070069068a73062e8194c6926aa7201b3412d6599c8aac55f9fd25a62", size = 42010, upload-time = "2026-09-11T19:44:35.31Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7f/bb/ae7ed554269808ad38c1359bac8fb42ec2a1676071c164e57033f913314a/types_boto3_batch-1.43.93-py3-none-any.whl", hash = "sha256:a64d585d634c73cc45c85ef5dc159483a83fcca7b9804d4c50d9bbb602dfe34b", size = 46822, upload-time = "2026-09-11T19:44:32.21Z" },
+]
+
+[[package]]
+name = "types-boto3-ecr"
+version = "1.43.73"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/6e/dc/662aea6699c786b622c1f03a7f0639a60de3f5b6826d9088c0bca4bd7c8a/types_boto3_ecr-1.43.73.tar.gz", hash = "sha256:e4696d27756a8db8ecfef6cbb7cb79ef15e4f4d80d0a97a51695b38bcf0b6503", size = 37070, upload-time = "2026-08-17T20:45:05.006Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6a/ba/47e2477acce679f26023d16b006075d22705780540a7ad633e4de5d00ebd/types_boto3_ecr-1.43.73-py3-none-any.whl", hash = "sha256:c3a45cb09684be0ca38c6be47d5d5977e56cd8aa3a7f20a9386389610b5f9bbd", size = 43042, upload-time = "2026-08-17T20:45:02.703Z" },
+]
+
+[[package]]
+name = "types-boto3-logs"
+version = "1.43.82"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/2e/64/a941f50ec1a4ead80d44c3837e729bf0ee810a8d60bb3ef913b5a3a57abe/types_boto3_logs-1.43.82.tar.gz", hash = "sha256:70e6f188fd1e193db2c674dd69587eb1f9912e7ec2c359a9029f82eb46173df3", size = 56133, upload-time = "2026-08-27T23:49:51.69Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/03/5c/4a0b9fd42a6a908097edf1d66e1029c8aa990bb637687c78d5ddc90a9074/types_boto3_logs-1.43.82-py3-none-any.whl", hash = "sha256:5c711ae3b63ae5996cdf8ffe5615a314b17ea3340e1704966030a944ead00bb4", size = 63355, upload-time = "2026-08-27T23:49:49.281Z" },
+]
+
+[[package]]
+name = "types-boto3-s3"
+version = "1.43.93"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f7/1a/285aa2a27436e437aea1c6d6f964b692df3d8c349bf6a35fd476d0b2f7bb/types_boto3_s3-1.43.93.tar.gz", hash = "sha256:6a7f979872b81f6bf22eb4dc39ea9909d635ec756275eca69e9caabdc94d5a6a", size = 79218, upload-time = "2026-09-11T19:44:38.149Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1f/16/db644e738b967336fb0ca335d708c7d659a965b8ae703e9c50fe209c59be/types_boto3_s3-1.43.93-py3-none-any.whl", hash = "sha256:da9249f05ea081bb3b3f3b8cc49099a988ff5c89da8a7393532397c6174e04d3", size = 86538, upload-time = "2026-09-11T19:44:36.68Z" },
+]
+
+[[package]]
 name = "types-python-dateutil"
 version = "2.9.0.20260408"
 source = { registry = "https://pypi.org/simple" }
@@ -3766,6 +3829,7 @@ dev = [
     { name = "testcontainers", extra = ["nats", "redis"] },
     { name = "tox" },
     { name = "types-aiofiles" },
+    { name = "types-boto3", extra = ["batch", "ecr", "logs", "s3"] },
     { name = "types-python-dateutil" },
     { name = "types-pyyaml" },
     { name = "types-requests" },
@@ -3857,6 +3921,7 @@ dev = [
     { name = "testcontainers", extras = ["nats", "postgres", "redis"], specifier = ">=4.10.0,<5" },
     { name = "tox", specifier = ">=4.11.1,<5" },
     { name = "types-aiofiles", specifier = ">=25.1.0.20251011" },
+    { name = "types-boto3", extras = ["batch", "ecr", "logs", "s3"], specifier = ">=1.40,<2" },
     { name = "types-python-dateutil", specifier = ">=2.9.0.20251115" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20250516,<7" },
     { name = "types-requests", specifier = ">=2.32.0.20250602,<3" },

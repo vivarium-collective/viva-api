@@ -6,7 +6,7 @@ These are the tests a second consumer of ``viva_core`` inherits. The SMS suite
 """
 
 import copy
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -21,6 +21,10 @@ from viva_core.backends.batch import (
     stage_out_env,
 )
 from viva_core.models import JobStatus
+
+if TYPE_CHECKING:
+    from types_boto3_batch import BatchClient
+    from types_boto3_batch.type_defs import JobDetailTypeDef
 
 
 class FakeBatch:
@@ -67,8 +71,15 @@ class FakeBatch:
         return {}
 
 
+def _as_client(fake: FakeBatch) -> "BatchClient":
+    """The engine is typed against the real ``BatchClient`` (``types-boto3``). A fake is a
+    fake on purpose -- six operations, recorded -- so it is CAST, here and only here, rather
+    than the engine's parameter being widened back to ``Any`` to let it in."""
+    return cast("BatchClient", fake)
+
+
 def _engine(fake: FakeBatch) -> BatchJobClient:
-    return BatchJobClient(lambda: fake)
+    return BatchJobClient(lambda: _as_client(fake))
 
 
 # ── job definitions ─────────────────────────────────────────────────────────
@@ -208,7 +219,13 @@ def test_submit_mnp_targets_the_single_node_range_and_does_not_mutate_the_caller
 def test_an_explicit_client_is_used_instead_of_the_factorys() -> None:
     factory_client, explicit = FakeBatch(), FakeBatch()
     _engine(factory_client).submit_container(
-        job_name="n", job_queue="q", job_definition="d:1", job_cmd="c", report_path="/r", stage_env=[], client=explicit
+        job_name="n",
+        job_queue="q",
+        job_definition="d:1",
+        job_cmd="c",
+        report_path="/r",
+        stage_env=[],
+        client=_as_client(explicit),
     )
     assert factory_client.calls == []
     assert len(explicit.named("submit_job")) == 1
@@ -217,7 +234,7 @@ def test_an_explicit_client_is_used_instead_of_the_factorys() -> None:
 def test_the_client_factory_is_called_per_operation_so_a_swapped_client_is_honoured() -> None:
     first, second = FakeBatch(), FakeBatch()
     current = [first]
-    engine = BatchJobClient(lambda: current[0])
+    engine = BatchJobClient(lambda: _as_client(current[0]))
     engine.terminate("a", reason="r")
     current[0] = second
     engine.terminate("b", reason="r")
@@ -266,7 +283,8 @@ def test_describe_job_returns_none_for_a_job_batch_does_not_know() -> None:
     assert engine.describe_job("nope") is None
     job = engine.describe_job("bad")
     assert job is not None and batch_exit_code(job) == "137"
-    assert batch_exit_code({"container": None}) is None
+    # Not a shape the stubs admit, but the function tolerates it and must keep doing so.
+    assert batch_exit_code(cast("JobDetailTypeDef", {"container": None})) is None
 
 
 def test_a_job_definitions_log_group_is_none_rather_than_an_error_when_it_cannot_be_read() -> None:

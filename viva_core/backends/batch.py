@@ -25,15 +25,24 @@ The container contract the env vars below speak to (``<PREFIX>_OUT_DIR``,
 entrypoint's: stage inputs in, run one command, sync outputs and a report out.
 """
 
+from __future__ import annotations
+
 import asyncio
 import copy
 import logging
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from viva_core.models import JobStatus
+
+if TYPE_CHECKING:
+    # ``types-boto3`` is a DEV dependency: it exists where mypy runs and not in the image.
+    # Everything it provides is used in annotations only, so nothing here may import it at
+    # runtime -- ``tests/core/test_typed_boto3.py`` fails if a module does.
+    from types_boto3_batch import BatchClient
+    from types_boto3_batch.type_defs import JobDetailTypeDef
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +113,7 @@ class BatchJobDetail:
         return ": ".join(parts[:1]) + " (" + ", ".join(parts[1:]) + ")"
 
 
-def batch_exit_code(job: dict[str, Any]) -> str | None:
+def batch_exit_code(job: JobDetailTypeDef) -> str | None:
     """The container exit code from an AWS Batch ``describe_jobs`` job object,
     as a string (JobStatusInfo.exit_code is ``str | None``), or None when Batch
     has not reported one yet.
@@ -165,7 +174,7 @@ class BatchJobClient:
     operation, never cached, so a caller that swaps its client (a test, a rotated
     credential) is honoured on the next call."""
 
-    def __init__(self, client_factory: Callable[[], Any]) -> None:
+    def __init__(self, client_factory: Callable[[], BatchClient]) -> None:
         self._client_factory = client_factory
 
     # ── job definitions ─────────────────────────────────────────────────────
@@ -261,7 +270,7 @@ class BatchJobClient:
         depends_type: str | None = "SEQUENTIAL",
         tags: dict[str, str] | None = None,
         retry_strategy: dict[str, Any] | None = None,
-        client: Any = None,
+        client: BatchClient | None = None,
     ) -> str:
         """Submit a multi-node parallel job. Returns the AWS Batch job id.
 
@@ -362,7 +371,7 @@ class BatchJobClient:
         depends_type: str | None = "SEQUENTIAL",
         tags: dict[str, str] | None = None,
         retry_strategy: dict[str, Any] | None = None,
-        client: Any = None,
+        client: BatchClient | None = None,
     ) -> str:
         """Submit a plain, standalone container-type job. Returns the AWS Batch job id.
 
@@ -403,10 +412,10 @@ class BatchJobClient:
 
     # ── status ──────────────────────────────────────────────────────────────
 
-    def describe_job(self, job_id: str) -> dict[str, Any] | None:
+    def describe_job(self, job_id: str) -> JobDetailTypeDef | None:
         """One job's raw ``describe_jobs`` object, or None when Batch does not know it."""
         jobs = self._client_factory().describe_jobs(jobs=[job_id]).get("jobs", [])
-        return dict(jobs[0]) if jobs else None
+        return copy.copy(jobs[0]) if jobs else None  # a shallow copy, as ``dict(...)`` was; the type survives
 
     def job_statuses(self, job_ids: list[str]) -> dict[str, JobStatus]:
         """Batched ``describe_jobs`` status lookup for arbitrary AWS Batch job ids,
@@ -478,7 +487,7 @@ class BatchJobClient:
         already finished, so it is safe to call without checking first."""
         self._client_factory().terminate_job(jobId=job_id, reason=reason)
 
-    def terminate_matching(self, *, queues: list[str], matches: Callable[[dict[str, Any]], bool], reason: str) -> int:
+    def terminate_matching(self, *, queues: list[str], matches: Callable[[JobDetailTypeDef], bool], reason: str) -> int:
         """Terminate every still-active job on ``queues`` that ``matches`` accepts, and
         return how many. For jobs the caller did not submit itself and so holds no ids
         for -- children a workflow engine launched on its behalf. ``matches`` receives

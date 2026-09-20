@@ -28,12 +28,16 @@ dispatcher Protocol into core waits for both (plan P2.3).
 import logging
 import random
 import string
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from viva_api.common.models import JobStatus
 from viva_api.simulation.ray import _seams
 from viva_api.simulation.ray.image_paths import REPORT_PATH
 from viva_core.backends.batch import BatchJobClient, BatchJobDetail, ecr_image_uri, stage_out_env
+
+if TYPE_CHECKING:
+    # ``types-boto3`` is a dev dependency (annotations only): never imported at runtime.
+    from types_boto3_batch import BatchClient
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +114,7 @@ class RayBatchLayer:
     """Implements ``ContainerSubmitter`` and ``MnpSubmitter``, plus what the service's own
     status, cancel and log paths need of Batch (``engine``, ``client``, ``resolve_log_group``)."""
 
-    def client(self) -> Any:
+    def client(self) -> "BatchClient":
         return _seams.boto3.client("batch", region_name=_seams.get_settings().batch_region)
 
     def engine(self) -> BatchJobClient:

@@ -10,11 +10,15 @@ Keeping the submit/poll here avoids duplicating the boto3 plumbing per backend.
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import boto3
 
 from viva_api.config import get_settings
+
+if TYPE_CHECKING:
+    # ``types-boto3`` is a dev dependency (annotations only): never imported at runtime.
+    from types_boto3_batch.type_defs import JobDetailTypeDef, KeyValuePairTypeDef
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +55,7 @@ class BatchJobState:
     stopped_at_ms: int | None = None
 
 
-def _job_state(job: dict[str, Any]) -> BatchJobState:
+def _job_state(job: "JobDetailTypeDef") -> BatchJobState:
     return BatchJobState(
         job_id=str(job.get("jobId", "")),
         job_name=str(job.get("jobName", "")),
@@ -119,7 +123,7 @@ async def submit_batch_build(
     job_name: str,
     queue: str,
     command: list[str],
-    environment: list[dict[str, str]] | None = None,
+    environment: "list[KeyValuePairTypeDef] | None" = None,
 ) -> str:
     """Submit a DooD build job to AWS Batch; return the Batch job ID.
 

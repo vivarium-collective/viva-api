@@ -269,7 +269,7 @@ P2.0a guard caught. So:
   | 4 ✅ | ParCa: commands and cache URIs → `ray/parca_spec.py` (pure); `RayParcaService` (`service.parca`) holds only the three cache jobs; `_stage_seed_override_caches` back in the class (the multi-node composite's) | half of it is pure; only the cache jobs work one way |
   | 5 ✅ | **`RayBatchLayer` stops being a base class** and becomes a composed `service.batch`, behind two small SMS Protocols, `ContainerSubmitter` and `MnpSubmitter`, replacing `TaskDispatch` / `AnalysisDispatch`. `local` and `k8s` are constructor arguments of the strategies that need them, never Protocol members | done **first**, so every strategy is handed a real object; done last, each strategy would be rewired twice (~80 call sites, ~24 `patch.object`) |
   | 6 ✅ | `compose` is **handed** a Batch layer (its own `ComposeBatch` Protocol; `dependencies.py` provides `RayBatchLayer()`), not a whole `SimulationServiceRay()` — and not an import of the layer either, which would only have renamed the edge | one of the three broken `compose-is-domain-free` edges goes (9 → 8 broken edges in all) |
-  | 6a | **typed boto3**: add `types-boto3[batch,s3,logs,ecr]` as a dev dependency and type the client factory (`BatchJobClient`'s `client_factory`, `RayBatchLayer.client()`, the `_seams` boto3 seam) (Jim, 2026-09-20: "inject into the plan soon") | the Batch engine — the one module everything submits through, and the first thing in core — is the **least** precisely typed code being restructured (72.7 % of its expressions; the repo is 92.7 %), because an untyped `boto3` makes the client `Any` and everything it returns `Any`. Before the strategies, so mypy is a real net for the five PRs that move the code that calls it |
+  | 6a ✅ | **typed boto3**: add `types-boto3[batch,s3,logs,ecr]` as a dev dependency and type the client factory (`BatchJobClient`'s `client_factory`, `RayBatchLayer.client()`, the `_seams` boto3 seam) (Jim, 2026-09-20: "inject into the plan soon") | the Batch engine — the one module everything submits through, and the first thing in core — is the **least** precisely typed code being restructured (72.7 % of its expressions; the repo is 92.7 %), because an untyped `boto3` makes the client `Any` and everything it returns `Any`. Before the strategies, so mypy is a real net for the five PRs that move the code that calls it |
   | 6b | **no `Any` in core (D12)**: per-module overrides turning on `disallow_any_explicit` + `disallow_any_unimported` for **`viva_core.*`** (55 explicit, 9 unimported — the kubernetes client in `backends/k8s_job_service.py`) and for the ray package's **existing modules, listed by name** (18 sites). JSON `Any` → a `JsonValue` alias or `TypedDict`s | right after 6a, which removes the biggest single cause. `viva_core.*` as a glob, so it is a standing rule for everything that later moves in. The ray package **by name, not `ray.*`**: PRs 7–11 move ~2,200 lines (and 28 `Any`) from the service file into that package, and a ban on `ray.*` would make every strategy PR change annotations in the code it moves — which breaks the AST-identity proof that makes those PRs reviewable. Widened to `ray.*` in PR 12 |
   | 7 | strategy: **mbp-tracked** | smallest (225 lines); first use of the shape |
   | 8 | strategy: **Nextflow** (needs `k8s`; `reap_cancelled_campaign` travels with it); then **C3** | 464 lines |
@@ -650,7 +650,9 @@ gating latency compared to the baseline.
   outside tests, 39 % are JSON-shaped (`dict[str, Any]`). Explicit `Any` understates it:
   by mypy's any-expression report `viva_core/backends/batch.py` is 72.7 % precise, against
   100 % for `ray/parca.py` and `ray/parca_spec.py`, because `boto3` is untyped. Sequence
-  PR 6a fixes that one cause. **Decided (D12):** `viva_core` carries no `Any` — sequence PR 6b
+  PR 6a fixed that one cause: `backends/batch.py` 72.7 % → **100 %**, `simulation/batch_build.py`
+  74.6 % → 100 %, `simulation_service_ray.py` 96.4 % → 98.0 %, the repository 92.70 % → 92.99 %.
+  **Decided (D12):** `viva_core` carries no `Any` — sequence PR 6b
   turns on `disallow_any_explicit` + `disallow_any_unimported` for `viva_core.*` (a glob: a
   standing rule for everything that moves into core later) and for the ray package's
   existing modules; PR 12 widens that to `ray.*` once the strategies have landed. Still
@@ -684,6 +686,7 @@ split; each has an owner-less issue or a named moment.
 | The dataset walk re-lists every simulation forever (~$5–6 / month / site); walking terminal simulations once a day would cut it ~10x | decision log, 2026-09-19 | P4a, when the walker moves to core |
 | Draft #670 conflicts with P1's move of `gcs_aio.py`; a resolution was offered | #670 | when its author picks it up |
 | RDS snapshot `pre-0-9-147-checkpoint-b-20260919t1955z` | dev | delete once 0.9.148 has soaked |
+| **#730** `_mnp_node_vcpus` calls `describe_job_definitions(revision=…)`, a parameter that does not exist: botocore refuses it client-side, the `except` swallows it, `RAY_SHARDS_DEFAULT` has never been set and every multi-node composite dispatch sleeps 3 s. Found by the typed client (PR 6a), left byte-for-byte there behind `# type: ignore[call-arg]` | viva-api | its own PR: a behaviour change to a dispatch (the shard count), so it wants a before/after on `sim-composite`. Its acceptance test is already in, as a strict `xfail` (`tests/simulation/test_mnp_node_vcpus_730.py`) |
 | RDS snapshot `pre-0-9-149-checkpoint-b2-20260920t1433z` | dev | C2 passed 2026-09-20; delete once it has soaked |
 | Smoke `sim-chain` downloads the whole chain output (~3.6 GB uncompressed) through the SSM tunnel at ~0.35 MB/s: about 30 of its 77 minutes at C2 were the download, long after the server was done | `app/smoke.py` | assert on a listing plus the per-seed `summary.json` files instead of the full archive |
 | Temporary simulators 214 and 215 and the images `tmp-d01dc07-b64227[-submit]` on dev / in the shared ECR | dev | the purge for temporary simulators (not built yet); until then they stay, marked |
@@ -703,7 +706,7 @@ split; each has an owner-less issue or a named moment.
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — #696; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — #698; all merged 2026-09-19 |
 | D11 | write-once simulators + the marked-temporary exception: migration `f4c8a2e6d0b3`, `environment_key`, `force` guarded (409), the marker in all three clients, smoke `build` on a temporary simulator — #722 | — | — (checkpoint **B2**, a database deploy, before C2) | — | open |
-| P2.1 | carve `simulation_service_ray.py` (5,019 → 3,395 lines so far; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `ray/analysis_spec.py` — PR 3 (#726) · ParCa split → `ray/parca_spec.py` + `RayParcaService` — PR 4 (#727) · `RayBatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6. Remaining: PRs 7–11 (the five strategies) of the 2026-09-20 sequence; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.149 carries cuts 1–5, #710, #714, #722 | **2026-09-20** (checkpoints C1, B2, C2) | — | **in progress.** Deployed to dev: everything through #722. Merged after C2 (→ C3): PR 3 (a pure move), PR 4 (the three cache jobs rewired), PR 5 (every Batch call respelled through `service.batch`). PR 6 (compose no longer builds a simulation service). Next: PR 7 (strategy: mbp-tracked) |
+| P2.1 | carve `simulation_service_ray.py` (5,019 → 3,395 lines so far; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `ray/analysis_spec.py` — PR 3 (#726) · ParCa split → `ray/parca_spec.py` + `RayParcaService` — PR 4 (#727) · `RayBatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a. Remaining: PR 6b (D12), then PRs 7–11 (the five strategies), PR 12 of the 2026-09-20 sequence; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.149 carries cuts 1–5, #710, #714, #722 | **2026-09-20** (checkpoints C1, B2, C2) | — | **in progress.** Deployed to dev: everything through #722. Merged after C2 (→ C3): PR 3 (a pure move), PR 4 (the three cache jobs rewired), PR 5 (every Batch call respelled through `service.batch`). PR 6 (compose no longer builds a simulation service). PR 6a (annotations only; no runtime change). Next: PR 6b (no `Any` in core) |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image | | | | not started (checkpoint D) |
 | P3 | | | | | not started (checkpoint E) |
@@ -717,6 +720,38 @@ split; each has an owner-less issue or a named moment.
 | P10 | | | | | not started (checkpoint —) |
 
 ## Decision log
+
+- **2026-09-20** — **PR 6a: the AWS clients are typed — and the first thing the types found was a
+  bug that has been live since 2026-08-24.** `types-boto3[batch,s3,logs,ecr]` as a dev
+  dependency; `boto3`/`botocore` removed from `ignore_missing_imports`; `BatchJobClient`'s
+  factory is `Callable[[], BatchClient]`, `RayBatchLayer.client()` returns a `BatchClient`,
+  job objects are `JobDetailTypeDef`. Annotations only, all under `if TYPE_CHECKING:` —
+  because the API image is built `--no-default-groups`, the stubs **do not exist in
+  production**, and an unguarded import would pass every test and fail at import time in
+  the pod, in the module everything submits through. Two guards: an AST scan of
+  `viva_core` / `viva_api` / `app`, and a subprocess that imports the five typed modules
+  with every stub package made unimportable (it first proves the blocker blocks). Mutation:
+  one unguarded import in the engine → both fail.
+  Typing the factory turned 0 errors into 11. Nine were annotations and test fakes (the
+  fakes are now cast in one named helper rather than the engine being widened back to
+  `Any`). **One was real: #730.** `_mnp_node_vcpus` calls
+  `describe_job_definitions(jobDefinitionName=…, revision=…)`; the API has no `revision`.
+  botocore refuses it before any network traffic, `except Exception` logs that at DEBUG and
+  retries it as if it were eventual consistency — which is what the comment above it says it
+  is, "confirmed live" — and the method has returned `None` on every multi-node composite
+  dispatch since it landed, after 3 s of sleeping. Reproduced offline; and the WARNING is in
+  dev's log for C2's own `sim-composite` run. Every unit test used a `MagicMock` client,
+  which accepts any keyword. **Not fixed here, on purpose:** the fix makes a dispatch start
+  receiving `RAY_SHARDS_DEFAULT`, i.e. changes its shard count — a behaviour change to a
+  dispatch does not ride in on a typing PR. The call is byte-for-byte what it was, behind a
+  targeted `# type: ignore[call-arg]` that names the issue; its acceptance test is committed
+  ahead of it as a strict `xfail`, using a fake that **validates its keywords against
+  botocore's own service model, offline** (checked: with the one-line fix applied it returns
+  16 and strict-xfail fails the run, as designed). That validating fake is the general answer
+  to "MagicMock accepts anything" and is worth reusing in 6b.
+  The stubs are 1.43.x against a 1.40.61 runtime: newer than what runs. Acceptable for four
+  services whose API surface only grows; a stub-only method would be caught by the
+  validating fake, not by mypy.
 
 - **2026-09-20** — **Typed boto3 injected into the sequence as PR 6a** (Jim: "inject `Add
   types-boto3[batch,s3,logs,ecr] as a dev dependency and type the client factory` into the
