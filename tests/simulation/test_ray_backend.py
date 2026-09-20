@@ -14,6 +14,7 @@ from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.config import ComputeBackend
 from viva_api.simulation.models import AnalysisOptions, HpcRun, JobType
+from viva_api.simulation.ray import parca_spec
 from viva_api.simulation.ray.analysis_spec import analysis_modules_for
 from viva_api.simulation.ray.config_interpretation import (
     injected_processes_from_config,
@@ -2094,7 +2095,7 @@ class TestNewGeneCacheSourceVariant:
             patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
             patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
         ):
-            job_id = await service.submit_new_gene_cache_job(
+            job_id = await service.parca.submit_new_gene_cache_job(
                 commit="abc123",
                 variant="cd2-run4-carina-lin-genotype1",
                 expression=1174897.5549395303,
@@ -2124,7 +2125,7 @@ class TestNewGeneCacheSourceVariant:
             patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
             patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
         ):
-            await service.submit_new_gene_cache_job(
+            await service.parca.submit_new_gene_cache_job(
                 commit="abc123",
                 variant="cd2-run4-carina-lin-genotype1",
                 expression=1174897.5549395303,
@@ -2443,22 +2444,19 @@ class TestParcaCommandNewGenes:
     produce a ParCa command that actually carries the --new-genes flag."""
 
     def test_new_genes_flows_into_the_parca_command(self) -> None:
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command(new_genes="violacein")
+            cmd = parca_spec.parca_command(new_genes="violacein")
         assert f"--new-genes {shlex.quote('violacein')}" in cmd
 
     @pytest.mark.parametrize("new_genes", [None, "off"])
     def test_new_genes_off_or_absent_omits_the_flag(self, new_genes: str | None) -> None:
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command(new_genes=new_genes)
+            cmd = parca_spec.parca_command(new_genes=new_genes)
         assert "--new-genes" not in cmd
 
     def test_new_genes_with_a_space_is_shell_quoted(self) -> None:
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command(new_genes="two genes")
+            cmd = parca_spec.parca_command(new_genes="two genes")
         assert f"--new-genes {shlex.quote('two genes')}" in cmd
 
 
@@ -3819,33 +3817,29 @@ class TestUpstreamParcaCommand:
     None) must be provably unaffected."""
 
     def test_no_config_path_is_byte_identical_to_before(self) -> None:
-        service = SimulationServiceRay()
-        assert service._upstream_parca_command() == (
+        assert parca_spec.upstream_parca_command() == (
             f"cd {V2ECOLI_DIR} && python scripts/build_upstream_parca.py"
             f" --outdir {V2ECOLI_DIR}/out/upstream --cpus 1"
             f" --copy-to {PARCA_CACHE_DIR}"
         )
 
     def test_config_path_appends_the_config_flag(self) -> None:
-        service = SimulationServiceRay()
-        cmd = service._upstream_parca_command(config_path=f"{V2ECOLI_DIR}/configs/custom_strain.json")
+        cmd = parca_spec.upstream_parca_command(config_path=f"{V2ECOLI_DIR}/configs/custom_strain.json")
         assert cmd.endswith(f" --config {V2ECOLI_DIR}/configs/custom_strain.json")
         # Everything before it is unchanged -- confirms this is a pure append,
         # not a differently-ordered command that happens to contain the flag.
-        assert cmd.startswith(service._upstream_parca_command())
+        assert cmd.startswith(parca_spec.upstream_parca_command())
 
     def test_cache_uri_no_variant_is_byte_identical_to_before(self) -> None:
-        service = SimulationServiceRay()
         with patch("viva_api.common.storage.data_layout.get_settings", _ray_settings):
-            assert service._upstream_cache_s3_uri("abc123") == "s3://mybucket/ray-upstream-parca-cache/abc123/"
+            assert parca_spec.upstream_cache_s3_uri("abc123") == "s3://mybucket/ray-upstream-parca-cache/abc123/"
 
     def test_cache_uri_variant_never_collides_with_bare_commit_path(self) -> None:
         """The real hazard this whole feature guards against: a config-driven
         cache must never land where a plain baseline build/stage would read."""
-        service = SimulationServiceRay()
         with patch("viva_api.common.storage.data_layout.get_settings", _ray_settings):
-            bare = service._upstream_cache_s3_uri("abc123")
-            variant = service._upstream_cache_s3_uri("abc123", variant="custom-strain")
+            bare = parca_spec.upstream_cache_s3_uri("abc123")
+            variant = parca_spec.upstream_cache_s3_uri("abc123", variant="custom-strain")
         assert variant != bare
         assert variant == "s3://mybucket/ray-upstream-parca-cache/abc123/custom-strain/"
 
@@ -3864,9 +3858,8 @@ class TestParcaCommand:
         other option here which is opt-in-only. See
         test_sidecar_copy_is_present_and_non_fatal below for that addition's own
         dedicated coverage."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command()
+            cmd = parca_spec.parca_command()
         assert "--new-genes" not in cmd
         assert "--bundle-overrides" not in cmd
         assert cmd == (
@@ -3886,9 +3879,8 @@ class TestParcaCommand:
         unconditional (present with or without any other option) and non-fatal
         (`|| true`) -- a pre-#735 v2ecoli image never writes this file, so every
         dispatch must keep working unchanged until it does."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command(new_genes="violacein_MG1655_M5")
+            cmd = parca_spec.parca_command(new_genes="violacein_MG1655_M5")
         assert f"cp {PARCA_SIMDATA_DIR}/parca_state.provenance.json" in cmd
         assert "|| true" in cmd
         # The sidecar copy must not break the leading &&-chain's own
@@ -3900,9 +3892,8 @@ class TestParcaCommand:
         synced PARCA_CACHE_DIR -- build_new_gene_cache.py needs exactly this
         file, and PARCA_SIMDATA_DIR (where it's first produced) is never
         synced anywhere and is discarded with the job's container."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command()
+            cmd = parca_spec.parca_command()
         assert f"cp {PARCA_SIMDATA_DIR}/parca_state.pkl.gz {PARCA_CACHE_DIR}/parca_state.pkl.gz" in cmd
         # comes after the hydration step, not before -- gzip must exist first
         assert cmd.index("build_cache.py") < cmd.index(f"cp {PARCA_SIMDATA_DIR}")
@@ -3910,21 +3901,18 @@ class TestParcaCommand:
     def test_off_new_genes_is_byte_identical_to_unset(self) -> None:
         """ "off" is v2ecoli-parca's own --new-genes default -- passing it explicitly
         must not append a redundant flag."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            assert service._parca_command(new_genes="off") == service._parca_command()
+            assert parca_spec.parca_command(new_genes="off") == parca_spec.parca_command()
 
     def test_bundle_overrides_appends_the_flag(self) -> None:
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command(bundle_overrides="models/parca/composed_overlay.tsv")
+            cmd = parca_spec.parca_command(bundle_overrides="models/parca/composed_overlay.tsv")
         assert "--bundle-overrides models/parca/composed_overlay.tsv" in cmd
         assert "--new-genes" not in cmd
 
     def test_new_genes_and_bundle_overrides_both_append(self) -> None:
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command(
+            cmd = parca_spec.parca_command(
                 new_genes="violacein_MG1655_M5", bundle_overrides="models/parca/composed_overlay.tsv"
             )
         assert "--new-genes violacein_MG1655_M5 --bundle-overrides models/parca/composed_overlay.tsv" in cmd
@@ -3935,9 +3923,8 @@ class TestParcaCommand:
         scenario rung5_lam075) stacks TWO --bundle-overrides flags in one
         v2ecoli-parca invocation -- a single-string field could only ever carry
         one of the two layers, silently dropping the other."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command(
+            cmd = parca_spec.parca_command(
                 new_genes="violacein_gfp",
                 bundle_overrides=[
                     "workspace/studies/cd2-pnnl-01-bundle-scenarios/bundles/vio-gfp/overrides.tsv",
@@ -3955,42 +3942,37 @@ class TestParcaCommand:
         assert cmd.count("--bundle-overrides") == 2
 
     def test_bundle_overrides_empty_list_is_byte_identical_to_none(self) -> None:
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            assert service._parca_command(bundle_overrides=[]) == service._parca_command()
+            assert parca_spec.parca_command(bundle_overrides=[]) == parca_spec.parca_command()
 
     def test_bundle_overrides_single_element_list_matches_bare_string(self) -> None:
         """A 1-element list and the equivalent bare string must build the exact
         same command -- the list form is additive, not a parallel code path."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            as_list = service._parca_command(bundle_overrides=["models/parca/composed_overlay.tsv"])
-            as_str = service._parca_command(bundle_overrides="models/parca/composed_overlay.tsv")
+            as_list = parca_spec.parca_command(bundle_overrides=["models/parca/composed_overlay.tsv"])
+            as_str = parca_spec.parca_command(bundle_overrides="models/parca/composed_overlay.tsv")
         assert as_list == as_str
 
     def test_omitted_rnaseq_source_is_byte_identical_to_before(self) -> None:
         """None must build byte-for-byte the same command as before this param
         existed -- same contract as new_genes/bundle_overrides above."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            assert service._parca_command(rnaseq_source=None) == service._parca_command()
+            assert parca_spec.parca_command(rnaseq_source=None) == parca_spec.parca_command()
 
     def test_rnaseq_source_appends_the_flag(self) -> None:
         """A bundle_overrides manifest can itself REQUIRE this flag to have any
         effect (rung5-lambda-075/overrides.tsv's own header: "READ BY NOTHING
         without that flag... the scenario silently becomes its own control") --
         confirmed real gap, item 106/#166 chassis-provenance thread."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command(rnaseq_source="experimental")
+            cmd = parca_spec.parca_command(rnaseq_source="experimental")
         assert "--rnaseq-source experimental" in cmd
         assert "--new-genes" not in cmd
         assert "--bundle-overrides" not in cmd
 
     def test_new_genes_bundle_overrides_and_rnaseq_source_all_append(self) -> None:
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command(
+            cmd = parca_spec.parca_command(
                 new_genes="violacein_gfp",
                 bundle_overrides="workspace/studies/cd2-pnnl-01-bundle-scenarios/bundles/rung5-lambda-075/overrides.tsv",
                 rnaseq_source="experimental",
@@ -4005,70 +3987,61 @@ class TestParcaCommand:
         """Item 451/#166: Run 4's own founder-chassis recipe needs
         --bundle-manifest-path -- a base-manifest-replacing flag, distinct from
         --bundle-overrides (which layers on top)."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command(bundle_manifest_path="out/combined_violacein.tsv")
+            cmd = parca_spec.parca_command(bundle_manifest_path="out/combined_violacein.tsv")
         assert "--bundle-manifest-path out/combined_violacein.tsv" in cmd
         assert "--bundle-overrides" not in cmd
 
     def test_omitted_bundle_manifest_path_is_byte_identical_to_before(self) -> None:
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            assert service._parca_command(bundle_manifest_path=None) == service._parca_command()
+            assert parca_spec.parca_command(bundle_manifest_path=None) == parca_spec.parca_command()
 
     def test_build_combined_bundle_manifest_generates_and_points_at_default_output(self) -> None:
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command(build_combined_bundle_manifest=True)
+            cmd = parca_spec.parca_command(build_combined_bundle_manifest=True)
         assert "python scripts/build_combined_bundle_manifest.py && " in cmd
         assert cmd.index("build_combined_bundle_manifest.py") < cmd.index("v2ecoli-parca")
         assert "--bundle-manifest-path out/combined_bundle_manifest.tsv" in cmd
         assert "--include-violacein" not in cmd
 
     def test_include_violacein_bundle_passes_the_generator_flag(self) -> None:
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command(build_combined_bundle_manifest=True, include_violacein_bundle=True)
+            cmd = parca_spec.parca_command(build_combined_bundle_manifest=True, include_violacein_bundle=True)
         assert "build_combined_bundle_manifest.py --include-violacein && " in cmd
 
     def test_include_violacein_bundle_alone_is_a_no_op(self) -> None:
         """include_violacein_bundle only matters when build_combined_bundle_manifest is also set."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command(include_violacein_bundle=True)
-            assert cmd == service._parca_command()
+            cmd = parca_spec.parca_command(include_violacein_bundle=True)
+            assert cmd == parca_spec.parca_command()
 
     def test_bundle_manifest_path_and_build_combined_bundle_manifest_are_mutually_exclusive(self) -> None:
-        service = SimulationServiceRay()
         with (
             patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
             pytest.raises(ValueError, match="mutually exclusive"),
         ):
-            service._parca_command(
+            parca_spec.parca_command(
                 bundle_manifest_path="out/combined_violacein.tsv", build_combined_bundle_manifest=True
             )
 
     def test_deterministic_hash_seed_prepends_pythonhashseed(self) -> None:
         """Item 451/#166: Run 4's own founder-chassis recipe explicitly requires
         PYTHONHASHSEED=0 for a deterministically re-derivable chassis."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command(deterministic_hash_seed=True)
+            cmd = parca_spec.parca_command(deterministic_hash_seed=True)
         assert "PYTHONHASHSEED=0 v2ecoli-parca" in cmd
 
     def test_omitted_deterministic_hash_seed_is_byte_identical_to_before(self) -> None:
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            assert service._parca_command(deterministic_hash_seed=False) == service._parca_command()
+            assert parca_spec.parca_command(deterministic_hash_seed=False) == parca_spec.parca_command()
 
     def test_run4_founder_chassis_recipe_end_to_end(self) -> None:
         """The exact real recipe from scripts/build_run4_founder_caches.py's own
         module docstring: build_combined_bundle_manifest(--include-violacein) +
         PYTHONHASHSEED=0 + --new-genes violacein_MG1655_M5 +
         --bundle-manifest-path out/combined_bundle_manifest.tsv."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command(
+            cmd = parca_spec.parca_command(
                 new_genes="violacein_MG1655_M5",
                 build_combined_bundle_manifest=True,
                 include_violacein_bundle=True,
@@ -4095,9 +4068,8 @@ class TestParcaCommand:
         the real --new-genes/--bundle-overrides flags one command earlier in
         this same chain). Restamping strain identity a second time at this step
         is not just unsupported now, it would be redundant even if it were."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._parca_command(
+            cmd = parca_spec.parca_command(
                 new_genes="violacein_MG1655_M5", bundle_overrides="models/parca/composed_overlay.tsv"
             )
         # isolate just the build_cache.py invocation (between it and the trailing cp)
@@ -4137,8 +4109,7 @@ class TestBuildNewGeneCacheCommand:
     ParCa's own new_genes presence/absence flag."""
 
     def test_required_flags_only(self) -> None:
-        service = SimulationServiceRay()
-        cmd = service._build_new_gene_cache_command(expression=1e6, translation_efficiency=1.0)
+        cmd = parca_spec.new_gene_cache_command(expression=1e6, translation_efficiency=1.0)
         assert cmd == (
             f"cd {V2ECOLI_DIR}"
             f" && python scripts/build_new_gene_cache.py"
@@ -4149,8 +4120,7 @@ class TestBuildNewGeneCacheCommand:
         )
 
     def test_optional_flags_all_append(self) -> None:
-        service = SimulationServiceRay()
-        cmd = service._build_new_gene_cache_command(
+        cmd = parca_spec.new_gene_cache_command(
             expression=1e6,
             translation_efficiency=1.0,
             rel_exp_adj="1,2,4",
@@ -4169,10 +4139,9 @@ class TestBuildNewGeneCacheCommand:
         """The --state path this command reads must be exactly the path
         _parca_command's own new cp step writes to -- the two are a matched
         pair across two separate job submissions with no other hand-off."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            parca_cmd = service._parca_command()
-        cache_cmd = service._build_new_gene_cache_command(expression=1.0, translation_efficiency=1.0)
+            parca_cmd = parca_spec.parca_command()
+        cache_cmd = parca_spec.new_gene_cache_command(expression=1.0, translation_efficiency=1.0)
         written_path = f"{PARCA_CACHE_DIR}/parca_state.pkl.gz"
         assert written_path in parca_cmd
         assert f"--state {written_path}" in cache_cmd
@@ -4193,7 +4162,7 @@ class TestSubmitNewGeneCacheJob:
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
         ):
-            job_id = await service.submit_new_gene_cache_job(
+            job_id = await service.parca.submit_new_gene_cache_job(
                 commit="abc1234",
                 variant="k4-induced",
                 expression=1e6,
@@ -4220,8 +4189,7 @@ class TestBuildVariantCacheCommand:
     native-overexpression design screen)."""
 
     def test_required_flags_only(self) -> None:
-        service = SimulationServiceRay()
-        cmd = service._build_variant_cache_command(perturbations={"EG10073": 10.0, "EG10074": 1.0})
+        cmd = parca_spec.variant_cache_command(perturbations={"EG10073": 10.0, "EG10074": 1.0})
         assert cmd == (
             f"cd {V2ECOLI_DIR}"
             f" && python scripts/build_variant_cache.py"
@@ -4232,8 +4200,7 @@ class TestBuildVariantCacheCommand:
         )
 
     def test_optional_flags_all_append(self) -> None:
-        service = SimulationServiceRay()
-        cmd = service._build_variant_cache_command(
+        cmd = parca_spec.variant_cache_command(
             perturbations={"EG10073": 0.0},
             seed=7,
             fixed_media="minimal_plus_amino_acids",
@@ -4245,10 +4212,9 @@ class TestBuildVariantCacheCommand:
         """Same matched-pair contract as new-gene-cache's own equivalent test --
         the --state path this command reads must be exactly the path
         _parca_command's own new cp step writes to."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            parca_cmd = service._parca_command()
-        cache_cmd = service._build_variant_cache_command(perturbations={"EG10073": 1.0})
+            parca_cmd = parca_spec.parca_command()
+        cache_cmd = parca_spec.variant_cache_command(perturbations={"EG10073": 1.0})
         written_path = f"{PARCA_CACHE_DIR}/parca_state.pkl.gz"
         assert written_path in parca_cmd
         assert f"--state {written_path}" in cache_cmd
@@ -4268,7 +4234,7 @@ class TestSubmitVariantCacheJob:
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
         ):
-            job_id = await service.submit_variant_cache_job(
+            job_id = await service.parca.submit_variant_cache_job(
                 commit="abc1234",
                 variant="strain-design-1",
                 perturbations={"EG10073": 10.0},

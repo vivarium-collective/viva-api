@@ -62,12 +62,13 @@ from viva_api.simulation.models import (
     CompositeEngine,
     HpcRun,
     JobType,
+    ParcaDataset,
     RepoDiscovery,
     Simulation,
     SimulatorVersion,
     VecoliSource,
 )
-from viva_api.simulation.ray import _seams
+from viva_api.simulation.ray import _seams, parca_spec
 from viva_api.simulation.ray.analysis_spec import analysis_memory_class, analysis_modules_for
 from viva_api.simulation.ray.batch_layer import RayBatchLayer, _rand_suffix
 from viva_api.simulation.ray.build import RayImageBuilder
@@ -83,7 +84,7 @@ from viva_api.simulation.ray.image_paths import (
     SIM_OUT_DIR,
     V2ECOLI_DIR,
 )
-from viva_api.simulation.ray.parca import RayParcaMixin
+from viva_api.simulation.ray.parca import RayParcaService
 from viva_api.simulation.ray.tasks import RayTaskService
 from viva_api.simulation.tables_orm import AnalysisStatusDB
 from viva_core.backends.batch import (
@@ -286,7 +287,7 @@ def _command_belongs_to_campaign(command: str, campaign_stem: str) -> bool:
     return False
 
 
-class SimulationServiceRay(RayParcaMixin, RayBatchLayer):
+class SimulationServiceRay(RayBatchLayer):
     """Ray-on-Batch (MNP) implementation of SimulationService."""
 
     async def stage_render_nf(self, experiment_id: str) -> str:
@@ -903,7 +904,7 @@ class SimulationServiceRay(RayParcaMixin, RayBatchLayer):
             parca_job_id = self._submit_container(
                 job_name=f"mbp-parca-{commit}-{_rand_suffix()}",
                 job_definition=job_def,
-                job_cmd=self._parca_command(),
+                job_cmd=parca_spec.parca_command(),
                 out_s3=cache_s3,
                 out_dir=PARCA_CACHE_DIR,
                 tags={**base_tags, "Phase": "parca"},
@@ -1515,6 +1516,23 @@ class SimulationServiceRay(RayParcaMixin, RayBatchLayer):
         )
 
     @property
+    def parca(self) -> RayParcaService:
+        """The ParCa cache jobs (a commit's cache, a new-gene cache, a variant cache), composed:
+        handed this service as the thing that dispatches container jobs for them. Built per
+        access; it holds no state of its own."""
+        return RayParcaService(self)
+
+    @override
+    async def submit_parca_job(self, parca_dataset: ParcaDataset) -> JobId:
+        """``SimulationService``'s contract; the work is ``RayParcaService``'s."""
+        return await self.parca.submit_parca_job(parca_dataset)
+
+    def cache_s3_uri(self, commit: str, *, variant: str | None = None) -> str:
+        """Where a commit's ParCa cache lives -- ``parca_spec.cache_s3_uri``, kept on the
+        service because the scheduler and the handlers ask the SERVICE for it."""
+        return parca_spec.cache_s3_uri(commit, variant=variant)
+
+    @property
     def tasks(self) -> RayTaskService:
         """The task service (``POST /api/v1/tasks`` and friends), composed: it is handed this
         service as the thing that dispatches container jobs for it. Built per access; it
@@ -1691,7 +1709,9 @@ class SimulationServiceRay(RayParcaMixin, RayBatchLayer):
         # are byte-identical (`REPO_ROOT/out/cache` == `/app/v2ecoli/out/cache`).
         cache_variant = None if is_upstream else (getattr(config, "cache_variant", None) or None)
         cache_s3 = (
-            self._upstream_cache_s3_uri(commit) if is_upstream else self.cache_s3_uri(commit, variant=cache_variant)
+            parca_spec.upstream_cache_s3_uri(commit)
+            if is_upstream
+            else self.cache_s3_uri(commit, variant=cache_variant)
         )
         # Backlog item 93: same generic new_genes passthrough as
         # submit_chain_dispatch_job -- irrelevant to the upstream-vEcoli
@@ -1725,9 +1745,9 @@ class SimulationServiceRay(RayParcaMixin, RayBatchLayer):
             False if is_upstream else bool(getattr(config.parca_options, "deterministic_hash_seed", False))
         )
         parca_command = (
-            self._upstream_parca_command()
+            parca_spec.upstream_parca_command()
             if is_upstream
-            else self._parca_command(
+            else parca_spec.parca_command(
                 new_genes=new_genes,
                 bundle_overrides=bundle_overrides,
                 rnaseq_source=rnaseq_source,
@@ -1972,6 +1992,75 @@ class SimulationServiceRay(RayParcaMixin, RayBatchLayer):
             f" --overrides {shlex.quote(json.dumps(params))} -n {int(steps)}{ident}"
         )
 
+    def _stage_seed_override_caches(
+        self,
+        *,
+        seed_overrides: dict[Any, dict[str, Any]],
+        cache_s3: str,
+        stage_dir: str,
+    ) -> dict[Any, dict[str, Any]]:
+        """Server-side copy each ``seed_overrides[*].cache_dir`` S3 prefix under
+        this dispatch's own ``cache_s3`` prefix, then rewrite ``cache_dir`` to the
+        LOCAL path it resolves to once the existing single ``stage_s3``->``stage_dir``
+        sync (``ray-batch-entrypoint.sh``'s ``stage_inputs``, a recursive
+        ``aws s3 sync``) pulls it down on every node.
+
+        Real bug this fixes (backlog item 106, 2026-09-09): ``seed_overrides[*].
+        cache_dir`` is a raw ``s3://`` URI, but ``_submit_mnp`` only ever stages ONE
+        ``(stage_s3, stage_dir)`` pair -- the dispatch's own base/chassis cache.
+        v2ecoli's ``build_lineage_ray_batch_document`` passes an override's
+        ``cache_dir`` straight through to ``LineageProcess.config["cache_dir"]``
+        unmodified (``v2ecoli/workflow/batch_lineage_ray.py`` line ~247), and
+        ``read_cache_version`` does a plain ``os.path.exists()`` on it
+        (``v2ecoli/library/cache_version.py`` line ~575) -- unconditionally False
+        for an ``s3://`` string regardless of whether the real object exists,
+        raising ``StaleCacheError``. Confirmed via direct source trace plus two
+        independent real dispatches (database_id 733/738) each hitting this on a
+        different seed (Ray's own non-deterministic task ordering picks whichever
+        seed's generation-build task runs first before the job aborts).
+
+        Copying each override's own prefix INTO the already-staged ``cache_s3``
+        prefix (under a ``_seed_overrides/<seed>/`` subpath) means the EXISTING
+        recursive sync already pulls it down — no new env var, no
+        entrypoint-script change, no image rebuild. The only new work is a
+        server-side S3->S3 copy plus rewriting each override's own ``cache_dir``
+        to the resulting local path. A ``cache_dir`` that isn't an ``s3://`` URI
+        (already local, or absent) passes through unchanged.
+        """
+        dest_bucket = _seams.get_settings().s3_work_bucket
+        dest_prefix = data_layout.key_from_uri(cache_s3).rstrip("/")
+        s3_client = _seams.boto3.client("s3", region_name=_seams.get_settings().storage_s3_region)
+        rewritten: dict[Any, dict[str, Any]] = {}
+        for seed, seed_override in seed_overrides.items():
+            seed_override = dict(seed_override)
+            cache_dir = seed_override.get("cache_dir")
+            if isinstance(cache_dir, str) and cache_dir.startswith("s3://"):
+                src_bucket, _, src_prefix = cache_dir.removeprefix("s3://").partition("/")
+                src_prefix = src_prefix.rstrip("/")
+                dest_seed_prefix = f"{dest_prefix}/_seed_overrides/{seed}"
+                paginator = s3_client.get_paginator("list_objects_v2")
+                copied = 0
+                for page in paginator.paginate(Bucket=src_bucket, Prefix=f"{src_prefix}/"):
+                    for obj in page.get("Contents", []):
+                        rel_key = obj["Key"][len(src_prefix) + 1 :]
+                        s3_client.copy_object(
+                            Bucket=dest_bucket,
+                            Key=f"{dest_seed_prefix}/{rel_key}",
+                            CopySource={"Bucket": src_bucket, "Key": obj["Key"]},
+                        )
+                        copied += 1
+                logger.info(
+                    "Staged seed_overrides[%s].cache_dir (%d objects) from %s to s3://%s/%s",
+                    seed,
+                    copied,
+                    cache_dir,
+                    dest_bucket,
+                    dest_seed_prefix,
+                )
+                seed_override["cache_dir"] = f"{stage_dir}/_seed_overrides/{seed}"
+            rewritten[seed] = seed_override
+        return rewritten
+
     async def _submit_multi_node_composite(
         self,
         ecoli_simulation: Simulation,
@@ -2148,7 +2237,7 @@ class SimulationServiceRay(RayParcaMixin, RayBatchLayer):
                 job_name=f"ray-parca-{commit}-{_rand_suffix()}",
                 job_definition=job_def,
                 num_nodes=1,
-                ray_job_cmd=self._parca_command(),
+                ray_job_cmd=parca_spec.parca_command(),
                 out_s3=cache_s3,
                 out_dir=PARCA_CACHE_DIR,
                 tags={**base_tags, "Phase": "parca"},
@@ -2740,7 +2829,7 @@ class SimulationServiceRay(RayParcaMixin, RayBatchLayer):
         parca_job_id = self._submit_container(
             job_name=f"ray-parca-{commit}-{_rand_suffix()}",
             job_definition=container_job_def,
-            job_cmd=self._parca_command(
+            job_cmd=parca_spec.parca_command(
                 new_genes=new_genes, bundle_overrides=bundle_overrides, rnaseq_source=rnaseq_source
             ),
             out_s3=cache_s3,
