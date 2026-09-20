@@ -692,6 +692,10 @@ split; each has an owner-less issue or a named moment.
   finishes before Tier 2 starts, so the simulations then run on the image it just built —
   the strongest proof a rewired build path can get. (4) No registry access ⇒ SKIP before
   anything is touched.
+  **Baseline, dev 0.9.148 (before PR 7 rewires the path):** `sim-mbp` PASS in 1,005 s —
+  simulation 1361, `baseline-reference-multigen`, 5 output files; almost all of it the ParCa
+  job the run waits on. `build` has not been run live: it waits for Jim's word, and is due
+  at C2 in any case.
 - **2026-09-20** — **Plan audit after cut 6, at Jim's request** ("a good time to double-check
   our plan given all we have learned"). Method: three read-only explorations — what is left
   in the class, these two documents against themselves, how far `viva_core` really is — and
