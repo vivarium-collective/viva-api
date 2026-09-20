@@ -25,7 +25,7 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class CoreSettings(BaseSettings):
+class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     # No env_prefix (yet): these are the variable names every existing deployment already
     # sets. A VIVA_CORE_ prefix arrives, with aliases, when core is deployed on its own (P10).
     model_config = SettingsConfigDict(extra="ignore")

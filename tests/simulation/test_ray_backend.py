@@ -4,6 +4,7 @@ and SimulationServiceRay submission/status/cancel (boto3 mocked, Postgres via te
 import asyncio
 import json
 import shlex
+from collections.abc import Mapping, Sequence
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -3088,8 +3089,8 @@ def test_runner_env_carries_both_output_guards() -> None:
     assert PBG_MIN_GLOBAL_TIME > 1.0
 
 
-def _env_names(env: list[dict[str, str]]) -> dict[str, str]:
-    return {e["name"]: e["value"] for e in env}
+def _env_names(env: Sequence[Mapping[str, object]]) -> dict[str, str]:
+    return {str(e["name"]): str(e["value"]) for e in env}
 
 
 def test_stage_out_env_emits_expect_vars_for_a_real_strain() -> None:

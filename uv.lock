@@ -1448,6 +1448,15 @@ wheels = [
 ]
 
 [[package]]
+name = "kubernetes-stubs-elephant-fork"
+version = "36.0.3.post1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/66/43/59c28f1f8dbf8887dbc7752db86f8ff095576bcf5efae55e62c7bb2f6e0f/kubernetes_stubs_elephant_fork-36.0.3.post1.tar.gz", hash = "sha256:f3d7d372ac843d106eb99f219d8c04d1cdb18fffff275eb9751e552bf76e2a48", size = 162487, upload-time = "2026-07-20T09:56:28.603Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0f/c0/a001a4e07d82dc1d9559dde6e4c0bf541d66d494190490b554f436ef3dda/kubernetes_stubs_elephant_fork-36.0.3.post1-py2.py3-none-any.whl", hash = "sha256:92e1745957faa9c1d01b2d399618410a8d029c85437060b70300efd48d3b1846", size = 488809, upload-time = "2026-07-20T09:56:27.34Z" },
+]
+
+[[package]]
 name = "librt"
 version = "0.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3819,6 +3828,7 @@ dev = [
     { name = "deptry" },
     { name = "import-linter" },
     { name = "ipdb" },
+    { name = "kubernetes-stubs-elephant-fork" },
     { name = "mypy" },
     { name = "openapi-python-client" },
     { name = "pre-commit" },
@@ -3911,6 +3921,7 @@ dev = [
     { name = "deptry", specifier = ">=0.16.2,<0.26" },
     { name = "import-linter", specifier = ">=2.15" },
     { name = "ipdb", specifier = ">=0.13.13" },
+    { name = "kubernetes-stubs-elephant-fork", specifier = ">=36.0.3.post1" },
     { name = "mypy", specifier = ">=1.5.1,<2.2" },
     { name = "openapi-python-client", specifier = ">=0.25.2,<0.30" },
     { name = "pre-commit", specifier = ">=3.4.0,<5" },

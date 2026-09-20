@@ -24,7 +24,7 @@ from viva_core.models import JobStatus
 
 if TYPE_CHECKING:
     from types_boto3_batch import BatchClient
-    from types_boto3_batch.type_defs import JobDetailTypeDef
+    from types_boto3_batch.type_defs import JobDetailTypeDef, KeyValuePairTypeDef
 
 
 class FakeBatch:
@@ -190,7 +190,7 @@ def test_submit_container_puts_the_whole_contract_in_one_environment_list() -> N
 
 def test_submit_mnp_targets_the_single_node_range_and_does_not_mutate_the_callers_env() -> None:
     fake = FakeBatch()
-    shared = [{"name": "RAY_OUT_DIR", "value": "/o"}]
+    shared: list[KeyValuePairTypeDef] = [{"name": "RAY_OUT_DIR", "value": "/o"}]
     _engine(fake).submit_mnp(
         job_name="n",
         job_queue="q",

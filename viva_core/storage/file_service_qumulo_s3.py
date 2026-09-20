@@ -3,7 +3,7 @@ import os
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, override
+from typing import TYPE_CHECKING, Literal, TypedDict, cast, override
 
 import aioboto3
 from botocore.config import Config
@@ -12,6 +12,22 @@ from botocore.exceptions import ClientError
 from viva_core.settings import get_core_settings, get_local_cache_dir
 from viva_core.storage.file_paths import S3FilePath
 from viva_core.storage.file_service import FileService, ListingItem
+
+if TYPE_CHECKING:
+    # a dev dependency (annotations only): never imported at runtime
+    from aiobotocore.config import AioConfig
+    from types_aiobotocore_s3 import S3Client
+
+
+class _S3ClientKwargs(TypedDict, total=False):
+    """Exactly the keywords this service passes to ``aioboto3.Session.client``."""
+
+    service_name: Literal["s3"]
+    endpoint_url: str
+    config: "AioConfig"
+    region_name: str
+    verify: bool
+
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -72,23 +88,25 @@ class FileServiceQumuloS3(FileService):
         # For SSL verification, we need to pass it separately to the client
         # since Config doesn't support the 'verify' parameter
 
-    def _get_client_kwargs(self) -> dict[str, Any]:
+    def _get_client_kwargs(self) -> _S3ClientKwargs:
         """
         Get the kwargs for creating an S3 client.
 
         Returns a dict with properly typed arguments for aioboto3.Session.client().
         """
-        kwargs: dict[str, Any] = {
+        kwargs: _S3ClientKwargs = {
             "service_name": "s3",
             "endpoint_url": self.endpoint_url,
-            "config": self.config,
+            # The stubs ask for an ``AioConfig``; aiobotocore accepts a plain botocore ``Config`` and
+            # wraps it itself (``aiobotocore/args.py``). Cast, so nothing changes at runtime.
+            "config": cast("AioConfig", self.config),
             "region_name": "us-east-1",
         }
         if not self.verify_ssl:
             kwargs["verify"] = False
         return kwargs
 
-    async def _delete_if_exists(self, s3_client: Any, bucket: str, key: str) -> None:
+    async def _delete_if_exists(self, s3_client: "S3Client", bucket: str, key: str) -> None:
         """
         Delete an object if it exists, to work around Qumulo's no-overwrite policy.
 

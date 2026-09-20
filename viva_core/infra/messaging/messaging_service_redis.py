@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Any, override
+from typing import override
 
 from redis.asyncio.client import PubSub, Redis
 
@@ -23,20 +23,19 @@ class MessagingServiceRedis(MessagingService):
         self._stop_event: asyncio.Event = asyncio.Event()
 
     @override
-    async def connect(self, host: str, port: int, **kwargs: Any) -> None:
+    async def connect(self, host: str, port: int) -> None:
         """Connect to the Redis server.
 
         Args:
             host: Redis server host (e.g. localhost)
             port: Redis server port (e.g. 6379)
-            **kwargs: Additional Redis connection parameters
         """
         if self._client is not None:
             logger.warning("Redis client is already connected")
             return
 
         logger.info(f"Connecting to Redis server at host:port {host}:{port}")
-        self._client = Redis(host=host, port=port, **kwargs)
+        self._client = Redis(host=host, port=port)
 
         # Test the connection
         await self._client.ping()

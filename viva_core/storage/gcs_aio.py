@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import TypedDict, cast
 from urllib.parse import quote
 
 from gcloud.aio.auth import Token
@@ -16,19 +16,33 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+class GcsObject(TypedDict):
+    """The fields of a GCS object resource this module reads (the API returns more). ``size`` is
+    a decimal STRING in the JSON API; pydantic coerces it where it lands in ``ListingItem``."""
+
+    id: str
+    updated: str
+    size: str
+    etag: str
+
+
+class GcsObjectList(TypedDict):
+    items: list[GcsObject]
+
+
 class _StorageWithListPrefix(Storage):
     def __init__(self, token: Token):
         super().__init__(token=token)
 
-    async def list_objects_with_prefix(self, bucket: str, prefix: str) -> dict[str, Any]:
+    async def list_objects_with_prefix(self, bucket: str, prefix: str) -> GcsObjectList:
         encoded_prefix = quote(string=prefix, safe="")
         url = f"{self._api_root_read}/{bucket}/o?prefix={encoded_prefix}/"
-        headers: dict[str, Any] = {}
+        headers: dict[str, str] = {}
         headers.update(await self._headers())
 
         s = self.session
         resp = await s.get(url=url, headers=headers, params={}, timeout=DEFAULT_TIMEOUT)
-        data: dict[str, Any] = await resp.json(content_type=None)
+        data: GcsObjectList = await resp.json(content_type=None)
         return data
 
 
@@ -59,7 +73,7 @@ async def download_gcs_file(s3_path: S3FilePath, file_path: Path, token: Token) 
 async def upload_file_to_gcs(file_path: Path, s3_path: S3FilePath, token: Token) -> S3FilePath:
     logger.info(f"Uploading {file_path} to {s3_path}")
     async with Storage(token=token) as client:
-        result: dict[str, Any] = await client.upload_from_filename(
+        result: dict[str, object] = await client.upload_from_filename(
             bucket=get_core_settings().storage_gcs_bucket, object_name=str(s3_path), filename=str(file_path)
         )
         logger.info(f"Upload result: {result}")
@@ -78,8 +92,9 @@ async def upload_bytes_to_gcs(file_contents: bytes, s3_path: S3FilePath, token: 
 async def get_gcs_modified_date(s3_path: S3FilePath, token: Token) -> datetime:
     logger.info(f"Getting modified date for {s3_path}")
     async with Storage(token=token) as client:
-        metadata: dict[str, Any] = await client.download_metadata(
-            bucket=get_core_settings().storage_gcs_bucket, object_name=str(s3_path)
+        metadata = cast(
+            GcsObject,
+            await client.download_metadata(bucket=get_core_settings().storage_gcs_bucket, object_name=str(s3_path)),
         )
         return datetime.fromisoformat(metadata["updated"])
 
@@ -87,12 +102,12 @@ async def get_gcs_modified_date(s3_path: S3FilePath, token: Token) -> datetime:
 async def get_listing_of_gcs(token: Token) -> list[ListingItem]:
     logger.info("Retrieving file list from root of bucket")
     async with Storage(token=token) as client:
-        metadata: dict[str, Any] = await client.list_objects(bucket=get_core_settings().storage_gcs_bucket)
+        metadata = cast(GcsObjectList, await client.list_objects(bucket=get_core_settings().storage_gcs_bucket))
         files: list[ListingItem] = [
             ListingItem(
                 Key=item["id"],
                 LastModified=datetime.fromisoformat(item["updated"]),
-                Size=item["size"],
+                Size=int(item["size"]),  # a decimal string in the JSON API; pydantic used to coerce it silently
                 ETag=item["etag"],
             )
             for item in metadata["items"]
@@ -104,14 +119,14 @@ async def get_listing_of_gcs_path(s3_path: S3FilePath, token: Token) -> list[Lis
     logger.info(f"Retrieving file list from {s3_path}")
     async with _StorageWithListPrefix(token=token) as _my_client:
         my_client = cast(_StorageWithListPrefix, _my_client)
-        metadata: dict[str, Any] = await my_client.list_objects_with_prefix(
+        metadata: GcsObjectList = await my_client.list_objects_with_prefix(
             bucket=get_core_settings().storage_gcs_bucket, prefix=str(s3_path)
         )
         files: list[ListingItem] = [
             ListingItem(
                 Key=item["id"],
                 LastModified=datetime.fromisoformat(item["updated"]),
-                Size=item["size"],
+                Size=int(item["size"]),  # a decimal string in the JSON API; pydantic used to coerce it silently
                 ETag=item["etag"],
             )
             for item in metadata["items"]

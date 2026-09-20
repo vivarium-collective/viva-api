@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from viva_core.storage.file_paths import S3FilePath
 
 
-class ListingItem(BaseModel):
+class ListingItem(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     Key: str
     LastModified: datetime
     ETag: str

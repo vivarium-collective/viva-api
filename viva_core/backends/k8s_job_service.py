@@ -69,7 +69,8 @@ class K8sJobService:
         # Load in-cluster config when running in a K8s pod,
         # or kubeconfig for local development
         try:
-            k8s_client.Configuration.set_default(k8s_client.Configuration())
+            # exists at runtime (kubernetes 35); missing from the stubs
+            k8s_client.Configuration.set_default(k8s_client.Configuration())  # type: ignore[attr-defined]
             from kubernetes import config as k8s_config
 
             k8s_config.load_incluster_config()
@@ -86,7 +87,7 @@ class K8sJobService:
         """Get status of a K8s Job by name."""
         try:
             job = self._batch_api.read_namespaced_job_status(name=job_name, namespace=self._namespace)
-        except k8s_client.rest.ApiException as e:
+        except k8s_client.ApiException as e:
             if e.status == 404:
                 return None
             raise
@@ -109,7 +110,7 @@ class K8sJobService:
         """Delete a ConfigMap."""
         try:
             self._core_api.delete_namespaced_config_map(name=name, namespace=self._namespace)
-        except k8s_client.rest.ApiException as e:
+        except k8s_client.ApiException as e:
             if e.status != 404:
                 raise
 
@@ -128,7 +129,7 @@ class K8sJobService:
                 namespace=self._namespace,
                 label_selector=f"job-name={job_name}",
             )
-        except k8s_client.rest.ApiException:
+        except k8s_client.ApiException:
             logger.warning(f"Failed to read pod exit for Job {job_name}")
             return None, None
         for pod in pods.items:
@@ -159,7 +160,7 @@ class K8sJobService:
                 namespace=self._namespace,
                 label_selector=f"job-name={job_name}",
             )
-        except k8s_client.rest.ApiException:
+        except k8s_client.ApiException:
             logger.warning(f"Failed to read pod termination for Job {job_name}")
             return None
         for pod in pods.items:
@@ -181,9 +182,11 @@ class K8sJobService:
             )
             if not pods.items:
                 return None
-            pod_name = pods.items[0].metadata.name
-            log: str = self._core_api.read_namespaced_pod_log(name=pod_name, namespace=self._namespace)
+            metadata = pods.items[0].metadata
+            if metadata is None or metadata.name is None:
+                return None  # a listed pod always has a name; the stubs say it need not
+            log: str = self._core_api.read_namespaced_pod_log(name=metadata.name, namespace=self._namespace)
             return log
-        except k8s_client.rest.ApiException:
+        except k8s_client.ApiException:
             logger.warning(f"Failed to get logs for Job {job_name}")
             return None

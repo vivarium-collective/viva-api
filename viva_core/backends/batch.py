@@ -33,7 +33,7 @@ import logging
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, cast
 
 from viva_core.models import JobStatus
 
@@ -42,7 +42,17 @@ if TYPE_CHECKING:
     # Everything it provides is used in annotations only, so nothing here may import it at
     # runtime -- ``tests/core/test_typed_boto3.py`` fails if a module does.
     from types_boto3_batch import BatchClient
-    from types_boto3_batch.type_defs import JobDetailTypeDef
+    from types_boto3_batch.literals import ArrayJobDependencyType, JobStatusType
+    from types_boto3_batch.type_defs import (
+        JobDependencyTypeDef,
+        JobDetailTypeDef,
+        KeyValuePairTypeDef,
+        ListJobsRequestTypeDef,
+        NodeOverridesTypeDef,
+        NodePropertyOverrideTypeDef,
+        RetryStrategyUnionTypeDef,
+        SubmitJobRequestTypeDef,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +66,7 @@ SUBMIT_JOB_MAX_ATTEMPTS = 5  # botocore "standard" retry attempts per submit_job
 DESCRIBE_JOBS_MAX_BATCH = 100
 
 # Every Batch state a job can still be stopped from.
-ACTIVE_JOB_STATES = ("SUBMITTED", "PENDING", "RUNNABLE", "STARTING", "RUNNING")
+ACTIVE_JOB_STATES: tuple[JobStatusType, ...] = ("SUBMITTED", "PENDING", "RUNNABLE", "STARTING", "RUNNING")
 
 
 class SubmitJobPacer:
@@ -132,7 +142,7 @@ def ecr_image_uri(*, account_id: str, region: str, repository: str, tag: str) ->
     return f"{account_id}.dkr.ecr.{region}.amazonaws.com/{repository}:{tag}"
 
 
-def env_as_batch_list(env: Mapping[str, str] | None) -> list[dict[str, str]]:
+def env_as_batch_list(env: Mapping[str, str] | None) -> list[KeyValuePairTypeDef]:
     """``{NAME: value}`` -> Batch's ``[{"name": ..., "value": ...}]`` shape."""
     return [{"name": k, "value": v} for k, v in (env or {}).items()]
 
@@ -145,7 +155,7 @@ def stage_out_env(
     stage_s3: str | None = None,
     stage_dir: str | None = None,
     log_s3_prefix: str | None = None,
-) -> list[dict[str, str]]:
+) -> list[KeyValuePairTypeDef]:
     """The stage-in / output / log env vars of the container contract, for both job
     shapes -- same conditional logic (only emit STAGE_*/LOG_S3_PREFIX when configured), a
     different env-var prefix per shape (``RAY`` / ``CONTAINER``), since each entrypoint
@@ -153,7 +163,7 @@ def stage_out_env(
 
     An application with more to tell its entrypoint appends its own entries to the list.
     """
-    env: list[dict[str, str]] = [
+    env: list[KeyValuePairTypeDef] = [
         {"name": f"{prefix}_OUT_DIR", "value": out_dir},
         {"name": f"{prefix}_OUT_S3", "value": out_s3},
     ]
@@ -165,8 +175,11 @@ def stage_out_env(
     return env
 
 
-def _depends_on(job_ids: list[str], depends_type: str | None) -> list[dict[str, str]]:
-    return [({"jobId": jid, "type": depends_type} if depends_type else {"jobId": jid}) for jid in job_ids]
+def _depends_on(job_ids: list[str], depends_type: str | None) -> list[JobDependencyTypeDef]:
+    # ``depends_type`` arrives as a plain ``str`` from every caller; Batch accepts two values. The
+    # cast states that without changing what is sent -- an invalid value is still Batch's to refuse.
+    kind = cast("ArrayJobDependencyType | None", depends_type)
+    return [({"jobId": jid, "type": kind} if kind else {"jobId": jid}) for jid in job_ids]
 
 
 class BatchJobClient:
@@ -264,12 +277,12 @@ class BatchJobClient:
         num_nodes: int,
         job_cmd: str,
         report_path: str,
-        shared_env: list[dict[str, str]],
+        shared_env: list[KeyValuePairTypeDef],
         task_env: Mapping[str, str] | None = None,
         depends_on: list[str] | None = None,
         depends_type: str | None = "SEQUENTIAL",
         tags: dict[str, str] | None = None,
-        retry_strategy: dict[str, Any] | None = None,
+        retry_strategy: RetryStrategyUnionTypeDef | None = None,
         client: BatchClient | None = None,
     ) -> str:
         """Submit a multi-node parallel job. Returns the AWS Batch job id.
@@ -311,7 +324,7 @@ class BatchJobClient:
         # The head additionally runs the workload (RAY_JOB_CMD) and writes the report.
         # Workers receive these too but never act on them -- the entrypoint branches on
         # AWS_BATCH_JOB_NODE_INDEX and only the head executes RAY_JOB_CMD/writes the report.
-        head_env: list[dict[str, str]] = [
+        head_env: list[KeyValuePairTypeDef] = [
             {"name": "RAY_JOB_CMD", "value": job_cmd},
             {"name": "RAY_REPORT_PATH", "value": report_path},
             *shared_env,
@@ -322,14 +335,14 @@ class BatchJobClient:
         # range. (Splitting into "0:0"/"1:" makes Batch reject: "NodeOverride targets should
         # match job definition".) One override on "0:" with the full env reaches every node;
         # the per-node staging/output knobs in shared_env are what workers need.
-        node_property_overrides: list[dict[str, Any]] = [
+        node_property_overrides: list[NodePropertyOverrideTypeDef] = [
             {"targetNodes": "0:", "containerOverrides": {"environment": head_env}},
         ]
-        node_overrides: dict[str, Any] = {
+        node_overrides: NodeOverridesTypeDef = {
             "numNodes": num_nodes,
             "nodePropertyOverrides": node_property_overrides,
         }
-        kwargs: dict[str, Any] = {
+        kwargs: SubmitJobRequestTypeDef = {
             "jobName": job_name,
             "jobQueue": job_queue,
             "jobDefinition": job_definition,
@@ -365,12 +378,12 @@ class BatchJobClient:
         job_definition: str,
         job_cmd: str,
         report_path: str,
-        stage_env: list[dict[str, str]],
+        stage_env: list[KeyValuePairTypeDef],
         task_env: Mapping[str, str] | None = None,
         depends_on: list[str] | None = None,
         depends_type: str | None = "SEQUENTIAL",
         tags: dict[str, str] | None = None,
-        retry_strategy: dict[str, Any] | None = None,
+        retry_strategy: RetryStrategyUnionTypeDef | None = None,
         client: BatchClient | None = None,
     ) -> str:
         """Submit a plain, standalone container-type job. Returns the AWS Batch job id.
@@ -381,7 +394,7 @@ class BatchJobClient:
         entrypoint contract. ``depends_on`` / ``tags`` / ``retry_strategy`` / ``client``
         as in ``submit_mnp``.
         """
-        env: list[dict[str, str]] = [
+        env: list[KeyValuePairTypeDef] = [
             {"name": "CONTAINER_JOB_CMD", "value": job_cmd},
             {"name": "CONTAINER_REPORT_PATH", "value": report_path},
             *stage_env,
@@ -390,7 +403,7 @@ class BatchJobClient:
             env.extend(env_as_batch_list(task_env))
             logger.info("Container job %s: task_env passthrough %s", job_name, dict(task_env))
 
-        kwargs: dict[str, Any] = {
+        kwargs: SubmitJobRequestTypeDef = {
             "jobName": job_name,
             "jobQueue": job_queue,
             "jobDefinition": job_definition,
@@ -496,7 +509,7 @@ class BatchJobClient:
         terminated = 0
         for queue in queues:
             for status in ACTIVE_JOB_STATES:
-                kwargs: dict[str, Any] = {"jobQueue": queue, "jobStatus": status}
+                kwargs: ListJobsRequestTypeDef = {"jobQueue": queue, "jobStatus": status}
                 while True:
                     response = batch.list_jobs(**kwargs)
                     ids = [j["jobId"] for j in response.get("jobSummaryList", [])]

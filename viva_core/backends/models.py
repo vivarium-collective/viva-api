@@ -1,8 +1,9 @@
 import logging
 import pprint
+from collections.abc import Mapping
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -12,7 +13,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class SlurmJob(BaseModel):
+class SlurmJob(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     #                                 --squeue--   --sacct--   --scontrol--
     job_id: int  #                       %i          jobid       JobId
     name: str  #                         %j          jobname     JobName
@@ -177,7 +178,7 @@ class NextflowTraceStatus(str, Enum):
     ABORTED = "ABORTED"
 
 
-class NextflowDateTime(BaseModel):
+class NextflowDateTime(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Nextflow's custom datetime representation."""
 
     model_config = ConfigDict(populate_by_name=True)
@@ -192,7 +193,7 @@ class NextflowDateTime(BaseModel):
     month: str
     month_value: int = Field(alias="monthValue")
     year: int
-    offset: dict[str, Any] | None = None
+    offset: dict[str, object] | None = None
 
     def to_datetime(self) -> datetime:
         """Convert to Python datetime."""
@@ -207,29 +208,29 @@ class NextflowDateTime(BaseModel):
         )
 
 
-class NextflowVersion(BaseModel):
+class NextflowVersion(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Nextflow version information."""
 
     version: str
     build: int
     timestamp: str
-    enable: dict[str, Any] = Field(default_factory=dict)
+    enable: dict[str, object] = Field(default_factory=dict)
 
 
-class NextflowWave(BaseModel):
+class NextflowWave(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Nextflow Wave configuration."""
 
     enabled: bool = False
 
 
-class NextflowFusion(BaseModel):
+class NextflowFusion(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Nextflow Fusion configuration."""
 
     enabled: bool = False
     version: str | None = None
 
 
-class NextflowProcessStats(BaseModel):
+class NextflowProcessStats(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Statistics for a single Nextflow process."""
 
     model_config = ConfigDict(populate_by_name=True)
@@ -259,7 +260,7 @@ class NextflowProcessStats(BaseModel):
     total_count: int = Field(default=0, alias="totalCount")
 
 
-class NextflowStats(BaseModel):
+class NextflowStats(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Nextflow workflow statistics."""
 
     model_config = ConfigDict(populate_by_name=True)
@@ -290,13 +291,13 @@ class NextflowStats(BaseModel):
     processes: list[NextflowProcessStats] = Field(default_factory=list)
 
 
-class NextflowManifest(BaseModel):
+class NextflowManifest(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Nextflow workflow manifest information."""
 
     model_config = ConfigDict(populate_by_name=True)
 
     author: str | None = None
-    contributors: list[Any] = Field(default_factory=list)
+    contributors: list[object] = Field(default_factory=list)
     default_branch: str | None = Field(default=None, alias="defaultBranch")
     description: str | None = None
     docs_url: str | None = Field(default=None, alias="docsUrl")
@@ -313,7 +314,7 @@ class NextflowManifest(BaseModel):
     version: str | None = None
 
 
-class NextflowWorkflow(BaseModel):
+class NextflowWorkflow(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Nextflow workflow metadata."""
 
     model_config = ConfigDict(populate_by_name=True)
@@ -328,7 +329,7 @@ class NextflowWorkflow(BaseModel):
     start: NextflowDateTime | None = None
     complete: NextflowDateTime | None = None
     duration: int | None = None
-    container: dict[str, Any] = Field(default_factory=dict)
+    container: dict[str, object] = Field(default_factory=dict)
     command_line: str = Field(alias="commandLine")
     nextflow: NextflowVersion
     success: bool
@@ -356,14 +357,14 @@ class NextflowWorkflow(BaseModel):
     fail_on_ignore: bool = Field(default=False, alias="failOnIgnore")
 
 
-class NextflowMetadata(BaseModel):
+class NextflowMetadata(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Nextflow metadata payload for started/completed events."""
 
-    parameters: dict[str, Any] = Field(default_factory=dict)
+    parameters: dict[str, object] = Field(default_factory=dict)
     workflow: NextflowWorkflow
 
 
-class NextflowTrace(BaseModel):
+class NextflowTrace(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Nextflow trace payload for process events."""
 
     model_config = ConfigDict(populate_by_name=True)
@@ -420,7 +421,7 @@ class NextflowTrace(BaseModel):
         )
 
 
-class NextflowMetadataEvent(BaseModel):
+class NextflowMetadataEvent(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Nextflow weblog event containing workflow metadata (started/completed)."""
 
     model_config = ConfigDict(populate_by_name=True)
@@ -432,7 +433,7 @@ class NextflowMetadataEvent(BaseModel):
     metadata: NextflowMetadata
 
 
-class NextflowTraceEvent(BaseModel):
+class NextflowTraceEvent(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Nextflow weblog event containing task trace data."""
 
     model_config = ConfigDict(populate_by_name=True)
@@ -447,7 +448,7 @@ class NextflowTraceEvent(BaseModel):
 NextflowEvent = NextflowMetadataEvent | NextflowTraceEvent
 
 
-def parse_nextflow_event(data: dict[str, Any]) -> NextflowEvent:
+def parse_nextflow_event(data: Mapping[str, object]) -> NextflowEvent:
     """Parse a Nextflow weblog event from a dictionary.
 
     Args:

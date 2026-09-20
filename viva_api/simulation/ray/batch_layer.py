@@ -28,7 +28,7 @@ dispatcher Protocol into core waits for both (plan P2.3).
 import logging
 import random
 import string
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from viva_api.common.models import JobStatus
 from viva_api.simulation.ray import _seams
@@ -38,6 +38,7 @@ from viva_core.backends.batch import BatchJobClient, BatchJobDetail, ecr_image_u
 if TYPE_CHECKING:
     # ``types-boto3`` is a dev dependency (annotations only): never imported at runtime.
     from types_boto3_batch import BatchClient
+    from types_boto3_batch.type_defs import KeyValuePairTypeDef, RetryStrategyUnionTypeDef
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +69,8 @@ class ContainerSubmitter(Protocol):
         depends_on: list[str] | None = None,
         depends_type: str | None = "SEQUENTIAL",
         tags: dict[str, str] | None = None,
-        retry_strategy: dict[str, Any] | None = None,
-        batch_client: Any = None,
+        retry_strategy: "RetryStrategyUnionTypeDef | None" = None,
+        batch_client: "BatchClient | None" = None,
         expect_new_genes: str | None = None,
         expect_bundle_overrides: str | list[str] | None = None,
         require_clean_chain: bool = False,
@@ -100,8 +101,8 @@ class MnpSubmitter(Protocol):
         depends_on: list[str] | None = None,
         depends_type: str | None = "SEQUENTIAL",
         tags: dict[str, str] | None = None,
-        retry_strategy: dict[str, Any] | None = None,
-        batch_client: Any = None,
+        retry_strategy: "RetryStrategyUnionTypeDef | None" = None,
+        batch_client: "BatchClient | None" = None,
         expect_new_genes: str | None = None,
         expect_bundle_overrides: str | list[str] | None = None,
         require_clean_chain: bool = False,
@@ -178,8 +179,8 @@ class RayBatchLayer:
         depends_on: list[str] | None = None,
         depends_type: str | None = "SEQUENTIAL",
         tags: dict[str, str] | None = None,
-        retry_strategy: dict[str, Any] | None = None,
-        batch_client: Any = None,
+        retry_strategy: "RetryStrategyUnionTypeDef | None" = None,
+        batch_client: "BatchClient | None" = None,
         expect_new_genes: str | None = None,
         expect_bundle_overrides: str | list[str] | None = None,
         require_clean_chain: bool = False,
@@ -277,7 +278,7 @@ class RayBatchLayer:
         expect_bundle_overrides: str | list[str] | None = None,
         require_clean_chain: bool = False,
         lineage_debug_division: bool = False,
-    ) -> list[dict[str, str]]:
+    ) -> "list[KeyValuePairTypeDef]":
         """Shared stage/output/log env-var construction for both the MNP (``RAY_*``)
         and container (``CONTAINER_*``) submission paths (backlog item 71) -- same
         conditional logic (only emit STAGE_*/LOG_S3_PREFIX when configured), a
@@ -388,8 +389,8 @@ class RayBatchLayer:
         depends_on: list[str] | None = None,
         depends_type: str | None = "SEQUENTIAL",
         tags: dict[str, str] | None = None,
-        retry_strategy: dict[str, Any] | None = None,
-        batch_client: Any = None,
+        retry_strategy: "RetryStrategyUnionTypeDef | None" = None,
+        batch_client: "BatchClient | None" = None,
         expect_new_genes: str | None = None,
         expect_bundle_overrides: str | list[str] | None = None,
         require_clean_chain: bool = False,
