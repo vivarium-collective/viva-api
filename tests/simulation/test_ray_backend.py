@@ -8,7 +8,9 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import botocore.session
 import pytest
+from botocore.validate import validate_parameters
 
 from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.models import JobBackend, JobId, JobStatus
@@ -41,6 +43,8 @@ def _ray_settings() -> MagicMock:
     """A settings double with the ray_* / S3 fields SimulationServiceRay reads."""
     return MagicMock(
         batch_region="us-gov-west-1",
+        # a str, as the real setting is: it becomes a Batch tag, and the fakes below validate tags
+        cost_team_tag="covertlab",
         s3_work_bucket="mybucket",
         s3_output_prefix="vecoli-output",
         ray_mnp_queue="smscdk-ray-mnp",
@@ -69,6 +73,28 @@ def _ray_settings() -> MagicMock:
     )
 
 
+_BATCH_SERVICE_MODEL = botocore.session.get_session().get_service_model("batch")
+
+
+def validate_batch_parameters(operation: str, kwargs: dict[str, Any]) -> None:
+    """Raise ``ParamValidationError`` for keywords the REAL Batch API would refuse -- offline, from
+    botocore's own service model. A ``MagicMock`` client accepts anything; a fake that calls
+    this first refuses what AWS refuses."""
+    shape = _BATCH_SERVICE_MODEL.operation_model(operation).input_shape
+    assert shape is not None
+    validate_parameters(kwargs, shape)
+
+
+def _validated(operation: str, answer: Any) -> Any:
+    """``answer``, but only for keywords the real API would accept."""
+
+    def call(**kwargs: Any) -> Any:
+        validate_batch_parameters(operation, kwargs)
+        return answer(**kwargs)
+
+    return call
+
+
 def _fake_batch(submit_ids: list[str]) -> MagicMock:
     """A boto3 Batch mock that supports the per-commit MNP job-def derivation +
     submits. (The Array job-def branch this used to also support was removed
@@ -88,14 +114,18 @@ def _fake_batch(submit_ids: list[str]) -> MagicMock:
     }
 
     def _describe(**kwargs: Any) -> dict[str, Any]:
+        validate_batch_parameters("DescribeJobDefinitions", kwargs)  # refuse what AWS refuses (#730)
         name = kwargs.get("jobDefinitionName")
         if name == "smscdk-ray-mnp":  # MNP base
             return {"jobDefinitions": [{"revision": 7, "nodeProperties": base_node_props}]}
         return {"jobDefinitions": []}  # per-commit: none yet
 
     b.describe_job_definitions.side_effect = _describe
-    b.register_job_definition.side_effect = lambda **kw: {"jobDefinitionName": kw["jobDefinitionName"], "revision": 1}
-    b.submit_job.side_effect = [{"jobId": jid} for jid in submit_ids]
+    b.register_job_definition.side_effect = _validated(
+        "RegisterJobDefinition", lambda **kw: {"jobDefinitionName": kw["jobDefinitionName"], "revision": 1}
+    )
+    _answers = iter([{"jobId": jid} for jid in submit_ids])
+    b.submit_job.side_effect = _validated("SubmitJob", lambda **kw: next(_answers))
     return b
 
 
@@ -139,14 +169,18 @@ def _fake_container_batch(submit_ids: list[str]) -> MagicMock:
     base_container_props = {"image": "111.dkr.ecr.x/vecoli:ray", "vcpus": 16, "memory": 32000}
 
     def _describe(**kwargs: Any) -> dict[str, Any]:
+        validate_batch_parameters("DescribeJobDefinitions", kwargs)  # refuse what AWS refuses (#730)
         name = kwargs.get("jobDefinitionName")
         if name == "smscdk-ray-container":  # container base
             return {"jobDefinitions": [{"revision": 7, "containerProperties": base_container_props}]}
         return {"jobDefinitions": []}  # per-commit: none yet
 
     b.describe_job_definitions.side_effect = _describe
-    b.register_job_definition.side_effect = lambda **kw: {"jobDefinitionName": kw["jobDefinitionName"], "revision": 1}
-    b.submit_job.side_effect = [{"jobId": jid} for jid in submit_ids]
+    b.register_job_definition.side_effect = _validated(
+        "RegisterJobDefinition", lambda **kw: {"jobDefinitionName": kw["jobDefinitionName"], "revision": 1}
+    )
+    _answers = iter([{"jobId": jid} for jid in submit_ids])
+    b.submit_job.side_effect = _validated("SubmitJob", lambda **kw: next(_answers))
     return b
 
 
@@ -728,7 +762,13 @@ def _fake_multi_node_batch(submit_ids: list[str], *, per_node_vcpus: int = 16) -
         }
 
     def _describe(**kwargs: Any) -> dict[str, Any]:
+        # Checked the way botocore checks it. This fake used to read ``jobDefinitionName`` and
+        # ignore everything else, which is how a lookup passing a keyword the API does not have
+        # (``revision``, viva-api#730) had two green tests here while failing on every real call.
+        validate_batch_parameters("DescribeJobDefinitions", kwargs)
         name = kwargs.get("jobDefinitionName")
+        if name is None and kwargs.get("jobDefinitions"):
+            name = str(kwargs["jobDefinitions"][0]).partition(":")[0]  # "<name>:<revision>"
         if name == "smscdk-ray-mnp":
             return {"jobDefinitions": [{"revision": 7, "nodeProperties": base_node_props}]}
         if name and name.startswith("smscdk-ray-mnp-"):
@@ -738,8 +778,11 @@ def _fake_multi_node_batch(submit_ids: list[str], *, per_node_vcpus: int = 16) -
         return {"jobDefinitions": []}
 
     b.describe_job_definitions.side_effect = _describe
-    b.register_job_definition.side_effect = lambda **kw: {"jobDefinitionName": kw["jobDefinitionName"], "revision": 1}
-    b.submit_job.side_effect = [{"jobId": jid} for jid in submit_ids]
+    b.register_job_definition.side_effect = _validated(
+        "RegisterJobDefinition", lambda **kw: {"jobDefinitionName": kw["jobDefinitionName"], "revision": 1}
+    )
+    _answers = iter([{"jobId": jid} for jid in submit_ids])
+    b.submit_job.side_effect = _validated("SubmitJob", lambda **kw: next(_answers))
     return b
 
 

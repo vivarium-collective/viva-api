@@ -575,7 +575,7 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 | C1 ✅ 0.9.148, 2026-09-20 | P2.1 cuts 1–3 + the #709 fix (#710) | the first **dispatch** checkpoint, taken early: the Batch engine now lives in core and every submit goes through it; cancel now stops a run's ParCa job | Tier 0 + 1 + 2, including `sim-cancel` and `chain-cancel`, which must flip FAIL → PASS; markers `/app/viva_core/backends/batch.py` and `cancel_companion_jobs` |
 | B2 ✅ 2026-09-20 (migration Job from 0.9.149; API still 0.9.148) | the write-once marker (D11): migration `f4c8a2e6d0b3` adds `simulator.temporary / label / image_tag` | a **database** change, so on its own before C2 (one kind per deploy). `main` also carries undeployed dispatch changes that #722 sits on top of, so B2 and C2 cannot be two images; they are **one image (0.9.149) and two deploys**: B2 runs only the migration Job and leaves the API on 0.9.148, which the additive migration allows; C2 rolls the API | `--analyze`, then the migration Job; Tier 0 + Tier 1 against the **old** API on the new schema (`database` still says "at head `e7b3c9a1d5f2`": `/health` reads the revision **at startup** and the pod was not restarted, so between B2 and C2 that check is stale, not evidence); `force` → 409 is checked at C2, when the code that refuses it is running; on dev only, mark simulator 214 (the unmarked smoke artifact of 2026-09-20) temporary by hand |
 | C2 ✅ 0.9.149, 2026-09-20 | cuts 4–5, build + tasks as services (#712–#714), PR 2's smoke checks, and #722's code (write-once, the marker) | the image build and the task path were rewired and are merged but undeployed | Tier 0 + 1 + 2, `sim-mbp`, and the opt-in **`build`** check: a real image build of a **marked-temporary** simulator, which Tier 2 then runs on |
-| C3 | PRs 3–8 (analysis spec, ParCa split, the composed Batch layer, `compose` on it, the mbp-tracked and Nextflow strategies) | every submit now goes through a composed object; two mechanisms are strategies | Tier 0 + 1 + 2; `compose`, `sim-mbp`, `sim-nextflow`, `nextflow-cancel` especially |
+| C3 | PRs 3–8 (analysis spec, ParCa split, the composed Batch layer, `compose` on it, the mbp-tracked and Nextflow strategies), 6a, and the **#730 fix — the one behaviour change in the set** | every submit now goes through a composed object; two mechanisms are strategies; a multi-node composite starts receiving `RAY_SHARDS_DEFAULT` | Tier 0 + 1 + 2; `compose`, `sim-mbp`, `sim-nextflow`, `nextflow-cancel` especially; Tier 0 `capabilities` still lists `container-jobs` (PR 5); the three #730 checks in the deferred list |
 | C | PRs 9–11 (composite, ensemble, chain strategies); the end of P2.1 | the last three mechanisms, chain among them | Tier 0 + 1 + 2, **plus a real 2 x 2 chain campaign** and `chain-cancel`: chain bills real money and fakes share their author's blind spots |
 | D | P2.3 | one resolver replaces four image derivations; the core runtime image | workbench through the relay; `vwb smoke`; `atlantis worker`, `task`, `compose` on the new image |
 | E | P3 | settings split, new wiring and lifespan, app factory | alone; diff redacted effective settings and the OpenAPI spec old pod vs new |
@@ -686,7 +686,7 @@ split; each has an owner-less issue or a named moment.
 | The dataset walk re-lists every simulation forever (~$5–6 / month / site); walking terminal simulations once a day would cut it ~10x | decision log, 2026-09-19 | P4a, when the walker moves to core |
 | Draft #670 conflicts with P1's move of `gcs_aio.py`; a resolution was offered | #670 | when its author picks it up |
 | RDS snapshot `pre-0-9-147-checkpoint-b-20260919t1955z` | dev | delete once 0.9.148 has soaked |
-| **#730** `_mnp_node_vcpus` calls `describe_job_definitions(revision=…)`, a parameter that does not exist: botocore refuses it client-side, the `except` swallows it, `RAY_SHARDS_DEFAULT` has never been set and every multi-node composite dispatch sleeps 3 s. Found by the typed client (PR 6a), left byte-for-byte there behind `# type: ignore[call-arg]` | viva-api | its own PR: a behaviour change to a dispatch (the shard count), so it wants a before/after on `sim-composite`. Its acceptance test is already in, as a strict `xfail` (`tests/simulation/test_mnp_node_vcpus_730.py`) |
+| **#730**, the *deployed* half: the fix is merged-pending and proven by unit tests; what only a deployment can show is its effect | dev, at the next dispatch deploy (C3, or earlier if #730 is deployed on its own) | for the smoke `sim-composite` run: (1) the job's `RAY_JOB_CMD` contains `RAY_SHARDS_DEFAULT=32` (16 vCPU × 2 nodes; **before**, measured on C2's run `65fd6e7d…`: absent); (2) the API log has no `Could not determine per-node vCPUs` (**before**: one per dispatch); (3) `sim-composite` still passes. The smoke run is 1 seed, so it cannot show a throughput change; a many-seed A/B is a separate, billable measurement and is not planned |
 | RDS snapshot `pre-0-9-149-checkpoint-b2-20260920t1433z` | dev | C2 passed 2026-09-20; delete once it has soaked |
 | Smoke `sim-chain` downloads the whole chain output (~3.6 GB uncompressed) through the SSM tunnel at ~0.35 MB/s: about 30 of its 77 minutes at C2 were the download, long after the server was done | `app/smoke.py` | assert on a listing plus the per-seed `summary.json` files instead of the full archive |
 | Temporary simulators 214 and 215 and the images `tmp-d01dc07-b64227[-submit]` on dev / in the shared ECR | dev | the purge for temporary simulators (not built yet); until then they stay, marked |
@@ -720,6 +720,34 @@ split; each has an owner-less issue or a named moment.
 | P10 | | | | | not started (checkpoint —) |
 
 ## Decision log
+
+- **2026-09-20** — **#730 fixed, before 6b (Jim: "fix #730 before 6b").** The lookup now passes the
+  definition the way the API takes it, `describe_job_definitions(jobDefinitions=["<name>:<rev>"])`,
+  and tells two failures apart that the blanket `except Exception` had merged: the *service*
+  said no or nothing yet (`ClientError`, an empty result: retried, quietly) and the *call* is
+  wrong (`ParamValidationError`: a programming error: not retried, `logger.exception`, and
+  still `None`, because a sizing nicety must not fail a dispatch). It was the second kind,
+  retried as the first, that hid this for a month. The comment that cited an
+  eventual-consistency incident "confirmed live" is rewritten to say what was actually
+  happening. **What changes for a run:** `RAY_SHARDS_DEFAULT` = vCPUs × nodes reaches the job
+  for the first time; process-bigraph's `RayProtocolRuntime` sizes its actor pool from it,
+  where until now it fell back to the head's `os.cpu_count()` — one node's worth of actors
+  on an N-node job. v2ecoli's own docs say viva-api "already computes this correctly"; it
+  never had. It is a throughput change, not a results change (lineages are independent); I
+  have not measured past campaigns and make no claim about them.
+  **The fakes were the accomplice, so they changed too.** The three shared Batch fakes in
+  `test_ray_backend.py` now validate `DescribeJobDefinitions`, `SubmitJob` and
+  `RegisterJobDefinition` keywords against botocore's service model, offline. Turning that
+  on across the suite refused 41 calls — all one test-double artefact (a `MagicMock`
+  `cost_team_tag` becoming a Batch tag), fixed in the settings double — and then **nothing
+  else: no other tested path makes a Batch call AWS would refuse.** The strict `xfail`
+  committed in 6a flipped as designed and became five tests (the read, the form of the call,
+  no sleep on success, a retried service error, a loud un-retried wrong call).
+  **Before/after.** Before, from AWS, read-only, on C2's own `sim-composite` job: job
+  definition `VCPU: 16`, 2 nodes, and no `RAY_SHARDS_DEFAULT` in `RAY_JOB_CMD`; one WARNING
+  per dispatch in the API log. After needs a deployment and is three checks in the deferred
+  list, attached to C3. The smoke composite is one seed, so it can confirm the variable and
+  not a speed-up.
 
 - **2026-09-20** — **PR 6a: the AWS clients are typed — and the first thing the types found was a
   bug that has been live since 2026-08-24.** `types-boto3[batch,s3,logs,ecr]` as a dev

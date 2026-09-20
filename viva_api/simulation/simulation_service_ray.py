@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, override
 
 from botocore.config import Config
+from botocore.exceptions import ClientError, ParamValidationError
 
 from viva_api.common import analysis_dag
 from viva_api.common.dispatch_validation import resolve_task_env, validate_nextflow_dispatch
@@ -1924,14 +1925,17 @@ class SimulationServiceRay(SimulationService):
         )
         return job_id
 
-    # A freshly-registered job definition (this method is always called right
-    # after `_ensure_mnp_job_def` registers one) can briefly 404/come back
-    # empty from `describe_job_definitions` due to AWS eventual consistency --
-    # confirmed live 2026-08-25 on a commit's first-ever multi-node dispatch
-    # (sim255): the identical job definition, queried again a few minutes
-    # later, returned correctly. A few short retries covers this window
-    # without meaningfully slowing down the common case (already-registered
-    # job def, resolves on the first attempt).
+    # A freshly-registered job definition (this method is always called right after
+    # ``ensure_mnp_job_def`` registers one) may not be visible to ``describe_job_definitions``
+    # yet. A few short retries cover that window without slowing down the common case (an
+    # already-registered definition resolves on the first attempt).
+    #
+    # History, because this comment used to say something untrue (viva-api#730): it cited an
+    # eventual-consistency incident "confirmed live 2026-08-25". What was actually happening was
+    # that the lookup passed a ``revision`` keyword the API does not have, botocore refused
+    # every call client-side, and the blanket ``except`` below retried the refusal as if it
+    # were weather. The lookup never once succeeded until 2026-09-20. The retry is kept because
+    # the window is plausible; it has not been observed.
     _VCPU_LOOKUP_RETRIES = 3
     _VCPU_LOOKUP_BACKOFF_SECONDS = 1.0
 
@@ -1948,22 +1952,30 @@ class SimulationServiceRay(SimulationService):
         ``RAY_SHARDS_DEFAULT`` unset (process-bigraph's own fallback still
         applies) rather than fail the whole submission over a sizing nicety.
 
-        Retries a few times on a transient empty/missing result -- see
-        ``_VCPU_LOOKUP_RETRIES`` above -- before giving up.
+        ``job_definition`` is ``<name>:<revision>``, which is one of the forms
+        ``jobDefinitions`` accepts. Two kinds of failure, told apart on purpose:
+
+        * the SERVICE said no, or said nothing yet (``ClientError``, an empty result) -- possibly
+          transient, so retried, quietly;
+        * the CALL is wrong (``ParamValidationError``: botocore refused it before sending) -- a
+          programming error. Not retried, logged at ERROR with the traceback. Still ``None``:
+          a sizing nicety must not fail a dispatch. It was this kind, retried as the first
+          kind, that kept #730 invisible for a month.
         """
-        name, _, revision = job_definition.partition(":")
         batch = self.batch.client()
         for attempt in range(self._VCPU_LOOKUP_RETRIES):
             defs: list[JobDefinitionTypeDef] = []
             try:
-                # viva-api#730: DescribeJobDefinitions has NO ``revision`` parameter -- botocore rejects
-                # this call client-side every time, the ``except`` below swallows it, and this method
-                # has never returned a vCPU count. Found by the typed client (P2.1 PR 6a) and left
-                # byte-for-byte on purpose: fixing it changes a dispatch's shard count, so it gets
-                # its own PR with a before/after. The ignore is the marker; remove both together.
-                described = batch.describe_job_definitions(jobDefinitionName=name, revision=int(revision))  # type: ignore[call-arg]
+                described = batch.describe_job_definitions(jobDefinitions=[job_definition])
                 defs = described.get("jobDefinitions", [])
-            except Exception as exc:
+            except ParamValidationError:
+                logger.exception(
+                    "describe_job_definitions refused for %s: a bug in the call, not in AWS; "
+                    "RAY_SHARDS_DEFAULT left unset",
+                    job_definition,
+                )
+                return None
+            except ClientError as exc:
                 # Treated the same as an empty result below -- both just mean "not visible yet".
                 logger.debug("describe_job_definitions attempt %d for %s failed: %s", attempt, job_definition, exc)
 
