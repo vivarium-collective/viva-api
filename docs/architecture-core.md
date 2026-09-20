@@ -175,8 +175,8 @@ and choose the queue. Since cut 3 those live in `RayBatchLayer`
 (`simulation/ray/batch_layer.py`), today a **base class**; the plan recomposes it as a
 `service.batch` object (plan-core P2.1, PR 5).
 
-**What `SimulationServiceRay` is as of 2026-09-20** (`SimulationServiceRay(RayParcaMixin,
-RayBatchLayer)`; the file is 3,271 lines, from 5,019):
+**What `SimulationServiceRay` is as of 2026-09-20** (`SimulationServiceRay(RayBatchLayer)` —
+no mixin left; the file is 3,360 lines, from 5,019):
 
 | Piece | Where | Shape |
 |---|---|---|
@@ -184,10 +184,11 @@ RayBatchLayer)`; the file is 3,271 lines, from 5,019):
 | in-image paths | `ray/image_paths.py` | constants, no imports |
 | analysis specification (which modules, which memory class) | `ray/analysis_spec.py` | pure functions; shared with the Nextflow handler and `scripts/cd2_nextflow_dispatches.py` |
 | SMS's half of the Batch seam | `ray/batch_layer.py` (`RayBatchLayer`) | base class, to be composed |
-| ParCa and the caches | `ray/parca.py` (`RayParcaMixin`) | mixin; to split into a pure module + a cache-jobs service |
+| where ParCa caches live, and the commands that build them | `ray/parca_spec.py` | pure functions (one reads two ParCa settings through `_seams`); every mechanism calls them |
+| the three ParCa cache jobs | `ray/parca.py` (`RayParcaService`, `ParcaDispatch` Protocol) | composed service, reached as `service.parca` |
 | image build | `ray/build.py` (`RayImageBuilder`) | composed service |
 | tasks | `ray/tasks.py` (`RayTaskService`, `TaskDispatch` Protocol) | composed service |
-| the two analysis **submitters** (chain's, the multi-node composite's), five dispatch mechanisms, the router, the facade | still in the class | each submitter moves with its mechanism; see below |
+| the two analysis **submitters** (chain's, the multi-node composite's), `_stage_seed_override_caches` (the multi-node composite's), five dispatch mechanisms, the router, the facade | still in the class | each submitter moves with its mechanism; see below |
 
 **Five dispatch mechanisms, none of which calls another** (measured 2026-09-20). The router
 `submit_ecoli_simulation_job` is 308 lines, of which ~20 are routing and **216 are a fifth,

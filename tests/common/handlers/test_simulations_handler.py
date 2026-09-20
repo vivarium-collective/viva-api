@@ -36,6 +36,7 @@ from viva_api.simulation.models import (
     SimulationConfig,
     SimulatorVersion,
 )
+from viva_api.simulation.ray.parca import RayParcaService
 from viva_api.simulation.simulation_service_k8s import SimulationServiceK8s
 from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 from viva_api.simulation.tables_orm import ORMAnalysis
@@ -951,7 +952,8 @@ class TestRunNewGeneCache:
         from viva_api.simulation.models import NewGeneCacheRequest
 
         mock_ray = AsyncMock(spec=SimulationServiceRay)
-        mock_ray.submit_new_gene_cache_job.return_value = JobId.ray("new-gene-cache-1")
+        mock_ray.parca = AsyncMock(spec=RayParcaService)  # a composed service, reached through a property
+        mock_ray.parca.submit_new_gene_cache_job.return_value = JobId.ray("new-gene-cache-1")
         mock_ray.cache_s3_uri.return_value = "s3://bucket/ray-parca-cache/82e1b1e/k4-induced/"
         mock_db = AsyncMock()
         mock_db.get_parca_dataset.return_value = _make_parca_dataset()
@@ -984,7 +986,8 @@ class TestRunNewGeneCache:
         from viva_api.simulation.models import NewGeneCacheRequest
 
         mock_ray = AsyncMock(spec=SimulationServiceRay)
-        mock_ray.submit_new_gene_cache_job.return_value = JobId.ray("new-gene-cache-2")
+        mock_ray.parca = AsyncMock(spec=RayParcaService)  # a composed service, reached through a property
+        mock_ray.parca.submit_new_gene_cache_job.return_value = JobId.ray("new-gene-cache-2")
         mock_ray.cache_s3_uri.return_value = "s3://bucket/ray-parca-cache/82e1b1e/j3-induced/"
         mock_db = AsyncMock()
         mock_db.get_parca_dataset.return_value = _make_parca_dataset()
@@ -1041,7 +1044,8 @@ class TestRunNewGeneCache:
         from viva_api.simulation.models import NewGeneCacheRequest
 
         mock_ray = AsyncMock(spec=SimulationServiceRay)
-        mock_ray.submit_new_gene_cache_job.return_value = JobId.ray("j")
+        mock_ray.parca = AsyncMock(spec=RayParcaService)  # a composed service, reached through a property
+        mock_ray.parca.submit_new_gene_cache_job.return_value = JobId.ray("j")
         mock_ray.cache_s3_uri.return_value = "s3://x/"
         mock_db = AsyncMock()
         mock_db.get_parca_dataset.return_value = _make_parca_dataset(commit="f64994e")
@@ -1059,7 +1063,7 @@ class TestRunNewGeneCache:
             database_service=mock_db,
         )
 
-        call_kwargs = mock_ray.submit_new_gene_cache_job.call_args.kwargs
+        call_kwargs = mock_ray.parca.submit_new_gene_cache_job.call_args.kwargs
         assert call_kwargs["commit"] == "f64994e"
         assert call_kwargs["variant"] == "k4-induced"
         assert call_kwargs["rel_exp_adj"] == "1,2,4"
@@ -1079,7 +1083,8 @@ class TestRunVariantCache:
         from viva_api.simulation.models import VariantCacheRequest
 
         mock_ray = AsyncMock(spec=SimulationServiceRay)
-        mock_ray.submit_variant_cache_job.return_value = JobId.ray("variant-cache-2")
+        mock_ray.parca = AsyncMock(spec=RayParcaService)  # a composed service, reached through a property
+        mock_ray.parca.submit_variant_cache_job.return_value = JobId.ray("variant-cache-2")
         mock_ray.cache_s3_uri.return_value = "s3://bucket/ray-parca-cache/82e1b1e/strain-design-1/"
         mock_db = AsyncMock()
         mock_db.get_parca_dataset.return_value = _make_parca_dataset()
@@ -1135,7 +1140,8 @@ class TestRunVariantCache:
         from viva_api.simulation.models import VariantCacheRequest
 
         mock_ray = AsyncMock(spec=SimulationServiceRay)
-        mock_ray.submit_variant_cache_job.return_value = JobId.ray("j")
+        mock_ray.parca = AsyncMock(spec=RayParcaService)  # a composed service, reached through a property
+        mock_ray.parca.submit_variant_cache_job.return_value = JobId.ray("j")
         mock_ray.cache_s3_uri.return_value = "s3://x/"
         mock_db = AsyncMock()
         mock_db.get_parca_dataset.return_value = _make_parca_dataset(commit="f64994e")
@@ -1152,7 +1158,7 @@ class TestRunVariantCache:
             database_service=mock_db,
         )
 
-        call_kwargs = mock_ray.submit_variant_cache_job.call_args.kwargs
+        call_kwargs = mock_ray.parca.submit_variant_cache_job.call_args.kwargs
         assert call_kwargs["commit"] == "f64994e"
         assert call_kwargs["variant"] == "strain-design-1"
         assert call_kwargs["perturbations"] == {"EG10073": 10.0, "EG10074": 0.0}

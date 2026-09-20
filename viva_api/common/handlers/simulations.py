@@ -921,7 +921,7 @@ async def run_new_gene_cache(
         raise HTTPException(status_code=404, detail=f"Parca dataset {request.parca_dataset_id} not found.")
     commit = parca_dataset.parca_dataset_request.simulator_version.environment_key
 
-    job_id = await simulation_service.submit_new_gene_cache_job(
+    job_id = await simulation_service.parca.submit_new_gene_cache_job(
         commit=commit,
         variant=request.variant,
         expression=request.expression,
@@ -977,7 +977,7 @@ async def run_variant_cache(
         raise HTTPException(status_code=404, detail=f"Parca dataset {request.parca_dataset_id} not found.")
     commit = parca_dataset.parca_dataset_request.simulator_version.environment_key
 
-    job_id = await simulation_service.submit_variant_cache_job(
+    job_id = await simulation_service.parca.submit_variant_cache_job(
         commit=commit,
         variant=request.variant,
         perturbations=request.perturbations,
