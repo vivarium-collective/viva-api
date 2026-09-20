@@ -74,7 +74,7 @@ class FakeService:
         self.repo_tasks: list[Any] = []
         self.cancelled: list[int] = []
         self.uploads: list[tuple[Any, bool]] = []
-        self.rebuilt_as: int | None = None  # None = the same simulator id, as a real forced rebuild
+        self.latest_commit = "new"
         self.build_statuses = ["running", "completed"]
         self.cancel_answer = "cancelled"
         self.nextflow_task_states = ["COMPLETED", "COMPLETED"]
@@ -117,7 +117,10 @@ class FakeService:
 
     def submit_upload_simulator(self, simulator: Any, force: bool = False) -> Any:
         self.uploads.append((simulator, force))
-        return SimpleNamespace(database_id=7 if self.rebuilt_as is None else self.rebuilt_as)
+        return SimpleNamespace(database_id=7)
+
+    def submit_get_latest_simulator(self, repo_url: str | None = None, branch: str | None = None) -> Any:
+        return SimpleNamespace(git_commit_hash=self.latest_commit, git_repo_url=repo_url, git_branch=branch)
 
     def get_simulator_status(self, simulator_id: int) -> str:
         return self.build_statuses.pop(0) if len(self.build_statuses) > 1 else self.build_statuses[0]
@@ -1037,22 +1040,22 @@ def test_sim_mbp_fails_when_the_run_completes_and_leaves_nothing() -> None:
 
 
 class FakeRegistry:
-    """``image_pushed_at``: the tag's push time moves forward only if a build really pushed."""
+    """``image_pushed_at``: a tag exists only once something has really pushed it."""
 
-    def __init__(self, svc: FakeService, *, pushes: bool = True, present: bool = True) -> None:
-        self.svc, self.pushes, self.present = svc, pushes, present
-        self.before = datetime(2026, 9, 1, tzinfo=UTC)
-        self.after = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+    def __init__(self, svc: FakeService, *, pushes: bool = True, existing: set[str] | None = None) -> None:
+        self.svc, self.pushes = svc, pushes
+        self.existing = existing or set()
 
     def __call__(self, tag: str) -> datetime | None:
-        if not self.present:
-            return None
-        return self.after if (self.svc.uploads and self.pushes) else self.before
+        if tag in self.existing:
+            return datetime(2026, 9, 1, tzinfo=UTC)
+        built = self.svc.uploads and self.pushes
+        return datetime(2026, 9, 20, 12, 0, tzinfo=UTC) if built else None
 
 
 def _build_opts(registry: FakeRegistry | None, **overrides: Any) -> dict[str, Any]:
     return {
-        "build_simulator_id": 7,
+        "build": True,
         "image_pushed_at": registry,
         "now": lambda: datetime(2026, 9, 20, 11, 0, tzinfo=UTC),
         **overrides,
@@ -1068,44 +1071,57 @@ def test_build_is_opt_in_and_skips_without_a_view_of_the_registry() -> None:
     assert svc.uploads == []
 
 
-def test_build_forces_a_rebuild_of_that_simulator_and_passes_on_a_newer_push() -> None:
+def test_build_builds_the_branch_head_as_a_new_simulator_and_never_forces() -> None:
     svc = FakeService()
+    svc.latest_commit = "fresh12"
     result = _run("build", svc, **_build_opts(FakeRegistry(svc)))
     assert result.outcome is smoke.Outcome.PASS, result.detail
     [(simulator, force)] = svc.uploads
-    assert force is True
-    assert (simulator.git_commit_hash, simulator.git_branch) == ("new", "main")
-    assert result.evidence["pushed_before"] < result.evidence["pushed_after"]
-
-
-def test_build_fails_when_the_api_says_completed_and_the_registry_saw_no_push() -> None:
-    """COMPLETED can be last week's build. Only the registry knows whether anything was built."""
-    svc = FakeService()
-    result = _run("build", svc, **_build_opts(FakeRegistry(svc, pushes=False)))
-    assert result.outcome is smoke.Outcome.FAIL
-    assert "nothing was built" in result.detail
+    assert force is False
+    # repo and branch default to the newest Ray-path simulator's
+    assert (simulator.git_commit_hash, simulator.git_branch) == ("fresh12", "main")
+    assert simulator.git_repo_url.endswith("/sms-ecoli")
     assert result.evidence["simulator_id"] == 7
 
 
-def test_build_fails_when_the_build_fails_or_the_tag_is_missing() -> None:
+@pytest.mark.parametrize("commit", [None, "new"], ids=["the branch head", "a named commit"])
+def test_build_never_rebuilds_a_commit_that_is_already_a_simulator(commit: str | None) -> None:
+    """Existing simulators, their images and their tags are the provenance of delivered
+    simulations. The check skips; it does not fall back to a forced rebuild."""
     svc = FakeService()
+    svc.latest_commit = "new"  # FakeService's simulator 7 is at commit "new"
+    result = _run("build", svc, **_build_opts(FakeRegistry(svc), build_commit=commit))
+    assert result.outcome is smoke.Outcome.SKIP
+    assert "already simulator 7" in result.detail and "never rebuilt" in result.detail
+    assert svc.uploads == []
+
+
+def test_build_never_overwrites_a_tag_that_exists_without_a_simulator_record() -> None:
+    svc = FakeService()
+    result = _run("build", svc, **_build_opts(FakeRegistry(svc, existing={"orphan1"}), build_commit="orphan1"))
+    assert result.outcome is smoke.Outcome.SKIP
+    assert "refusing to overwrite its tag" in result.detail
+    assert svc.uploads == []
+
+
+def test_build_fails_when_the_build_fails_or_completes_without_a_push() -> None:
+    svc = FakeService()
+    svc.latest_commit = "fresh12"
     svc.build_statuses = ["failed"]
     assert _run("build", svc, **_build_opts(FakeRegistry(svc))).outcome is smoke.Outcome.FAIL
 
     svc = FakeService()
-    result = _run("build", svc, **_build_opts(FakeRegistry(svc, present=False)))
+    svc.latest_commit = "fresh12"
+    result = _run("build", svc, **_build_opts(FakeRegistry(svc, pushes=False)))
     assert result.outcome is smoke.Outcome.FAIL
-    assert "has no image tagged new" in result.detail
+    assert "has no image tagged fresh12" in result.detail
 
 
-def test_build_refuses_an_unknown_simulator_and_a_rebuild_that_changes_identity() -> None:
-    svc = FakeService()
-    unknown = _run("build", svc, **_build_opts(FakeRegistry(svc), build_simulator_id=999))
-    assert unknown.outcome is smoke.Outcome.FAIL and "not registered" in unknown.detail
-    assert svc.uploads == []
-
-    svc.rebuilt_as = 8
-    assert "came back as simulator 8" in _run("build", svc, **_build_opts(FakeRegistry(svc))).detail
+def test_nothing_in_the_smoke_module_can_force_a_rebuild() -> None:
+    """A standing rule, so a standing test: the word appears once, as ``force=False``."""
+    source = Path(smoke.__file__).read_text(encoding="utf-8")
+    assert "force=True" not in source
+    assert source.count("force=False") == 1
 
 
 def test_the_registry_inspector_reads_a_tags_push_time_and_none_when_absent() -> None:

@@ -41,6 +41,7 @@ and has a rollback. There is no big-bang step.
 | D8 | **Core CLI:** an independent CLI targeting only core, built on the OpenAPI client generated from the core spec. In the plan for standalone operation; not required up front. | 2026-09-18 | Jim |
 | D9 | **BioModels and the curated COPASI / Tellurium simulators move to core** (not SMS), and are eventually factored back out into the reproducible-biology hosted-services application. | 2026-09-18 | Jim |
 | D10 | **Core's default path is *select or build* an acceptable environment, then run.** The reproducibility application on core accepts a composite and either selects a known compatible environment or builds one from the composite's dependencies. A barebones environment (built-ins only) is rarely useful; an uber-container does not scale. Extends D6: an environment is a **spec** (explicit `repo@commit` + recipe, or derived from a composite), an **environment** (spec hash *and* image digest, status, build job, what it provides) and a **resolver**. "Default path" is reserved for this. | 2026-09-20 | Jim |
+| D11 | **Environments are provenance: immutable once built, and retained.** A simulator record, its container image and its image tag are the provenance of every simulation that ran on them. Once built they are never overwritten, force-rebuilt, re-tagged or deleted; a rebuild is a **new** environment with a new identity, never the same tag. Every simulator, image and tag created **before 2026-09-19** is preserved through this refactor and retained after it; only simulators created *by* the refactor's own testing may be overwritten. A standing rule of the final design, not only of the migration. | 2026-09-20 | Jim |
 
 ## 3. The issues, in one page
 
@@ -364,6 +365,10 @@ exists three times in this codebase and its siblings, each one partial
   `python:pypi<pkg[ver]>@module.path` address protocol and checks an allow-list, then returns
   empty lists and is called nowhere. The allow-list becomes one enforced core setting rather
   than three carried-and-dropped copies.
+- **built environments are immutable and retained (D11).** A successful build is never
+  replaced: a rebuild is a new row with a new image digest and a new tag, and `force` means
+  "build another", not "overwrite this one". No lifecycle rule may expire an environment that
+  a run points at. The registries become tag-IMMUTABLE once nothing relies on overwriting.
 - from the SMS path, what the compose path lacks: **a FAILED build is retried**, not treated
   as "already built". And `run_pbg.py` stays **out of the hashed definition**, so editing the
   runner does not invalidate every environment.
@@ -579,7 +584,7 @@ is reported separately from PASS and says why; `--json-out` is the record a rele
 | Tier | Cost | What it proves |
 |---|---|---|
 | 0 | seconds, free, read-only | `/version` = `/health`; every spec operation is served; capabilities; the relay is routed and live (JSON 404, not the gateway's HTML); the database-backed list endpoints; an events read |
-| 1 | minutes, cents | one tiny real dispatch per mechanism: a container **task** (uploaded script; the nonce *and* the `sim_data_refs` it was given must come back in its log); **`task-fail`** (a script that exits 3 must be reported FAILED, with proof in its log that it ran); **`task-repo`** (a script already in the image, by repo path — the other entry point); opt-in **`build`** (`--build-simulator-id`: force a rebuild of that simulator's image and pass only when the **registry** shows a push newer than the check's start — the API would answer COMPLETED from last week's build; ~20 min, and it runs before Tier 2 so the simulations then run on the image it built); a relayed env **worker** (a K8s Job) + a task on its task tier, always stopped; a five-step **composite** that must return 1.1^5; opt-in: a standalone **analysis** (`--simulation-id`), a **BioModels** run (`--biomodel`) |
+| 1 | minutes, cents | one tiny real dispatch per mechanism: a container **task** (uploaded script; the nonce *and* the `sim_data_refs` it was given must come back in its log); **`task-fail`** (a script that exits 3 must be reported FAILED, with proof in its log that it ran); **`task-repo`** (a script already in the image, by repo path — the other entry point); opt-in **`build`** (`--build`: build a simulator for a commit that has **no simulator and no image yet** — the branch HEAD, or `--build-commit` — and pass only when the **registry** shows that tag arrive after the check began; the API alone would answer COMPLETED. It **never rebuilds** (D11): a commit that is already a simulator, or already a tag, is a SKIP, not a `force`. ~20 min; it runs before Tier 2, so the simulations then run on the image it built); a relayed env **worker** (a K8s Job) + a task on its task tier, always stopped; a five-step **composite** that must return 1.1^5; opt-in: a standalone **analysis** (`--simulation-id`), a **BioModels** run (`--biomodel`) |
 | 2 | tens of minutes, dollars | **one real simulation per dispatch mechanism**, submitted the way a real client selects each and run **concurrently**: `sim-default` (1 seed x 1 generation), `sim-chain` (2 x 2 — more than one generation is what selects chain dispatch; every seed must have succeeded), `sim-nextflow` (`extra_params.nextflow_dispatch`; every traced task completed), `sim-composite` (`extra_params.multi_node_dispatch`), `sim-mbp` (`extra_params.mbp_dispatch`: the reference variant of `run_mbp_tracked.py` for one simulated minute — the mechanism exists so that output *survives the container*, so that is what is asserted). Each must show **output**, not just COMPLETED. Three more **cancel** what they submit — `sim-cancel` (the run's ParCa job, then its own), `chain-cancel` (a 2 x 2 campaign cancelled in its ParCa phase, where no seed has a job yet) and `nextflow-cancel` (head Job deleted; tasks stopped by Nextflow's hook or the scheduler's reaper) — and assert on **AWS Batch itself**, with the operator's own read-only credentials, that no job carrying the run's experiment id is still active: the API cannot be the witness, because the cancel handler writes CANCELLED to its own row whether or not anything stopped. Without AWS access they SKIP, before submitting anything. Not covered: the upstream K8s + Nextflow path (`scripts/qualification_test.sh` stays the check for that) |
 | R (`--tier 3`) | minutes | a task is put in flight, the deployment is restarted with the operator's own `--restart-command` (`scripts/smoke_restart_k8s.sh`), `/version` must be unchanged and the task must still resolve with its output. Status that lives only in a pod's memory fails this. The shutdown order in the terminated pod's log is still read by hand |
 
@@ -648,6 +653,7 @@ split; each has an owner-less issue or a named moment.
 | compose on Ray / Batch accepts `extra_pip_deps` and never installs them | #716 | refuse now, or honour in P5 |
 | compose on SLURM: a FAILED container build suppresses every later rebuild | #717 | folded into the P5 resolver; live in `compose-api` |
 | 153 simulation runs stuck RUNNING on dev | #718 | — |
+| `POST /core/v1/simulator/upload?force=true` overwrites an existing image tag; the `v2ecoli` and `vecoli` ECR repositories are tag-MUTABLE, and dev and prod share one registry (D11) | #721 | guard `force` now; immutability in P5 |
 | The dataset walk re-lists every simulation forever (~$5–6 / month / site); walking terminal simulations once a day would cut it ~10x | decision log, 2026-09-19 | P4a, when the walker moves to core |
 | Draft #670 conflicts with P1's move of `gcs_aio.py`; a resolution was offered | #670 | when its author picks it up |
 | RDS snapshot `pre-0-9-147-checkpoint-b-20260919t1955z` | dev | delete once 0.9.148 has soaked |
@@ -680,22 +686,38 @@ split; each has an owner-less issue or a named moment.
 
 ## Decision log
 
+- **2026-09-20** — **D11: simulators are provenance. I was stopped one command short of
+  breaking that.** The first `build` check forced a rebuild of an *existing* simulator, and I
+  was about to run it on simulator 212 because it was five days old and looked unused. Jim:
+  the existing simulators are the provenance of last week's deliverable simulations. A forced
+  rebuild pushes a **different** image under the same `v2ecoli:<commit>` tag (the builds are
+  not reproducible), so "this result came from that image" silently stops being true.
+  Nothing was overwritten — the command was refused before it ran. What I found when I then
+  looked: both image repositories (`v2ecoli`, `vecoli`) are **tag-MUTABLE**; they have **no
+  lifecycle policy**, so nothing expires (good); and there is **one ECR registry for dev and
+  prod**, so an overwrite "on dev" is an overwrite on prod. And the product itself offers the
+  overwrite: `POST /core/v1/simulator/upload?force=true`. The rule (D11): everything created
+  before 2026-09-19 is preserved through the refactor and retained after it; a rebuild is a
+  new environment identity, never the same tag; only what the refactor's own testing created
+  may be overwritten. In the target design this is what P5's two identities are for — the
+  spec hash says what was asked, the **image digest** says what ran — and `force` becomes
+  "build a new environment", not "replace this one". Filed as #721: the present-day hazard.
 - **2026-09-20** — **PR 2: the two smoke checks the carve needs before it goes on.** `sim-mbp`
   (Tier 2) and an opt-in `build` (Tier 1). Design points for `build`: (1) like the cancel
-  checks it asserts on the **outside world**, here the image registry: a forced rebuild's
-  status endpoint answers COMPLETED from whatever build ran last, so the check passes only
-  when ECR shows `<repository>:<commit>` pushed *after* the check began. (2) It is opt-in by
-  naming the simulator (`--build-simulator-id`), because for ~20 minutes the API refuses
-  simulations on a simulator that is rebuilding, and because it overwrites that commit's tag
-  with a fresh build of the same commit (the recipe pushes only `<sha>`; the comments that
-  say it also moves `:latest` are stale — it would need `-t`). (3) It sits in Tier 1, which
+  checks it asserts on the **outside world**, here the image registry: the status endpoint
+  alone would answer COMPLETED, so the check passes only when ECR shows `<repository>:<commit>`
+  arrive *after* the check began. (2) **It never rebuilds (D11).** It builds a commit that has
+  no simulator record and no image tag — the branch HEAD, or `--build-commit` — without
+  `force`; a commit that is already a simulator, or already a tag, is a SKIP. The image tag
+  is the commit alone, so *any* simulator at that commit owns the tag. A unit test pins that
+  `force=True` does not appear in the smoke module at all. (3) It sits in Tier 1, which
   finishes before Tier 2 starts, so the simulations then run on the image it just built —
   the strongest proof a rewired build path can get. (4) No registry access ⇒ SKIP before
-  anything is touched.
+  anything is touched. (The recipe pushes only `<sha>`; the comments saying it also moves
+  `:latest` are stale — it would need `-t`.)
   **Baseline, dev 0.9.148 (before PR 7 rewires the path):** `sim-mbp` PASS in 1,005 s —
   simulation 1361, `baseline-reference-multigen`, 5 output files; almost all of it the ParCa
-  job the run waits on. `build` has not been run live: it waits for Jim's word, and is due
-  at C2 in any case.
+  job the run waits on.
 - **2026-09-20** — **Plan audit after cut 6, at Jim's request** ("a good time to double-check
   our plan given all we have learned"). Method: three read-only explorations — what is left
   in the class, these two documents against themselves, how far `viva_core` really is — and

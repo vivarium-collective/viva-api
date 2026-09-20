@@ -128,10 +128,13 @@ class SmokeOptions:
     #: default is the script's own reference variant, cut to one simulated minute.
     mbp_variant: str = "baseline-reference-multigen"
     mbp_duration_sec: int = 60
-    #: ``build``: the simulator whose image to REBUILD (``force``). Opt-in, because for the
-    #: twenty-odd minutes it takes, the API refuses simulations on that simulator -- and
-    #: because it overwrites that commit's image tag with a fresh build of the same commit.
-    build_simulator_id: int | None = None
+    #: ``build``: opt-in. Builds a simulator for a commit that has NO simulator and NO image yet
+    #: (the branch's HEAD, or ``build_commit``). It never rebuilds: existing simulators, their
+    #: images and their tags are the provenance of delivered simulations.
+    build: bool = False
+    build_repo_url: str | None = None
+    build_branch: str | None = None
+    build_commit: str | None = None
     #: ``commit -> when the registry last received that image tag``, or ``None`` if absent.
     #: The build check needs it for the same reason the cancel checks need Batch: the API
     #: would answer COMPLETED from a build that happened last week.
@@ -156,6 +159,7 @@ class SmokeService(Protocol):
     def client(self) -> httpx.Client: ...
 
     def show_simulators(self) -> Sequence[Any]: ...
+    def submit_get_latest_simulator(self, repo_url: str | None = ..., branch: str | None = ...) -> Any: ...
     def submit_upload_simulator(self, simulator: Any, force: bool = ...) -> Any: ...
     def get_simulator_status(self, simulator_id: int) -> str: ...
     def run_uploaded_task(
@@ -297,15 +301,18 @@ def _resolve_commit(svc: SmokeService, opts: SmokeOptions) -> str:
     the task and worker dispatch pull from)."""
     if opts.commit:
         return opts.commit
+    return str(_newest_ray_simulator(svc.show_simulators()).git_commit_hash)
+
+
+def _newest_ray_simulator(simulators: Sequence[Any]) -> Any:
     candidates = [
         s
-        for s in svc.show_simulators()
+        for s in simulators
         if any(tag in str(getattr(s, "git_repo_url", "")).lower() for tag in ("sms-ecoli", "v2ecoli"))
     ]
     if not candidates:
         raise SkipCheck("no --commit given and no container-path simulator is registered")
-    newest = max(candidates, key=lambda s: int(getattr(s, "database_id", 0) or 0))
-    return str(newest.git_commit_hash)
+    return max(candidates, key=lambda s: int(getattr(s, "database_id", 0) or 0))
 
 
 def spec_operations(spec: dict[str, Any]) -> set[tuple[str, str]]:
@@ -629,58 +636,69 @@ def check_task_repo(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[st
 
 
 def check_build(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
-    """Rebuild one simulator's image and pass only when the REGISTRY shows a newer image.
+    """Build a NEW simulator image and pass only when the REGISTRY shows it arrive.
 
     No other tier builds anything: every simulation check reuses a simulator that already
     has an image. So the whole build path -- the LOCAL task, the Batch DooD job, the repo's
     own recipe, the push -- is otherwise unexercised by a deploy. It runs in tier 1, before
     the simulations, so they then run on the image this check just built.
+
+    **It never rebuilds.** An existing simulator, its image and its tag are the provenance of
+    every simulation that ran on them; a rebuild pushes a different image under the same tag.
+    So the commit must have no simulator and no image. If it has either, the check SKIPs --
+    it does not fall back to ``force``. Name another commit with ``--build-commit``.
     """
     from viva_api.simulation.models import Simulator
 
-    if opts.build_simulator_id is None:
-        raise SkipCheck("pass --build-simulator-id <id> to rebuild that simulator's image (~20 min, several GB)")
+    if not opts.build:
+        raise SkipCheck("pass --build to build a simulator for an unregistered commit (~20 min, several GB)")
     if opts.image_pushed_at is None:
         raise SkipCheck(f"needs to see the image registry to verify a push ({opts.image_pushed_at_unavailable})")
-    known = {int(getattr(s, "database_id", -1)): s for s in svc.show_simulators()}
-    simulator = known.get(opts.build_simulator_id)
-    if simulator is None:
-        raise CheckFailed(f"simulator {opts.build_simulator_id} is not registered")
-    commit = str(simulator.git_commit_hash)
-    evidence: dict[str, Any] = {"simulator_id": opts.build_simulator_id, "commit": commit}
-    evidence["pushed_before"] = opts.image_pushed_at(commit)
-    started = opts.now()
 
-    rebuilt = svc.submit_upload_simulator(
-        Simulator(
-            git_commit_hash=commit,
-            git_repo_url=str(simulator.git_repo_url),
-            git_branch=str(simulator.git_branch),
-        ),
-        force=True,
-    )
-    if int(rebuilt.database_id) != opts.build_simulator_id:
-        raise CheckFailed(
-            f"a forced rebuild of simulator {opts.build_simulator_id} came back as simulator {rebuilt.database_id}",
-            evidence,
+    registered = list(svc.show_simulators())
+    newest = _newest_ray_simulator(registered)
+    repo_url = opts.build_repo_url or str(newest.git_repo_url)
+    branch = opts.build_branch or str(newest.git_branch)
+    commit = (opts.build_commit or str(svc.submit_get_latest_simulator(repo_url, branch).git_commit_hash))[:7]
+    evidence: dict[str, Any] = {"repo_url": repo_url, "branch": branch, "commit": commit}
+
+    # The image tag is the commit alone, so ANY simulator at this commit owns that tag.
+    owners = [s for s in registered if str(getattr(s, "git_commit_hash", ""))[:7] == commit]
+    if owners:
+        owner = owners[0].database_id
+        raise SkipCheck(
+            f"{commit} is already simulator {owner}: existing simulators are provenance and are never "
+            f"rebuilt. Pass --build-commit <an unregistered commit>"
         )
+    already = opts.image_pushed_at(commit)
+    if already is not None:
+        raise SkipCheck(
+            f"an image tagged {commit} already exists (pushed {already:%Y-%m-%d}); refusing to overwrite its tag"
+        )
+
+    started = opts.now()
+    built = svc.submit_upload_simulator(
+        Simulator(git_commit_hash=commit, git_repo_url=repo_url, git_branch=branch), force=False
+    )
+    simulator_id = int(built.database_id)
+    evidence["simulator_id"] = simulator_id
     _poll(
         opts,
-        lambda: _status_text(svc.get_simulator_status(opts.build_simulator_id or 0)),
-        f"build of simulator {opts.build_simulator_id} ({commit})",
+        lambda: _status_text(svc.get_simulator_status(simulator_id)),
+        f"build of new simulator {simulator_id} ({commit})",
         timeout_seconds=opts.build_timeout_seconds,
     )
     pushed = opts.image_pushed_at(commit)
-    evidence["pushed_after"] = pushed
+    evidence["pushed_at"] = pushed
     if pushed is None:
         raise CheckFailed(f"build COMPLETED but the registry has no image tagged {commit}", evidence)
     if pushed < started:
         raise CheckFailed(
-            f"build COMPLETED but the image tagged {commit} was last pushed {pushed:%Y-%m-%d %H:%M}Z, "
+            f"build COMPLETED but the image tagged {commit} was pushed {pushed:%Y-%m-%d %H:%M}Z, "
             f"before this check began: nothing was built",
             evidence,
         )
-    return f"simulator {opts.build_simulator_id} rebuilt; {commit} pushed {pushed:%H:%M:%S}Z", evidence
+    return f"new simulator {simulator_id} built from {commit}; image pushed {pushed:%H:%M:%S}Z", evidence
 
 
 @contextmanager
@@ -1302,7 +1320,12 @@ CHECKS: tuple[Check, ...] = (
     Check("task", 1, "a container task runs and its output is read back", check_task),
     Check("task-fail", 1, "a task that exits 3 is reported FAILED, having really run", check_task_fail),
     Check("task-repo", 1, "a script already in the image runs by its repo path", check_task_repo),
-    Check("build", 1, "a simulator image is rebuilt; the registry shows it (needs --build-simulator-id)", check_build),
+    Check(
+        "build",
+        1,
+        "a NEW simulator image is built and reaches the registry; never a rebuild (needs --build)",
+        check_build,
+    ),
     Check("worker", 1, "a relayed env worker starts, answers, runs a task, stops", check_worker),
     Check("compose", 1, "a composite runs and returns the right number", check_compose),
     Check("analysis", 1, "a standalone analysis produces output (needs --simulation-id)", check_analysis),

@@ -3021,11 +3021,17 @@ def smoke_run(
         default="scripts/build_cache.py",
         help="`task-repo`: a script that exists in the image, run with --help; its log must contain 'usage:'.",
     ),
-    build_simulator_id: int | None = Option(
-        default=None,
-        help="Enables `build`: REBUILD this simulator's image (force) and verify the registry received it. "
-        "~20 min; the API refuses simulations on that simulator meanwhile. Runs before tier 2.",
+    build: bool = Option(
+        default=False,
+        help="Enables `build`: build a simulator for a commit that has NO simulator and NO image yet, and "
+        "verify the registry received it (~20 min). It never rebuilds an existing simulator: those are "
+        "provenance. Runs before tier 2, so the simulations then run on the new image.",
     ),
+    build_commit: str | None = Option(
+        default=None, help="`build`: the commit to build (default: the branch's HEAD). Must be unregistered."
+    ),
+    build_repo_url: str | None = Option(default=None, help="`build`: default = the newest Ray-path simulator's repo."),
+    build_branch: str | None = Option(default=None, help="`build`: default = that simulator's branch."),
     ecr_repository: str = Option(default="v2ecoli", help="`build`: the ECR repository the image is pushed to."),
     mbp_variant: str = Option(
         default="baseline-reference-multigen", help="`sim-mbp`: the run_mbp_tracked.py variant to dispatch."
@@ -3069,7 +3075,7 @@ def smoke_run(
             batch_unavailable = f"{type(e).__name__}: {str(e)[:160]}"
     image_pushed_at = None
     registry_unavailable = "no build check selected"
-    if build_simulator_id is not None and any(check.name in smoke.NEEDS_REGISTRY_ACCESS for check in checks):
+    if build and any(check.name in smoke.NEEDS_REGISTRY_ACCESS for check in checks):
         try:
             image_pushed_at = smoke.AwsImagePushedAt(ecr_repository, region=aws_region)
         except Exception as e:
@@ -3077,7 +3083,10 @@ def smoke_run(
     options = smoke.SmokeOptions(
         repo_script=repo_script,
         mbp_variant=mbp_variant,
-        build_simulator_id=build_simulator_id,
+        build=build,
+        build_commit=build_commit,
+        build_repo_url=build_repo_url,
+        build_branch=build_branch,
         image_pushed_at=image_pushed_at,
         image_pushed_at_unavailable=registry_unavailable,
         active_batch_jobs=batch_jobs,
