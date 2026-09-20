@@ -180,7 +180,7 @@ The service keeps `get_job_status` / `cancel_job` (its own interface) and two de
 `get_batch_job_statuses` / `_details`, because the scheduler still asks the service (until P6).
 
 **What `SimulationServiceRay` is as of 2026-09-20** (`SimulationServiceRay(SimulationService)` —
-it inherits nothing from `simulation/ray/`; the file is 3,395 lines, from 5,019):
+it inherits nothing from `simulation/ray/`; the file is 3,165 lines, from 5,019):
 
 | Piece | Where | Shape |
 |---|---|---|
@@ -192,7 +192,9 @@ it inherits nothing from `simulation/ray/`; the file is 3,395 lines, from 5,019)
 | the three ParCa cache jobs | `ray/parca.py` (`RayParcaService`, takes a `ContainerSubmitter`) | composed service, reached as `service.parca` |
 | image build | `ray/build.py` (`RayImageBuilder`) | composed service |
 | tasks | `ray/tasks.py` (`RayTaskService`, `TaskBatch` Protocol) | composed service |
-| the two analysis **submitters** (chain's, the multi-node composite's), `_stage_seed_override_caches` (the multi-node composite's), five dispatch mechanisms, the router, the facade | still in the class | each submitter moves with its mechanism; see below |
+| recording a dispatch's own run row | `ray/run_records.py` | a function (it never used `self`); shared by the mechanisms that submit a job ahead of the one they return |
+| dispatch mechanism: **mbp-tracked** | `ray/mbp_tracked.py` (`MbpTrackedStrategy(batch)`, `mbp_tracked_command`) | **strategy object**, handed a `ContainerSubmitter` and nothing else — the first of five |
+| the two analysis **submitters** (chain's, the multi-node composite's), `_stage_seed_override_caches` (the multi-node composite's), **four** dispatch mechanisms (ensemble, chain, multi-node composite, Nextflow), the router, the facade | still in the class | each submitter moves with its mechanism; see below |
 
 **Five dispatch mechanisms, none of which calls another** (measured 2026-09-20). The router
 `submit_ecoli_simulation_job` is 308 lines, of which ~20 are routing and **216 are a fifth,

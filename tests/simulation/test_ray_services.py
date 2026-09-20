@@ -180,8 +180,13 @@ async def test_everything_that_submits_is_handed_the_same_batch_layer() -> None:
         await service.submit_parca_job(dataset)  # type: ignore[arg-type]
         await service.parca.submit_variant_cache_job(commit="abc1234", variant="kd", perturbations={"EG1": 2.0})
         await service.tasks.submit_task(TaskRunRequest(script="scripts/x.py", commit="abc1234"), database)
+        # ...and a dispatch STRATEGY is handed it too (P2.1 PR 7): two jobs, ParCa then the run.
+        database.get_simulator = AsyncMock(return_value=simulator)
+        database.insert_hpcrun = AsyncMock()
+        run = SimpleNamespace(simulator_id=1, database_id=2, config=SimpleNamespace(experiment_id="exp", task_env=None))
+        await service._mbp_tracked().submit(run, database, {"variant": "v"}, correlation_id="c")  # type: ignore[arg-type]
 
-    assert [name.split("-")[0] for name in submitted] == ["ray", "variant", "task"], submitted
+    assert [name.split("-")[0] for name in submitted] == ["ray", "variant", "task", "mbp", "mbp"], submitted
 
 
 def test_a_layer_handed_to_the_constructor_is_the_one_the_service_uses() -> None:
@@ -192,3 +197,48 @@ def test_a_layer_handed_to_the_constructor_is_the_one_the_service_uses() -> None
 
     layer = RayBatchLayer()
     assert SimulationServiceRay(batch=layer).batch is layer
+
+
+# ------------------------------------------------------------------ a strategy is handed a submitter, and nothing else
+
+
+class OnlyASubmitter:
+    """The whole of ``ContainerSubmitter``. If ``MbpTrackedStrategy`` reached for anything else of
+    the simulation service -- its database, its other backends, a sibling mechanism -- this would
+    not be enough to run it."""
+
+    def __init__(self) -> None:
+        self.submitted: list[dict[str, Any]] = []
+
+    def image_uri(self, commit: str) -> str:
+        return f"registry/image:{commit}"
+
+    def ensure_container_job_def(self, image: str, commit: str) -> str:
+        return f"jobdef-{commit}:1"
+
+    def submit_container(self, **kwargs: Any) -> str:
+        self.submitted.append(kwargs)
+        return f"batch-job-{len(self.submitted)}"
+
+
+@pytest.mark.asyncio
+async def test_the_mbp_tracked_strategy_runs_on_a_submitter_alone() -> None:
+    from viva_api.simulation.ray.mbp_tracked import MbpTrackedStrategy
+
+    batch, database = OnlyASubmitter(), MagicMock()
+    database.get_simulator = AsyncMock(return_value=SimpleNamespace(environment_key="tmp-abc1234-0a1b2c"))
+    database.insert_hpcrun = AsyncMock()
+    run = SimpleNamespace(simulator_id=1, database_id=42, config=SimpleNamespace(experiment_id="exp-1", task_env=None))
+
+    with (
+        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+    ):
+        job_id = await MbpTrackedStrategy(batch).submit(run, database, {"variant": "v"}, correlation_id="corr")  # type: ignore[arg-type]
+
+    parca, tracked = batch.submitted
+    assert job_id == JobId.ray("batch-job-2")
+    assert parca["job_name"].startswith("mbp-parca-tmp-abc1234-0a1b2c-")  # the environment key, not the commit (D11)
+    assert tracked["depends_on"] == ["batch-job-1"] and tracked["stage_s3"] == parca["out_s3"]
+    # the ParCa job is written down as a companion, so a cancel can stop it (viva-api#709)
+    assert database.insert_hpcrun.await_args.kwargs["external_job_ids"] == ["batch-job-1"]

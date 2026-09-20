@@ -271,7 +271,7 @@ P2.0a guard caught. So:
   | 6 ✅ | `compose` is **handed** a Batch layer (its own `ComposeBatch` Protocol; `dependencies.py` provides `RayBatchLayer()`), not a whole `SimulationServiceRay()` — and not an import of the layer either, which would only have renamed the edge | one of the three broken `compose-is-domain-free` edges goes (9 → 8 broken edges in all) |
   | 6a ✅ | **typed boto3**: add `types-boto3[batch,s3,logs,ecr]` as a dev dependency and type the client factory (`BatchJobClient`'s `client_factory`, `RayBatchLayer.client()`, the `_seams` boto3 seam) (Jim, 2026-09-20: "inject into the plan soon") | the Batch engine — the one module everything submits through, and the first thing in core — is the **least** precisely typed code being restructured (72.7 % of its expressions; the repo is 92.7 %), because an untyped `boto3` makes the client `Any` and everything it returns `Any`. Before the strategies, so mypy is a real net for the five PRs that move the code that calls it |
   | 6b ✅ | **no `Any` in core (D12)**: per-module overrides turning on `disallow_any_explicit` + `disallow_any_unimported` for **`viva_core.*`** (55 explicit, 9 unimported — the kubernetes client in `backends/k8s_job_service.py`) and for the ray package's **existing modules, listed by name** (18 sites). JSON `Any` → a `JsonValue` alias or `TypedDict`s | right after 6a, which removes the biggest single cause. `viva_core.*` as a glob, so it is a standing rule for everything that later moves in. The ray package **by name, not `ray.*`**: PRs 7–11 move ~2,200 lines (and 28 `Any`) from the service file into that package, and a ban on `ray.*` would make every strategy PR change annotations in the code it moves — which breaks the AST-identity proof that makes those PRs reviewable. Widened to `ray.*` in PR 12 |
-  | 7 | strategy: **mbp-tracked** | smallest (225 lines); first use of the shape |
+  | 7 ✅ | strategy: **mbp-tracked** → `ray/mbp_tracked.py` (`MbpTrackedStrategy(batch)`, `mbp_tracked_command`); the run-record helper → `ray/run_records.py` | smallest (225 lines); first use of the shape |
   | 8 | strategy: **Nextflow** (needs `k8s`; `reap_cancelled_campaign` travels with it); then **C3** | 464 lines |
   | 9 | strategy: **multi-node composite** (+ its analysis submitter) | 346 lines |
   | 10 | strategy: **ensemble**, extracted from the router (+ `_sim_command`) | the router shrinks to ~20 lines of precedence |
@@ -708,7 +708,7 @@ split; each has an owner-less issue or a named moment.
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — #696; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — #698; all merged 2026-09-19 |
 | D11 | write-once simulators + the marked-temporary exception: migration `f4c8a2e6d0b3`, `environment_key`, `force` guarded (409), the marker in all three clients, smoke `build` on a temporary simulator — #722 | — | — (checkpoint **B2**, a database deploy, before C2) | — | open |
-| P2.1 | carve `simulation_service_ray.py` (5,019 → 3,395 lines so far; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `ray/analysis_spec.py` — PR 3 (#726) · ParCa split → `ray/parca_spec.py` + `RayParcaService` — PR 4 (#727) · `RayBatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a (#731) · #730 fixed (#732) · the D12 ban — PR 6b. Remaining: PRs 7–11 (the five strategies), PR 12 of the 2026-09-20 sequence; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.149 carries cuts 1–5, #710, #714, #722 | **2026-09-20** (checkpoints C1, B2, C2) | — | **in progress.** Deployed to dev: everything through #722. Merged after C2 (→ C3): PR 3 (a pure move), PR 4 (the three cache jobs rewired), PR 5 (every Batch call respelled through `service.batch`). PR 6 (compose no longer builds a simulation service). PR 6a (annotations only; no runtime change). PR 6b (the D12 ban; annotations, three unused `**kwargs` removed). Next: PR 7 (strategy: mbp-tracked) |
+| P2.1 | carve `simulation_service_ray.py` (5,019 → 3,165 lines so far; PR 7 took 252; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `ray/analysis_spec.py` — PR 3 (#726) · ParCa split → `ray/parca_spec.py` + `RayParcaService` — PR 4 (#727) · `RayBatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a (#731) · #730 fixed (#732) · the D12 ban — PR 6b (#733) · strategy: mbp-tracked — PR 7. Remaining: PRs 8–11 (four strategies), PR 12 of the 2026-09-20 sequence; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.149 carries cuts 1–5, #710, #714, #722 | **2026-09-20** (checkpoints C1, B2, C2) | — | **in progress.** Deployed to dev: everything through #722. Merged after C2 (→ C3): PR 3 (a pure move), PR 4 (the three cache jobs rewired), PR 5 (every Batch call respelled through `service.batch`). PR 6 (compose no longer builds a simulation service). PR 6a (annotations only; no runtime change). PR 6b (the D12 ban; annotations, three unused `**kwargs` removed). PR 7 (the first strategy). Next: PR 8 (strategy: Nextflow), then checkpoint C3 |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image | | | | not started (checkpoint D) |
 | P3 | | | | | not started (checkpoint E) |
@@ -722,6 +722,43 @@ split; each has an owner-less issue or a named moment.
 | P10 | | | | | not started (checkpoint —) |
 
 ## Decision log
+
+- **2026-09-20** — **PR 7: the first dispatch strategy, `MbpTrackedStrategy` — and the shape the
+  other four will take.** Measured first: the mechanism is two methods. `_mbp_tracked_command`
+  never touched `self` → the function `mbp_tracked_command`. `_submit_mbp_tracked_dispatch`
+  used four things of the service: the Batch layer, `cache_s3_uri` (already a function),
+  its own command, and `_record_run_with_companions` — which also never touched `self`, and is
+  shared with the ensemble path, so it is a function in `ray/run_records.py` rather than
+  something a strategy would have to be handed the service to reach.
+  **The shape:** `MbpTrackedStrategy(batch: ContainerSubmitter)` — handed what it submits
+  through and nothing else; `submit(...)` is the old method's body, verbatim but for four
+  respellings. A test runs it on a 15-line object that is *only* a `ContainerSubmitter`: if it
+  reached for the service's database, its other backends or a sibling mechanism, that would
+  not be enough. The service builds it per call (`_mbp_tracked()`), the router calls `submit`.
+  **Deliberately not yet:** a `DispatchStrategy` Protocol. The five mechanisms take five
+  different things (a dispatch block, a Nextflow block, nothing), and an interface is better
+  read off five real strategies than guessed from one; adding `applies()` later is additive.
+  Progress and cancel routing stay where they are until P6, as the audit decided.
+  **Proof.** `prove_ray_carve_is_move_only.py` is now machinery plus per-cut tables
+  (`BECAME_FUNCTIONS`, `BECAME_STRATEGY_METHODS` with their respellings, `RESPELLED_IN_SERVICE`,
+  `NEW`), so PRs 8–11 edit tables, not code: `moved, but not as named: []`, `differing / lost /
+  added: []`. Three mutations *inside the moved code* each caught (a dropped `depends_on`, an
+  emptied companion list, a different script in the command). Differential against
+  `origin/main`, directly and **through the router**: 252 cases, 0 differences — 90 run to
+  completion (842 outward calls recorded), 162 raise identically (no simulator, no variant, an
+  unset queue, a variant cache that is not staged). Wiring mutations: the router dropping the
+  correlation id → 30 differences; the strategy ignoring the cache variant → 20; the strategy
+  built around its own `RayBatchLayer()` → 0, as predicted, and caught by the shared-layer unit
+  test, now extended to the strategy.
+  **Guards that had to learn about strategies:** the events-identity guard pinned dispatch
+  methods by bare name, and every strategy's entry point is called `submit` — five bare
+  `submit`s would pin nothing, so a method in the package is pinned as `<module>.<name>`
+  (`mbp_tracked.submit`). D12's guard did its job on its first day: the new module carries the
+  `dict[str, Any]` it had in the service, so it is named in `NOT_YET_BANNED` with the reason;
+  `run_records.py` has no `Any` and went straight under the ban.
+  **Tests moved with the code:** the two mbp test classes (413 lines, unchanged but for six service constructions the command
+  tests no longer need) are
+  `tests/simulation/test_ray_mbp_tracked.py`; `test_ray_backend.py` is 5,879 → 5,467 lines.
 
 - **2026-09-20** — **PR 6b: D12 is on. `viva_core.*` and the ray package's modules are type-checked
   with `disallow_any_explicit` + `disallow_any_unimported`.** 74 sites: 55 real, 19 not ours.

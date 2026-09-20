@@ -123,15 +123,18 @@ def test_the_known_dispatch_paths_are_all_still_covered() -> None:
     altogether (e.g. someone inlines it). This pins the list that must keep
     carrying an identity.
     """
+    # A method still on the service is pinned by its bare name; one that moved into the package
+    # is pinned as ``<module>.<name>``, because every strategy's entry point is called ``submit``
+    # and five bare ``submit``s would pin nothing.
     with_identity = {
-        fn.name
+        fn.name if "/simulation/ray/" not in module_path else f"{pathlib.Path(module_path).stem}.{fn.name}"
         for module_path in RAY_SERVICE_MODULES
         for fn in _functions(ast.parse(pathlib.Path(module_path).read_text()))
         if _calls_named(fn, "with_events_env")
     }
     expected = {
         "_submit_nextflow_dispatch",
-        "_submit_mbp_tracked_dispatch",
+        "mbp_tracked.submit",  # MbpTrackedStrategy (P2.1 PR 7)
         "_submit_multi_node_composite",
         "submit_chain_dispatch_job",
         "submit_ecoli_simulation_job",
