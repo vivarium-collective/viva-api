@@ -1414,7 +1414,26 @@
 #            Code-only: NO new migration, DB stays at e7b3c9a1d5f2.
 #            MARKERS: /app/viva_core/backends/batch.py exists; `cancel_companion_jobs` in
 #            /app/viva_api/simulation/simulation_service_ray.py.
-__version__ = "0.9.148"
+#           0.9.149 -- core split, checkpoints B2 and C2: ONE image, TWO deploys
+#            (docs/plan-core.md section 8). main carries a database change (#722) on top of
+#            dispatch changes that were never deployed (cuts 4-5, #714), so they cannot be
+#            shipped as separate images. They are separated in TIME instead:
+#              B2 -- the migration Job only, from this image. The API stays on 0.9.148.
+#                    f4c8a2e6d0b3 adds simulator.temporary / label / image_tag; additive with
+#                    defaults, so 0.9.148 runs unchanged against the new schema.
+#              C2 -- the API rolls to this image.
+#            What the API gains at C2:
+#            * #722 (D11): simulators are WRITE-ONCE. `force` on a built or building simulator
+#              answers 409; a failed build is still retried. The one exception is a
+#              marked-TEMPORARY simulator: a new record with a label and its own image tag
+#              tmp-<commit>-<nonce>, shown as TEMPORARY in the API and in all three clients.
+#              Everything environment-shaped keys on SimulatorVersion.environment_key.
+#            * P2.1 cut 4 (#712) image build, cut 5 (#713) ParCa -> ray/parca.py,
+#              #714 build + tasks as composed services. No behaviour change intended.
+#            Client side, nothing to deploy: smoke `sim-mbp` and `build` (#720, #722).
+#            MARKERS (C2): `environment_key` in /app/viva_api/simulation/models.py;
+#            /app/viva_api/simulation/ray/parca.py exists.
+__version__ = "0.9.149"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in
