@@ -451,6 +451,7 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 | A ✅ 0.9.145, 2026-09-18 | P0 first wave + P1a | new top-level package in the image; reconciler probes; shutdown order | `current_schema()` is `public`; migration Job classifies MANAGED; pod boots; `/app/viva_core/models.py` on the newest pod; EUTE smoke via `atlantis`; `vwb smoke`; one rolling restart's logs |
 | A2 ✅ 0.9.146, 2026-09-19 | P1b + the `run_pbg` fix (#689) | configuration plumbing — how the storage settings reach the file services — kept apart from P2.1's dispatch change (one kind per deploy) | Tier 0 + Tier 1; `compose` flips FAIL → PASS; `atlantis simulation outputs` (the S3 file service end to end); marker `/app/viva_core/settings.py` |
 | B ✅ 0.9.147, 2026-09-19 | P0 second wave + #661 | `create_all` off and the FRESH path changed — how every database bootstraps | alone; `--analyze` per site; migration Job; boot against an already-migrated DB |
+| C1 (0.9.148) | P2.1 cuts 1–3 + the #709 fix (#710) | the first **dispatch** checkpoint, taken early: the Batch engine now lives in core and every submit goes through it; cancel now stops a run's ParCa job | Tier 0 + 1 + 2, including `sim-cancel` and `chain-cancel`, which must flip FAIL → PASS; markers `/app/viva_core/backends/batch.py` and `cancel_companion_jobs` |
 | C | P2.0–P2.1 | core's first settings object; the Batch submit path moved | every dispatch path: Ray MNP sim, container analysis, task, compose, image build, Nextflow head |
 | D | P2.2–P2.3 | strategies; env-worker and task image resolution | workbench through the relay; `vwb smoke`; `atlantis worker`, `task` |
 | E | P3 | settings split, new wiring and lifespan, app factory | alone; diff redacted effective settings and the OpenAPI spec old pod vs new |
@@ -472,7 +473,7 @@ is reported separately from PASS and says why; `--json-out` is the record a rele
 | 2 | tens of minutes, dollars | **one real simulation per dispatch mechanism**, submitted the way a real client selects each and run **concurrently**: `sim-default` (1 seed x 1 generation), `sim-chain` (2 x 2 — more than one generation is what selects chain dispatch; every seed must have succeeded), `sim-nextflow` (`extra_params.nextflow_dispatch`; every traced task completed), `sim-composite` (`extra_params.multi_node_dispatch`). Each must show **output**, not just COMPLETED. Three more **cancel** what they submit — `sim-cancel` (the run's ParCa job, then its own), `chain-cancel` (a 2 x 2 campaign cancelled in its ParCa phase, where no seed has a job yet) and `nextflow-cancel` (head Job deleted; tasks stopped by Nextflow's hook or the scheduler's reaper) — and assert on **AWS Batch itself**, with the operator's own read-only credentials, that no job carrying the run's experiment id is still active: the API cannot be the witness, because the cancel handler writes CANCELLED to its own row whether or not anything stopped. Without AWS access they SKIP, before submitting anything. Not covered: an image build, and the upstream K8s + Nextflow path (`scripts/qualification_test.sh` stays the check for that) |
 | R (`--tier 3`) | minutes | a task is put in flight, the deployment is restarted with the operator's own `--restart-command` (`scripts/smoke_restart_k8s.sh`), `/version` must be unchanged and the task must still resolve with its output. Status that lives only in a pod's memory fails this. The shutdown order in the terminated pod's log is still read by hand |
 
-Required: **A** = 0 + `task`. **A2** = 0 + 1 + an outputs download. **B** = 0 + 1. **C** = 0 + 1 + 2 (P2.1 is the first change that
+Required: **A** = 0 + `task`. **A2** = 0 + 1 + an outputs download. **B** = 0 + 1. **C1**, **C** = 0 + 1 + 2 (P2.1 is the first change that
 can break dispatch — Tier 2 and R are built before it). **D** = 0 + 1 (`worker`, `task`
 especially). **E** = 0 + 1 + R. **F** = 0 + 1. **G** = 0 + 1 + R. **H** = 0 + 1 + 2. **I**, **J** = all.
 
@@ -530,6 +531,14 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — **Checkpoint C split: C1 now (0.9.148), C when the carve is done** (Jim:
+  "bump and deploy 0.9.148"). `main` was four dispatch changes ahead of dev — cuts 1–3 and
+  #710. Deploying now rather than after cut 10 means a Tier 2 failure has three suspects
+  instead of ten, the #709 compute leak stops, and the two cancel checks get their
+  FAIL → PASS. It does not break "one kind of plumbing change per deploy": all four are the
+  same kind (dispatch). #710 merged as `495fdd2e` with a fifth smoke check, `chain-cancel`,
+  whose pre-fix baseline FAILED exactly as predicted — a chain campaign cancelled in its
+  ParCa phase stopped nothing (`ray-parca-… RUNNING, terminated: false`, 900 s on).
 - **2026-09-19** — **#709 fixed before cut 4, at Jim's direction** (#708 merged first). Its
   extent was wider than the one case the smoke check hit: **three** dispatch paths submit a
   ParCa job ahead of the job they return (default, multi-node composite, mbp-tracked) and
