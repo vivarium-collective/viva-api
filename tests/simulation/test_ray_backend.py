@@ -14,6 +14,7 @@ from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.config import ComputeBackend
 from viva_api.simulation.models import AnalysisOptions, HpcRun, JobType
+from viva_api.simulation.ray.analysis import analysis_modules_for
 from viva_api.simulation.ray.config_interpretation import (
     injected_processes_from_config,
     strain_from_config,
@@ -26,10 +27,7 @@ from viva_api.simulation.ray.image_paths import (
     V2ECOLI_DIR,
     VARIANT_CACHE_DIR,
 )
-from viva_api.simulation.simulation_service_ray import (
-    SimulationServiceRay,
-    analysis_modules_for,
-)
+from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
 if TYPE_CHECKING:
     from viva_api.simulation.database_service import DatabaseServiceSQL
@@ -1799,7 +1797,7 @@ class TestMultiNodeAnalysisCommand:
         real shape (item 88) never has n_seeds in the same sense."""
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._multi_node_analysis_command(
+            cmd = service.analysis._multi_node_analysis_command(
                 experiment_id="exp1",
                 composite_id="v2ecoli.composites.ecoli_colony.ecoli_colony",
                 history_uri="s3://bucket/exp1",
@@ -1817,7 +1815,7 @@ class TestMultiNodeAnalysisCommand:
         `.strip().lower() == "applicable"` check would silently miss."""
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._multi_node_analysis_command(
+            cmd = service.analysis._multi_node_analysis_command(
                 experiment_id="exp1",
                 composite_id="v2ecoli.composites.lineage_ray_batch",
                 history_uri="s3://bucket/exp1",
@@ -1835,7 +1833,7 @@ class TestMultiNodeAnalysisCommand:
         service = SimulationServiceRay()
         modules: dict[str, dict[str, Any]] = {"multiseed": {"doubling_time_distribution": {}}}
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._multi_node_analysis_command(
+            cmd = service.analysis._multi_node_analysis_command(
                 experiment_id="exp1",
                 composite_id="v2ecoli.composites.lineage_ray_batch",
                 history_uri="s3://bucket/exp1",
@@ -1852,7 +1850,7 @@ class TestMultiNodeAnalysisCommand:
         cd-then-python shape."""
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._multi_node_analysis_command(
+            cmd = service.analysis._multi_node_analysis_command(
                 experiment_id="exp1",
                 composite_id="v2ecoli.composites.ecoli_colony.ecoli_colony",
                 history_uri="s3://bucket/exp1",
@@ -1869,7 +1867,7 @@ class TestMultiNodeAnalysisCommand:
         stock knowledge-base build."""
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._multi_node_analysis_command(
+            cmd = service.analysis._multi_node_analysis_command(
                 experiment_id="exp1",
                 composite_id="v2ecoli.composites.lineage_ray_batch",
                 history_uri="s3://bucket/exp1",
@@ -1923,7 +1921,7 @@ class TestSubmitMultiNodeAnalysisExtraction:
             patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
             patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
         ):
-            job_id = await service.submit_multi_node_analysis(
+            job_id = await service.analysis.submit_multi_node_analysis(
                 simulation=simulation,
                 database_service=database_service,
                 commit="abc123",
@@ -1968,7 +1966,7 @@ class TestSubmitMultiNodeAnalysisExtraction:
             patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
             patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
         ):
-            await service.submit_multi_node_analysis(
+            await service.analysis.submit_multi_node_analysis(
                 simulation=simulation,
                 database_service=database_service,
                 commit="abc123",
@@ -2018,7 +2016,7 @@ class TestSubmitMultiNodeAnalysisExtraction:
             patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
             patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
         ):
-            await service.submit_multi_node_analysis(
+            await service.analysis.submit_multi_node_analysis(
                 simulation=simulation,
                 database_service=database_service,
                 commit="abc123",
@@ -2059,7 +2057,7 @@ class TestSubmitMultiNodeAnalysisExtraction:
             patch.object(service, "_ensure_container_job_def", return_value="job-def:1"),
             patch.object(service, "_image_uri", return_value="ghcr.io/example/image:abc"),
         ):
-            await service.submit_multi_node_analysis(
+            await service.analysis.submit_multi_node_analysis(
                 simulation=simulation,
                 database_service=database_service,
                 commit="abc123",
@@ -2324,7 +2322,7 @@ class TestAnalysisCommand:
             patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
-            return service._analysis_command(**{**defaults, **kw})
+            return service.analysis._analysis_command(**{**defaults, **kw})
 
     def test_runs_v2ecoli_analyze_with_positional_sweep_dir_and_config_only(self) -> None:
         cmd = self._cmd()
@@ -5707,7 +5705,7 @@ class TestSubmitCampaignAnalysis:
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
         ):
-            job_id = await service.submit_campaign_analysis(
+            job_id = await service.analysis.submit_campaign_analysis(
                 simulation=simulation,
                 database_service=database_service,
                 commit="abc1234",
@@ -5750,7 +5748,7 @@ class TestSubmitCampaignAnalysis:
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
         ):
-            await service.submit_campaign_analysis(
+            await service.analysis.submit_campaign_analysis(
                 simulation=simulation,
                 database_service=database_service,
                 commit="abc1234",
@@ -5784,7 +5782,7 @@ class TestSubmitCampaignAnalysis:
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
         ):
-            await service.submit_campaign_analysis(
+            await service.analysis.submit_campaign_analysis(
                 simulation=simulation,
                 database_service=database_service,
                 commit="abc1234",
@@ -5821,7 +5819,7 @@ class TestSubmitCampaignAnalysis:
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
         ):
-            await service.submit_campaign_analysis(
+            await service.analysis.submit_campaign_analysis(
                 simulation=simulation,
                 database_service=database_service,
                 commit="abc1234",
@@ -5854,7 +5852,7 @@ class TestSubmitCampaignAnalysis:
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
             patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
         ):
-            result = await service.submit_campaign_analysis(
+            result = await service.analysis.submit_campaign_analysis(
                 simulation=simulation,
                 database_service=database_service,
                 commit="abc1234",

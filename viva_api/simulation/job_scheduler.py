@@ -858,7 +858,7 @@ class JobScheduler:
             )
             return update
 
-        analysis_job_id = await simulation_service_ray.submit_campaign_analysis(
+        analysis_job_id = await simulation_service_ray.analysis.submit_campaign_analysis(
             simulation=simulation,
             database_service=self.database_service,
             commit=commit,
@@ -955,7 +955,7 @@ class JobScheduler:
             )
             return
 
-        analysis_job_id = await simulation_service_ray.submit_multi_node_analysis(
+        analysis_job_id = await simulation_service_ray.analysis.submit_multi_node_analysis(
             simulation=simulation,
             database_service=self.database_service,
             commit=simulator.git_commit_hash,

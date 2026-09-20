@@ -202,8 +202,8 @@ def _mock_ray_service() -> MagicMock:
     mock_ray.stage_runner = AsyncMock(return_value="s3://mybucket/runner/run_pbg.py")
     mock_ray.submit_chain_generation_batch = AsyncMock()
     mock_ray.submit_chain_lineage_batch = AsyncMock()
-    mock_ray.submit_campaign_analysis = AsyncMock(return_value="analysis-job-id")
-    mock_ray.submit_multi_node_analysis = AsyncMock(return_value="mnp-analysis-job-id")
+    mock_ray.analysis.submit_campaign_analysis = AsyncMock(return_value="analysis-job-id")
+    mock_ray.analysis.submit_multi_node_analysis = AsyncMock(return_value="mnp-analysis-job-id")
     mock_ray.cache_s3_uri = MagicMock(return_value="s3://mybucket/cache/commit")
     mock_ray.chain_base_tags = MagicMock(return_value={"Project": "v2ecoli-comparison"})
     return mock_ray
@@ -632,8 +632,8 @@ class TestAdvanceChainCampaign:
         await scheduler._advance_chain_campaign(hpcrun, mock_ray)
 
         mock_ray.get_chain_campaign_result.assert_called_once_with(["s1g0", "s0g1"])
-        mock_ray.submit_campaign_analysis.assert_awaited_once()
-        call_kwargs = mock_ray.submit_campaign_analysis.call_args.kwargs
+        mock_ray.analysis.submit_campaign_analysis.assert_awaited_once()
+        call_kwargs = mock_ray.analysis.submit_campaign_analysis.call_args.kwargs
         assert call_kwargs["total_n_seeds"] == 2
         assert call_kwargs["n_generations"] == 2
         assert call_kwargs["simulation"].database_id == simulation.database_id
@@ -691,7 +691,7 @@ class TestAdvanceChainCampaign:
 
         await scheduler._advance_chain_campaign(hpcrun, mock_ray)
 
-        mock_ray.submit_campaign_analysis.assert_not_awaited()
+        mock_ray.analysis.submit_campaign_analysis.assert_not_awaited()
         refetched = await database_service.get_hpcrun(hpcrun.database_id)
         assert refetched is not None
         assert refetched.status != JobStatus.COMPLETED
@@ -732,7 +732,7 @@ class TestAdvanceChainCampaign:
 
         await scheduler._advance_chain_campaign(hpcrun, mock_ray)
 
-        mock_ray.submit_campaign_analysis.assert_not_awaited()
+        mock_ray.analysis.submit_campaign_analysis.assert_not_awaited()
         refetched = await database_service.get_hpcrun(hpcrun.database_id)
         assert refetched is not None
         assert refetched.status == JobStatus.FAILED
@@ -937,7 +937,7 @@ class TestUpdateMultiNodeJobs:
 
         await scheduler._advance_multi_node_job(hpcrun, mock_ray)
 
-        mock_ray.submit_multi_node_analysis.assert_not_awaited()
+        mock_ray.analysis.submit_multi_node_analysis.assert_not_awaited()
         refetched = await database_service.get_hpcrun(hpcrun.database_id)
         assert refetched is not None
         assert refetched.status == JobStatus.RUNNING
@@ -957,8 +957,8 @@ class TestUpdateMultiNodeJobs:
 
         await scheduler._advance_multi_node_job(hpc_run=hpcrun, simulation_service_ray=mock_ray)
 
-        mock_ray.submit_multi_node_analysis.assert_awaited_once()
-        call_kwargs = mock_ray.submit_multi_node_analysis.call_args.kwargs
+        mock_ray.analysis.submit_multi_node_analysis.assert_awaited_once()
+        call_kwargs = mock_ray.analysis.submit_multi_node_analysis.call_args.kwargs
         assert call_kwargs["composite_id"] == "v2ecoli.composites.ecoli_colony.ecoli_colony"
 
         refetched = await database_service.get_hpcrun(hpcrun.database_id)
@@ -980,7 +980,7 @@ class TestUpdateMultiNodeJobs:
 
         await scheduler._advance_multi_node_job(hpc_run=hpcrun, simulation_service_ray=mock_ray)
 
-        mock_ray.submit_multi_node_analysis.assert_not_awaited()
+        mock_ray.analysis.submit_multi_node_analysis.assert_not_awaited()
         refetched = await database_service.get_hpcrun(hpcrun.database_id)
         assert refetched is not None
         assert refetched.status == JobStatus.FAILED

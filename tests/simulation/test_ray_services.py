@@ -138,3 +138,27 @@ async def test_a_task_status_is_what_batch_says_or_unchanged_when_batch_does_not
     dispatch.statuses["batch-job-1"] = JobStatus.FAILED
     updated: Any = await service.get_task_status(1, database)
     assert updated == "updated"
+
+
+def test_the_analysis_service_builds_its_command_from_a_dispatcher_that_only_names_uris() -> None:
+    """``RayAnalysisService`` with no ``SimulationServiceRay``: the analysis DAG command needs
+    to know where results and the ParCa cache live, and nothing else of the dispatcher."""
+    from viva_api.simulation.ray.analysis import RayAnalysisService
+
+    class UrisOnly:
+        def _results_s3_uri(self, experiment_id: str) -> str:
+            return f"s3://bucket/out/{experiment_id}/"
+
+        def cache_s3_uri(self, commit: str, *, variant: str | None = None) -> str:
+            return f"s3://bucket/cache/{commit}/{variant or 'base'}/"
+
+    service = RayAnalysisService(UrisOnly())  # type: ignore[arg-type]
+    with (
+        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+    ):
+        command = service._analysis_command(
+            experiment_id="exp-1", modules={"multiseed": {"m": {}}}, analysis_name="an-1", commit="abc1234"
+        )
+    assert "s3://bucket/out/exp-1/" in command
+    assert "multiseed" in command

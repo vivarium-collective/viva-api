@@ -21,10 +21,8 @@ from tests.simulation.test_ray_backend import (
     _container_settings,
     _fake_container_batch,
 )
-from viva_api.simulation.simulation_service_ray import (
-    SimulationServiceRay,
-    analysis_memory_class,
-)
+from viva_api.simulation.ray.analysis import analysis_memory_class
+from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
 # ---------------------------------------------------------------------------
 # analysis_memory_class — the sizing rule

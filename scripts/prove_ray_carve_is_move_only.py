@@ -9,8 +9,8 @@ every class of the hierarchy from the working tree and from ``origin/main`` and 
 method whose source differs, was lost, was added, or is defined in two classes. A cut that
 only MOVES methods prints ``differing: []``, ``lost: []``, ``added: []`` and exits 0.
 
-Tasks and image build are NOT in the hierarchy: they are composed services
-(``ray/tasks.py``, ``ray/build.py``), proven by a differential run instead, because turning a
+Tasks, image build and analysis are NOT in the hierarchy: they are composed services
+(``ray/tasks.py``, ``ray/build.py``, ``ray/analysis.py``), proven by a differential run instead, because turning a
 mixin into a service is a rewiring and cannot be byte-identical.
 
 It compares methods, not module-level code: a moved module function or constant is covered
@@ -34,7 +34,6 @@ HIERARCHY = {
     ROOT + "simulation_service_ray.py": "SimulationServiceRay",
     ROOT + "ray/batch_layer.py": "RayBatchLayer",
     ROOT + "ray/parca.py": "RayParcaMixin",
-    ROOT + "ray/analysis.py": "RayAnalysisMixin",
     ROOT + "ray/nextflow.py": "RayNextflowMixin",
     ROOT + "ray/mbp_tracked.py": "RayMbpTrackedMixin",
     ROOT + "ray/mnp.py": "RayMnpMixin",

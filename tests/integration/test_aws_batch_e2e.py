@@ -225,7 +225,7 @@ async def test_chain_dispatch_multiseed_multigeneration_against_real_aws_batch(
         if non_failed:
             analysis_job_id: str | None = non_failed[-1].job_id_ext
         else:
-            analysis_job_id = await ray_service.submit_campaign_analysis(
+            analysis_job_id = await ray_service.analysis.submit_campaign_analysis(
                 simulation=simulation,
                 database_service=database_service,
                 commit=simulator.git_commit_hash,

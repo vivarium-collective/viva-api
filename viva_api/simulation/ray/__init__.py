@@ -14,12 +14,16 @@ mechanisms (``docs/plan-core.md`` P2). Its pieces land here, one concern per PR:
 * :mod:`.parca` -- ``RayParcaMixin``: ParCa and the caches a simulation stages from. The dispatch
   mixins inherit it.
 
-Two concerns are composed SERVICES rather than mixins, because each needs one collaborator
-and is headed for ``viva_core``, where a class that inherits an SMS class cannot go:
+Three concerns are composed SERVICES rather than mixins: each is handed the few things it
+needs instead of inheriting a class to find them. Build and tasks are headed for
+``viva_core``, where a class that inherits an SMS class cannot go; analysis stays SMS, but it
+is a leaf -- nothing inside ``SimulationServiceRay`` calls it:
 
 * :mod:`.build` -- ``RayImageBuilder(local_task_service)``: build a simulator image.
 * :mod:`.tasks` -- ``RayTaskService(dispatch)``: run a script in the image, follow it, read its
   logs. ``TaskDispatch`` is the Protocol of what it asks of whatever runs container jobs.
+* :mod:`.analysis` -- ``RayAnalysisService(dispatch)``: the analysis DAG node for a chain campaign
+  and for a multi-node composite run, behind the ``AnalysisDispatch`` Protocol.
 
 ``SimulationServiceRay`` inherits the mixins and composes the services.
 """

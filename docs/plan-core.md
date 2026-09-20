@@ -240,8 +240,9 @@ P2.0a guard caught. So:
   | 3 | tasks → `ray/tasks.py` (`RayTasksMixin`), on two prerequisites every later mixin shares: `ray/image_paths.py` (in-image path constants, a leaf) and `ray/batch_layer.py` (`RayBatchLayer`, the service's delegations to the engine) | #707 | 597 (4,581 → 3,984) | merged 2026-09-19 (`4173ca26`) |
   | 4 | build → `ray/build.py` (`RayBuildMixin`); the constructor and `_submit_image_uri` join `RayBatchLayer` | #712 | 144 (3,984 → 3,840) | merged 2026-09-20 (`8229315a`) |
   | 5 | ParCa and the caches → `ray/parca.py` (`RayParcaMixin`): cache URIs, the ParCa / new-gene / variant / upstream commands, their three submit methods, per-seed founder-cache staging | #713 | 512 (3,840 → 3,328) | merged 2026-09-20 (`1f90dd04`) |
-  | — | **build and tasks become composed services** (`RayImageBuilder`, `RayTaskService` behind a `TaskDispatch` Protocol), not mixins — see the decision log, 2026-09-20 | #714 | service file 3,328 → 3,361 (two delegations added) | open |
-  | 6–10 | analysis · Nextflow · mbp-tracked · MNP · chain | | | |
+  | — | **build and tasks become composed services** (`RayImageBuilder`, `RayTaskService` behind a `TaskDispatch` Protocol), not mixins — see the decision log, 2026-09-20 | #714 | service file 3,328 → 3,361 (two delegations added) | merged 2026-09-20 (`a10ac6cf`) |
+  | 6 | analysis → `ray/analysis.py`, a **service**: `RayAnalysisService(dispatch)` behind an `AnalysisDispatch` Protocol, plus `analysis_memory_class`, `analysis_modules_for` and their constants | **this PR** | 513 (3,361 → 2,848) | open |
+  | 7–10 | Nextflow · mbp-tracked · MNP · chain | | | |
 - **P2.2 — mixins become strategies.** A `DispatchStrategy` Protocol (`applies`, `submit`,
   `cancel`, `progress`); each mechanism an object with explicit dependencies (`BatchJobClient`,
   layout, settings) instead of `self`; `submit_ecoli_simulation_job` shrinks to a router.
@@ -461,7 +462,7 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 | A ✅ 0.9.145, 2026-09-18 | P0 first wave + P1a | new top-level package in the image; reconciler probes; shutdown order | `current_schema()` is `public`; migration Job classifies MANAGED; pod boots; `/app/viva_core/models.py` on the newest pod; EUTE smoke via `atlantis`; `vwb smoke`; one rolling restart's logs |
 | A2 ✅ 0.9.146, 2026-09-19 | P1b + the `run_pbg` fix (#689) | configuration plumbing — how the storage settings reach the file services — kept apart from P2.1's dispatch change (one kind per deploy) | Tier 0 + Tier 1; `compose` flips FAIL → PASS; `atlantis simulation outputs` (the S3 file service end to end); marker `/app/viva_core/settings.py` |
 | B ✅ 0.9.147, 2026-09-19 | P0 second wave + #661 | `create_all` off and the FRESH path changed — how every database bootstraps | alone; `--analyze` per site; migration Job; boot against an already-migrated DB |
-| C1 (0.9.148) | P2.1 cuts 1–3 + the #709 fix (#710) | the first **dispatch** checkpoint, taken early: the Batch engine now lives in core and every submit goes through it; cancel now stops a run's ParCa job | Tier 0 + 1 + 2, including `sim-cancel` and `chain-cancel`, which must flip FAIL → PASS; markers `/app/viva_core/backends/batch.py` and `cancel_companion_jobs` |
+| C1 ✅ 0.9.148, 2026-09-20 | P2.1 cuts 1–3 + the #709 fix (#710) | the first **dispatch** checkpoint, taken early: the Batch engine now lives in core and every submit goes through it; cancel now stops a run's ParCa job | Tier 0 + 1 + 2, including `sim-cancel` and `chain-cancel`, which must flip FAIL → PASS; markers `/app/viva_core/backends/batch.py` and `cancel_companion_jobs` |
 | C | P2.0–P2.1 | core's first settings object; the Batch submit path moved | every dispatch path: Ray MNP sim, container analysis, task, compose, image build, Nextflow head |
 | D | P2.2–P2.3 | strategies; env-worker and task image resolution | workbench through the relay; `vwb smoke`; `atlantis worker`, `task` |
 | E | P3 | settings split, new wiring and lifespan, app factory | alone; diff redacted effective settings and the OpenAPI spec old pod vs new |
@@ -516,7 +517,7 @@ gating latency compared to the baseline.
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — #696; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — #698; all merged 2026-09-19 |
-| P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core). Cut 1, config interpretation — #705 · cut 2, Batch engine → `viva_core/backends/batch.py` — #706 · cut 3, tasks + the shared base layer — #707 (merged `4173ca26`) · cut 4, build — #712 (merged `8229315a`) · cut 5, ParCa — #713 (merged `1f90dd04`) · build and tasks → composed services — #714 | no bump: deploys with the rest of P2.1 at checkpoint C | — | — | **in progress** — cuts 1–3 merged 2026-09-19; nothing deployed (checkpoint C) |
+| P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core). Cut 1, config interpretation — #705 · cut 2, Batch engine → `viva_core/backends/batch.py` — #706 · cut 3, tasks + the shared base layer — #707 (merged `4173ca26`) · cut 4, build — #712 (merged `8229315a`) · cut 5, ParCa — #713 (merged `1f90dd04`) · build and tasks → composed services — #714 (merged `a10ac6cf`) · cut 6, analysis as a service — **this PR** | no bump: deploys with the rest of P2.1 at checkpoint C | — | — | **in progress** — cuts 1–3 merged 2026-09-19; nothing deployed (checkpoint C) |
 | P2.2 | mixins → `DispatchStrategy` objects; router | | | | not started |
 | P2.3 | core runtime image; K8s / SLURM / LOCAL adapters; `EnvironmentRef` | | | | not started |
 | P3 | | | | | |
@@ -541,6 +542,38 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-20** — **P2.1 cut 6: analysis, as a service** (#714 merged first, on Jim's say-so).
+  The rule from #714 decided it: analysis is a **leaf** of the class — the scheduler, the
+  handlers and `compose` call *into* it, and **nothing inside `SimulationServiceRay` calls
+  it** (checked by scanning every remaining method for the five names). It reaches back for
+  six helpers, which `AnalysisDispatch` names. It is not headed for core — it is SMS
+  science — but "a mixin is for code entangled with the rest of the class" does not
+  describe it. Method bodies are what they were with `self.<helper>` →
+  `self._dispatch.<helper>` for those six names; callers use `service.analysis.…` (the
+  scheduler, 3 test files). **The Protocol earned its place on the first type-check:** I had
+  listed the keywords analysis passes to `_submit_container` by reading the code and missed
+  `task_env`; mypy refused the call. **Proof:** differential, 138 cases (analysis command ×
+  modules × cache variant; campaign analysis × generations × seeds × options × variant ×
+  a failing task table × settings; multi-node command and submit), **0 differences**, 84
+  run to completion and 54 are the injected database failure, identical on both sides;
+  three mutations caught (12, 16, 12 differences) — job name, the memory-sizing constant,
+  the cache URI. **A guard that would have gone blind:** `test_dispatch_events_identity.py`
+  statically scans named files for dispatch methods that drop the `PBG_*` events identity,
+  and its own history says it once missed a dispatch because "the module was simply not
+  scanned". It listed `simulation_service_ray.py` only. It now globs `simulation/ray/*.py`,
+  so a dispatch method carved into a new file is scanned without anyone remembering to add it.
+- **2026-09-20** — **Checkpoint C1 passed on dev (0.9.148, #711, tag `v0.9.148`).** `kubectl
+  diff` = one line (the api image); the apply alone rolled it, the workbench did not roll;
+  both markers on the newest pod; `/health` at head `e7b3c9a1d5f2`. Smoke **Tier 0 + 1: 12
+  PASS / 0 FAIL** (2 opt-in skips) — the three task checks and `compose` ran through the
+  Batch engine in core. **Tier 2: 7 / 7 PASS** — `sim-default` (82 output files),
+  `sim-chain` (2/2 seeds over 2 generations), `sim-nextflow`, `sim-composite`, and the three
+  cancels. **`sim-cancel` and `chain-cancel` flipped FAIL → PASS**, 921 s and 915 s of
+  waiting down to 45 s each: on 0.9.148 Batch showed `ray-parca-…` *and* `ray-sim-…` active
+  before the default-path cancel and none after; the chain campaign was cancelled in its
+  ParCa phase and its one job was gone. Posted on #709. So cuts 1–3 are proven on a
+  deployment, not only in unit tests, and a Tier 2 failure at checkpoint C now has seven
+  suspects (cuts 4–10), not ten. Prod is untouched (0.9.78) and still has #709.
 - **2026-09-20** — **Build and tasks are services, not mixins** (Jim asked "why have a
   RayBuildMixin rather than a build service"; there was no good reason). What the three
   build methods take from `self`: `_local`, and each other. Nothing of the Batch layer. It

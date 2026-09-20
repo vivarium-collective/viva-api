@@ -63,8 +63,8 @@ from pathlib import Path
 from typing import Any
 
 from viva_api.simulation.models import SimulationConfig
+from viva_api.simulation.ray.analysis import analysis_modules_for
 from viva_api.simulation.ray.config_interpretation import injected_processes_from_config
-from viva_api.simulation.simulation_service_ray import analysis_modules_for
 
 #: The product-axis listener pair Runs 1/2/4 dispatch with (met-eng Q6); Run 3 has none.
 VIOLACEIN_EXCHANGE_FLUXES: dict[str, str] = {"glucose_exchange": "GLC", "violacein_exchange": "VIOLACEIN"}
