@@ -1376,7 +1376,15 @@ class SimulationServiceRay(RayTasksMixin, RayBatchLayer):
             tags={**base_tags, "Phase": "mbp_tracked"},
             task_env=task_env,
         )
-        return JobId.ray(job_id)
+        tracked_job_id = JobId.ray(job_id)
+        await self._record_run_with_companions(
+            database_service,
+            job_id=tracked_job_id,
+            simulation_id=ecoli_simulation.database_id,
+            correlation_id=correlation_id,
+            companion_job_ids=[parca_job_id] if parca_job_id else [],
+        )
+        return tracked_job_id
 
     async def stage_runner(self, experiment_id: str) -> str:
         """Upload the generic run_pbg.py runner to S3 for this experiment; return its URI.
@@ -2567,7 +2575,15 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         # comparison-ensemble and phase0 paths that still reach this point write
         # no cd1_*/ptools_*-ready sweep and never got inline analysis either --
         # unaffected by this rework.
-        return JobId.ray(sim_job_id)
+        job_id = JobId.ray(sim_job_id)
+        await self._record_run_with_companions(
+            database_service,
+            job_id=job_id,
+            simulation_id=ecoli_simulation.database_id,
+            correlation_id=correlation_id,
+            companion_job_ids=[parca_job_id],
+        )
+        return job_id
 
     # A freshly-registered job definition (this method is always called right
     # after `_ensure_mnp_job_def` registers one) can briefly 404/come back
@@ -2993,6 +3009,8 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
             ref_id=ecoli_simulation.database_id,
             correlation_id=correlation_id,
             multi_node_composite_id=composite_id,
+            # The ParCa job this composite waits on is this run's too (viva-api#709).
+            external_job_ids=[parca_job_id] if parca_job_id else None,
         )
         return job_id
 
@@ -3915,6 +3933,58 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         self._batch_jobs().terminate(job_id.value, reason="cancelled via sms-api")
         logger.info("Terminated Ray Batch job %s", job_id.value)
 
+    async def _record_run_with_companions(
+        self,
+        database_service: DatabaseService,
+        *,
+        job_id: JobId,
+        simulation_id: int,
+        correlation_id: str | None,
+        companion_job_ids: list[str],
+    ) -> None:
+        """Record this dispatch's OWN HpcRun row, carrying the Batch jobs it submitted besides
+        the tracked one (viva-api#709).
+
+        A path that submits ParCa ahead of the job it returns used to keep the ParCa id only
+        as that job's ``dependsOn``. The row the generic caller then inserted knew one job, so
+        a cancel terminated one job: ParCa ran on under a CANCELLED row, and the terminated
+        job sat PENDING behind it until it finished.
+
+        Same pattern, same reason, as ``submit_chain_dispatch_job`` and
+        ``_submit_multi_node_composite``: the row needs a field the generic caller cannot
+        populate. It is inserted under the caller's ``correlation_id``, which is exactly what
+        the caller's insert-if-absent guard keys on, so there is still one row per run.
+
+        No companions, or no correlation id to key the guard on: nothing is recorded and the
+        generic caller inserts its row as before.
+        """
+        if not companion_job_ids or not correlation_id:
+            return
+        await database_service.insert_hpcrun(
+            job_id=job_id,
+            job_type=JobType.SIMULATION,
+            ref_id=simulation_id,
+            correlation_id=correlation_id,
+            external_job_ids=companion_job_ids,
+        )
+
+    async def cancel_companion_jobs(self, hpc_run: HpcRun) -> int:
+        """Terminate the Batch jobs a run owns besides its tracked one; returns how many.
+
+        Called BEFORE the tracked job is cancelled: that job depends on these, and Batch keeps
+        a terminated job PENDING until its dependency ends -- so stopping the dependency
+        first is also what lets the tracked job leave the queue.
+
+        Only a Batch-backed run has companions of this kind. A LOCAL row's
+        ``external_job_ids`` are its build's jobs, which ``LocalTaskService`` owns.
+        """
+        if hpc_run.job_id.backend != JobBackend.RAY:
+            return 0
+        companions = [j for j in hpc_run.external_job_ids or [] if j and j != hpc_run.job_id.value]
+        for companion in companions:
+            await self.cancel_job(JobId.ray(companion))
+        return len(companions)
+
     async def reap_cancelled_campaign(self, head_job_name: str) -> int | None:
         """Terminate Batch tasks that outlived a cancelled Nextflow head.
 
@@ -3974,6 +4044,12 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         single-job ``cancel_job``/``cancel_simulation`` split: this service
         talks to AWS, the handler owns the DB write).
         """
+        # The campaign's OWN job id is its ParCa job, and until ParCa succeeds no seed has a
+        # current job at all -- so a campaign cancelled in that phase terminated nothing and
+        # left ParCa running under a CANCELLED row (viva-api#709). Terminating a job that has
+        # already finished is accepted by Batch, so there is no state to check first.
+        if not campaign.chain_parca_done and campaign.job_id.backend == JobBackend.RAY:
+            await self.cancel_job(campaign.job_id)
         for job_id in campaign.chain_current_job_ids or []:
             if job_id is None:
                 continue

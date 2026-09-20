@@ -530,6 +530,25 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — **#709 fixed before cut 4, at Jim's direction** (#708 merged first). Its
+  extent was wider than the one case the smoke check hit: **three** dispatch paths submit a
+  ParCa job ahead of the job they return (default, multi-node composite, mbp-tracked) and
+  none recorded it; and a **chain campaign** cancelled during its ParCa phase terminated
+  nothing at all, because the campaign's own job id *is* the ParCa job and no seed has a
+  current job yet. The fix uses what exists: `hpcrun.external_job_ids` (#414) holds the jobs
+  a run owns besides the one it tracks; `insert_hpcrun` takes them; the default and
+  mbp-tracked paths now record their own row under the caller's correlation id — the
+  pattern chain and composite already use, and what the handlers' insert-if-absent guard
+  keys on, so still one row per run; cancel terminates the companions **first** (Batch
+  keeps a terminated job `PENDING` until its dependency ends), then the tracked job. No
+  schema change. **The partial-cache question, decided:** terminating ParCa mid-write adds
+  no state the system does not already produce — the image's entrypoint syncs the cache
+  dir to the shared key every 30 s *during every ParCa run*, a failed or reclaimed ParCa
+  leaves the same, the stage-in's `verify_cache_version` is the existing guard, and the
+  default path rebuilds ParCa on every submit. Only the run's *own* ParCa job is
+  terminated, never another run's. After this deploys, `sim-cancel` is an expected **PASS**;
+  until then it stays an expected FAIL. This lands in code the ParCa cut (5) will move —
+  which is the argument for fixing it first: the carve then moves correct code.
 - **2026-09-19** — **The new checks' first live run (dev 0.9.147, pre-carve) found a real
   bug: #709.** `task` PASS (304 s, cold start; nonce and `sim_data_refs` read back),
   `task-fail` PASS (12 s), `task-repo` PASS (22 s), `nextflow-cancel` PASS (216 s — and it
