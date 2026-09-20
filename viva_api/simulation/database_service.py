@@ -581,7 +581,16 @@ class DatabaseService(ABC):
         pass
 
     @abstractmethod
-    async def insert_simulator(self, git_commit_hash: str, git_repo_url: str, git_branch: str) -> SimulatorVersion:
+    async def insert_simulator(
+        self,
+        git_commit_hash: str,
+        git_repo_url: str,
+        git_branch: str,
+        *,
+        temporary: bool = False,
+        label: str | None = None,
+        image_tag: str | None = None,
+    ) -> SimulatorVersion:
         pass
 
     @abstractmethod
@@ -590,6 +599,8 @@ class DatabaseService(ABC):
 
     @abstractmethod
     async def get_simulator_by_commit(self, commit_hash: str) -> SimulatorVersion | None:
+        """The AUTHORITATIVE simulator at this commit. A temporary one is never the answer to
+        "is this commit already built?" -- it is a test artifact (docs/plan-core.md D11)."""
         pass
 
     @abstractmethod
@@ -1432,7 +1443,16 @@ class DatabaseServiceSQL(DatabaseService):
             return [row.to_hpc_run() for row in result.scalars().all()]
 
     @override
-    async def insert_simulator(self, git_commit_hash: str, git_repo_url: str, git_branch: str) -> SimulatorVersion:
+    async def insert_simulator(
+        self,
+        git_commit_hash: str,
+        git_repo_url: str,
+        git_branch: str,
+        *,
+        temporary: bool = False,
+        label: str | None = None,
+        image_tag: str | None = None,
+    ) -> SimulatorVersion:
         async with self.async_sessionmaker() as session, session.begin():
             stmt1 = (
                 select(ORMSimulator)
@@ -1441,12 +1461,15 @@ class DatabaseServiceSQL(DatabaseService):
                         ORMSimulator.git_commit_hash == git_commit_hash,
                         ORMSimulator.git_repo_url == git_repo_url,
                         ORMSimulator.git_branch == git_branch,
+                        # Temporary simulators never stand in for the authoritative one, and
+                        # there may be any number of them at one commit (each has its own tag).
+                        ORMSimulator.temporary.is_(False),
                     )
                 )
                 .limit(1)
             )
             result1: Result[tuple[ORMSimulator]] = await session.execute(stmt1)
-            existing_orm_simulator: ORMSimulator | None = result1.scalars().one_or_none()
+            existing_orm_simulator: ORMSimulator | None = None if temporary else result1.scalars().one_or_none()
             if existing_orm_simulator is not None:
                 # If the simulator already exists
                 logger.error(
@@ -1460,6 +1483,9 @@ class DatabaseServiceSQL(DatabaseService):
                 git_commit_hash=git_commit_hash,
                 git_repo_url=git_repo_url,
                 git_branch=git_branch,
+                temporary=temporary,
+                label=label,
+                image_tag=image_tag,
             )
             session.add(new_orm_simulator)
             await session.flush()
@@ -1477,7 +1503,11 @@ class DatabaseServiceSQL(DatabaseService):
     @override
     async def get_simulator_by_commit(self, commit_hash: str) -> SimulatorVersion | None:
         async with self.async_sessionmaker() as session, session.begin():
-            stmt1 = select(ORMSimulator).where(ORMSimulator.git_commit_hash == commit_hash).limit(1)
+            stmt1 = (
+                select(ORMSimulator)
+                .where(and_(ORMSimulator.git_commit_hash == commit_hash, ORMSimulator.temporary.is_(False)))
+                .limit(1)
+            )
             result1: Result[tuple[ORMSimulator]] = await session.execute(stmt1)
             orm_simulator: ORMSimulator | None = result1.scalars().one_or_none()
             if orm_simulator is None:

@@ -75,6 +75,8 @@ class FakeService:
         self.cancelled: list[int] = []
         self.uploads: list[tuple[Any, bool]] = []
         self.latest_commit = "new"
+        self.server_marks_temporaries = True
+        self.extra_simulators: list[Any] = []
         self.build_statuses = ["running", "completed"]
         self.cancel_answer = "cancelled"
         self.nextflow_task_states = ["COMPLETED", "COMPLETED"]
@@ -98,6 +100,7 @@ class FakeService:
             SimpleNamespace(
                 database_id=3, git_repo_url="https://github.com/vivarium-collective/v2ecoli", git_commit_hash="old"
             ),
+            *self.extra_simulators,
         ]
 
     def run_uploaded_task(
@@ -117,7 +120,10 @@ class FakeService:
 
     def submit_upload_simulator(self, simulator: Any, force: bool = False) -> Any:
         self.uploads.append((simulator, force))
-        return SimpleNamespace(database_id=7)
+        if getattr(simulator, "temporary", False) and self.server_marks_temporaries:
+            tag = f"tmp-{simulator.git_commit_hash}-abc123"
+            return SimpleNamespace(database_id=8, temporary=True, image_tag=tag)
+        return SimpleNamespace(database_id=7, temporary=False, image_tag=None)
 
     def submit_get_latest_simulator(self, repo_url: str | None = None, branch: str | None = None) -> Any:
         return SimpleNamespace(git_commit_hash=self.latest_commit, git_repo_url=repo_url, git_branch=branch)
@@ -1042,15 +1048,13 @@ def test_sim_mbp_fails_when_the_run_completes_and_leaves_nothing() -> None:
 class FakeRegistry:
     """``image_pushed_at``: a tag exists only once something has really pushed it."""
 
-    def __init__(self, svc: FakeService, *, pushes: bool = True, existing: set[str] | None = None) -> None:
+    def __init__(self, svc: FakeService, *, pushes: bool = True) -> None:
         self.svc, self.pushes = svc, pushes
-        self.existing = existing or set()
+        self.asked: list[str] = []
 
     def __call__(self, tag: str) -> datetime | None:
-        if tag in self.existing:
-            return datetime(2026, 9, 1, tzinfo=UTC)
-        built = self.svc.uploads and self.pushes
-        return datetime(2026, 9, 20, 12, 0, tzinfo=UTC) if built else None
+        self.asked.append(tag)
+        return datetime(2026, 9, 20, 12, 0, tzinfo=UTC) if (self.svc.uploads and self.pushes) else None
 
 
 def _build_opts(registry: FakeRegistry | None, **overrides: Any) -> dict[str, Any]:
@@ -1071,50 +1075,63 @@ def test_build_is_opt_in_and_skips_without_a_view_of_the_registry() -> None:
     assert svc.uploads == []
 
 
-def test_build_builds_the_branch_head_as_a_new_simulator_and_never_forces() -> None:
+def test_build_makes_a_marked_temporary_simulator_and_asserts_on_its_own_tag() -> None:
+    """Even at a commit that is ALREADY an authoritative simulator (FakeService's 7 is at "new"):
+    a temporary simulator is a new record with its own tag, so nothing of 7's is touched."""
     svc = FakeService()
-    svc.latest_commit = "fresh12"
-    result = _run("build", svc, **_build_opts(FakeRegistry(svc)))
+    registry = FakeRegistry(svc)
+    result = _run("build", svc, **_build_opts(registry))
     assert result.outcome is smoke.Outcome.PASS, result.detail
     [(simulator, force)] = svc.uploads
     assert force is False
-    # repo and branch default to the newest Ray-path simulator's
-    assert (simulator.git_commit_hash, simulator.git_branch) == ("fresh12", "main")
-    assert simulator.git_repo_url.endswith("/sms-ecoli")
-    assert result.evidence["simulator_id"] == 7
+    assert simulator.temporary is True and simulator.label.startswith("atlantis-smoke ")
+    assert (simulator.git_commit_hash, simulator.git_branch) == ("new", "main")
+    # the registry was asked about the MARKED tag, never about the commit's own tag
+    assert registry.asked == ["tmp-new-abc123"]
+    assert result.evidence["image_tag"] == "tmp-new-abc123" and "tmp-new-abc123" in result.detail
 
 
-@pytest.mark.parametrize("commit", [None, "new"], ids=["the branch head", "a named commit"])
-def test_build_never_rebuilds_a_commit_that_is_already_a_simulator(commit: str | None) -> None:
-    """Existing simulators, their images and their tags are the provenance of delivered
-    simulations. The check skips; it does not fall back to a forced rebuild."""
+def test_build_refuses_to_go_on_if_the_server_does_not_mark_the_simulator() -> None:
+    """An older server ignores ``temporary`` and would build under the commit's own tag --
+    the overwrite this whole rule exists to prevent. The check stops before polling."""
     svc = FakeService()
-    svc.latest_commit = "new"  # FakeService's simulator 7 is at commit "new"
-    result = _run("build", svc, **_build_opts(FakeRegistry(svc), build_commit=commit))
-    assert result.outcome is smoke.Outcome.SKIP
-    assert "already simulator 7" in result.detail and "never rebuilt" in result.detail
-    assert svc.uploads == []
-
-
-def test_build_never_overwrites_a_tag_that_exists_without_a_simulator_record() -> None:
-    svc = FakeService()
-    result = _run("build", svc, **_build_opts(FakeRegistry(svc, existing={"orphan1"}), build_commit="orphan1"))
-    assert result.outcome is smoke.Outcome.SKIP
-    assert "refusing to overwrite its tag" in result.detail
-    assert svc.uploads == []
+    svc.server_marks_temporaries = False
+    result = _run("build", svc, **_build_opts(FakeRegistry(svc)))
+    assert result.outcome is smoke.Outcome.FAIL
+    assert "refusing to build under the commit's tag" in result.detail
 
 
 def test_build_fails_when_the_build_fails_or_completes_without_a_push() -> None:
     svc = FakeService()
-    svc.latest_commit = "fresh12"
     svc.build_statuses = ["failed"]
     assert _run("build", svc, **_build_opts(FakeRegistry(svc))).outcome is smoke.Outcome.FAIL
 
     svc = FakeService()
-    svc.latest_commit = "fresh12"
     result = _run("build", svc, **_build_opts(FakeRegistry(svc, pushes=False)))
     assert result.outcome is smoke.Outcome.FAIL
-    assert "has no image tagged fresh12" in result.detail
+    assert "has no image tagged tmp-new-abc123" in result.detail
+
+
+def test_tier_2_runs_on_the_simulator_build_just_made_and_otherwise_never_on_a_temporary_one() -> None:
+    svc = FakeService()
+    opts = _opts(**_build_opts(FakeRegistry(svc)))
+    [build] = smoke.select_checks(3, only=["build"])
+    [result] = smoke.run_checks(svc, [build], opts)
+    assert result.outcome is smoke.Outcome.PASS
+    assert smoke._resolve_simulator(svc, opts) == 8  # the temporary simulator this run built
+
+    # without a build in this run, a temporary simulator in the list is never the default
+    other = FakeService()
+    other.extra_simulators = [
+        SimpleNamespace(
+            database_id=99,
+            git_repo_url="https://github.com/CovertLabEcoli/sms-ecoli",
+            git_commit_hash="zzz",
+            git_branch="main",
+            temporary=True,
+        )
+    ]
+    assert smoke._resolve_simulator(other, _opts()) == 7
 
 
 def test_nothing_in_the_smoke_module_can_force_a_rebuild() -> None:

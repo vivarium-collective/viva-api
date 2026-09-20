@@ -33,6 +33,7 @@ never caught this bug: it runs against the ``database_service`` fixture
 
 import asyncio
 from collections.abc import AsyncGenerator, Generator
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -50,7 +51,7 @@ from viva_api.compose.tables_orm import ComposeBase
 from viva_api.simulation.database_service import DatabaseServiceSQL
 from viva_api.simulation.db_reconcile import _alembic_config
 from viva_api.simulation.models import JobType
-from viva_api.simulation.tables_orm import ORMHpcRun
+from viva_api.simulation.tables_orm import ORMHpcRun, ORMSimulator
 
 # The buggy migration itself: real, currently-deployed enum shape.
 PRE_FIX_REVISION = "a1c3e5f7b9d2"
@@ -149,15 +150,27 @@ async def _shim_missing_hpcrun_columns(engine: AsyncEngine) -> None:
     queries can run end to end against a migration-only schema without
     chasing each pre-existing gap by hand.
     """
-    async with engine.connect() as conn:
-        existing = set(await conn.run_sync(lambda c: [col["name"] for col in sa.inspect(c).get_columns("hpcrun")]))
-    missing = [col for col in ORMHpcRun.__table__.columns if col.name not in existing]
-    if not missing:
-        return
-    async with engine.begin() as conn:
-        for col in missing:
-            coltype = col.type.compile(dialect=conn.dialect)
-            await conn.execute(text(f'ALTER TABLE hpcrun ADD COLUMN "{col.name}" {coltype}'))
+    # ``simulator`` too, since the write-once marker (f4c8a2e6d0b3, docs/plan-core.md D11): the
+    # tests below insert a simulator through the CURRENT model against a schema stopped at an
+    # older revision. A column with a server default keeps it, so a NOT NULL one stays readable.
+    for model in (ORMHpcRun, ORMSimulator):
+        table: str = model.__tablename__
+
+        def column_names(sync_conn: Any, table: str = table) -> list[str]:
+            return [col["name"] for col in sa.inspect(sync_conn).get_columns(table)]
+
+        async with engine.connect() as conn:
+            existing = set(await conn.run_sync(column_names))
+        missing = [col for col in model.__table__.columns if col.name not in existing]
+        async with engine.begin() as conn:
+            for col in missing:
+                coltype = col.type.compile(dialect=conn.dialect)
+                default = ""
+                arg: Any = getattr(col.server_default, "arg", None)
+                if arg is not None:
+                    rendered = arg.compile(dialect=conn.dialect) if hasattr(arg, "compile") else arg
+                    default = f" DEFAULT {rendered}"
+                await conn.execute(text(f'ALTER TABLE {table} ADD COLUMN "{col.name}" {coltype}{default}'))
 
 
 @pytest_asyncio.fixture(scope="function")

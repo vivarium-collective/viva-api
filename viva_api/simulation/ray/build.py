@@ -57,7 +57,7 @@ class RayImageBuilder:
         identical build to before these params existed. See ``build_command``'s own
         docstring.
         """
-        commit = simulator_version.git_commit_hash
+        commit = simulator_version.environment_key
         return self._local.submit(
             self.run(
                 simulator_version,
@@ -113,6 +113,11 @@ class RayImageBuilder:
             raise ValueError("vecoli_private_commit is required when stage_private_fork is True")
         settings = _seams.get_settings()
         commit = simulator_version.git_commit_hash
+        # The image tag. For an authoritative simulator it IS the commit; a temporary one has its
+        # own marked tag (``tmp-<commit>-<nonce>``), so it cannot claim, or overwrite, the tag the
+        # authoritative build of this commit owns (docs/plan-core.md D11). The checkout below
+        # still uses the commit: that one is git's.
+        tag = simulator_version.environment_key
         branch = simulator_version.git_branch
         repo_url = simulator_version.git_repo_url
         build_flags = " -g" if include_new_gene_data else ""
@@ -156,7 +161,7 @@ git checkout {commit}
 
 {private_fork_spec_block}# The v2ecoli image is self-contained (bundles the AWS CLI + Ray entrypoint); its own
 # recipe builds + pushes v2ecoli:<sha> and the :latest deploy tag the MNP job def uses.
-bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -R {settings.batch_region}{build_flags}
+bash docker/build-and-push-ecr.sh -i {tag} -r {settings.ray_ecr_repository} -R {settings.batch_region}{build_flags}
 """
         if include_submit_image:
             # The Nextflow HEAD image. Deliberately a thin derived layer, not a change to the
@@ -174,7 +179,7 @@ bash docker/build-and-push-ecr.sh -i {commit} -r {settings.ray_ecr_repository} -
             # attemptDurationSeconds -- see its §11.1 -- and the skew is resolved here in
             # favour of what already ships.)
             script += f"""
-BASE_URI=$ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}
+BASE_URI=$ECR_REGISTRY/{settings.ray_ecr_repository}:{tag}
 
 cat > /tmp/Dockerfile-submit <<'DOCKERFILE'
 ARG BASE_IMAGE
@@ -188,11 +193,11 @@ RUN curl -fsSL "https://github.com/nextflow-io/nextflow/releases/download/v${{NE
 WORKDIR /app/v2ecoli
 DOCKERFILE
 
-docker build -t "$ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-submit" \
+docker build -t "$ECR_REGISTRY/{settings.ray_ecr_repository}:{tag}-submit" \
     --build-arg BASE_IMAGE="$BASE_URI" \
     -f /tmp/Dockerfile-submit /tmp
-docker push "$ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-submit"
-echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-submit"
+docker push "$ECR_REGISTRY/{settings.ray_ecr_repository}:{tag}-submit"
+echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{tag}-submit"
 """
         return ["sh", "-c", script]
 
@@ -207,7 +212,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
     ) -> None:
         """Submit the DooD v2ecoli image build to Batch (amd64 queue) and poll it."""
         settings = _seams.get_settings()
-        commit = simulator_version.git_commit_hash
+        commit = simulator_version.environment_key
         job_id = await batch_build.submit_batch_build(
             job_name=batch_build.ray_build_job_name(commit),
             queue=settings.build_amd64_queue,

@@ -283,14 +283,51 @@ class ChainProgress(BaseModel):
 
 
 class Simulator(BaseModel):
+    """A simulator to register: a repository at a commit.
+
+    A simulator, its container image and its image tag are the provenance of every simulation
+    that ran on them, so they are **write-once** (``docs/plan-core.md`` D11). ``temporary`` is
+    the one exception, and it has to say so: a temporary simulator is a test artifact that may
+    be overwritten or removed, and every client marks it and leaves it out of "latest" and of
+    any default choice, so nobody takes it for an authoritative one. ``label`` says who or
+    what made it, and is required when ``temporary``.
+    """
+
     git_commit_hash: str  # Git commit hash for the specific simulator version (first 7 characters)
     git_repo_url: str  # Git repository URL for the simulator
     git_branch: str  # Git branch name for the simulator version
+    temporary: bool = False
+    label: str | None = None
+
+    @model_validator(mode="after")
+    def _a_temporary_simulator_says_who_made_it(self) -> "Simulator":
+        if self.temporary and not (self.label or "").strip():
+            raise ValueError("a temporary simulator needs a label saying who or what made it")
+        if self.label is not None and not re.fullmatch(r"[A-Za-z0-9 ._:/@+-]{1,120}", self.label):
+            raise ValueError("label must be 1-120 characters of letters, digits, space and ._:/@+-")
+        return self
 
 
 class SimulatorVersion(Simulator):
     database_id: int  # Unique identifier for the simulator version
     created_at: datetime.datetime | None = None
+    #: The image tag, when it is NOT the commit. ``None`` for an authoritative simulator, whose
+    #: image is ``<repository>:<git_commit_hash>``. A temporary one gets ``tmp-<commit>-<nonce>``,
+    #: so it can never claim, or overwrite, the tag an authoritative build of that commit owns.
+    image_tag: str | None = None
+
+    @property
+    def environment_key(self) -> str:
+        """What this simulator's environment is keyed by: its image tag, the job definitions
+        derived for that image, its ParCa cache, its build job's name.
+
+        For an authoritative simulator this IS the commit, exactly as before this property
+        existed. For a temporary one it is the marked tag, which keeps everything a test
+        simulator writes -- image, caches, job definitions -- out of the namespace the
+        authoritative simulator at the same commit uses. Use ``git_commit_hash`` only for
+        what is really about git: the checkout, and reading the repository.
+        """
+        return self.image_tag or self.git_commit_hash
 
 
 class RegisteredSimulators(BaseModel):

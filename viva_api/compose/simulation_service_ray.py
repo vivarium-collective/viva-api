@@ -158,7 +158,7 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         simulator = await database_service.get_simulator(simulator_id=simulator_id)
         if simulator is None:
             raise ValueError(f"Simulator {simulator_id} not found")
-        return simulator.git_commit_hash
+        return simulator.environment_key
 
     @override
     async def submit_simulation_job(

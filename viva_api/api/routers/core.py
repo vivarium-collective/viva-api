@@ -224,7 +224,11 @@ async def insert_simulator_version(
         logger.error("Simulation service is not initialized")
         raise HTTPException(status_code=500, detail="Simulation service is not initialized")
 
-    existing_version = await db_service.get_simulator_by_commit(simulator.git_commit_hash)
+    # A temporary simulator is always a NEW record with its own marked image tag; it never
+    # resolves to, reuses or replaces anything (docs/plan-core.md D11).
+    existing_version = (
+        None if simulator.temporary else await db_service.get_simulator_by_commit(simulator.git_commit_hash)
+    )
     if existing_version is not None and not force:
         # Check if previous build failed — if so, fall through to retry
         existing_build = await db_service.get_hpcrun_by_ref(
@@ -244,7 +248,12 @@ async def insert_simulator_version(
             include_submit_image=include_submit_image,
             stage_private_fork=stage_private_fork,
             vecoli_private_commit=vecoli_private_commit,
+            temporary=simulator.temporary,
+            label=simulator.label,
         )
+    except handlers.simulators.SimulatorIsWriteOnce as e:
+        # Not a server error: the request asked for something the rule forbids.
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except Exception as e:
         logger.exception("Error inserting simulator version.")
         raise HTTPException(status_code=500, detail=str(e)) from e

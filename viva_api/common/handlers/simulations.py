@@ -919,7 +919,7 @@ async def run_new_gene_cache(
     parca_dataset = await database_service.get_parca_dataset(request.parca_dataset_id)
     if parca_dataset is None:
         raise HTTPException(status_code=404, detail=f"Parca dataset {request.parca_dataset_id} not found.")
-    commit = parca_dataset.parca_dataset_request.simulator_version.git_commit_hash
+    commit = parca_dataset.parca_dataset_request.simulator_version.environment_key
 
     job_id = await simulation_service.submit_new_gene_cache_job(
         commit=commit,
@@ -975,7 +975,7 @@ async def run_variant_cache(
     parca_dataset = await database_service.get_parca_dataset(request.parca_dataset_id)
     if parca_dataset is None:
         raise HTTPException(status_code=404, detail=f"Parca dataset {request.parca_dataset_id} not found.")
-    commit = parca_dataset.parca_dataset_request.simulator_version.git_commit_hash
+    commit = parca_dataset.parca_dataset_request.simulator_version.environment_key
 
     job_id = await simulation_service.submit_variant_cache_job(
         commit=commit,
@@ -2225,7 +2225,7 @@ async def _run_standalone_analysis_ray_native(
         job_id = await sim_service.submit_ray_native_analysis(
             experiment_id=experiment_id,
             params=params,
-            commit=simulator.git_commit_hash,
+            commit=simulator.environment_key,
             correlation_id=correlation_id,
             sim_id=simulation.database_id,
             analysis_id=analysis_id,

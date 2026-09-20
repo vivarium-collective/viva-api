@@ -31,7 +31,7 @@ import httpx
 import typer
 from typer import Argument, Option
 
-from app.app_data_service import READ_CAPABILITIES, E2EDataService, get_data_service
+from app.app_data_service import READ_CAPABILITIES, E2EDataService, get_data_service, simulator_marker
 from app.cli_theme import display_json, get_console, print_banner, status_border, status_style
 from app.dataset_views import (
     ANALYSIS_COLUMNS,
@@ -998,6 +998,9 @@ def simulator_list(
     simulators = data_service.show_simulators()
     simulators = _slice_by_id(simulators, n)
     for sim in simulators:
+        marker = simulator_marker(sim)
+        if marker:
+            console.print(f"[memphis.error]simulator {sim.database_id}: {marker}[/]")
         display_json(sim.model_dump(), console)
 
 
@@ -1022,6 +1025,19 @@ def simulator_status(
     if hpcrun.error_message:
         console.print(f"[memphis.error]Error:[/] {hpcrun.error_message}")
     display_json(hpcrun.model_dump(), console)
+
+
+def _warn_if_temporary_simulator(console: Any, data_service: E2EDataService, simulator_id: int) -> None:
+    """Say so, loudly, before a run is submitted on a temporary simulator: its results are not
+    provenance-grade (docs/plan-core.md D11). A lookup failure never blocks the run."""
+    try:
+        chosen = next((s for s in data_service.show_simulators() if s.database_id == simulator_id), None)
+    except Exception:
+        return
+    marker = simulator_marker(chosen) if chosen is not None else ""
+    if marker:
+        console.print(f"[memphis.error]simulator {simulator_id}: {marker}[/]")
+        console.print("[memphis.error]Results of this run must not be reported as coming from a real simulator.[/]")
 
 
 # -- Simulation commands --
@@ -1133,6 +1149,7 @@ def simulation_run(
                 )
             )
 
+    _warn_if_temporary_simulator(console, data_service, simulator_id)
     with console.status("[memphis.spinner]Submitting simulation..."):
         simulation = data_service.run_workflow(
             experiment_id=experiment_id,
@@ -1322,6 +1339,7 @@ def composite_run(
     if task_env:
         extra_params["multi_node_dispatch"]["task_env"] = _parse_task_env(task_env)
 
+    _warn_if_temporary_simulator(console, data_service, simulator_id)
     with console.status("[memphis.spinner]Submitting composite dispatch..."):
         simulation = data_service.run_workflow(
             experiment_id=experiment_id,
@@ -1647,6 +1665,7 @@ def composite_nextflow(
     )
 
     data_service = get_data_service(base_url=base_url)
+    _warn_if_temporary_simulator(console, data_service, simulator_id)
     with console.status("[memphis.spinner]Submitting Nextflow dispatch..."):
         simulation = data_service.run_workflow(
             experiment_id=experiment_id,
@@ -3023,13 +3042,11 @@ def smoke_run(
     ),
     build: bool = Option(
         default=False,
-        help="Enables `build`: build a simulator for a commit that has NO simulator and NO image yet, and "
-        "verify the registry received it (~20 min). It never rebuilds an existing simulator: those are "
-        "provenance. Runs before tier 2, so the simulations then run on the new image.",
+        help="Enables `build`: build a marked-TEMPORARY simulator (its own record, its own image tag "
+        "`tmp-<commit>-<nonce>`) and verify the registry received it (~15 min). It cannot touch an "
+        "authoritative simulator: those are write-once. Runs before tier 2, which then uses it.",
     ),
-    build_commit: str | None = Option(
-        default=None, help="`build`: the commit to build (default: the branch's HEAD). Must be unregistered."
-    ),
+    build_commit: str | None = Option(default=None, help="`build`: the commit to build (default: the branch's HEAD)."),
     build_repo_url: str | None = Option(default=None, help="`build`: default = the newest Ray-path simulator's repo."),
     build_branch: str | None = Option(default=None, help="`build`: default = that simulator's branch."),
     ecr_repository: str = Option(default="v2ecoli", help="`build`: the ECR repository the image is pushed to."),

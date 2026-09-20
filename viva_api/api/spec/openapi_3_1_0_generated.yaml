@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.146
+  version: 0.9.148
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -2035,8 +2035,9 @@ paths:
                   git_commit_hash: 2f3ead
                   git_repo_url: https://github.com/CovertLabEcoli/vEcoli-private
                   git_branch: master
+                  temporary: false
                   database_id: 25
-                  created_at: '2026-09-19T11:14:22.944054'
+                  created_at: '2026-09-20T08:28:45.799971'
                 parca_config:
                   outdir: .
                   operons: true
@@ -6291,7 +6292,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-09-19 11:14:21.556301'
+          default: '2026-09-20 08:28:45.724518'
         job_id:
           anyOf:
           - type: string
@@ -6792,6 +6793,15 @@ components:
         git_branch:
           type: string
           title: Git Branch
+        temporary:
+          type: boolean
+          title: Temporary
+          default: false
+        label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Label
       additionalProperties: true
       type: object
       required:
@@ -6799,6 +6809,25 @@ components:
       - git_repo_url
       - git_branch
       title: Simulator
+      description: 'A simulator to register: a repository at a commit.
+
+
+        A simulator, its container image and its image tag are the provenance of every
+        simulation
+
+        that ran on them, so they are **write-once** (``docs/plan-core.md`` D11).
+        ``temporary`` is
+
+        the one exception, and it has to say so: a temporary simulator is a test artifact
+        that may
+
+        be overwritten or removed, and every client marks it and leaves it out of
+        "latest" and of
+
+        any default choice, so nobody takes it for an authoritative one. ``label``
+        says who or
+
+        what made it, and is required when ``temporary``.'
     SimulatorVersion:
       properties:
         git_commit_hash:
@@ -6810,6 +6839,15 @@ components:
         git_branch:
           type: string
           title: Git Branch
+        temporary:
+          type: boolean
+          title: Temporary
+          default: false
+        label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Label
         database_id:
           type: integer
           title: Database Id
@@ -6819,6 +6857,11 @@ components:
             format: date-time
           - type: 'null'
           title: Created At
+        image_tag:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image Tag
       additionalProperties: true
       type: object
       required:

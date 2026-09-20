@@ -46,7 +46,7 @@ PRE_REVISION = "e3a9c1d70b62"
 JOBTYPE_REVISION = "b2f6d8e0a4c7"
 DATASET_REVISION = "c9a1e3f5b7d2"
 #: `upgrade head` and the reconciler go past the dataset revision now; this is where they stop.
-HEAD_REVISION = "e7b3c9a1d5f2"
+HEAD_REVISION = "f4c8a2e6d0b3"
 
 _NEW_COLUMNS = (("analysis", "source"), ("analysis", "tags"), ("hpcrun", "jobref_analysis_id"))
 _NEW_INDEXES = ("ix_analysis_tags", "ix_hpcrun_jobref_analysis_id")
@@ -169,6 +169,9 @@ async def _drop_provenance_objects(url: str) -> None:
         # True above two that are False, and the reconciler rightly calls that INCONSISTENT.
         "DROP INDEX IF EXISTS ix_env_worker_task_owner_instance",
         "ALTER TABLE env_worker_task DROP COLUMN IF EXISTS owner_instance",
+        "ALTER TABLE simulator DROP COLUMN IF EXISTS image_tag",
+        "ALTER TABLE simulator DROP COLUMN IF EXISTS label",
+        "ALTER TABLE simulator DROP COLUMN IF EXISTS temporary",
     )
 
 

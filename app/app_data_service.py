@@ -170,6 +170,20 @@ READ_CAPABILITIES = (
 )
 
 
+TEMPORARY_SIMULATOR_NOTICE = "TEMPORARY -- a test artifact, NOT an authoritative simulator"
+
+
+def simulator_marker(simulator: object) -> str:
+    """What every client shows next to a simulator: empty for an authoritative one, and for a
+    temporary one a marker nobody can miss, with who made it. Simulators are write-once
+    provenance (docs/plan-core.md D11); a temporary one is the exception and must never be
+    taken for the real thing."""
+    if not getattr(simulator, "temporary", False):
+        return ""
+    label = getattr(simulator, "label", None) or "unlabelled"
+    return f"{TEMPORARY_SIMULATOR_NOTICE} ({label})"
+
+
 class E2EDataService:
     base_url: BaseUrl | str
     client: httpx.Client
