@@ -40,6 +40,7 @@ and has a rollback. There is no big-bang step.
 | D7 | **Standalone:** core must run without `viva_api` for every service it provides. | 2026-09-18 | Jim |
 | D8 | **Core CLI:** an independent CLI targeting only core, built on the OpenAPI client generated from the core spec. In the plan for standalone operation; not required up front. | 2026-09-18 | Jim |
 | D9 | **BioModels and the curated COPASI / Tellurium simulators move to core** (not SMS), and are eventually factored back out into the reproducible-biology hosted-services application. | 2026-09-18 | Jim |
+| D10 | **Core's default path is *select or build* an acceptable environment, then run.** The reproducibility application on core accepts a composite and either selects a known compatible environment or builds one from the composite's dependencies. A barebones environment (built-ins only) is rarely useful; an uber-container does not scale. Extends D6: an environment is a **spec** (explicit `repo@commit` + recipe, or derived from a composite), an **environment** (spec hash *and* image digest, status, build job, what it provides) and a **resolver**. "Default path" is reserved for this. | 2026-09-20 | Jim |
 
 ## 3. The issues, in one page
 
@@ -76,7 +77,7 @@ Detail and evidence are in `architecture-core.md` Part 1. The ones that shape th
 Each phase: a handful of PRs, a version bump per the release protocol (including the
 `<ns>-db-migration` overlay tag), dev then prod.
 
-### P-1 — This PR
+### P-1 — The plan-core PR (#679)
 
 `docs/architecture-core.md` + `docs/plan-core.md`, and a pointer in `CLAUDE.md`. Docs only.
 
@@ -156,26 +157,46 @@ copied). Verify: full `pytest`, `make check`, and on dev the marker grep is
 
 ### P2 — Break up `simulation_service_ray.py`, and extract the backends
 
-`SimulationServiceRay` is one class of **4,305 lines and ~75 methods** holding eleven
-concerns. It was extended, mechanism by mechanism, into the home of *four* simulation
-dispatch paths; it should have been broken up on the SMS side long before a core existed
-(Jim, 2026-09-19). Extracting the generic Batch engine alone would leave a ~4,000-line class
-with all four mechanisms still in it — so P2 is a **decomposition**, of which the core
-extraction is the first cut.
+`simulation_service_ray.py` was **5,019 lines**; its one class, `SimulationServiceRay`, was
+4,305 of them with ~75 methods and eleven concerns. (Every count in this document is against
+that 5,019.) It was extended, mechanism by mechanism, into the home of the simulation dispatch
+paths; it should have been broken up on the SMS side long before a core existed (Jim,
+2026-09-19). Extracting the generic Batch engine alone would leave a ~4,000-line class with
+every mechanism still in it — so P2 is a **decomposition**, of which the core extraction is
+the first cut.
 
-| Concern | ~lines | Destination |
+**Choose the shape by what the thing *is*, not by how its code is arranged** (the 2026-09-20
+audit; Jim's test for build: *a common requirement every dispatch mechanism uses, that works
+one way regardless of mechanism*):
+
+| Domain role | What belongs | Shape |
 |---|---|---|
-| Batch engine — job definitions, MNP + container submit, pacer, status, cancel, logs | 550 | **core** `backends/batch.py` (`BatchJobClient`) |
-| `/tasks` — submit, upload, dispatch, status, logs | 190 | **core** `tasks/` |
-| Image build — `submit_build_image_job`, `_build_command`, `_run_build` | 200 | **core** `backends/build.py` + an SMS recipe |
-| ParCa and caches (ParCa, new-gene, variant, upstream, seed-override staging) | 520 | SMS `simulation/ray/parca.py` |
-| Dispatch 1 — multi-node composite on Ray | 470 | SMS `ray/strategies/mnp.py` |
-| Dispatch 2 — chain dispatch (per seed x generation, lineage, campaign result, cancel / reap) | 900 | SMS `ray/strategies/chain.py` |
-| Dispatch 3 — Nextflow head (render, params, session, head job) | 460 | SMS `ray/strategies/nextflow.py`, on core's Nextflow backend |
-| Dispatch 4 — "mbp tracked" | 220 | SMS `ray/strategies/mbp_tracked.py` |
-| Analysis — container, campaign, multi-node | 460 | SMS `ray/analysis.py` |
-| **The router** — `submit_ecoli_simulation_job`, one 299-line method choosing among the four | 299 | SMS `ray/service.py`, reduced to selecting a strategy |
-| Config interpretation (`strain_from_config`, `injected_processes_from_config`, …) | 200 | SMS `ray/config_interpretation.py` |
+| common capability, works one way | image build; the Batch seam; tasks; the three ParCa **cache jobs** | composed service, handed its collaborators |
+| pure domain specification | config interpretation; the analysis spec (modules, memory sizing); ParCa **commands and cache URIs**; image paths; run tags | module of pure functions |
+| dispatch mechanism | **ensemble**, chain, multi-node composite, mbp-tracked, Nextflow — *five*, not four | strategy object |
+| shared compute pattern | `common/analysis_dag.py`, already shared by the Ray service and `compose` | stays where it is |
+
+A **mixin** is none of these: it is a file split, and at runtime still one object. It was the
+right tool for nothing that remains (see the audit entry in the decision log).
+
+Where each concern went, or goes:
+
+| Concern | ~lines | Destination | State |
+|---|---|---|---|
+| Batch engine — job definitions, MNP + container submit, pacer, status, cancel, logs | 550 | **core** `backends/batch.py` (`BatchJobClient`, takes no settings) | done, cut 2 |
+| SMS's half of the Batch seam (settings, queue choice, this application's env entries) | 400 | SMS `ray/batch_layer.py`: today a base class, **to become a composed `service.batch`** | cut 3; recomposed in PR 5 |
+| `/tasks` — submit, upload, dispatch, status, logs | 190 | SMS `ray/tasks.py` (`RayTaskService`) **now**; core `tasks/` in P4b, when the `task` table has a `JobStore` and the image an environment | service, #714 |
+| Image build | 200 | SMS `ray/build.py` (`RayImageBuilder`) **now**; a core `repo-recipe` build recipe in P5. Not core yet because `batch_build.py` reads this application's settings, names its jobs, and is shared with `SimulationServiceK8s` | service, #714 |
+| Config interpretation | 211 | SMS `ray/config_interpretation.py` (pure) | done, cut 1 |
+| ParCa and caches | 520 | SMS: commands + cache URIs → a pure module; the three cache jobs → `RayParcaService`. ParCa is **not** submitted one way (container in mbp and chain, MNP in ensemble and composite), so each mechanism submits its own | mixin today (cut 5); split in PR 4 |
+| Analysis | 460 | SMS: `ray/analysis_spec.py` (pure: modules, memory sizing, shared with Nextflow and the K8s path); each mechanism's analysis **submitter travels with that mechanism**; the pattern stays `common/analysis_dag.py` | PR 3 |
+| Dispatch — ensemble (the router's inline ParCa + simulation MNP pair; 216 of its 308 lines) | 336 | SMS `ray/strategies/ensemble.py` | PR 10 |
+| Dispatch — chain (per seed x generation, lineage, campaign result, cancel) | 848 | SMS `ray/strategies/chain.py` | PR 11 |
+| Dispatch — Nextflow head (render, params, session, head job, reap) | 464 | SMS `ray/strategies/nextflow.py` | PR 8 |
+| Dispatch — multi-node composite on Ray | 346 | SMS `ray/strategies/composite.py` | PR 9 |
+| Dispatch — "mbp tracked" | 225 | SMS `ray/strategies/mbp_tracked.py` | PR 7 |
+| **The router** `submit_ecoli_simulation_job` | ~20 of code | stays in the facade: precedence among the five, nothing else | PR 10 |
+| The facade — status, cancel routing, config template, repo discovery | 142 | stays: it *is* `SimulationServiceRay` | — |
 
 **The hazard that dictates the staging.** Tests patch this module's *names*: **298** string
 patches. The **205** of `get_settings` are *positional* — a name patch reaches only the module
@@ -197,41 +218,35 @@ P2.0a guard caught. So:
   is the ratchet — no Ray-service module may import either name itself (including
   `from …_seams import get_settings`, which looks like using the seam and defeats it).
   (c) Smoke **Tier 2** and **Tier R** (§8): this is the first phase that can break dispatch.
-- **P2.1 — carve, move-only, one concern per PR**, leaves first: config interpretation →
-  Batch engine (**straight into `viva_core`** as `BatchJobClient`, composed, not inherited) →
-  tasks → build → ParCa → analysis → Nextflow → mbp-tracked → MNP → chain. The SMS pieces
-  start as **mixins** of `SimulationServiceRay`: `self.` keeps working, private-method names
-  that tests and `compose` reach for (`_parca_command` ×34, `_seed_generation_command` ×15,
-  `_submit_container`, `_submit_mnp`, …) stay valid, and each PR is a pure move that a reviewer
-  can verify by diff. `simulation_service_ray.py` ends as the facade.
-  **The shape, settled by cut 3:** mixins do not mix into a vacuum — each one calls
-  `_submit_container`, `_image_uri`, `_results_s3_uri`. So those live in a base class,
-  `RayBatchLayer(SimulationService)`, and every mixin *inherits* it:
-  `SimulationServiceRay(RayTasksMixin, …, RayBatchLayer)`. Real inheritance gives mypy the
-  real signatures; the alternative (a `Protocol` or `TYPE_CHECKING` stubs restating an
-  18-keyword signature per mixin) is a second copy that drifts. Constants a mixin needs
-  live in leaf modules with no imports (`image_paths.py`), because a module under
-  `simulation/ray/` cannot import from the service module that imports it. Ratchet:
-  `test_no_method_is_defined_twice_across_the_carved_classes`.
-  **When NOT to use a mixin (settled 2026-09-20):** a mixin is a file split, not a design —
-  at runtime it is still one object. It earns its keep only where the code is entangled
-  through `self.` with the rest of the class *and* tests reach it by private name (ParCa,
-  the four dispatch mechanisms). A concern that needs one or two collaborators and is
-  headed for core is a **composed service**, handed what it needs: `RayImageBuilder(local)`
-  and `RayTaskService(dispatch)`. A mixin that inherits an SMS class can never move to
-  `viva_core`; a service behind a Protocol can.
-  **No re-exports for module-level functions** (settled by cut 1): a moved function's importers
-  are pointed at its new home in the same PR. mypy strict already refuses the implicit
-  re-export, and an explicit one would keep `job_scheduler` importing a pure function from
-  the 4,800-line module it is being freed from. *Methods* are different — they stay reachable
-  as `self.` through the mixin, which is what keeps the test and `compose` call sites valid.
-  Each cut's PR carries its own proof of "move-only": every moved function's source compared
-  byte-for-byte with `origin/main`, and every class and remaining function in the service
-  file compared the same way. A cut that crosses into `viva_core` cannot be byte-identical
-  (core takes no settings and no domain arguments), so its proof is a **differential run**
-  instead: `origin/main`'s service and the carved one, same inputs, a recording fake Batch
-  client, every boto3 call and return value compared — plus a mutation check that the
-  harness can see a difference at all.
+- **P2.1 — carve, one concern per PR.** Cuts 1–5 are done (table below). The first plan for
+  the rest was "every SMS piece becomes a **mixin** now, and the mixins become strategy
+  objects in P2.2". The 2026-09-20 audit measured the class and found that plan had no basis
+  for what remains, so **P2.2 is absorbed here** and the remaining mechanisms go **straight to
+  strategy objects**:
+  - no dispatch mechanism calls into another; only the router fans out
+  - the helpers thought to be shared are not (`_sim_command`: ensemble only;
+    `_seed_generation_command`, `_seed_lineage_command`: chain only). What is shared is
+    `stage_runner`, `_record_run_with_companions`, `chain_base_tags`, and the Batch and ParCa
+    layers
+  - no test patches a method by string. Tests reach mechanisms by direct call on a real
+    instance and by `patch.object` on Batch-layer seams. (The 298 name patches were
+    `get_settings` and `boto3`; P2.0 dealt with those.)
+
+  **What a strategy owns in this phase: command builders, submit, and its narrow AWS-side
+  helpers** (`get_chain_campaign_result`, `cancel_chain_campaign`, `reap_cancelled_campaign`).
+  Not progress and not cancel routing: progress lives in `job_scheduler.py`
+  (`_advance_chain_campaign`, `_advance_parca_gate`, `_advance_seed_generations`,
+  `_finalize_campaign`, `_advance_multi_node_job`, `_advance_nextflow_head`, ~600 lines keyed
+  on `HpcRun` columns), and cancel is routed by `job_id.backend` in the facade and by
+  `chain_final_job_ids` in the handler. Those halves join the strategies in **P6**. Deferred,
+  not dropped.
+
+  **Rules that stand from cuts 1–5.** No re-exports for module-level functions: a moved
+  function's importers point at its new home in the same PR (mypy strict refuses the implicit
+  re-export). Constants a carved module needs live in leaf modules with no imports
+  (`image_paths.py`). Ratchet: `test_no_method_is_defined_twice_across_the_carved_classes`.
+  A cut that only moves is proven byte-identical; a cut that rewires is proven by a
+  differential run (section 9).
 
   | cut | concern | PR | lines out of the service file | state |
   |---|---|---|---|---|
@@ -240,31 +255,55 @@ P2.0a guard caught. So:
   | 3 | tasks → `ray/tasks.py` (`RayTasksMixin`), on two prerequisites every later mixin shares: `ray/image_paths.py` (in-image path constants, a leaf) and `ray/batch_layer.py` (`RayBatchLayer`, the service's delegations to the engine) | #707 | 597 (4,581 → 3,984) | merged 2026-09-19 (`4173ca26`) |
   | 4 | build → `ray/build.py` (`RayBuildMixin`); the constructor and `_submit_image_uri` join `RayBatchLayer` | #712 | 144 (3,984 → 3,840) | merged 2026-09-20 (`8229315a`) |
   | 5 | ParCa and the caches → `ray/parca.py` (`RayParcaMixin`): cache URIs, the ParCa / new-gene / variant / upstream commands, their three submit methods, per-seed founder-cache staging | #713 | 512 (3,840 → 3,328) | merged 2026-09-20 (`1f90dd04`) |
-  | — | **build and tasks become composed services** (`RayImageBuilder`, `RayTaskService` behind a `TaskDispatch` Protocol), not mixins — see the decision log, 2026-09-20 | #714 | service file 3,328 → 3,361 (two delegations added) | open |
-  | 6–10 | analysis · Nextflow · mbp-tracked · MNP · chain | | | |
-- **P2.2 — mixins become strategies.** A `DispatchStrategy` Protocol (`applies`, `submit`,
-  `cancel`, `progress`); each mechanism an object with explicit dependencies (`BatchJobClient`,
-  layout, settings) instead of `self`; `submit_ecoli_simulation_job` shrinks to a router.
-  Tests move from patching module globals to passing fakes — the smell P2.0 only contained.
-- **P2.3 — the rest of the backends** (was P2b), **starting with the core runtime image**:
+  | — | **build and tasks become composed services** (`RayImageBuilder`, `RayTaskService` behind a `TaskDispatch` Protocol), not mixins — see the decision log, 2026-09-20 | #714 | service file 3,328 → 3,361 (two delegations added) | merged 2026-09-20 (`a10ac6cf`) |
 
-  - **The core runtime image.** A small reference environment that is not
-  any application's science image: Python slim + process-bigraph + pbg-emitters + the Batch
+  The rest, in the order the audit settled (one PR each; nothing merges without Jim's say-so):
+
+  | PR | what | why here |
+  |---|---|---|
+  | 1 | **docs truth** (this PR) | both living documents made true before more work |
+  | 2 | smoke: `sim-mbp` and an opt-in `build` check; then deploy the merged-but-undeployed build cuts (**C2**) | no check builds an image or exercises mbp, and both are about to be rewired |
+  | 3 | reshape #715: pure `ray/analysis_spec.py` + the static-guard glob fix; the two analysis submitters stay in the class until their mechanisms move; `service.analysis` kept as a delegating shim for `job_scheduler.py` | analysis is a spec + a pattern + per-mechanism glue, not one service |
+  | 4 | ParCa: commands and cache URIs → a pure module; `RayParcaService` holds only the three cache jobs | half of it is pure; only the cache jobs work one way |
+  | 5 | **`RayBatchLayer` stops being a base class** and becomes a composed `service.batch`, behind two small SMS Protocols, `ContainerSubmitter` and `MnpSubmitter`, replacing `TaskDispatch` / `AnalysisDispatch`. `local` and `k8s` are constructor arguments of the strategies that need them, never Protocol members | done **first**, so every strategy is handed a real object; done last, each strategy would be rewired twice (~80 call sites, ~24 `patch.object`) |
+  | 6 | `compose` uses `RayBatchLayer` directly, not a whole `SimulationServiceRay()` | one of the three broken `compose-is-domain-free` edges goes |
+  | 7 | strategy: **mbp-tracked** | smallest (225 lines); first use of the shape |
+  | 8 | strategy: **Nextflow** (needs `k8s`; `reap_cancelled_campaign` travels with it); then **C3** | 464 lines |
+  | 9 | strategy: **multi-node composite** (+ its analysis submitter) | 346 lines |
+  | 10 | strategy: **ensemble**, extracted from the router (+ `_sim_command`) | the router shrinks to ~20 lines of precedence |
+  | 11 | strategy: **chain** (+ its analysis submitter; needs `local`); delete the facade shims and `scripts/prove_ray_carve_is_move_only.py`; **checkpoint C** | largest (848 lines) and it bills real money, so last |
+- **P2.2 — absorbed into P2.1** (2026-09-20). There are no mixins to turn into strategies.
+- **P2.3 — the environment model and its *select* half** (no database, no build). D10 says
+  core's default path is *select or build an environment, then run*; this is the select half.
+  `viva_core/environments/`: `EnvironmentSpec` (explicit `repo@commit` + recipe | derived
+  dependency set), `Environment`, and an `EnvironmentResolver` Protocol with one
+  implementation that resolves an **explicit** spec to an image. It replaces four independent
+  derivations of the same image from the same two settings (`ray/batch_layer.py:72`,
+  `compose/simulation_service_ray.py:91`, `compose/env_worker_service.py:114`,
+  `simulation_service_k8s.py:486`). With PR 5 and PR 6 of the carve, that is the smallest slice
+  that runs a third party's pbg-wrapped simulator through core.
+
+  Then **the core runtime image**: a small reference environment that is not any
+  application's science image — Python slim + process-bigraph + pbg-emitters + the Batch
   container entrypoint (stage-in / stage-out contract) + the env-worker module. A few hundred
   MB, built by CI from this repo (`Dockerfile-core-runtime`), pushed to its own ECR/ghcr
-  repository, versioned with `viva_core`.
-  *Why first:* tasks, compose and env workers take no image parameter today — all three
-  hard-wire `<ecr>/v2ecoli:<commit>` — so even a plumbing smoke test pulls a **5.74 GB**
-  (compressed) science image. Measured 2026-09-19 on dev: a Tier 1 task spent **320 s** in
-  queue + instance scale-up + image pull and **2 s** running. The explicit `EnvironmentRef`
-  below is what lets a request name this image; the image is what gives it something small
-  to name. Once it exists: Tier 1 smoke runs on it by default, `tests/core/` gets a real
-  non-application environment, and the public core has a default environment that carries no
-  domain code. (Instance scale-up from zero remains; only the pull shrinks.)
-  - **Then:** K8s, SLURM and LOCAL adapters behind `JobBackend`; `batch_build.py` →
-  `backends/build.py`; `LocalTaskService` over a `JobStore` Protocol; compose stops calling
-  Ray privates; tasks and env-worker take an explicit `EnvironmentRef` with SMS supplying
-  the defaults; a minimal `CoreContainer`.
+  repository, versioned with `viva_core`. It is the environment the resolver selects for a
+  composite that needs nothing beyond the built-ins — the "barebones" end of D10's line, and
+  rarely the useful one. *Why it still matters:* tasks, compose and env workers take no image
+  parameter today, so even a plumbing smoke test pulls a **5.74 GB** (compressed) science
+  image. Measured on dev: a Tier 1 task spends **250–320 s** in queue + scale-up + pull and
+  **2 s** running. With it, Tier 1 smoke and `tests/core/` get a real non-application
+  environment, and the public core a default that carries no domain code.
+
+  **Deliberately not here** (each was listed in two or three phases before the audit):
+  promoting a dispatcher Protocol into core, the K8s / SLURM / LOCAL adapters behind
+  `JobBackend`, `JobStore` (P4b only), a `CoreContainer` (P3), build → core (P5). On D4: the
+  K8s and SLURM adapters are **deferred with a trigger, not dropped** — they land no later
+  than P5, when `compose` (which already runs on SLURM and Batch) moves onto the core seam and
+  becomes the second consumer; until a second backend implements it, a core `JobBackend` would
+  quietly be Batch-shaped, so it is not declared final before then. Before any promotion, the
+  four E. coli keywords on `_submit_container` (`expect_new_genes`, `expect_bundle_overrides`,
+  `require_clean_chain`, `lineage_debug_division`) fold into a generic env contribution.
 
 SLURM: contract tests on recorded sbatch / squeue fixtures, labelled *unverified live*;
 location changes, behaviour does not. Deploy: app only. Verify: `pytest tests/simulation
@@ -279,6 +318,12 @@ a 5k-line file edited by concurrent sessions; announce a freeze while each PR is
 goes); env-worker models lifted out of the router; the lifespan no longer requires the SMS
 scheduler. Two OpenAPI specs, with the SMS spec the union until P8 so the drift tests stay
 green. **The core spec existing is what unblocks the generated core client (D8).**
+
+**Order inside P3 (2026-09-20):** `create_core_app()` and a **test that boots it** come first.
+Only then the explicitly phased move of the `compose` package (5,526 lines; its SMS ties sit
+in one file) and of env-worker (its models and service logic lifted out of the 1,170-line
+router). Moving 5.5k lines into a package nothing boots is unverifiable. `dependencies.py`
+(691 lines of module globals and setters pushed into routers) is what the containers replace.
 
 Deploy: app only. Risk: medium.
 
@@ -298,12 +343,38 @@ Deploy: app + migration Job. Rollback: columns are additive; the previous image 
 
 ### P5 — Environments, builds, compose decoupling, durable dispatch
 
-`core.environment`-shaped table (in `public` until P7), the `BuildRecipe` registry, build
-jobs as core jobs; the SMS simulator build path delegates to them (rows and
-`/core/v1/simulator/*` unchanged). Compose resolves images through `EnvironmentRef`; its
-`analysis` writes, ParCa staging and `analysis_options` move behind an SMS post-completion
-hook. `BackgroundTask` dispatch → lease-based dispatch with orphan reconcile (the #414
-pattern). `/curated/ecoli` → SMS.
+**The *build* half of D10 — where select-or-build becomes whole.** Select-or-build already
+exists three times in this codebase and its siblings, each one partial
+(`architecture-core.md` §2.3a has the table). P5 unifies them rather than adding a fourth:
+
+- a `core.environment`-shaped table (in `public` until P7) carrying **both** identities — the
+  **spec hash** (what was asked for) and the **image digest** (what was built; a recipe hash
+  is not an image identity when the recipe runs `apt upgrade` and resolves pins at build
+  time) — plus status, the build job and what it **provides**. A real unique key, which
+  neither existing table has (`simulator` has none; `compose-api` races on insert).
+- a `BuildRecipe` registry; build jobs as core jobs. Two generic recipes, plus the
+  application's own: **`repo-recipe`** (clone a repo at a commit and run its own build
+  script — today's Ray build *and* `SimulationServiceK8s`'s, which removes that duplication;
+  the SMS simulator build path delegates to it, rows and `/core/v1/simulator/*` unchanged) and
+  **`python-deps`** (synthesize an image from a dependency set — today's
+  `compose/container_def.py`, emitting Apptainer for SLURM and an OCI image for Batch, which
+  cannot build per-composite at all today).
+- **deriving the spec from the composite:** port and *finish*
+  `pbest.dependency_resolution.determine_dependencies` — it parses the
+  `python:pypi<pkg[ver]>@module.path` address protocol and checks an allow-list, then returns
+  empty lists and is called nowhere. The allow-list becomes one enforced core setting rather
+  than three carried-and-dropped copies.
+- from the SMS path, what the compose path lacks: **a FAILED build is retried**, not treated
+  as "already built". And `run_pbg.py` stays **out of the hashed definition**, so editing the
+  runner does not invalidate every environment.
+- "satisfies" starts as an exact spec-hash match and may grow to "a registered environment
+  whose `provides` covers the requirement" — how curated environments (COPASI, Tellurium) and
+  SMS simulators get selected without being rebuilt (open question 9).
+
+Compose's `analysis` writes, ParCa staging and `analysis_options` move behind an SMS
+post-completion hook. `BackgroundTask` dispatch → lease-based dispatch with orphan reconcile
+(the #414 pattern). `/curated/ecoli` → SMS. Prerequisite: a settings-as-arguments cut of
+`batch_build.py`. This is also where the K8s and SLURM adapters land (see P2.3).
 
 BioModels and curated COPASI / Tellurium (D9) → `viva_core/contrib/sysbio`, URLs unchanged.
 The modules (`compose/biomodels_service.py`, `biomodel_documents.py`) already import nothing
@@ -323,6 +394,13 @@ registered. Risk: medium.
 `ComposeJobMonitor`; an SMS `CampaignSubscriber` consumes the `job_transition` outbox for
 chain campaigns and analysis fan-in. Still one process. Verify: a multi-generation chain
 campaign on dev; gating latency against the baseline.
+
+**Before the split (2026-09-20):** `JobScheduler` takes the *concrete* `SimulationServiceRay`
+(`job_scheduler.py:66`) and the handlers `isinstance`-check it six times
+(`handlers/simulations.py`). Narrow Protocols replace both first. **And this is where a
+dispatch strategy gets its other half:** the per-mechanism progress code in the scheduler
+(~600 lines) and the cancel routing in the facade and the handler move onto the strategies
+P2.1 created with build + submit only.
 
 ### P7 — The `core` schema
 
@@ -374,6 +452,22 @@ enforced, quotas, image and repo allow-lists defaulting to deny, the three code-
 surfaces gated, K8s labels parameterised, `VIVA_CORE_` env prefix. Then extract to its own
 repo and PyPI distribution, with the core CLI.
 
+### Out of scope, on purpose
+
+- **`SimulationServiceK8s`** (`simulation_service_k8s.py`, 624 lines: the upstream-vEcoli
+  K8s + Nextflow path). It is the **default backend on both Stanford sites**, it duplicates
+  the image-build commands, and it holds both standalone-analysis entry points
+  (`submit_standalone_analysis`, `submit_ray_native_analysis`). The P2 carve does not touch
+  it. It shares the pure `analysis_spec` module once that exists (PR 3); its build becomes a
+  `repo-recipe` in P5, which is what removes the duplication; `scripts/qualification_test.sh`
+  stays its check, and `atlantis smoke` does not cover it. (Decided 2026-09-20. Before the
+  audit the plan did not mention it at all.)
+- **Production.** Prod is on **0.9.78**; dev is at 0.9.148. A catch-up is *not part of this
+  work* (Jim, 2026-09-20): the plan only records the gap and what closing it needs — an RDS
+  snapshot, `db_reconcile --analyze` against prod, the migration Job across every revision in
+  between (section 7a, risk 3), then smoke Tier 0 + 1 and Tier 2 including the cancel checks.
+  Prod still has #709 (a cancelled run leaves its ParCa job running).
+
 ## 5. Sequencing against in-flight work
 
 - **#678 (BioModels consolidation, merged 2026-09-18):** already on `main`; it shrank the
@@ -409,16 +503,20 @@ repo and PyPI distribution, with the core CLI.
 
 ## 7. Open questions
 
-1. Is `/viva/v1` the right public prefix for core?
-2. May migrated compose rows get new job ids (old one kept in `legacy_compose_id`)?
-3. `/api/v1/tasks`: a permanent SMS facade, or deprecated in favour of `/viva/v1/tasks`?
-4. How urgent is #656 — take the fast lane (the Batch-engine and tasks cuts of P2.1, then P4)?
-5. Core's bus: Redis + the outbox (leaning this way, and deleting the dead `compose_nats_*`
-   settings), or NATS?
-6. Does the public hosted core get its own database? It would confirm the soft-reference
-   policy early.
-7. The core CLI's name (`viva`?), and whether `atlantis` delegates its generic verbs to it
-   or stays independent.
+None blocks the P2.1 carve. Each has the phase that needs its answer; none has been decided,
+though later text had started to assume some of them.
+
+| # | Question | Needed by | Leaning |
+|---|---|---|---|
+| 1 | Is `/viva/v1` the right public prefix for core? | P3 | yes, root prefix configurable |
+| 2 | May migrated compose rows get new job ids (old one kept in `legacy_compose_id`)? | P7 | yes; P7 and §7a already assume it |
+| 3 | `/api/v1/tasks`: a permanent SMS facade, or deprecated in favour of `/viva/v1/tasks`? | P4b | facade |
+| 4 | How urgent is #656 — take the fast lane to P4? | P4b | not urgent until someone says so |
+| 5 | Core's bus: Redis + the outbox (and delete the dead `compose_nats_*` settings), or NATS? | P5 | Redis + outbox |
+| 6 | Does the public hosted core get its own database? | P9 | — |
+| 7 | The core CLI's name (`viva`?), and whether `atlantis` delegates its generic verbs to it | P8 | — |
+| 8 | **Does core depend on `pbest`** for the address parser and the recipe generator (`compose-api` already imports its types), or carry its own copy? | P5 | depend, if `pbest` stays domain-neutral: a third copy is how the three partial implementations happened |
+| 9 | **What does "compatible" mean** for selecting an environment, beyond an exact spec hash: covering `provides`? version ranges? a curated list only? | P5 | exact match first; `provides`-covers second |
 
 ## 7a. Migrations: proper, tested, and honest about reversibility
 
@@ -461,9 +559,11 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 | A ✅ 0.9.145, 2026-09-18 | P0 first wave + P1a | new top-level package in the image; reconciler probes; shutdown order | `current_schema()` is `public`; migration Job classifies MANAGED; pod boots; `/app/viva_core/models.py` on the newest pod; EUTE smoke via `atlantis`; `vwb smoke`; one rolling restart's logs |
 | A2 ✅ 0.9.146, 2026-09-19 | P1b + the `run_pbg` fix (#689) | configuration plumbing — how the storage settings reach the file services — kept apart from P2.1's dispatch change (one kind per deploy) | Tier 0 + Tier 1; `compose` flips FAIL → PASS; `atlantis simulation outputs` (the S3 file service end to end); marker `/app/viva_core/settings.py` |
 | B ✅ 0.9.147, 2026-09-19 | P0 second wave + #661 | `create_all` off and the FRESH path changed — how every database bootstraps | alone; `--analyze` per site; migration Job; boot against an already-migrated DB |
-| C1 (0.9.148) | P2.1 cuts 1–3 + the #709 fix (#710) | the first **dispatch** checkpoint, taken early: the Batch engine now lives in core and every submit goes through it; cancel now stops a run's ParCa job | Tier 0 + 1 + 2, including `sim-cancel` and `chain-cancel`, which must flip FAIL → PASS; markers `/app/viva_core/backends/batch.py` and `cancel_companion_jobs` |
-| C | P2.0–P2.1 | core's first settings object; the Batch submit path moved | every dispatch path: Ray MNP sim, container analysis, task, compose, image build, Nextflow head |
-| D | P2.2–P2.3 | strategies; env-worker and task image resolution | workbench through the relay; `vwb smoke`; `atlantis worker`, `task` |
+| C1 ✅ 0.9.148, 2026-09-20 | P2.1 cuts 1–3 + the #709 fix (#710) | the first **dispatch** checkpoint, taken early: the Batch engine now lives in core and every submit goes through it; cancel now stops a run's ParCa job | Tier 0 + 1 + 2, including `sim-cancel` and `chain-cancel`, which must flip FAIL → PASS; markers `/app/viva_core/backends/batch.py` and `cancel_companion_jobs` |
+| C2 | cuts 4–5, build + tasks as services (#712–#714), PR 2's smoke checks | the image build and the task path were rewired and are merged but undeployed | Tier 0 + 1 + 2, `sim-mbp`, and the opt-in **`build`** check: a real image build, which no tier has ever exercised |
+| C3 | PRs 3–8 (analysis spec, ParCa split, the composed Batch layer, `compose` on it, the mbp-tracked and Nextflow strategies) | every submit now goes through a composed object; two mechanisms are strategies | Tier 0 + 1 + 2; `compose`, `sim-mbp`, `sim-nextflow`, `nextflow-cancel` especially |
+| C | PRs 9–11 (composite, ensemble, chain strategies); the end of P2.1 | the last three mechanisms, chain among them | Tier 0 + 1 + 2, **plus a real 2 x 2 chain campaign** and `chain-cancel`: chain bills real money and fakes share their author's blind spots |
+| D | P2.3 | one resolver replaces four image derivations; the core runtime image | workbench through the relay; `vwb smoke`; `atlantis worker`, `task`, `compose` on the new image |
 | E | P3 | settings split, new wiring and lifespan, app factory | alone; diff redacted effective settings and the OpenAPI spec old pod vs new |
 | F | P4a, then P4b | additive migration with dual-write | SQL check that both column sets agree; `atlantis dataset` |
 | G | P5 | durable compose dispatch | kill the pod mid-dispatch; the row must be reconciled, not stranded |
@@ -483,7 +583,7 @@ is reported separately from PASS and says why; `--json-out` is the record a rele
 | 2 | tens of minutes, dollars | **one real simulation per dispatch mechanism**, submitted the way a real client selects each and run **concurrently**: `sim-default` (1 seed x 1 generation), `sim-chain` (2 x 2 — more than one generation is what selects chain dispatch; every seed must have succeeded), `sim-nextflow` (`extra_params.nextflow_dispatch`; every traced task completed), `sim-composite` (`extra_params.multi_node_dispatch`). Each must show **output**, not just COMPLETED. Three more **cancel** what they submit — `sim-cancel` (the run's ParCa job, then its own), `chain-cancel` (a 2 x 2 campaign cancelled in its ParCa phase, where no seed has a job yet) and `nextflow-cancel` (head Job deleted; tasks stopped by Nextflow's hook or the scheduler's reaper) — and assert on **AWS Batch itself**, with the operator's own read-only credentials, that no job carrying the run's experiment id is still active: the API cannot be the witness, because the cancel handler writes CANCELLED to its own row whether or not anything stopped. Without AWS access they SKIP, before submitting anything. Not covered: an image build, and the upstream K8s + Nextflow path (`scripts/qualification_test.sh` stays the check for that) |
 | R (`--tier 3`) | minutes | a task is put in flight, the deployment is restarted with the operator's own `--restart-command` (`scripts/smoke_restart_k8s.sh`), `/version` must be unchanged and the task must still resolve with its output. Status that lives only in a pod's memory fails this. The shutdown order in the terminated pod's log is still read by hand |
 
-Required: **A** = 0 + `task`. **A2** = 0 + 1 + an outputs download. **B** = 0 + 1. **C1**, **C** = 0 + 1 + 2 (P2.1 is the first change that
+Required: **A** = 0 + `task`. **A2** = 0 + 1 + an outputs download. **B** = 0 + 1. **C1**, **C1**, **C2**, **C3**, **C** = 0 + 1 + 2 (P2.1 is the first change that
 can break dispatch — Tier 2 and R are built before it). **D** = 0 + 1 (`worker`, `task`
 especially). **E** = 0 + 1 + R. **F** = 0 + 1. **G** = 0 + 1 + R. **H** = 0 + 1 + 2. **I**, **J** = all.
 
@@ -506,6 +606,55 @@ through the tunnel: `atlantis simulator latest`, `simulation run … --poll`,
 the marker grep on the **newest** pod. For P6 and P9, a multi-generation chain campaign with
 gating latency compared to the baseline.
 
+**Methods this work has taught, promoted here from the decision log:**
+
+- **Classify by domain role before choosing a shape** (P2's role table). Twice a shape was
+  picked from how the code was arranged — a build mixin, an analysis service — and twice the
+  question "what *is* this?" gave a different answer.
+- **Pure move → byte-identical proof.** `scripts/prove_ray_carve_is_move_only.py` compares
+  every method of the hierarchy by source with `origin/main` and exits 1 on a differing,
+  lost, added or doubly-defined method. For a strategy PR the body moves verbatim with
+  `self.` rewritten to the dispatcher, and the script compares **after that substitution**,
+  so most of the byte-level proof survives a rewiring.
+- **Rewiring → a differential run, and its zero counts only after a mutation.** Old and new
+  side by side, recording fakes, every outward call and return compared. Then (a) count how
+  many cases run to completion versus raise, and (b) mutate the new code and watch
+  differences appear. #714's first "0 differences" was vacuous for three case families: the
+  fakes raised the same error on both sides.
+- **The live proof is the mechanism's own smoke check**, with a baseline taken *before* the
+  change it judges. A check asserts the effect, not the status; for cancel that means asking
+  AWS Batch, because the API's answer is the row it just wrote.
+- **Static guards glob, never list.** `test_dispatch_events_identity.py` had already missed a
+  dispatch once because "the module was simply not scanned"; it now scans `simulation/ray/*`.
+- **Tests move with the code.** `tests/simulation/test_ray_backend.py` (5,866 lines, 200
+  instantiations) is split per mechanism in the same PR as each strategy.
+- **Import edges ratchet.** Twelve report-only edges are broken today; the count never
+  rises, and a PR that touches one burns it down.
+- **Deploy early and often within one kind of change** (C1, C2, C3): a Tier 2 failure then
+  has two or three suspects, not ten.
+- **Have the design attacked before building it.** An independent review overturned three
+  claims of this audit's own first draft (what a strategy owns; recompose the Batch layer
+  first, not last; ParCa is only half a service).
+
+## Deferred, tracked
+
+One list, so nothing lives only in a decision-log aside. None of these is part of the core
+split; each has an owner-less issue or a named moment.
+
+| Item | Where | When |
+|---|---|---|
+| An image build has never been exercised by any smoke tier, and the build path was rewired in cut 4 and #714 (merged, undeployed) | PR 2: an opt-in `build` smoke check | before checkpoint C2 |
+| `mbp_dispatch` has no smoke check | PR 2: `sim-mbp` | before the mbp-tracked strategy (PR 7) |
+| compose on Ray / Batch accepts `extra_pip_deps` and never installs them | #716 | refuse now, or honour in P5 |
+| compose on SLURM: a FAILED container build suppresses every later rebuild | #717 | folded into the P5 resolver; live in `compose-api` |
+| 153 simulation runs stuck RUNNING on dev | #718 | — |
+| The dataset walk re-lists every simulation forever (~$5–6 / month / site); walking terminal simulations once a day would cut it ~10x | decision log, 2026-09-19 | P4a, when the walker moves to core |
+| Draft #670 conflicts with P1's move of `gcs_aio.py`; a resolution was offered | #670 | when its author picks it up |
+| RDS snapshot `pre-0-9-147-checkpoint-b-20260919t1955z` | dev | delete once 0.9.148 has soaked |
+| `CLAUDE.md` still says backend selection is by `deployment_namespace` and that tests use SQLite | `CLAUDE.md` | any docs PR |
+| `scripts/prove_ray_carve_is_move_only.py` | — | delete in PR 11 |
+| `job_scheduler.py` (1,370 lines), `handlers/simulations.py` (2,463), `routers/env_worker.py` (1,170), `dependencies.py` (691) have no detailed plan yet | P3, P6 | before those phases start |
+
 ## Status ledger
 
 | Phase | PRs | Version | Dev | Prod | Notes |
@@ -516,20 +665,64 @@ gating latency compared to the baseline.
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — #696; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — #698; all merged 2026-09-19 |
-| P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core). Cut 1, config interpretation — #705 · cut 2, Batch engine → `viva_core/backends/batch.py` — #706 · cut 3, tasks + the shared base layer — #707 (merged `4173ca26`) · cut 4, build — #712 (merged `8229315a`) · cut 5, ParCa — #713 (merged `1f90dd04`) · build and tasks → composed services — #714 | no bump: deploys with the rest of P2.1 at checkpoint C | — | — | **in progress** — cuts 1–3 merged 2026-09-19; nothing deployed (checkpoint C) |
-| P2.2 | mixins → `DispatchStrategy` objects; router | | | | not started |
-| P2.3 | core runtime image; K8s / SLURM / LOCAL adapters; `EnvironmentRef` | | | | not started |
-| P3 | | | | | |
-| P4a | | | | | |
-| P4b | | | | | |
-| P5 | | | | | |
-| P6 | | | | | |
-| P7a / b / c | | | | | |
-| P8 | | | | | |
-| P9a / b / c | | | | | |
-| P10 | | | | | |
+| P2.1 | carve `simulation_service_ray.py` (5,019 → 3,361 lines so far). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. Remaining: PRs 1–11 of the 2026-09-20 sequence; #715 (analysis as a service) is open and **to be reshaped** as PR 3 | 0.9.148 carries cuts 1–3 + #710 | **2026-09-20** (checkpoint C1) | — | **in progress.** Deployed: cuts 1–3, #710. **Merged, undeployed:** cuts 4–5, #714 (→ C2) |
+| P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
+| P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image | | | | not started (checkpoint D) |
+| P3 | | | | | not started (checkpoint E) |
+| P4a | | | | | not started (checkpoint F) |
+| P4b | | | | | not started (checkpoint F) |
+| P5 | | | | | not started (checkpoint G) |
+| P6 | | | | | not started (checkpoint H) |
+| P7a / b / c | | | | | not started (checkpoint I) |
+| P8 | | | | | not started (checkpoint —) |
+| P9a / b / c | | | | | not started (checkpoint J) |
+| P10 | | | | | not started (checkpoint —) |
 
 ## Decision log
+
+- **2026-09-20** — **Plan audit after cut 6, at Jim's request** ("a good time to double-check
+  our plan given all we have learned"). Method: three read-only explorations — what is left
+  in the class, these two documents against themselves, how far `viva_core` really is — and
+  then an independent reviewer asked to attack the draft revision. Findings and decisions:
+  (1) **"Mixins first, strategies in P2.2" had no basis for what remains.** Measured: no
+  mechanism calls another; the helpers assumed shared are not; no test patches a method by
+  string. So the mechanisms go **straight to strategy objects** and P2.2 is absorbed. There
+  are **five**, not four: 216 of the router's 308 lines are an inline ParCa + simulation path,
+  now named the **ensemble** path. (2) **Shapes are chosen by domain role.** Jim's test for a
+  service — a common requirement every mechanism uses, that works one way regardless of
+  mechanism — fits build and the three ParCa cache jobs. It does not fit analysis, which is a
+  domain specification + a compute pattern already shared in `common/analysis_dag.py` +
+  per-mechanism glue; `RayAnalysisService` (#715) grouped by the word, and is to be reshaped.
+  ParCa's commands and cache URIs are pure functions, not a service either. (3) **The
+  reviewer overturned three claims of my own draft:** a strategy cannot own progress or
+  cancel yet (they live in the scheduler and in routing code; they join in P6); recompose
+  `RayBatchLayer` *first*, not last, or every strategy is rewired twice; ParCa is only half a
+  service. (4) **D10**, from Jim's reply to the first draft: core's default path is *select
+  or build an acceptable environment, then run* — the pattern of `../compose-api` and
+  `../pbest`. The plan's `EnvironmentRef` was an exact coordinate; neither document described
+  deriving an environment from a composite or selecting a compatible one. Select-or-build
+  already exists three times, each partial (table in `architecture-core.md` §2.3a), and the
+  derivation half in `pbest` parses addresses and then returns empty lists. "Default path" is
+  reserved for this. (5) **Scope, decided:** `SimulationServiceK8s` is out of the carve; a
+  prod catch-up is not part of this work. (6) **Order of core work:** the environment model
+  and its select half, then an app that boots, then package moves, then the build half. D4's
+  K8s and SLURM adapters are deferred with a trigger (no later than P5), not dropped.
+  (7) **These documents had drifted**: three different line counts, a ledger saying "nothing
+  deployed", P2.2 describing mixins that do not exist, `EnvironmentRef` / `JobStore` /
+  build → core each in two or three phases, seven open questions with no owner, and no
+  mention at all of the default backend on both Stanford sites. This PR makes them true;
+  #716, #717 and #718 were filed from what the audit found.
+- **2026-09-20** — **Checkpoint C1 passed on dev (0.9.148, #711, tag `v0.9.148`).** `kubectl
+  diff` = one line (the api image); the apply alone rolled it, the workbench did not roll;
+  both markers on the newest pod; `/health` at head `e7b3c9a1d5f2`. Smoke **Tier 0 + 1: 12
+  PASS / 0 FAIL** (2 opt-in skips) — the three task checks and `compose` ran through the
+  Batch engine in core. **Tier 2: 7 / 7 PASS** — `sim-default` (82 output files),
+  `sim-chain` (2/2 seeds over 2 generations), `sim-nextflow`, `sim-composite`, and the three
+  cancels. **`sim-cancel` and `chain-cancel` flipped FAIL → PASS**, 921 s and 915 s of
+  waiting down to 45 s each: Batch showed `ray-parca-…` *and* `ray-sim-…` active before the
+  default-path cancel and none after; the chain campaign was cancelled in its ParCa phase and
+  its one job was gone. Posted on #709. Cuts 1–3 are proven on a deployment, not only in unit
+  tests. Prod is untouched (0.9.78) and still has #709.
 
 - **2026-09-18** — D1–D8 (above). Two course corrections the same day: the `simulator`
   table was briefly planned to move into core, then kept in SMS once environments, build
@@ -841,7 +1034,7 @@ gating latency compared to the baseline.
   in-memory composite fails on compose-on-Ray (since #276, 2026-08-25). Fixed in #689;
   reproduced locally (original rc=1, fixed rc=0).
   Also seen: a five-step toy composite provisions **3** multi-node instances and stages the
-  whole ParCa cache first — both go away with P2b's runtime image and P5's decoupling.
+  whole ParCa cache first — both go away with P2.3's runtime image (then called P2b) and P5's decoupling.
 - **2026-09-19** — `atlantis smoke` added (Tier 0 + Tier 1), at Jim's prompt: before it, the
   only checks against a *deployment* were the vEcoli qualification script, the analysis-read
   node tests and hand inspection; `make e2e` pointed at a test class that no longer exists
