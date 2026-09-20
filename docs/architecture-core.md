@@ -470,6 +470,15 @@ registered ones the resolver may select; an environment **built per spec** is th
 when nothing registered fits. An uber-container is what you get when the derived spec is
 ignored and everything is installed every time.
 
+**Built environments are provenance (decision D11).** A simulator record, its image and its
+tag are what every simulation that ran on them points back to. So an environment, once
+built, is **immutable and retained**: never overwritten, force-rebuilt, re-tagged or expired.
+A rebuild is a *new* environment — new image digest, new tag — and the two identities above
+are what make that expressible: the spec hash says what was asked for, the digest says what
+actually ran. Today this holds only by care: `/core/v1/simulator/upload?force=true`
+overwrites `v2ecoli:<commit>`, both ECR repositories are tag-mutable, and dev and prod share
+one registry. Everything created before 2026-09-19 is preserved through this refactor.
+
 A `BuildRecipe` registry maps a name to a command/env builder and its allowed parameters.
 Core ships two generic ones — **`repo-recipe`** (clone a repo at a commit, run its own build
 script) and **`python-deps`** (synthesize an image from a dependency set; Apptainer for

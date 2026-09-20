@@ -222,6 +222,13 @@ a strategy object; a mixin is none of these. And **"default path" is reserved** 
 *select or build an acceptable environment, then run* (decision D10); the SMS ParCa +
 ensemble run is the *ensemble path*.
 
+**Simulators are provenance (decision D11).** Never overwrite, force-rebuild, re-tag or delete
+an existing simulator record, its container image or its image tag — they are what delivered
+simulations point back to, and dev and prod share one ECR registry. That means never
+`?force=true` on `/core/v1/simulator/upload` for a registered simulator. Everything created
+before 2026-09-19 is preserved; to exercise the build path, build a commit that has no
+simulator and no image yet.
+
 ## Development
 
 ### Setup
@@ -251,6 +258,8 @@ make e2e BASE_URL=<url>    # = make smoke TIER=1 (task, env worker, composite). 
                            # TIER=2 = one real simulation per dispatch path, concurrently (tens of minutes, dollars);
                            #   plus sim-cancel / chain-cancel / nextflow-cancel, which verify on AWS Batch itself and so need
                            #   your AWS credentials (read-only); without them they SKIP;
+                           #   `build` is opt-in: SMOKE_ARGS='--build' builds a simulator for an UNREGISTERED commit
+                           #   (branch HEAD, or --build-commit) and checks ECR for the push (~20 min). It never rebuilds;
                            # TIER=3 adds the restart check (needs SMOKE_ARGS='--restart-command "scripts/smoke_restart_k8s.sh <ns> <port>"')
 
 uv run pytest              # Run all tests

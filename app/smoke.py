@@ -51,6 +51,7 @@ from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from importlib import resources
 from pathlib import Path
@@ -123,6 +124,24 @@ class SmokeOptions:
     #: checks then SKIP rather than pass on a status.
     active_batch_jobs: Callable[[str], list[dict[str, Any]]] | None = None
     active_batch_jobs_unavailable: str = "no AWS Batch access was configured"
+    #: ``sim-mbp``: which ``run_mbp_tracked.py`` variant to dispatch, and for how long. The
+    #: default is the script's own reference variant, cut to one simulated minute.
+    mbp_variant: str = "baseline-reference-multigen"
+    mbp_duration_sec: int = 60
+    #: ``build``: opt-in. Builds a simulator for a commit that has NO simulator and NO image yet
+    #: (the branch's HEAD, or ``build_commit``). It never rebuilds: existing simulators, their
+    #: images and their tags are the provenance of delivered simulations.
+    build: bool = False
+    build_repo_url: str | None = None
+    build_branch: str | None = None
+    build_commit: str | None = None
+    #: ``commit -> when the registry last received that image tag``, or ``None`` if absent.
+    #: The build check needs it for the same reason the cancel checks need Batch: the API
+    #: would answer COMPLETED from a build that happened last week.
+    image_pushed_at: Callable[[str], datetime | None] | None = None
+    image_pushed_at_unavailable: str = "no registry access was configured"
+    build_timeout_seconds: float = 3600.0
+    now: Callable[[], datetime] = lambda: datetime.now(UTC)
     #: How long a cancelled run's Batch jobs may take to disappear. Covers the Nextflow
     #: head's termination grace period plus a few scheduler ticks of the reaper.
     cancel_settle_seconds: float = 900.0
@@ -140,6 +159,9 @@ class SmokeService(Protocol):
     def client(self) -> httpx.Client: ...
 
     def show_simulators(self) -> Sequence[Any]: ...
+    def submit_get_latest_simulator(self, repo_url: str | None = ..., branch: str | None = ...) -> Any: ...
+    def submit_upload_simulator(self, simulator: Any, force: bool = ...) -> Any: ...
+    def get_simulator_status(self, simulator_id: int) -> str: ...
     def run_uploaded_task(
         self,
         *,
@@ -279,15 +301,18 @@ def _resolve_commit(svc: SmokeService, opts: SmokeOptions) -> str:
     the task and worker dispatch pull from)."""
     if opts.commit:
         return opts.commit
+    return str(_newest_ray_simulator(svc.show_simulators()).git_commit_hash)
+
+
+def _newest_ray_simulator(simulators: Sequence[Any]) -> Any:
     candidates = [
         s
-        for s in svc.show_simulators()
+        for s in simulators
         if any(tag in str(getattr(s, "git_repo_url", "")).lower() for tag in ("sms-ecoli", "v2ecoli"))
     ]
     if not candidates:
         raise SkipCheck("no --commit given and no container-path simulator is registered")
-    newest = max(candidates, key=lambda s: int(getattr(s, "database_id", 0) or 0))
-    return str(newest.git_commit_hash)
+    return max(candidates, key=lambda s: int(getattr(s, "database_id", 0) or 0))
 
 
 def spec_operations(spec: dict[str, Any]) -> set[tuple[str, str]]:
@@ -610,6 +635,72 @@ def check_task_repo(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[st
     return f"task {task_id} ran {opts.repo_script} from the image on {commit}", evidence
 
 
+def check_build(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
+    """Build a NEW simulator image and pass only when the REGISTRY shows it arrive.
+
+    No other tier builds anything: every simulation check reuses a simulator that already
+    has an image. So the whole build path -- the LOCAL task, the Batch DooD job, the repo's
+    own recipe, the push -- is otherwise unexercised by a deploy. It runs in tier 1, before
+    the simulations, so they then run on the image this check just built.
+
+    **It never rebuilds.** An existing simulator, its image and its tag are the provenance of
+    every simulation that ran on them; a rebuild pushes a different image under the same tag.
+    So the commit must have no simulator and no image. If it has either, the check SKIPs --
+    it does not fall back to ``force``. Name another commit with ``--build-commit``.
+    """
+    from viva_api.simulation.models import Simulator
+
+    if not opts.build:
+        raise SkipCheck("pass --build to build a simulator for an unregistered commit (~20 min, several GB)")
+    if opts.image_pushed_at is None:
+        raise SkipCheck(f"needs to see the image registry to verify a push ({opts.image_pushed_at_unavailable})")
+
+    registered = list(svc.show_simulators())
+    newest = _newest_ray_simulator(registered)
+    repo_url = opts.build_repo_url or str(newest.git_repo_url)
+    branch = opts.build_branch or str(newest.git_branch)
+    commit = (opts.build_commit or str(svc.submit_get_latest_simulator(repo_url, branch).git_commit_hash))[:7]
+    evidence: dict[str, Any] = {"repo_url": repo_url, "branch": branch, "commit": commit}
+
+    # The image tag is the commit alone, so ANY simulator at this commit owns that tag.
+    owners = [s for s in registered if str(getattr(s, "git_commit_hash", ""))[:7] == commit]
+    if owners:
+        owner = owners[0].database_id
+        raise SkipCheck(
+            f"{commit} is already simulator {owner}: existing simulators are provenance and are never "
+            f"rebuilt. Pass --build-commit <an unregistered commit>"
+        )
+    already = opts.image_pushed_at(commit)
+    if already is not None:
+        raise SkipCheck(
+            f"an image tagged {commit} already exists (pushed {already:%Y-%m-%d}); refusing to overwrite its tag"
+        )
+
+    started = opts.now()
+    built = svc.submit_upload_simulator(
+        Simulator(git_commit_hash=commit, git_repo_url=repo_url, git_branch=branch), force=False
+    )
+    simulator_id = int(built.database_id)
+    evidence["simulator_id"] = simulator_id
+    _poll(
+        opts,
+        lambda: _status_text(svc.get_simulator_status(simulator_id)),
+        f"build of new simulator {simulator_id} ({commit})",
+        timeout_seconds=opts.build_timeout_seconds,
+    )
+    pushed = opts.image_pushed_at(commit)
+    evidence["pushed_at"] = pushed
+    if pushed is None:
+        raise CheckFailed(f"build COMPLETED but the registry has no image tagged {commit}", evidence)
+    if pushed < started:
+        raise CheckFailed(
+            f"build COMPLETED but the image tagged {commit} was pushed {pushed:%Y-%m-%d %H:%M}Z, "
+            f"before this check began: nothing was built",
+            evidence,
+        )
+    return f"new simulator {simulator_id} built from {commit}; image pushed {pushed:%H:%M:%S}Z", evidence
+
+
 @contextmanager
 def _relayed_worker(svc: SmokeService, commit: str) -> Iterator[str]:
     started = svc.worker_start(commit, session_key=f"smoke-{secrets.token_hex(4)}")
@@ -838,6 +929,24 @@ def check_sim_composite(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dic
     if not files:
         raise CheckFailed(f"composite {simulation_id} COMPLETED but its output is empty")
     return f"simulation {simulation_id}: completed, {files} output files", evidence
+
+
+def check_sim_mbp(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
+    """The mbp-tracked dispatch: ``run_mbp_tracked.py`` as one container job (after its own
+    ParCa job), writing through the script's runtime emitter. The point of this mechanism is
+    that its output SURVIVES the container -- a run that completes and leaves nothing is the
+    bug it was built to fix -- so that is what is asserted."""
+    dispatch: dict[str, object] = {
+        "variant": opts.mbp_variant,
+        "duration_sec": opts.mbp_duration_sec,
+        "max_generations": 1,
+    }
+    simulation_id, evidence = _run_simulation(svc, opts, "mbp", extra_params={"mbp_dispatch": dispatch})
+    evidence["variant"] = opts.mbp_variant
+    files = _require_outputs(svc, simulation_id, evidence, expect_summaries=0)
+    if not files:
+        raise CheckFailed(f"mbp-tracked {simulation_id} COMPLETED but its output is empty", evidence)
+    return f"simulation {simulation_id}: {opts.mbp_variant} completed, {files} output files", evidence
 
 
 # ------------------------------------------------------------------- tier 2: cancel
@@ -1113,6 +1222,33 @@ class AwsBatchJobLister:
         return found
 
 
+class AwsImagePushedAt:
+    """The real ``SmokeOptions.image_pushed_at``: when ECR last received ``<repository>:<tag>``.
+    Read-only (``ecr:DescribeImages``). Constructing it raises if ECR cannot be reached with
+    the caller's credentials -- the CLI turns that into a SKIP reason."""
+
+    def __init__(self, repository: str, region: str | None = None, client: Any = None) -> None:
+        if client is None:
+            import boto3
+
+            client = boto3.client("ecr", region_name=region) if region else boto3.client("ecr")
+        self._client, self._repository = client, repository
+        self._client.describe_repositories(repositoryNames=[repository])  # fail here, with a reason
+
+    def __call__(self, tag: str) -> datetime | None:
+        try:
+            images = self._client.describe_images(repositoryName=self._repository, imageIds=[{"imageTag": tag}])
+        except Exception as e:
+            if type(e).__name__ == "ImageNotFoundException":
+                return None
+            raise
+        details = images.get("imageDetails") or []
+        pushed = details[0].get("imagePushedAt") if details else None
+        if not isinstance(pushed, datetime):
+            return None
+        return pushed if pushed.tzinfo else pushed.replace(tzinfo=UTC)
+
+
 # --------------------------------------------------------------------------- tier R
 
 
@@ -1184,6 +1320,12 @@ CHECKS: tuple[Check, ...] = (
     Check("task", 1, "a container task runs and its output is read back", check_task),
     Check("task-fail", 1, "a task that exits 3 is reported FAILED, having really run", check_task_fail),
     Check("task-repo", 1, "a script already in the image runs by its repo path", check_task_repo),
+    Check(
+        "build",
+        1,
+        "a NEW simulator image is built and reaches the registry; never a rebuild (needs --build)",
+        check_build,
+    ),
     Check("worker", 1, "a relayed env worker starts, answers, runs a task, stops", check_worker),
     Check("compose", 1, "a composite runs and returns the right number", check_compose),
     Check("analysis", 1, "a standalone analysis produces output (needs --simulation-id)", check_analysis),
@@ -1192,6 +1334,7 @@ CHECKS: tuple[Check, ...] = (
     Check("sim-chain", 2, "chain dispatch: 2 seeds x 2 generations, every seed succeeds", check_sim_chain),
     Check("sim-nextflow", 2, "Nextflow head: every traced task completes", check_sim_nextflow),
     Check("sim-composite", 2, "multi-node composite on Ray completes and writes output", check_sim_composite),
+    Check("sim-mbp", 2, "mbp-tracked dispatch completes and its output survives the container", check_sim_mbp),
     Check("sim-cancel", 2, "a cancelled simulation leaves no active Batch job (needs AWS access)", check_sim_cancel),
     Check(
         "chain-cancel",
@@ -1210,6 +1353,8 @@ CHECKS: tuple[Check, ...] = (
 
 #: Checks that assert on AWS Batch directly and so need the operator's own AWS access.
 NEEDS_BATCH_ACCESS = frozenset({"sim-cancel", "chain-cancel", "nextflow-cancel"})
+#: ...and the one that asserts on the image registry.
+NEEDS_REGISTRY_ACCESS = frozenset({"build"})
 
 #: Tier 2 checks spend their time waiting on AWS Batch, so they run side by side.
 CONCURRENT_TIERS = frozenset({2})
