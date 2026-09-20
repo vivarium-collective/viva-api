@@ -613,6 +613,7 @@ class DatabaseService(ABC):
         chain_current_generation: list[int | None] | None = None,
         chain_parca_done: bool | None = None,
         multi_node_composite_id: str | None = None,
+        external_job_ids: list[str] | None = None,
     ) -> HpcRun:
         """
         :param job_id: Backend-tagged job identifier.
@@ -631,6 +632,10 @@ class DatabaseService(ABC):
         :param multi_node_composite_id: the dispatched composite's id, for a generic multi-node
             process-bigraph composite dispatch (backlog item 88, e.g. a colony composite spread
             across N Ray-cluster nodes). Omit for every other HpcRun.
+        :param external_job_ids: backend job ids this run OWNS besides ``job_id`` -- a ParCa job
+            submitted ahead of the simulation that depends on it (viva-api#709), a build's Batch
+            jobs (#414). Cancelling the run must stop these too; without them on the row,
+            nothing can.
         """
         pass
 
@@ -1512,6 +1517,7 @@ class DatabaseServiceSQL(DatabaseService):
         chain_current_generation: list[int | None] | None = None,
         chain_parca_done: bool | None = None,
         multi_node_composite_id: str | None = None,
+        external_job_ids: list[str] | None = None,
     ) -> HpcRun:
         jobref_simulation_id = ref_id if job_type == JobType.SIMULATION else None
         jobref_parca_dataset_id = ref_id if job_type == JobType.PARCA else None
@@ -1538,6 +1544,7 @@ class DatabaseServiceSQL(DatabaseService):
                 else None,
                 chain_parca_done=chain_parca_done,
                 multi_node_composite_id=multi_node_composite_id,
+                external_job_ids=list(external_job_ids) if external_job_ids else None,
                 # Derived, never minted: the dispatcher already handed every task
                 # the same ids (viva_api.common.events_env) before this row existed.
                 trace_id=trace_id_from_correlation(correlation_id),

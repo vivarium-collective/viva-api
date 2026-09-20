@@ -469,7 +469,7 @@ is reported separately from PASS and says why; `--json-out` is the record a rele
 |---|---|---|
 | 0 | seconds, free, read-only | `/version` = `/health`; every spec operation is served; capabilities; the relay is routed and live (JSON 404, not the gateway's HTML); the database-backed list endpoints; an events read |
 | 1 | minutes, cents | one tiny real dispatch per mechanism: a container **task** (uploaded script; the nonce *and* the `sim_data_refs` it was given must come back in its log); **`task-fail`** (a script that exits 3 must be reported FAILED, with proof in its log that it ran); **`task-repo`** (a script already in the image, by repo path — the other entry point); a relayed env **worker** (a K8s Job) + a task on its task tier, always stopped; a five-step **composite** that must return 1.1^5; opt-in: a standalone **analysis** (`--simulation-id`), a **BioModels** run (`--biomodel`) |
-| 2 | tens of minutes, dollars | **one real simulation per dispatch mechanism**, submitted the way a real client selects each and run **concurrently**: `sim-default` (1 seed x 1 generation), `sim-chain` (2 x 2 — more than one generation is what selects chain dispatch; every seed must have succeeded), `sim-nextflow` (`extra_params.nextflow_dispatch`; every traced task completed), `sim-composite` (`extra_params.multi_node_dispatch`). Each must show **output**, not just COMPLETED. Two more **cancel** what they submit — `sim-cancel` (one `terminate_job`) and `nextflow-cancel` (head Job deleted; tasks stopped by Nextflow's hook or the scheduler's reaper) — and assert on **AWS Batch itself**, with the operator's own read-only credentials, that no job carrying the run's experiment id is still active: the API cannot be the witness, because the cancel handler writes CANCELLED to its own row whether or not anything stopped. Without AWS access they SKIP, before submitting anything. Not covered: an image build, and the upstream K8s + Nextflow path (`scripts/qualification_test.sh` stays the check for that) |
+| 2 | tens of minutes, dollars | **one real simulation per dispatch mechanism**, submitted the way a real client selects each and run **concurrently**: `sim-default` (1 seed x 1 generation), `sim-chain` (2 x 2 — more than one generation is what selects chain dispatch; every seed must have succeeded), `sim-nextflow` (`extra_params.nextflow_dispatch`; every traced task completed), `sim-composite` (`extra_params.multi_node_dispatch`). Each must show **output**, not just COMPLETED. Three more **cancel** what they submit — `sim-cancel` (the run's ParCa job, then its own), `chain-cancel` (a 2 x 2 campaign cancelled in its ParCa phase, where no seed has a job yet) and `nextflow-cancel` (head Job deleted; tasks stopped by Nextflow's hook or the scheduler's reaper) — and assert on **AWS Batch itself**, with the operator's own read-only credentials, that no job carrying the run's experiment id is still active: the API cannot be the witness, because the cancel handler writes CANCELLED to its own row whether or not anything stopped. Without AWS access they SKIP, before submitting anything. Not covered: an image build, and the upstream K8s + Nextflow path (`scripts/qualification_test.sh` stays the check for that) |
 | R (`--tier 3`) | minutes | a task is put in flight, the deployment is restarted with the operator's own `--restart-command` (`scripts/smoke_restart_k8s.sh`), `/version` must be unchanged and the task must still resolve with its output. Status that lives only in a pod's memory fails this. The shutdown order in the terminated pod's log is still read by hand |
 
 Required: **A** = 0 + `task`. **A2** = 0 + 1 + an outputs download. **B** = 0 + 1. **C** = 0 + 1 + 2 (P2.1 is the first change that
@@ -530,6 +530,25 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — **#709 fixed before cut 4, at Jim's direction** (#708 merged first). Its
+  extent was wider than the one case the smoke check hit: **three** dispatch paths submit a
+  ParCa job ahead of the job they return (default, multi-node composite, mbp-tracked) and
+  none recorded it; and a **chain campaign** cancelled during its ParCa phase terminated
+  nothing at all, because the campaign's own job id *is* the ParCa job and no seed has a
+  current job yet. The fix uses what exists: `hpcrun.external_job_ids` (#414) holds the jobs
+  a run owns besides the one it tracks; `insert_hpcrun` takes them; the default and
+  mbp-tracked paths now record their own row under the caller's correlation id — the
+  pattern chain and composite already use, and what the handlers' insert-if-absent guard
+  keys on, so still one row per run; cancel terminates the companions **first** (Batch
+  keeps a terminated job `PENDING` until its dependency ends), then the tracked job. No
+  schema change. **The partial-cache question, decided:** terminating ParCa mid-write adds
+  no state the system does not already produce — the image's entrypoint syncs the cache
+  dir to the shared key every 30 s *during every ParCa run*, a failed or reclaimed ParCa
+  leaves the same, the stage-in's `verify_cache_version` is the existing guard, and the
+  default path rebuilds ParCa on every submit. Only the run's *own* ParCa job is
+  terminated, never another run's. After this deploys, `sim-cancel` is an expected **PASS**;
+  until then it stays an expected FAIL. This lands in code the ParCa cut (5) will move —
+  which is the argument for fixing it first: the carve then moves correct code.
 - **2026-09-19** — **The new checks' first live run (dev 0.9.147, pre-carve) found a real
   bug: #709.** `task` PASS (304 s, cold start; nonce and `sim_data_refs` read back),
   `task-fail` PASS (12 s), `task-repo` PASS (22 s), `nextflow-cancel` PASS (216 s — and it
@@ -559,7 +578,8 @@ gating latency compared to the baseline.
   Batch**, not the API — `cancel_simulation` sets the row to CANCELLED unconditionally and
   `/status` reads the row, so a status assertion would pass with every job still running;
   the run's unique experiment id is in a default job's *name* and a Nextflow task's
-  *command*, so one token finds both. (2) No AWS access ⇒ SKIP before anything is
+  *command*, so one token finds both. (A ParCa job has it in neither — it is named for the
+  commit — so the lister also reads the `ExperimentId` cost tag; added with `chain-cancel`.) (2) No AWS access ⇒ SKIP before anything is
   submitted, per the suite's rule that SKIP is not PASS. (3) A cancel check that gives up
   still cancels what it submitted. (4) `task-repo` runs `scripts/build_cache.py --help`:
   the image has no script that echoes its environment, and relying on `script="-c"` would

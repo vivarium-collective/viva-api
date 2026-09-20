@@ -1355,6 +1355,12 @@ async def cancel_simulation(
             raise RuntimeError("Chain-dispatch campaign requires the Ray/Batch simulation service")
         await service.cancel_chain_campaign(hpc_run)
     else:
+        # The jobs this run submitted besides the one it tracks -- a ParCa job the simulation
+        # waits on (viva-api#709). First, because the tracked job depends on them.
+        if isinstance(service, SimulationServiceRay):
+            stopped = await service.cancel_companion_jobs(hpc_run)
+            if stopped:
+                logger.info("Simulation %s: terminated %d companion job(s) before its own", simulation_id, stopped)
         await service.cancel_job(hpc_run.job_id)
 
     # Update the database record. ``end_time`` is stamped here because it is the

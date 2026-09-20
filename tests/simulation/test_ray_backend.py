@@ -784,6 +784,11 @@ class TestSubmitMultiNodeComposite:
         # NOT chain-dispatch's JobBackend.LOCAL placeholder -- a real MNP job id.
         assert job_id == JobId.ray("composite-1")
         assert mock_batch.submit_job.call_count == 2
+        # viva-api#709: the ParCa job it waits on is recorded on the run's own row, so a cancel
+        # can stop it too.
+        run = await database_service.get_hpcrun_by_ref(ref_id=simulation.database_id, job_type=JobType.SIMULATION)
+        assert run is not None
+        assert run.external_job_ids == ["parca-1"]
 
     @pytest.mark.asyncio
     async def test_multi_node_composite_command_and_tags(
