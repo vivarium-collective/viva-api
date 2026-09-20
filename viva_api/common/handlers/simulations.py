@@ -2154,7 +2154,7 @@ async def _run_standalone_analysis_ray_native(
     ground -- the legacy caller-facing default (three ptools modules) would
     silently under-deliver the cd1_* suite for this pipeline.
     """
-    from viva_api.simulation.simulation_service_ray import analysis_modules_for
+    from viva_api.simulation.ray.analysis_spec import analysis_modules_for
 
     config = simulation.config
     if modules is None:

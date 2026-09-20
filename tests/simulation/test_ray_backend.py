@@ -14,6 +14,7 @@ from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.config import ComputeBackend
 from viva_api.simulation.models import AnalysisOptions, HpcRun, JobType
+from viva_api.simulation.ray.analysis_spec import analysis_modules_for
 from viva_api.simulation.ray.config_interpretation import (
     injected_processes_from_config,
     strain_from_config,
@@ -28,7 +29,6 @@ from viva_api.simulation.ray.image_paths import (
 )
 from viva_api.simulation.simulation_service_ray import (
     SimulationServiceRay,
-    analysis_modules_for,
 )
 
 if TYPE_CHECKING:
