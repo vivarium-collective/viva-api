@@ -7,6 +7,11 @@ four dispatch mechanisms) submits through _submit_container / _submit_mnp and
 resolves an image through _image_uri, so those have to live somewhere a mixin can
 inherit from rather than in the class that inherits the mixins.
 
+It also owns the constructor, because the two other backends the service composes --
+LocalTaskService (in-process tasks: image builds, the chain-dispatch background submit)
+and K8sJobService (the Nextflow head) -- are what the mixins reach for as self._local
+and self._k8s.
+
 What is here is SMS's half of the Batch seam, not the engine: read settings through
 _seams, pick the queue, append this application's entries to the env, then hand over to
 viva_core.backends.batch.BatchJobClient.
@@ -17,6 +22,8 @@ import random
 import string
 from typing import Any
 
+from viva_api.common.hpc.k8s_job_service import K8sJobService
+from viva_api.common.hpc.local_task_service import LocalTaskService
 from viva_api.common.models import JobStatus
 from viva_api.common.storage import data_layout
 from viva_api.simulation.ray import _seams
@@ -34,6 +41,17 @@ def _rand_suffix() -> str:
 class RayBatchLayer(SimulationService):
     """Abstract: it implements none of SimulationService's interface, only what the
     implementations of it are built from."""
+
+    def __init__(
+        self,
+        local_task_service: LocalTaskService | None = None,
+        k8s_job_service: "K8sJobService | None" = None,
+    ) -> None:
+        self._local = local_task_service or LocalTaskService()
+        # Only the Nextflow dispatch uses this: its HEAD runs as a K8s Job so it
+        # inherits the `batch-submit` ServiceAccount's IRSA identity. Every other
+        # path here submits to Batch directly and needs no cluster access.
+        self._k8s = k8s_job_service
 
     def _batch(self) -> Any:
         return _seams.boto3.client("batch", region_name=_seams.get_settings().batch_region)
@@ -60,6 +78,19 @@ class RayBatchLayer(SimulationService):
             repository=settings.ray_ecr_repository,
             tag=commit,
         )
+
+    def _submit_image_uri(self, commit: str) -> str:
+        """The Nextflow HEAD image for a commit: ``<repo>:<commit>-submit``.
+
+        Only the process running ``nextflow run`` needs a JVM; Batch TASKS run the
+        plain science image. Built on request by ``include_submit_image``
+        (viva-api#423/#426) -- a dispatch asking for Nextflow against a commit whose
+        head image was never built fails at the Batch pull, which is why the
+        submitter names the tag explicitly rather than reusing ``_image_uri``.
+        """
+        settings = _seams.get_settings()
+        registry = f"{settings.ecr_account_id}.dkr.ecr.{settings.batch_region}.amazonaws.com"
+        return f"{registry}/{settings.ray_ecr_repository}:{commit}-submit"
 
     def _ensure_mnp_job_def(self, image: str, commit: str) -> str:
         """Return an MNP job definition (name:revision) whose image is the commit's image.
