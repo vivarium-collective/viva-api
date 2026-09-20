@@ -128,13 +128,16 @@ class SmokeOptions:
     #: default is the script's own reference variant, cut to one simulated minute.
     mbp_variant: str = "baseline-reference-multigen"
     mbp_duration_sec: int = 60
-    #: ``build``: opt-in. Builds a simulator for a commit that has NO simulator and NO image yet
-    #: (the branch's HEAD, or ``build_commit``). It never rebuilds: existing simulators, their
-    #: images and their tags are the provenance of delivered simulations.
+    #: ``build``: opt-in. Builds a MARKED-TEMPORARY simulator: a new record with its own image tag
+    #: (``tmp-<commit>-<nonce>``) at the branch's HEAD, or at ``build_commit``. It can never touch
+    #: an authoritative simulator, its image or its tag -- those are write-once provenance.
     build: bool = False
     build_repo_url: str | None = None
     build_branch: str | None = None
     build_commit: str | None = None
+    #: Set by ``build`` when it passes: the temporary simulator tier 2 then runs on, so the
+    #: simulations exercise the image that was just built.
+    built_simulator_id: int | None = None
     #: ``commit -> when the registry last received that image tag``, or ``None`` if absent.
     #: The build check needs it for the same reason the cancel checks need Batch: the API
     #: would answer COMPLETED from a build that happened last week.
@@ -305,13 +308,15 @@ def _resolve_commit(svc: SmokeService, opts: SmokeOptions) -> str:
 
 
 def _newest_ray_simulator(simulators: Sequence[Any]) -> Any:
+    # Never a temporary one: someone else's test artifact is not "the newest simulator".
     candidates = [
         s
         for s in simulators
-        if any(tag in str(getattr(s, "git_repo_url", "")).lower() for tag in ("sms-ecoli", "v2ecoli"))
+        if not getattr(s, "temporary", False)
+        and any(tag in str(getattr(s, "git_repo_url", "")).lower() for tag in ("sms-ecoli", "v2ecoli"))
     ]
     if not candidates:
-        raise SkipCheck("no --commit given and no container-path simulator is registered")
+        raise SkipCheck("no simulator was named and no authoritative container-path simulator is registered")
     return max(candidates, key=lambda s: int(getattr(s, "database_id", 0) or 0))
 
 
@@ -636,69 +641,62 @@ def check_task_repo(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[st
 
 
 def check_build(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
-    """Build a NEW simulator image and pass only when the REGISTRY shows it arrive.
+    """Build a MARKED-TEMPORARY simulator and pass only when the REGISTRY shows its image arrive.
 
     No other tier builds anything: every simulation check reuses a simulator that already
     has an image. So the whole build path -- the LOCAL task, the Batch DooD job, the repo's
     own recipe, the push -- is otherwise unexercised by a deploy. It runs in tier 1, before
-    the simulations, so they then run on the image this check just built.
+    the simulations, which then run on the image this check just built.
 
-    **It never rebuilds.** An existing simulator, its image and its tag are the provenance of
-    every simulation that ran on them; a rebuild pushes a different image under the same tag.
-    So the commit must have no simulator and no image. If it has either, the check SKIPs --
-    it does not fall back to ``force``. Name another commit with ``--build-commit``.
+    **It cannot touch an authoritative simulator.** Simulator records, images and tags are
+    write-once provenance (``docs/plan-core.md`` D11). What this check makes is the marked
+    exception: a new record with ``temporary=True``, a label saying this check made it, and
+    its own image tag ``tmp-<commit>-<nonce>`` -- never ``<commit>``, which belongs to the
+    authoritative build of that commit. The server refuses ``force`` on an authoritative
+    simulator; this check never sends it.
     """
     from viva_api.simulation.models import Simulator
 
     if not opts.build:
-        raise SkipCheck("pass --build to build a simulator for an unregistered commit (~20 min, several GB)")
+        raise SkipCheck("pass --build to build a marked-temporary simulator (~15 min, several GB)")
     if opts.image_pushed_at is None:
         raise SkipCheck(f"needs to see the image registry to verify a push ({opts.image_pushed_at_unavailable})")
 
-    registered = list(svc.show_simulators())
-    newest = _newest_ray_simulator(registered)
+    newest = _newest_ray_simulator(svc.show_simulators())
     repo_url = opts.build_repo_url or str(newest.git_repo_url)
     branch = opts.build_branch or str(newest.git_branch)
     commit = (opts.build_commit or str(svc.submit_get_latest_simulator(repo_url, branch).git_commit_hash))[:7]
-    evidence: dict[str, Any] = {"repo_url": repo_url, "branch": branch, "commit": commit}
-
-    # The image tag is the commit alone, so ANY simulator at this commit owns that tag.
-    owners = [s for s in registered if str(getattr(s, "git_commit_hash", ""))[:7] == commit]
-    if owners:
-        owner = owners[0].database_id
-        raise SkipCheck(
-            f"{commit} is already simulator {owner}: existing simulators are provenance and are never "
-            f"rebuilt. Pass --build-commit <an unregistered commit>"
-        )
-    already = opts.image_pushed_at(commit)
-    if already is not None:
-        raise SkipCheck(
-            f"an image tagged {commit} already exists (pushed {already:%Y-%m-%d}); refusing to overwrite its tag"
-        )
+    label = f"atlantis-smoke {secrets.token_hex(4)}"
+    evidence: dict[str, Any] = {"repo_url": repo_url, "branch": branch, "commit": commit, "label": label}
 
     started = opts.now()
     built = svc.submit_upload_simulator(
-        Simulator(git_commit_hash=commit, git_repo_url=repo_url, git_branch=branch), force=False
+        Simulator(git_commit_hash=commit, git_repo_url=repo_url, git_branch=branch, temporary=True, label=label),
+        force=False,
     )
-    simulator_id = int(built.database_id)
-    evidence["simulator_id"] = simulator_id
+    simulator_id, image_tag = int(built.database_id), getattr(built, "image_tag", None)
+    evidence.update(simulator_id=simulator_id, image_tag=image_tag)
+    if not getattr(built, "temporary", False) or not image_tag or image_tag == commit:
+        raise CheckFailed(
+            f"asked for a temporary simulator and got simulator {simulator_id} (temporary="
+            f"{getattr(built, 'temporary', None)}, image_tag={image_tag!r}): refusing to build under the commit's tag",
+            evidence,
+        )
     _poll(
         opts,
         lambda: _status_text(svc.get_simulator_status(simulator_id)),
-        f"build of new simulator {simulator_id} ({commit})",
+        f"build of temporary simulator {simulator_id} ({image_tag})",
         timeout_seconds=opts.build_timeout_seconds,
     )
-    pushed = opts.image_pushed_at(commit)
+    pushed = opts.image_pushed_at(str(image_tag))
     evidence["pushed_at"] = pushed
     if pushed is None:
-        raise CheckFailed(f"build COMPLETED but the registry has no image tagged {commit}", evidence)
+        raise CheckFailed(f"build COMPLETED but the registry has no image tagged {image_tag}", evidence)
     if pushed < started:
-        raise CheckFailed(
-            f"build COMPLETED but the image tagged {commit} was pushed {pushed:%Y-%m-%d %H:%M}Z, "
-            f"before this check began: nothing was built",
-            evidence,
-        )
-    return f"new simulator {simulator_id} built from {commit}; image pushed {pushed:%H:%M:%S}Z", evidence
+        raise CheckFailed(f"build COMPLETED but {image_tag} was pushed before this check began", evidence)
+    opts.built_simulator_id = simulator_id
+    when = pushed.astimezone(UTC)
+    return f"temporary simulator {simulator_id} built as {image_tag}; image pushed {when:%H:%M:%S}Z", evidence
 
 
 @contextmanager
@@ -811,17 +809,13 @@ MULTI_NODE_COMPOSITE_ID = "v2ecoli.composites.lineage_ray_batch"
 
 
 def _resolve_simulator(svc: SmokeService, opts: SmokeOptions) -> int:
-    """``--simulator-id``, else the newest registered container-path simulator."""
+    """``--simulator-id``; else the temporary simulator ``build`` just made in this run (so the
+    simulations exercise the fresh image); else the newest AUTHORITATIVE container-path one."""
     if opts.simulator_id is not None:
         return opts.simulator_id
-    candidates = [
-        s
-        for s in svc.show_simulators()
-        if any(tag in str(getattr(s, "git_repo_url", "")).lower() for tag in ("sms-ecoli", "v2ecoli"))
-    ]
-    if not candidates:
-        raise SkipCheck("no --simulator-id given and no container-path simulator is registered")
-    return max(int(getattr(s, "database_id", 0) or 0) for s in candidates)
+    if opts.built_simulator_id is not None:
+        return opts.built_simulator_id
+    return int(_newest_ray_simulator(svc.show_simulators()).database_id)
 
 
 def _run_simulation(
@@ -1323,7 +1317,7 @@ CHECKS: tuple[Check, ...] = (
     Check(
         "build",
         1,
-        "a NEW simulator image is built and reaches the registry; never a rebuild (needs --build)",
+        "a marked-TEMPORARY simulator is built and its image reaches the registry (needs --build)",
         check_build,
     ),
     Check("worker", 1, "a relayed env worker starts, answers, runs a task, stops", check_worker),

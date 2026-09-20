@@ -41,7 +41,7 @@ and has a rollback. There is no big-bang step.
 | D8 | **Core CLI:** an independent CLI targeting only core, built on the OpenAPI client generated from the core spec. In the plan for standalone operation; not required up front. | 2026-09-18 | Jim |
 | D9 | **BioModels and the curated COPASI / Tellurium simulators move to core** (not SMS), and are eventually factored back out into the reproducible-biology hosted-services application. | 2026-09-18 | Jim |
 | D10 | **Core's default path is *select or build* an acceptable environment, then run.** The reproducibility application on core accepts a composite and either selects a known compatible environment or builds one from the composite's dependencies. A barebones environment (built-ins only) is rarely useful; an uber-container does not scale. Extends D6: an environment is a **spec** (explicit `repo@commit` + recipe, or derived from a composite), an **environment** (spec hash *and* image digest, status, build job, what it provides) and a **resolver**. "Default path" is reserved for this. | 2026-09-20 | Jim |
-| D11 | **Environments are provenance: immutable once built, and retained.** A simulator record, its container image and its image tag are the provenance of every simulation that ran on them. Once built they are never overwritten, force-rebuilt, re-tagged or deleted; a rebuild is a **new** environment with a new identity, never the same tag. Every simulator, image and tag created **before 2026-09-19** is preserved through this refactor and retained after it; only simulators created *by* the refactor's own testing may be overwritten. A standing rule of the final design, not only of the migration. | 2026-09-20 | Jim |
+| D11 | **Simulators are write-once provenance; a marked-temporary simulator is the only exception.** A simulator record, its container image and its image tag are the provenance of every simulation that ran on them. With one exception, **all of them are write-once, immutable and never deleted** — on every site, not only those that predate this work. The exception is a simulator that says so about itself: `temporary`, with a `label` naming who or what made it and its **own marked image tag** (`tmp-<commit>-<nonce>`, never `<commit>`). A temporary simulator may be overwritten or removed, and it is **marked back to the end user** — in the API, in the CLI, TUI and GUI lists, and left out of every "latest" or default choice — so nobody takes it for an authoritative one. A standing rule of the final design, not only of the migration. | 2026-09-20 | Jim |
 
 ## 3. The issues, in one page
 
@@ -365,10 +365,13 @@ exists three times in this codebase and its siblings, each one partial
   `python:pypi<pkg[ver]>@module.path` address protocol and checks an allow-list, then returns
   empty lists and is called nowhere. The allow-list becomes one enforced core setting rather
   than three carried-and-dropped copies.
-- **built environments are immutable and retained (D11).** A successful build is never
-  replaced: a rebuild is a new row with a new image digest and a new tag, and `force` means
-  "build another", not "overwrite this one". No lifecycle rule may expire an environment that
-  a run points at. The registries become tag-IMMUTABLE once nothing relies on overwriting.
+- **built environments are write-once (D11), with the marked-temporary exception already in
+  place** (`simulator.temporary / label / image_tag`, `SimulatorVersion.environment_key`).
+  P5 generalises it: a successful build is never replaced; a rebuild is a new row with a new
+  image digest and a new tag; `force` means "build another", not "overwrite this one"; no
+  lifecycle rule may expire an environment a run points at. The registries can become
+  tag-IMMUTABLE now that even temporaries never reuse a tag. Still missing, and P5's: the
+  image **digest** recorded with the build, and a purge for temporaries.
 - from the SMS path, what the compose path lacks: **a FAILED build is retried**, not treated
   as "already built". And `run_pbg.py` stays **out of the hashed definition**, so editing the
   runner does not invalidate every environment.
@@ -541,6 +544,7 @@ RDS snapshot comes first.
 | P0 second wave | #637: `b9e1d5a3c7f2` (creates nine tables), `c3f7a1e5b9d4` (reshapes three baseline tables) — inserted, guarded | `b9e1…` yes, but its downgrade **drops the tables and their data** — only ever right on a database this chain built. `c3f7…` downgrade is a deliberate no-op: the baseline's shape is one the application cannot use. Both are no-ops on every existing (`create_all`) database |
 | — | `a1c3e5f7b9d2`, `44335812e447` (and #661's `b2f6d8e0a4c7`): enum `ADD VALUE` | **no** — Postgres cannot drop an enum label; the downgrade is a documented no-op. Benign: an unused label |
 | P0 second wave | `e7b3c9a1d5f2`: `env_worker_task.owner_instance` + index | yes — and proven: upgrade → downgrade → upgrade round-trips to an identical schema |
+| D11 (checkpoint B2) | `f4c8a2e6d0b3`: `simulator.temporary` (NOT NULL, default false), `label`, `image_tag` | yes — additive with defaults, so the previous image keeps working; round-trip proven the same way. A downgrade loses the marker on any temporary simulator made since, which would then read as authoritative: purge them first |
 | P4a | owner-ref columns on `hpcrun` / `dataset`, backfilled, dual-written | yes — old columns stay authoritative |
 | P4b | `task_script` table; task = job with `owner_kind = 'task'` | yes. **No `TASK` enum label is added** — the job kind rides in the new VARCHAR column, precisely so this stays reversible |
 | P5 | `environment` table | yes — dropping it loses only rows created since |
@@ -565,7 +569,8 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 | A2 ✅ 0.9.146, 2026-09-19 | P1b + the `run_pbg` fix (#689) | configuration plumbing — how the storage settings reach the file services — kept apart from P2.1's dispatch change (one kind per deploy) | Tier 0 + Tier 1; `compose` flips FAIL → PASS; `atlantis simulation outputs` (the S3 file service end to end); marker `/app/viva_core/settings.py` |
 | B ✅ 0.9.147, 2026-09-19 | P0 second wave + #661 | `create_all` off and the FRESH path changed — how every database bootstraps | alone; `--analyze` per site; migration Job; boot against an already-migrated DB |
 | C1 ✅ 0.9.148, 2026-09-20 | P2.1 cuts 1–3 + the #709 fix (#710) | the first **dispatch** checkpoint, taken early: the Batch engine now lives in core and every submit goes through it; cancel now stops a run's ParCa job | Tier 0 + 1 + 2, including `sim-cancel` and `chain-cancel`, which must flip FAIL → PASS; markers `/app/viva_core/backends/batch.py` and `cancel_companion_jobs` |
-| C2 | cuts 4–5, build + tasks as services (#712–#714), PR 2's smoke checks | the image build and the task path were rewired and are merged but undeployed | Tier 0 + 1 + 2, `sim-mbp`, and the opt-in **`build`** check: a real image build, which no tier has ever exercised |
+| B2 | the write-once marker (D11): migration `f4c8a2e6d0b3` adds `simulator.temporary / label / image_tag` | a **database** change, so on its own before C2 (one kind per deploy). Additive with defaults: the previous image keeps working | `--analyze`, then the migration Job; Tier 0 (`database` at the new head) + Tier 1; `force` on a built simulator answers 409; on dev only, mark simulator 214 (the unmarked smoke artifact of 2026-09-20) temporary by hand |
+| C2 | cuts 4–5, build + tasks as services (#712–#714), PR 2's smoke checks | the image build and the task path were rewired and are merged but undeployed | Tier 0 + 1 + 2, `sim-mbp`, and the opt-in **`build`** check: a real image build of a **marked-temporary** simulator, which Tier 2 then runs on |
 | C3 | PRs 3–8 (analysis spec, ParCa split, the composed Batch layer, `compose` on it, the mbp-tracked and Nextflow strategies) | every submit now goes through a composed object; two mechanisms are strategies | Tier 0 + 1 + 2; `compose`, `sim-mbp`, `sim-nextflow`, `nextflow-cancel` especially |
 | C | PRs 9–11 (composite, ensemble, chain strategies); the end of P2.1 | the last three mechanisms, chain among them | Tier 0 + 1 + 2, **plus a real 2 x 2 chain campaign** and `chain-cancel`: chain bills real money and fakes share their author's blind spots |
 | D | P2.3 | one resolver replaces four image derivations; the core runtime image | workbench through the relay; `vwb smoke`; `atlantis worker`, `task`, `compose` on the new image |
@@ -584,11 +589,11 @@ is reported separately from PASS and says why; `--json-out` is the record a rele
 | Tier | Cost | What it proves |
 |---|---|---|
 | 0 | seconds, free, read-only | `/version` = `/health`; every spec operation is served; capabilities; the relay is routed and live (JSON 404, not the gateway's HTML); the database-backed list endpoints; an events read |
-| 1 | minutes, cents | one tiny real dispatch per mechanism: a container **task** (uploaded script; the nonce *and* the `sim_data_refs` it was given must come back in its log); **`task-fail`** (a script that exits 3 must be reported FAILED, with proof in its log that it ran); **`task-repo`** (a script already in the image, by repo path — the other entry point); opt-in **`build`** (`--build`: build a simulator for a commit that has **no simulator and no image yet** — the branch HEAD, or `--build-commit` — and pass only when the **registry** shows that tag arrive after the check began; the API alone would answer COMPLETED. It **never rebuilds** (D11): a commit that is already a simulator, or already a tag, is a SKIP, not a `force`. ~20 min; it runs before Tier 2, so the simulations then run on the image it built); a relayed env **worker** (a K8s Job) + a task on its task tier, always stopped; a five-step **composite** that must return 1.1^5; opt-in: a standalone **analysis** (`--simulation-id`), a **BioModels** run (`--biomodel`) |
+| 1 | minutes, cents | one tiny real dispatch per mechanism: a container **task** (uploaded script; the nonce *and* the `sim_data_refs` it was given must come back in its log); **`task-fail`** (a script that exits 3 must be reported FAILED, with proof in its log that it ran); **`task-repo`** (a script already in the image, by repo path — the other entry point); opt-in **`build`** (`--build`: build a **marked-temporary** simulator — its own record, `temporary` with a label, its own image tag `tmp-<commit>-<nonce>` — and pass only when the **registry** shows *that* tag arrive after the check began; the API alone would answer COMPLETED. It cannot touch an authoritative simulator (D11), and it stops if the server does not mark the simulator. ~15 min; it runs before Tier 2, which then runs on the image it built); a relayed env **worker** (a K8s Job) + a task on its task tier, always stopped; a five-step **composite** that must return 1.1^5; opt-in: a standalone **analysis** (`--simulation-id`), a **BioModels** run (`--biomodel`) |
 | 2 | tens of minutes, dollars | **one real simulation per dispatch mechanism**, submitted the way a real client selects each and run **concurrently**: `sim-default` (1 seed x 1 generation), `sim-chain` (2 x 2 — more than one generation is what selects chain dispatch; every seed must have succeeded), `sim-nextflow` (`extra_params.nextflow_dispatch`; every traced task completed), `sim-composite` (`extra_params.multi_node_dispatch`), `sim-mbp` (`extra_params.mbp_dispatch`: the reference variant of `run_mbp_tracked.py` for one simulated minute — the mechanism exists so that output *survives the container*, so that is what is asserted). Each must show **output**, not just COMPLETED. Three more **cancel** what they submit — `sim-cancel` (the run's ParCa job, then its own), `chain-cancel` (a 2 x 2 campaign cancelled in its ParCa phase, where no seed has a job yet) and `nextflow-cancel` (head Job deleted; tasks stopped by Nextflow's hook or the scheduler's reaper) — and assert on **AWS Batch itself**, with the operator's own read-only credentials, that no job carrying the run's experiment id is still active: the API cannot be the witness, because the cancel handler writes CANCELLED to its own row whether or not anything stopped. Without AWS access they SKIP, before submitting anything. Not covered: the upstream K8s + Nextflow path (`scripts/qualification_test.sh` stays the check for that) |
 | R (`--tier 3`) | minutes | a task is put in flight, the deployment is restarted with the operator's own `--restart-command` (`scripts/smoke_restart_k8s.sh`), `/version` must be unchanged and the task must still resolve with its output. Status that lives only in a pod's memory fails this. The shutdown order in the terminated pod's log is still read by hand |
 
-Required: **A** = 0 + `task`. **A2** = 0 + 1 + an outputs download. **B** = 0 + 1. **C1**, **C1**, **C2**, **C3**, **C** = 0 + 1 + 2 (P2.1 is the first change that
+Required: **A** = 0 + `task`. **A2** = 0 + 1 + an outputs download. **B** = 0 + 1. **C1**, **B2** = 0 + 1. **C1**, **C2**, **C3**, **C** = 0 + 1 + 2 (P2.1 is the first change that
 can break dispatch — Tier 2 and R are built before it). **D** = 0 + 1 (`worker`, `task`
 especially). **E** = 0 + 1 + R. **F** = 0 + 1. **G** = 0 + 1 + R. **H** = 0 + 1 + 2. **I**, **J** = all.
 
@@ -653,7 +658,10 @@ split; each has an owner-less issue or a named moment.
 | compose on Ray / Batch accepts `extra_pip_deps` and never installs them | #716 | refuse now, or honour in P5 |
 | compose on SLURM: a FAILED container build suppresses every later rebuild | #717 | folded into the P5 resolver; live in `compose-api` |
 | 153 simulation runs stuck RUNNING on dev | #718 | — |
-| `POST /core/v1/simulator/upload?force=true` overwrites an existing image tag; the `v2ecoli` and `vecoli` ECR repositories are tag-MUTABLE, and dev and prod share one registry (D11) | #721 | guard `force` now; immutability in P5 |
+| `force=true` on a built simulator | #721 | **guarded** (409) by the write-once PR; deploys at B2 |
+| The `v2ecoli` and `vecoli` ECR repositories are tag-MUTABLE, and dev and prod share one registry (D11) | #721 | turn on tag immutability (sms-cdk) once B2 is on both sites |
+| Temporary simulators accumulate: each is a row and ~5.7 GB in ECR, and nothing removes them | — | a purge command, with P5 |
+| Simulator 214 on dev (`d01dc07`) is an unmarked smoke artifact from before the marker existed | dev | mark it temporary by hand at B2; its image keeps the commit's tag |
 | The dataset walk re-lists every simulation forever (~$5–6 / month / site); walking terminal simulations once a day would cut it ~10x | decision log, 2026-09-19 | P4a, when the walker moves to core |
 | Draft #670 conflicts with P1's move of `gcs_aio.py`; a resolution was offered | #670 | when its author picks it up |
 | RDS snapshot `pre-0-9-147-checkpoint-b-20260919t1955z` | dev | delete once 0.9.148 has soaked |
@@ -671,6 +679,7 @@ split; each has an owner-less issue or a named moment.
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — #696; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — #698; all merged 2026-09-19 |
+| D11 | write-once simulators + the marked-temporary exception: migration `f4c8a2e6d0b3`, `environment_key`, `force` guarded (409), the marker in all three clients, smoke `build` on a temporary simulator — **this PR** | — | — (checkpoint **B2**, a database deploy, before C2) | — | open |
 | P2.1 | carve `simulation_service_ray.py` (5,019 → 3,361 lines so far). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. Remaining: PRs 1–11 of the 2026-09-20 sequence; #715 (analysis as a service) is open and **to be reshaped** as PR 3 | 0.9.148 carries cuts 1–3 + #710 | **2026-09-20** (checkpoint C1) | — | **in progress.** Deployed: cuts 1–3, #710. **Merged, undeployed:** cuts 4–5, #714 (→ C2) |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image | | | | not started (checkpoint D) |
@@ -686,6 +695,31 @@ split; each has an owner-less issue or a named moment.
 
 ## Decision log
 
+- **2026-09-20** — **D11 made real: write-once simulators and the marked-temporary exception.**
+  Jim sharpened the rule three times in one afternoon — preserve what predates 2026-09-19;
+  a test simulator should be a *clearly marked temporary* record, image and tag; it must be
+  *marked back to the end user*; and finally, **everything else is write-once, immutable,
+  never deleted**. Built as one PR, and deployed as its own database checkpoint (**B2**)
+  before C2. **The key idea is one property**, `SimulatorVersion.environment_key` =
+  `image_tag or git_commit_hash`: every place the Ray path keyed an environment on the
+  commit (image URI, job-definition suffix, ParCa cache, build job name — eleven call sites)
+  now keys on that. For an authoritative simulator it *is* the commit, so nothing changes;
+  for a temporary one it is `tmp-<commit>-<nonce>`, so everything a test simulator writes —
+  including its **ParCa cache**, which would otherwise have overwritten the commit-keyed
+  cache the authoritative simulator stages from — lands in its own namespace. Only the
+  `git checkout` still uses the commit. **Server:** a temporary upload is always a *new*
+  record with a fresh tag (never reused, never the answer to an authoritative request, any
+  number per commit); `force` against a built or building authoritative simulator is
+  refused (`SimulatorIsWriteOnce` → 409) while a FAILED build is still retried; temporaries
+  are Ray-path only, because only that builder can push a tag that is not the commit.
+  **Clients:** one shared `simulator_marker`; the CLI list prints it, the TUI has a Kind
+  column, the GUI table leads with it, and the three CLI run commands warn before
+  submitting on a temporary simulator. **Smoke:** `build` makes a temporary simulator,
+  refuses to continue if the server does not mark it, asserts on the *marked* tag in ECR,
+  and hands the simulator to Tier 2; no default ever picks a temporary one. A guard test
+  pins that no HTTP route can delete or rewrite a simulator. The baseline `build` run on
+  the old path (dev 0.9.148) passed — simulator **214**, 702 s — and left the one unmarked
+  test artifact this rule was written to prevent; it is marked by hand at B2.
 - **2026-09-20** — **D11: simulators are provenance. I was stopped one command short of
   breaking that.** The first `build` check forced a rebuild of an *existing* simulator, and I
   was about to run it on simulator 212 because it was five days old and looked unused. Jim:

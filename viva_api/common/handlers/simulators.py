@@ -1,5 +1,6 @@
 import inspect
 import logging
+import secrets
 
 from fastapi import HTTPException
 
@@ -15,6 +16,7 @@ from viva_api.simulation.models import (
     SimulatorVersion,
 )
 from viva_api.simulation.simulation_service import SimulationService, SimulationServiceHpc
+from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,17 @@ def _builds_head_image_unconditionally(service: object) -> bool:
     return type(service).__name__ == "SimulationServiceK8s"
 
 
+class SimulatorIsWriteOnce(ValueError):
+    """A request would replace an authoritative simulator's image. Refused (D11)."""
+
+
+def temporary_image_tag(commit_hash: str) -> str:
+    """``tmp-<commit>-<nonce>``: visibly not a commit, and unique, so a temporary simulator can
+    never claim or overwrite the tag an authoritative build of that commit owns -- nor another
+    temporary simulator's."""
+    return f"tmp-{commit_hash}-{secrets.token_hex(3)}"
+
+
 async def upload_simulator(  # noqa: C901
     commit_hash: str,
     git_repo_url: str,
@@ -86,7 +99,20 @@ async def upload_simulator(  # noqa: C901
     include_submit_image: bool | None = None,
     stage_private_fork: bool = False,
     vecoli_private_commit: str | None = None,
+    temporary: bool = False,
+    label: str | None = None,
 ) -> SimulatorVersion:
+    """Find the simulator at this commit, or register and build it.
+
+    **Simulators are write-once** (``docs/plan-core.md`` D11): a record, its image and its tag
+    are the provenance of every simulation that ran on them. So an authoritative simulator is
+    built once. A build that FAILED is retried -- there is no image to replace -- but ``force``
+    against one that is built, or building, is refused with ``SimulatorIsWriteOnce``.
+
+    ``temporary`` is the exception, and it is a different thing rather than a flag on the same
+    thing: every temporary request makes a NEW record with its own marked image tag
+    (``tmp-<commit>-<nonce>``) and builds it. It never reuses, and never touches, anything else.
+    """
     if not simulation_service_slurm:
         # Route the build to the simulator's backend (v2ecoli→Ray builds v2ecoli:<sha>,
         # vEcoli→Batch builds vecoli:{commit}); default otherwise.
@@ -100,34 +126,61 @@ async def upload_simulator(  # noqa: C901
         logger.exception("Simulation database service is not initialized")
         raise RuntimeError("Simulation database service is not initialized")
 
-    # check if the simulator version is already installed
+    if temporary and not isinstance(simulation_service_slurm, SimulationServiceRay):
+        # Only the Ray build path can push an image under a tag that is not the commit.
+        raise ValueError("temporary simulators are supported for repositories built on the Ray / AWS Batch path only")
+
+    # check if the simulator version is already installed. A temporary simulator is never
+    # "already installed": it is a test artifact, and an authoritative request must not get one.
     simulator: SimulatorVersion | None = None
-    for _simulator in await database_service.list_simulators():
+    for _simulator in [] if temporary else await database_service.list_simulators():
         if (
-            _simulator.git_commit_hash == commit_hash
+            not _simulator.temporary
+            and _simulator.git_commit_hash == commit_hash
             and _simulator.git_repo_url == git_repo_url
             and _simulator.git_branch == git_branch
         ):
             simulator = _simulator
             break
 
-    # Check if we need to (re-)submit a build
-    needs_build = simulator is None or force
-    if simulator is not None and not force:
-        # Re-trigger build if the previous one failed
+    # Check if we need to (re-)submit a build. The only reason to build an EXISTING
+    # authoritative simulator again is that its build failed.
+    needs_build = simulator is None
+    if simulator is not None:
         existing_build = await database_service.get_hpcrun_by_ref(
             ref_id=simulator.database_id, job_type=JobType.BUILD_IMAGE
         )
         if existing_build is not None and existing_build.status == JobStatus.FAILED:
             logger.info(f"Previous build for simulator {simulator.database_id} failed, retrying")
             needs_build = True
+        elif force:
+            status = existing_build.status if existing_build is not None else None
+            state = status.value if status is not None else "of unknown status"
+            raise SimulatorIsWriteOnce(
+                f"simulator {simulator.database_id} ({commit_hash}) has a build that is {state}. Simulators are "
+                f"write-once: its image is the provenance of the simulations that ran on it and is never "
+                f"rebuilt. Register a different commit, or a temporary simulator (temporary=true with a label)."
+            )
 
     # insert the latest commit into the database and submit build job
     if simulator is None:
-        simulator = await database_service.insert_simulator(
-            git_commit_hash=commit_hash, git_repo_url=git_repo_url, git_branch=git_branch
+        verify_simulator_payload(
+            Simulator(
+                git_commit_hash=commit_hash,
+                git_repo_url=git_repo_url,
+                git_branch=git_branch,
+                temporary=temporary,
+                label=label,
+            )
         )
-        verify_simulator_payload(simulator)
+        simulator = await database_service.insert_simulator(
+            git_commit_hash=commit_hash,
+            git_repo_url=git_repo_url,
+            git_branch=git_branch,
+            temporary=temporary,
+            label=label,
+            image_tag=temporary_image_tag(commit_hash) if temporary else None,
+        )
 
     if needs_build:
         # ``include_submit_image``: also build the NEXTFLOW HEAD image

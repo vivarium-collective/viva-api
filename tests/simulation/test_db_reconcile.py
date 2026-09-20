@@ -20,7 +20,7 @@ stamped stale.
 
 from viva_api.simulation.db_reconcile import LEGACY_FINGERPRINTS, UNFINGERPRINTED_REVISIONS, DbState, classify
 
-HEAD = "e7b3c9a1d5f2"
+HEAD = "f4c8a2e6d0b3"
 # Mirrors LEGACY_FINGERPRINTS ordering.
 REVS = [
     "fb7621a73e24",
@@ -42,6 +42,7 @@ REVS = [
     "b2f6d8e0a4c7",
     "c9a1e3f5b7d2",
     "e7b3c9a1d5f2",
+    "f4c8a2e6d0b3",
 ]
 
 
@@ -51,6 +52,7 @@ def test_managed_database_takes_upgrade_path() -> None:
         fingerprint=[
             True,
             True,
+            False,
             False,
             False,
             False,
@@ -101,6 +103,7 @@ def test_managed_takes_precedence_even_with_odd_fingerprint() -> None:
             False,
             False,
             False,
+            False,
         ],
         head_revision=HEAD,
     )
@@ -111,6 +114,7 @@ def test_fresh_database_when_no_tables_and_no_version() -> None:
     diag = classify(
         alembic_revision=None,
         fingerprint=[
+            False,
             False,
             False,
             False,
@@ -161,6 +165,7 @@ def test_legacy_matches_baseline_only() -> None:
             False,
             False,
             False,
+            False,
         ],
         head_revision=HEAD,
     )
@@ -174,6 +179,7 @@ def test_legacy_matches_middle_revision() -> None:
         fingerprint=[
             True,
             True,
+            False,
             False,
             False,
             False,
@@ -221,6 +227,7 @@ def test_legacy_matches_cancelled_revision() -> None:
             False,
             False,
             False,
+            False,
         ],
         head_revision=HEAD,
     )
@@ -236,6 +243,7 @@ def test_legacy_matches_tags_revision() -> None:
             True,
             True,
             True,
+            False,
             False,
             False,
             False,
@@ -281,6 +289,7 @@ def test_legacy_matches_analysis_revision() -> None:
             False,
             False,
             False,
+            False,
         ],
         head_revision=HEAD,
     )
@@ -298,6 +307,7 @@ def test_legacy_matches_compose_hpcrun_revision() -> None:
             True,
             True,
             True,
+            False,
             False,
             False,
             False,
@@ -341,6 +351,7 @@ def test_legacy_matches_chain_dispatch_revision() -> None:
             False,
             False,
             False,
+            False,
         ],
         head_revision=HEAD,
     )
@@ -360,6 +371,7 @@ def test_legacy_matches_pending_and_cancelled_uppercase_revision() -> None:
             True,
             True,
             True,
+            False,
             False,
             False,
             False,
@@ -391,6 +403,7 @@ def test_legacy_matches_chain_current_revision() -> None:
             True,
             True,
             True,
+            False,
             False,
             False,
             False,
@@ -433,6 +446,7 @@ def test_legacy_matches_analysis_options_revision() -> None:
             False,
             False,
             False,
+            False,
         ],
         head_revision=HEAD,
     )
@@ -465,6 +479,7 @@ def test_legacy_matches_task_one_short_of_head() -> None:
             False,
             False,
             False,
+            False,
         ],
         head_revision=HEAD,
     )
@@ -479,7 +494,7 @@ def test_legacy_pre_provenance_create_all_database_matches_the_component_rename(
     of a site whose app bootstrapped its schema on the previous release."""
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True] * 16 + [False, False, False],
+        fingerprint=[True] * 16 + [False, False, False, False],
         head_revision=HEAD,
     )
     assert diag.state is DbState.LEGACY
@@ -491,7 +506,7 @@ def test_legacy_matches_the_analysis_jobtype_one_short_of_head() -> None:
     revision and everything after it run."""
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True] * 17 + [False, False],
+        fingerprint=[True] * 17 + [False, False, False],
         head_revision=HEAD,
     )
     assert diag.state is DbState.LEGACY
@@ -504,17 +519,31 @@ def test_legacy_matches_the_dataset_revision_one_short_of_head() -> None:
     so only the owner_instance revision runs."""
     diag = classify(
         alembic_revision=None,
-        fingerprint=[True] * 18 + [False],
+        fingerprint=[True] * 18 + [False, False],
         head_revision=HEAD,
     )
     assert diag.state is DbState.LEGACY
     assert diag.matched_revision == "c9a1e3f5b7d2"
 
 
+def test_legacy_matches_the_owner_instance_revision_one_short_of_head() -> None:
+    """Everything up to ``env_worker_task.owner_instance``, but no ``simulator.temporary`` -- a
+    create_all database from just before the write-once marker joined the model. Stamps at
+    e7b3c9a1d5f2, so only the marker revision runs."""
+    diag = classify(
+        alembic_revision=None,
+        fingerprint=[True] * 19 + [False],
+        head_revision=HEAD,
+    )
+    assert diag.state is DbState.LEGACY
+    assert diag.matched_revision == "e7b3c9a1d5f2"
+
+
 def test_legacy_matches_head_when_all_markers_present() -> None:
     diag = classify(
         alembic_revision=None,
         fingerprint=[
+            True,
             True,
             True,
             True,
@@ -577,6 +606,7 @@ def test_legacy_matches_fresh_create_all_database() -> None:
             True,
             True,
             True,
+            True,
         ],
         head_revision=HEAD,
     )
@@ -591,6 +621,7 @@ def test_inconsistent_when_later_marker_present_but_earlier_missing() -> None:
             True,
             False,
             True,
+            False,
             False,
             False,
             False,
@@ -638,6 +669,7 @@ def test_inconsistent_when_baseline_missing_but_later_present() -> None:
             False,
             False,
             False,
+            False,
         ],
         head_revision=HEAD,
     )
@@ -668,6 +700,7 @@ def test_markers_are_reported_with_labels() -> None:
             False,
             False,
             False,
+            False,
         ],
         head_revision=HEAD,
     )
@@ -676,6 +709,7 @@ def test_markers_are_reported_with_labels() -> None:
     assert presence == [
         True,
         True,
+        False,
         False,
         False,
         False,

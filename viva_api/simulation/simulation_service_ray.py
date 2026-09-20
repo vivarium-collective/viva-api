@@ -645,7 +645,7 @@ class SimulationServiceRay(RayParcaMixin, RayBatchLayer):
             settings=_seams.get_settings(),
         )
 
-        commit = simulator.git_commit_hash
+        commit = simulator.environment_key
         # The RUN's own id, read from the simulation record rather than from the
         # config. Since #450 force-assigns the config's `experiment_id` these agree,
         # but they agree by way of a coupling nothing here would notice breaking --
@@ -947,7 +947,7 @@ class SimulationServiceRay(RayParcaMixin, RayBatchLayer):
             raise ValueError("mbp_dispatch.variant is required")
 
         settings = _seams.get_settings()
-        commit = simulator.git_commit_hash
+        commit = simulator.environment_key
         experiment_id = str(ecoli_simulation.config.experiment_id)
         cache_variant = mbp_dispatch.get("cache_variant") or None
         task_env = with_events_env(
@@ -1748,7 +1748,7 @@ class SimulationServiceRay(RayParcaMixin, RayBatchLayer):
             raise ValueError(f"Simulator {ecoli_simulation.simulator_id} not found")
 
         settings = _seams.get_settings()
-        commit = simulator.git_commit_hash
+        commit = simulator.environment_key
         experiment_id = ecoli_simulation.config.experiment_id
 
         # Run the TRUE commit image: derive a per-commit MNP job-def revision pointing at
@@ -2176,7 +2176,7 @@ class SimulationServiceRay(RayParcaMixin, RayBatchLayer):
             raise ValueError(f"Simulator {ecoli_simulation.simulator_id} not found")
 
         settings = _seams.get_settings()
-        commit = simulator.git_commit_hash
+        commit = simulator.environment_key
         experiment_id = ecoli_simulation.config.experiment_id
 
         job_def = self._ensure_mnp_job_def(self._image_uri(commit), commit)
@@ -2797,7 +2797,7 @@ class SimulationServiceRay(RayParcaMixin, RayBatchLayer):
         if simulator is None:
             raise ValueError(f"Simulator {ecoli_simulation.simulator_id} not found")
 
-        commit = simulator.git_commit_hash
+        commit = simulator.environment_key
         config = ecoli_simulation.config
         n_seeds = int(ecoli_simulation.num_seeds or getattr(config, "n_init_sims", None) or 1)
         n_generations = int(config.generations or 1)

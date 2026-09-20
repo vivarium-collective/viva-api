@@ -38,7 +38,7 @@ from textual.widgets import (
     Static,
 )
 
-from app.app_data_service import BaseUrl, E2EDataService, get_data_service
+from app.app_data_service import BaseUrl, E2EDataService, get_data_service, simulator_marker
 from app.dataset_views import (
     ANALYSIS_COLUMNS,
     DATASET_COLUMNS,
@@ -1264,8 +1264,9 @@ class AtlantisTUI(App[None]):
                 sv.git_repo_url.rsplit("/", 1)[-1] if "/" in sv.git_repo_url else sv.git_repo_url,
                 str(sv.created_at)[:19] if sv.created_at else "-",
                 status,
+                simulator_marker(sv),
             ])
-        self._populate_table(["ID", "Commit", "Branch", "Repo", "Created", "Status"], rows)
+        self._populate_table(["ID", "Commit", "Branch", "Repo", "Created", "Status", "Kind"], rows)
         self.write_log(f"[green]Loaded {len(versions)} simulators[/green]\n")
 
     @work(thread=True)

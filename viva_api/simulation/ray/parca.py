@@ -359,7 +359,7 @@ class RayParcaMixin(RayBatchLayer):
         traffic, so it moves to the plain container-type path -- see
         ``_submit_container``."""
         simulator_version = parca_dataset.parca_dataset_request.simulator_version
-        commit = simulator_version.git_commit_hash
+        commit = simulator_version.environment_key
         job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
         job_id = self._submit_container(
             job_name=f"ray-parca-{commit}-{_rand_suffix()}",

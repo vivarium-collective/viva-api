@@ -16,6 +16,7 @@ from viva_api.compose.models import (
     SimulationFileType,
 )
 from viva_api.compose.simulation_service_ray import ComposeSimulationServiceRay
+from viva_api.simulation.models import SimulatorVersion
 
 
 def _settings(**overrides: object) -> types.SimpleNamespace:
@@ -175,7 +176,7 @@ async def test_resolve_commit_returns_none_when_simulator_id_unset() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_commit_resolves_the_git_commit_hash() -> None:
-    fake_simulator = types.SimpleNamespace(git_commit_hash="9e2040093e", git_repo_url="x", git_branch="main")
+    fake_simulator = SimulatorVersion(database_id=1, git_commit_hash="9e2040093e", git_repo_url="x", git_branch="main")
     fake_db = AsyncMock()
     fake_db.get_simulator = AsyncMock(return_value=fake_simulator)
     with patch("viva_api.dependencies.get_database_service", return_value=fake_db):
@@ -312,7 +313,9 @@ async def test_submit_simulation_job_with_simulator_id_uses_the_resolved_per_com
 
     fake_file_service = AsyncMock()
     fake_file_service.upload_file = AsyncMock()
-    fake_simulator = types.SimpleNamespace(git_commit_hash="resolved-commit-42", git_repo_url="x", git_branch="main")
+    fake_simulator = SimulatorVersion(
+        database_id=1, git_commit_hash="resolved-commit-42", git_repo_url="x", git_branch="main"
+    )
     fake_db = AsyncMock()
     fake_db.get_simulator = AsyncMock(return_value=fake_simulator)
 

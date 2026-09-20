@@ -281,3 +281,26 @@ async def test_owner_instance_revision_round_trips(empty_database: str, monkeypa
 
     await _upgrade(empty_database, "e7b3c9a1d5f2", monkeypatch)
     assert await _schema(empty_database) == at_head
+
+
+@pytest.mark.asyncio
+async def test_simulator_temporary_marker_revision_round_trips(
+    empty_database: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """f4c8a2e6d0b3, the write-once marker (``docs/plan-core.md`` D11 and section 7a): a real
+    downgrade, proven by upgrade -> downgrade -> upgrade against a real Postgres."""
+    marker_columns = {"temporary", "label", "image_tag"}
+
+    async def simulator_columns() -> set[str]:
+        return set((await _schema(empty_database))["tables"]["simulator"]["columns"])
+
+    await _upgrade(empty_database, "f4c8a2e6d0b3", monkeypatch)
+    assert marker_columns <= await simulator_columns()
+    at_head = await _schema(empty_database)
+
+    monkeypatch.setenv("SQLALCHEMY_DATABASE_URL", empty_database)
+    await asyncio.to_thread(command.downgrade, _alembic_config(empty_database), "e7b3c9a1d5f2")
+    assert not (marker_columns & await simulator_columns())
+
+    await _upgrade(empty_database, "f4c8a2e6d0b3", monkeypatch)
+    assert await _schema(empty_database) == at_head

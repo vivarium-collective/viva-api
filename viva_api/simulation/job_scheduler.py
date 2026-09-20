@@ -382,7 +382,7 @@ class JobScheduler:
             logger.error("Orphaned build HpcRun %s: simulator %s not found", hpc_run.database_id, hpc_run.ref_id)
             return []
         settings = get_settings()
-        commit = simulator.git_commit_hash
+        commit = simulator.environment_key
         backend = compute_backend_for_repo(simulator.git_repo_url)
         if backend == ComputeBackend.RAY:
             lookups = [(settings.build_amd64_queue, batch_build.ray_build_job_name(commit))]
@@ -542,7 +542,7 @@ class JobScheduler:
                     "Chain dispatch: Simulator %s not found for simulation %s", simulation.simulator_id, fresh.ref_id
                 )
                 return None
-            commit = simulator.git_commit_hash
+            commit = simulator.environment_key
             experiment_id = str(simulation.config.experiment_id)
 
             if not fresh.chain_parca_done:
@@ -958,7 +958,7 @@ class JobScheduler:
         analysis_job_id = await simulation_service_ray.submit_multi_node_analysis(
             simulation=simulation,
             database_service=self.database_service,
-            commit=simulator.git_commit_hash,
+            commit=simulator.environment_key,
             composite_id=composite_id,
         )
         logger.info(

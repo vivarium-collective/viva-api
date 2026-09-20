@@ -444,11 +444,14 @@ def _(mo):
 
 @app.cell
 def _(build_form, get_svc, mo, set_selected_sim_id):
+    from app.app_data_service import simulator_marker
+
     sims_table = mo.Html("")
     _svc = get_svc()
     try:
         _sims = _svc.show_simulators()
-        _rows = [s.model_dump() for s in _sims]
+        # "kind" first, so a temporary simulator cannot be picked without seeing what it is.
+        _rows = [{"kind": simulator_marker(s) or "authoritative", **s.model_dump()} for s in _sims]
         if _rows:
             _table = mo.ui.table(
                 data=_rows,

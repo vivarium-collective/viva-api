@@ -3,7 +3,7 @@ import enum
 import logging
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, UniqueConstraint, false, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs, AsyncEngine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -125,6 +125,12 @@ class ORMSimulator(Base):
     git_repo_url: Mapped[str] = mapped_column(nullable=False)
     git_branch: Mapped[str] = mapped_column(nullable=False)
     git_commit_hash: Mapped[str] = mapped_column(nullable=False)  # first 7 characters of the commit hash
+    # Write-once provenance, and its one exception (docs/plan-core.md D11). ``temporary`` marks a
+    # test artifact that must never be mistaken for an authoritative build; ``label`` says who made
+    # it; ``image_tag`` is set only when the image is NOT ``<repository>:<git_commit_hash>``.
+    temporary: Mapped[bool] = mapped_column(nullable=False, server_default=false())
+    label: Mapped[str | None] = mapped_column(nullable=True)
+    image_tag: Mapped[str | None] = mapped_column(nullable=True)
 
     def to_simulator_version(self) -> SimulatorVersion:
         return SimulatorVersion(
@@ -133,6 +139,9 @@ class ORMSimulator(Base):
             git_repo_url=self.git_repo_url,
             git_branch=self.git_branch,
             git_commit_hash=self.git_commit_hash,
+            temporary=self.temporary,
+            label=self.label,
+            image_tag=self.image_tag,
         )
 
 

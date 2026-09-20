@@ -222,12 +222,15 @@ a strategy object; a mixin is none of these. And **"default path" is reserved** 
 *select or build an acceptable environment, then run* (decision D10); the SMS ParCa +
 ensemble run is the *ensemble path*.
 
-**Simulators are provenance (decision D11).** Never overwrite, force-rebuild, re-tag or delete
-an existing simulator record, its container image or its image tag — they are what delivered
-simulations point back to, and dev and prod share one ECR registry. That means never
-`?force=true` on `/core/v1/simulator/upload` for a registered simulator. Everything created
-before 2026-09-19 is preserved; to exercise the build path, build a commit that has no
-simulator and no image yet.
+**Simulators are write-once provenance (decision D11).** Never overwrite, force-rebuild,
+re-tag or delete a simulator record, its container image or its image tag — they are what
+delivered simulations point back to, and dev and prod share one ECR registry. The server
+refuses `?force=true` on a built simulator (409). The one exception is a **marked-temporary**
+simulator (`temporary=true` + a `label`): a new record with its own image tag
+`tmp-<commit>-<nonce>`, shown as TEMPORARY in every client and never picked by default. To
+exercise the build path, make one of those (`atlantis smoke run --only build --build`). Key
+anything environment-shaped on `SimulatorVersion.environment_key`, never on
+`git_commit_hash` — that one is only for git.
 
 ## Development
 
@@ -258,8 +261,8 @@ make e2e BASE_URL=<url>    # = make smoke TIER=1 (task, env worker, composite). 
                            # TIER=2 = one real simulation per dispatch path, concurrently (tens of minutes, dollars);
                            #   plus sim-cancel / chain-cancel / nextflow-cancel, which verify on AWS Batch itself and so need
                            #   your AWS credentials (read-only); without them they SKIP;
-                           #   `build` is opt-in: SMOKE_ARGS='--build' builds a simulator for an UNREGISTERED commit
-                           #   (branch HEAD, or --build-commit) and checks ECR for the push (~20 min). It never rebuilds;
+                           #   `build` is opt-in: SMOKE_ARGS='--build' builds a marked-TEMPORARY simulator (own record,
+                           #   own tag tmp-<commit>-<nonce>) and checks ECR for the push (~15 min); tier 2 then runs on it;
                            # TIER=3 adds the restart check (needs SMOKE_ARGS='--restart-command "scripts/smoke_restart_k8s.sh <ns> <port>"')
 
 uv run pytest              # Run all tests
