@@ -264,7 +264,7 @@ P2.0a guard caught. So:
   |---|---|---|
   | 1 | **docs truth** (#719) | both living documents made true before more work |
   | 2 | smoke: `sim-mbp` and an opt-in `build` check (#720); then deploy the merged-but-undeployed build cuts (**C2**) | no check builds an image or exercises mbp, and both are about to be rewired |
-  | 3 | reshape #715: pure `ray/analysis_spec.py` + the static-guard glob fix; the two analysis submitters stay in the class until their mechanisms move; `service.analysis` kept as a delegating shim for `job_scheduler.py` | analysis is a spec + a pattern + per-mechanism glue, not one service |
+  | 3 ✅ | pure `ray/analysis_spec.py` + the static-guard glob fix; the two analysis submitters stay in the class until their mechanisms move. **#715 is closed, not reshaped:** it was never merged, so on `main` the submitters had never left the class and `job_scheduler.py` still calls them there — there is nothing for a `service.analysis` shim to delegate to, and none was added | analysis is a spec + a pattern + per-mechanism glue, not one service |
   | 4 | ParCa: commands and cache URIs → a pure module; `RayParcaService` holds only the three cache jobs | half of it is pure; only the cache jobs work one way |
   | 5 | **`RayBatchLayer` stops being a base class** and becomes a composed `service.batch`, behind two small SMS Protocols, `ContainerSubmitter` and `MnpSubmitter`, replacing `TaskDispatch` / `AnalysisDispatch`. `local` and `k8s` are constructor arguments of the strategies that need them, never Protocol members | done **first**, so every strategy is handed a real object; done last, each strategy would be rewired twice (~80 call sites, ~24 `patch.object`) |
   | 6 | `compose` uses `RayBatchLayer` directly, not a whole `SimulationServiceRay()` | one of the three broken `compose-is-domain-free` edges goes |
@@ -684,7 +684,7 @@ split; each has an owner-less issue or a named moment.
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — #696; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — #698; all merged 2026-09-19 |
 | D11 | write-once simulators + the marked-temporary exception: migration `f4c8a2e6d0b3`, `environment_key`, `force` guarded (409), the marker in all three clients, smoke `build` on a temporary simulator — #722 | — | — (checkpoint **B2**, a database deploy, before C2) | — | open |
-| P2.1 | carve `simulation_service_ray.py` (5,019 → 3,361 lines so far). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. Remaining: PRs 1–11 of the 2026-09-20 sequence; #715 (analysis as a service) is open and **to be reshaped** as PR 3 | 0.9.149 carries cuts 1–5, #710, #714, #722 | **2026-09-20** (checkpoints C1, B2, C2) | — | **in progress.** Everything merged is deployed to dev. Next: PR 3 (reshape #715) |
+| P2.1 | carve `simulation_service_ray.py` (5,019 → 3,271 lines so far). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `ray/analysis_spec.py` — PR 3. Remaining: PRs 4–11 of the 2026-09-20 sequence; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.149 carries cuts 1–5, #710, #714, #722 | **2026-09-20** (checkpoints C1, B2, C2) | — | **in progress.** Deployed to dev: everything through #722. Merged after C2 (a pure move, → C3): PR 3. Next: PR 4 (ParCa split) |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image | | | | not started (checkpoint D) |
 | P3 | | | | | not started (checkpoint E) |
@@ -698,6 +698,25 @@ split; each has an owner-less issue or a named moment.
 | P10 | | | | | not started (checkpoint —) |
 
 ## Decision log
+
+- **2026-09-20** — **PR 3: the analysis specification, and #715 closed rather than reshaped.**
+  `ANALYSIS_SCALES`, `APPLICABLE_ANALYSES`, the three sizing constants, `analysis_modules_for`
+  and `analysis_memory_class` moved to `ray/analysis_spec.py` — 91 lines, byte-identical
+  (functions, constants *and* their comments compared by source against `origin/main`; the
+  class hierarchy's 69 methods unchanged per `prove_ray_carve_is_move_only.py`). No re-export:
+  the service, the Nextflow handler, `scripts/cd2_nextflow_dispatches.py` and two test
+  modules import from the new home.
+  The plan row said "reshape #715 … keep `service.analysis` as a delegating shim". Starting
+  from `main` that turned out to be unnecessary: #715 never merged, so the submitters never
+  left the class and the scheduler still calls `submit_campaign_analysis` /
+  `submit_multi_node_analysis` on it. A shim would have delegated to itself. #715 is closed
+  with a pointer here; what was right in it (the pure functions, the glob fix) is this PR,
+  and what was wrong (grouping two mechanisms' submitters by a shared word) is not carried.
+  **The static guard now globs `viva_api/simulation/ray/*.py`** instead of listing files, and
+  the "known dispatch paths" pin reads the whole package. Checked with a mutation: a new
+  file in the package containing a `resolve_task_env` call without `with_events_env` fails
+  the guard (1 failed, 14 passed), and is gone again. Before this, that file would not have
+  been scanned at all — which is exactly how this guard missed a dispatch once already.
 
 - **2026-09-20** — **Checkpoint C2 passed on dev (0.9.149, tag `v0.9.149`): the API roll.** Jim:
   "merge #724 and deploy C2". `kubectl diff` of the app overlay at `79fb0b21` against the live

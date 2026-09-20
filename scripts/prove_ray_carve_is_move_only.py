@@ -34,7 +34,6 @@ HIERARCHY = {
     ROOT + "simulation_service_ray.py": "SimulationServiceRay",
     ROOT + "ray/batch_layer.py": "RayBatchLayer",
     ROOT + "ray/parca.py": "RayParcaMixin",
-    ROOT + "ray/analysis.py": "RayAnalysisMixin",
     ROOT + "ray/nextflow.py": "RayNextflowMixin",
     ROOT + "ray/mbp_tracked.py": "RayMbpTrackedMixin",
     ROOT + "ray/mnp.py": "RayMnpMixin",

@@ -176,17 +176,18 @@ and choose the queue. Since cut 3 those live in `RayBatchLayer`
 `service.batch` object (plan-core P2.1, PR 5).
 
 **What `SimulationServiceRay` is as of 2026-09-20** (`SimulationServiceRay(RayParcaMixin,
-RayBatchLayer)`; the file is 3,361 lines, from 5,019):
+RayBatchLayer)`; the file is 3,271 lines, from 5,019):
 
 | Piece | Where | Shape |
 |---|---|---|
 | config interpretation | `ray/config_interpretation.py` | pure functions |
 | in-image paths | `ray/image_paths.py` | constants, no imports |
+| analysis specification (which modules, which memory class) | `ray/analysis_spec.py` | pure functions; shared with the Nextflow handler and `scripts/cd2_nextflow_dispatches.py` |
 | SMS's half of the Batch seam | `ray/batch_layer.py` (`RayBatchLayer`) | base class, to be composed |
 | ParCa and the caches | `ray/parca.py` (`RayParcaMixin`) | mixin; to split into a pure module + a cache-jobs service |
 | image build | `ray/build.py` (`RayImageBuilder`) | composed service |
 | tasks | `ray/tasks.py` (`RayTaskService`, `TaskDispatch` Protocol) | composed service |
-| analysis, five dispatch mechanisms, the router, the facade | still in the class | see below |
+| the two analysis **submitters** (chain's, the multi-node composite's), five dispatch mechanisms, the router, the facade | still in the class | each submitter moves with its mechanism; see below |
 
 **Five dispatch mechanisms, none of which calls another** (measured 2026-09-20). The router
 `submit_ecoli_simulation_job` is 308 lines, of which ~20 are routing and **216 are a fifth,
