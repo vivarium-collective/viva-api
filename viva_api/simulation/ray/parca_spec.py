@@ -192,9 +192,7 @@ def parca_command(
         )
     settings = _seams.get_settings()
     new_genes_flag = f" --new-genes {shlex.quote(new_genes)}" if new_genes and new_genes != "off" else ""
-    bundle_overrides_list = (
-        [bundle_overrides] if isinstance(bundle_overrides, str) else list(bundle_overrides or [])
-    )
+    bundle_overrides_list = [bundle_overrides] if isinstance(bundle_overrides, str) else list(bundle_overrides or [])
     bundle_overrides_flag = "".join(f" --bundle-overrides {shlex.quote(path)}" for path in bundle_overrides_list)
     rnaseq_source_flag = f" --rnaseq-source {shlex.quote(rnaseq_source)}" if rnaseq_source else ""
     combined_manifest_prefix = ""
