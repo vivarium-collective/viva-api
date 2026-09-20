@@ -40,7 +40,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, override
+from typing import TYPE_CHECKING, Any, override
 
 from botocore.config import Config
 
@@ -96,6 +96,10 @@ from viva_core.backends.batch import (
     SubmitJobPacer,
     batch_exit_code,
 )
+
+if TYPE_CHECKING:
+    # ``types-boto3`` is a dev dependency (annotations only): never imported at runtime.
+    from types_boto3_batch.type_defs import JobDefinitionTypeDef, JobDetailTypeDef
 
 logger = logging.getLogger(__name__)
 
@@ -1950,9 +1954,14 @@ class SimulationServiceRay(SimulationService):
         name, _, revision = job_definition.partition(":")
         batch = self.batch.client()
         for attempt in range(self._VCPU_LOOKUP_RETRIES):
-            defs: list[dict[str, Any]] = []
+            defs: list[JobDefinitionTypeDef] = []
             try:
-                described = batch.describe_job_definitions(jobDefinitionName=name, revision=int(revision))
+                # viva-api#730: DescribeJobDefinitions has NO ``revision`` parameter -- botocore rejects
+                # this call client-side every time, the ``except`` below swallows it, and this method
+                # has never returned a vCPU count. Found by the typed client (P2.1 PR 6a) and left
+                # byte-for-byte on purpose: fixing it changes a dispatch's shard count, so it gets
+                # its own PR with a before/after. The ignore is the marker; remove both together.
+                described = batch.describe_job_definitions(jobDefinitionName=name, revision=int(revision))  # type: ignore[call-arg]
                 defs = described.get("jobDefinitions", [])
             except Exception as exc:
                 # Treated the same as an empty result below -- both just mean "not visible yet".
@@ -3352,7 +3361,7 @@ class SimulationServiceRay(SimulationService):
         return await asyncio.to_thread(self._terminate_campaign_tasks, queues, stem)
 
     def _terminate_campaign_tasks(self, queues: list[str], stem: str) -> int:
-        def _is_this_campaigns(job: dict[str, Any]) -> bool:
+        def _is_this_campaigns(job: "JobDetailTypeDef") -> bool:
             command = " ".join(job.get("container", {}).get("command", []) or [])
             return _command_belongs_to_campaign(command, stem)
 

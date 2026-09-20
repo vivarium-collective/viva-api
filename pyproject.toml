@@ -102,6 +102,7 @@ dev = [
     "types-aiofiles>=25.1.0.20251011",
     "types-python-dateutil>=2.9.0.20251115",
     "import-linter>=2.15",
+    "types-boto3[batch,ecr,logs,s3]>=1.40,<2",
 ]
 docs = [
     "sphinx>=8.2.3,<10",
@@ -149,7 +150,7 @@ strict = true
 exclude = ['^notes/', '^viva_api/api/client/.*', '^app/ui/.*', '^app/gui\\.py$', '^app/tui\\.py$', '^sms_api/.*']
 
 [[tool.mypy.overrides]]
-module = ["kubernetes.*", "textual", "textual.*", "boto3", "boto3.*", "botocore.*", "process_bigraph", "process_bigraph.*", "bigraph_schema", "bigraph_schema.*", "pbg_emitters", "pbg_emitters.*", "viva_emitters", "viva_emitters.*", "v2ecoli", "v2ecoli.*", "biosimulators_utils.*", "libsedml.*", "libsbml.*", "spython.*", "nats.*", "biomodels", "biomodels.*", "fsspec", "fsspec.*", "pyarrow", "pyarrow.*"]
+module = ["kubernetes.*", "textual", "textual.*", "process_bigraph", "process_bigraph.*", "bigraph_schema", "bigraph_schema.*", "pbg_emitters", "pbg_emitters.*", "viva_emitters", "viva_emitters.*", "v2ecoli", "v2ecoli.*", "biosimulators_utils.*", "libsedml.*", "libsbml.*", "spython.*", "nats.*", "biomodels", "biomodels.*", "fsspec", "fsspec.*", "pyarrow", "pyarrow.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
