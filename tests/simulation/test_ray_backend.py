@@ -4340,11 +4340,11 @@ class TestRaySubmitImage:
         with (
             patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
             patch(
-                "viva_api.simulation.simulation_service_ray.batch_build.submit_batch_build",
+                "viva_api.simulation.batch_build.submit_batch_build",
                 new=AsyncMock(return_value="build-job-1"),
             ) as mock_submit,
             patch(
-                "viva_api.simulation.simulation_service_ray.batch_build.poll_batch_jobs",
+                "viva_api.simulation.batch_build.poll_batch_jobs",
                 new=AsyncMock(),
             ),
         ):
@@ -4361,11 +4361,11 @@ class TestSimulationServiceRayBuildSubmit:
         with (
             patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
             patch(
-                "viva_api.simulation.simulation_service_ray.batch_build.submit_batch_build",
+                "viva_api.simulation.batch_build.submit_batch_build",
                 new=AsyncMock(return_value="build-job-1"),
             ) as mock_submit,
             patch(
-                "viva_api.simulation.simulation_service_ray.batch_build.poll_batch_jobs",
+                "viva_api.simulation.batch_build.poll_batch_jobs",
                 new=AsyncMock(),
             ) as mock_poll,
         ):
@@ -4381,10 +4381,10 @@ class TestSimulationServiceRayBuildSubmit:
         with (
             patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
             patch(
-                "viva_api.simulation.simulation_service_ray.batch_build.submit_batch_build",
+                "viva_api.simulation.batch_build.submit_batch_build",
                 new=AsyncMock(return_value="bj"),
             ),
-            patch("viva_api.simulation.simulation_service_ray.batch_build.poll_batch_jobs", new=AsyncMock()),
+            patch("viva_api.simulation.batch_build.poll_batch_jobs", new=AsyncMock()),
         ):
             job_id = await service.submit_build_image_job(_v2ecoli_simulator())
             # The build runs as a BACKGROUND task that outlives this call. Wait for it INSIDE
@@ -4406,10 +4406,10 @@ class TestSimulationServiceRayBuildSubmit:
         with (
             patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
             patch(
-                "viva_api.simulation.simulation_service_ray.batch_build.submit_batch_build",
+                "viva_api.simulation.batch_build.submit_batch_build",
                 new=AsyncMock(return_value="build-job-1"),
             ) as mock_submit,
-            patch("viva_api.simulation.simulation_service_ray.batch_build.poll_batch_jobs", new=AsyncMock()),
+            patch("viva_api.simulation.batch_build.poll_batch_jobs", new=AsyncMock()),
         ):
             job_id = await service.submit_build_image_job(_v2ecoli_simulator())
             await service._local.bind_hpcrun(job_id.value, hpcrun_id=506, database_service=db)

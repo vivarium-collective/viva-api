@@ -12,6 +12,8 @@ mechanisms (``docs/plan-core.md`` P2). Its pieces land here, one concern per PR:
   queue choice, this application's env entries) over ``viva_core.backends.batch``. The base
   class every mixin below inherits.
 * :mod:`.tasks` -- ``RayTasksMixin``: run a script in the image, follow it, read its logs.
+* :mod:`.build` -- ``RayBuildMixin``: build a simulator image (a DooD build on Batch, run as
+  a LOCAL task).
 
 ``SimulationServiceRay`` inherits the mixins, so callers and tests see one class, as before.
 """

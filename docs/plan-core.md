@@ -231,7 +231,8 @@ P2.0a guard caught. So:
   | 1 | config interpretation → `simulation/ray/config_interpretation.py` | #705 | 211 (5,019 → 4,815) | merged 2026-09-19 (`0d71e2a6`) |
   | 2 | Batch engine → `viva_core/backends/batch.py` (`BatchJobClient`) — a **delegation**, not a move; see the decision log | #706 | 234 (4,815 → 4,581) | merged 2026-09-19 (`d5f965a4`) |
   | 3 | tasks → `ray/tasks.py` (`RayTasksMixin`), on two prerequisites every later mixin shares: `ray/image_paths.py` (in-image path constants, a leaf) and `ray/batch_layer.py` (`RayBatchLayer`, the service's delegations to the engine) | #707 | 597 (4,581 → 3,984) | merged 2026-09-19 (`4173ca26`) |
-  | 4–10 | build · ParCa · analysis · Nextflow · mbp-tracked · MNP · chain | | | |
+  | 4 | build → `ray/build.py` (`RayBuildMixin`); the constructor and `_submit_image_uri` join `RayBatchLayer` | #712 | 144 (3,984 → 3,840) | open |
+  | 5–10 | ParCa · analysis · Nextflow · mbp-tracked · MNP · chain | | | |
 - **P2.2 — mixins become strategies.** A `DispatchStrategy` Protocol (`applies`, `submit`,
   `cancel`, `progress`); each mechanism an object with explicit dependencies (`BatchJobClient`,
   layout, settings) instead of `self`; `submit_ecoli_simulation_job` shrinks to a router.
@@ -506,7 +507,7 @@ gating latency compared to the baseline.
 | P1a | #686 `viva_core/` skeleton, enforced `core-is-standalone`, `tests/core/`, first nine modules | 0.9.145 | **2026-09-18** (checkpoint A) | — | merged 2026-09-18 (`8c9f8e78`); marker `/app/viva_core/models.py` confirmed on the newest pod |
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — #696; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — #698; all merged 2026-09-19 |
-| P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core). Cut 1, config interpretation — #705 · cut 2, Batch engine → `viva_core/backends/batch.py` — #706 · cut 3, tasks + the shared base layer — #707 (merged `4173ca26`) | no bump: deploys with the rest of P2.1 at checkpoint C | — | — | **in progress** — cuts 1–3 merged 2026-09-19; nothing deployed (checkpoint C) |
+| P2.1 | carve `simulation_service_ray.py`, one concern per PR (Batch engine → core). Cut 1, config interpretation — #705 · cut 2, Batch engine → `viva_core/backends/batch.py` — #706 · cut 3, tasks + the shared base layer — #707 (merged `4173ca26`) · cut 4, build — #712 | no bump: deploys with the rest of P2.1 at checkpoint C | — | — | **in progress** — cuts 1–3 merged 2026-09-19; nothing deployed (checkpoint C) |
 | P2.2 | mixins → `DispatchStrategy` objects; router | | | | not started |
 | P2.3 | core runtime image; K8s / SLURM / LOCAL adapters; `EnvironmentRef` | | | | not started |
 | P3 | | | | | |
@@ -531,6 +532,20 @@ gating latency compared to the baseline.
   non-adjacent hunk in `db_reconcile.py`): #680–#684. Second wave after #661 merges.
   First result from #680: 1 contract kept (env workers + relay — now **enforced**), 5
   broken, 9 direct edges — the work list for P1–P5.
+- **2026-09-19** — **P2.1 cut 4: build**, started while 0.9.148 deployed (Jim). Three methods
+  (`submit_build_image_job`, `_build_command`, `_run_build`) → `ray/build.py`. The mixin
+  needs `self._local`, so the **constructor moved into `RayBatchLayer`** — every later mixin
+  needs `_local` or `_k8s` too — and `_submit_image_uri` joined `_image_uri` there (Nextflow
+  uses it, not only build). **Proof:** 76 methods across the four classes compared by
+  source with `origin/main`: 0 differ, none twice (52 service / 14 layer / 7 tasks / 3
+  build). Eight test patches aimed at `simulation_service_ray.batch_build.…` were retargeted
+  to `viva_api.simulation.batch_build.…`: they reached the functions through a name the
+  service module no longer binds (same object, so same effect). **Not done here, on
+  purpose:** the plan's table sends build to core (`backends/build.py` + an SMS recipe).
+  That is a design change, not a move — `batch_build.py` reads this application's settings,
+  imports `boto3` directly, names this application's jobs (`v2ecoli-ray-build-…`) and is
+  shared with `SimulationServiceK8s`. It goes with the recipe registry in P2.3 / P5. And
+  no smoke check builds an image: run one by hand before this cut deploys.
 - **2026-09-19** — **Checkpoint C split: C1 now (0.9.148), C when the carve is done** (Jim:
   "bump and deploy 0.9.148"). `main` was four dispatch changes ahead of dev — cuts 1–3 and
   #710. Deploying now rather than after cut 10 means a Tier 2 failure has three suspects
