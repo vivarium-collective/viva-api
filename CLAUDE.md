@@ -215,6 +215,13 @@ and flips its delta row — in the same PR. A change of plan is a dated decision
 not a silent rewrite. Core carries no domain terms (ecoli, parca, …) in its identifiers and
 never imports `viva_api` or `app`.
 
+Two rules from the 2026-09-20 plan audit. **Choose a shape by what the thing *is*:** a common
+capability that works one way regardless of dispatch mechanism is a composed service (image
+build, tasks); a domain specification is a module of pure functions; a dispatch mechanism is
+a strategy object; a mixin is none of these. And **"default path" is reserved** for core's
+*select or build an acceptable environment, then run* (decision D10); the SMS ParCa +
+ensemble run is the *ensemble path*.
+
 ## Development
 
 ### Setup
