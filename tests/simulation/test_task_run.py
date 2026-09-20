@@ -146,7 +146,7 @@ async def test_get_task_status_maps_succeeded_to_ready() -> None:
     database_service.get_task.return_value = _submitted_task_dto(status=JobStatus.RUNNING)
     database_service.update_task_status.return_value = _submitted_task_dto(status=JobStatus.COMPLETED)
 
-    with patch.object(service, "get_batch_job_statuses", return_value={"c-1": JobStatus.COMPLETED}):
+    with patch.object(service.batch, "get_batch_job_statuses", return_value={"c-1": JobStatus.COMPLETED}):
         result = await service.tasks.get_task_status(1, database_service)
 
     database_service.update_task_status.assert_awaited_once_with(1, TaskStatusDB.READY)
@@ -160,7 +160,7 @@ async def test_get_task_status_maps_failed_to_failed() -> None:
     database_service.get_task.return_value = _submitted_task_dto(status=JobStatus.RUNNING)
     database_service.update_task_status.return_value = _submitted_task_dto(status=JobStatus.FAILED)
 
-    with patch.object(service, "get_batch_job_statuses", return_value={"c-1": JobStatus.FAILED}):
+    with patch.object(service.batch, "get_batch_job_statuses", return_value={"c-1": JobStatus.FAILED}):
         result = await service.tasks.get_task_status(1, database_service)
 
     database_service.update_task_status.assert_awaited_once_with(1, TaskStatusDB.FAILED)
@@ -188,7 +188,7 @@ async def test_get_task_status_not_yet_visible_in_batch_leaves_status_unchanged(
     database_service = AsyncMock()
     database_service.get_task.return_value = _submitted_task_dto(status=JobStatus.RUNNING)
 
-    with patch.object(service, "get_batch_job_statuses", return_value={}):
+    with patch.object(service.batch, "get_batch_job_statuses", return_value={}):
         result = await service.tasks.get_task_status(1, database_service)
 
     database_service.update_task_status.assert_not_called()

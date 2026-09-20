@@ -71,46 +71,50 @@ async def test_a_build_records_its_batch_job_before_it_waits_on_it() -> None:
     assert order == ["submit", "poll"]
 
 
-class FakeDispatch:
-    """The whole of ``TaskDispatch``, in thirty lines -- which is the point."""
+async def _latest_commit() -> str:
+    return "latestsha"
+
+
+def _results_uri(experiment_id: str) -> str:
+    return f"s3://bucket/out/{experiment_id}/"
+
+
+class FakeBatch:
+    """The whole of ``TaskBatch``, in twenty-five lines -- which is the point."""
 
     def __init__(self) -> None:
         self.submitted: list[dict[str, Any]] = []
         self.statuses: dict[str, JobStatus] = {}
 
-    async def get_latest_commit_hash(self) -> str:
-        return "latestsha"
-
-    def _image_uri(self, commit: str) -> str:
+    def image_uri(self, commit: str) -> str:
         return f"registry/image:{commit}"
 
-    def _ensure_container_job_def(self, image: str, commit: str) -> str:
+    def ensure_container_job_def(self, image: str, commit: str) -> str:
         return f"jobdef-{commit}:1"
 
-    def _results_s3_uri(self, experiment_id: str) -> str:
-        return f"s3://bucket/out/{experiment_id}/"
-
-    def _submit_container(self, **kwargs: Any) -> str:
+    def submit_container(self, **kwargs: Any) -> str:
         self.submitted.append(kwargs)
         return "batch-job-1"
 
     def get_batch_job_statuses(self, job_ids: list[str]) -> dict[str, JobStatus]:
         return {j: self.statuses[j] for j in job_ids if j in self.statuses}
 
-    def _batch(self) -> Any:
+    def client(self) -> Any:
         return MagicMock()
 
-    def _resolve_log_group(self, job_definition: str | None) -> str | None:
+    def resolve_log_group(self, job_definition: str | None) -> str | None:
         return None
 
 
 @pytest.mark.asyncio
 async def test_a_task_is_one_container_job_recorded_on_the_task_table() -> None:
-    dispatch, database = FakeDispatch(), MagicMock()
+    dispatch, database = FakeBatch(), MagicMock()
     database.record_task = AsyncMock(return_value="the-task-row")
     request = TaskRunRequest(script="scripts/x.py", args=["--k", "v w"], sim_data_refs={"a": "s3://x"})
 
-    result: Any = await RayTaskService(dispatch).submit_task(request, database)
+    result: Any = await RayTaskService(dispatch, latest_commit=_latest_commit, results_uri=_results_uri).submit_task(
+        request, database
+    )
     assert result == "the-task-row"
 
     (job,) = dispatch.submitted
@@ -125,11 +129,11 @@ async def test_a_task_is_one_container_job_recorded_on_the_task_table() -> None:
 
 @pytest.mark.asyncio
 async def test_a_task_status_is_what_batch_says_or_unchanged_when_batch_does_not_know() -> None:
-    dispatch, database = FakeDispatch(), MagicMock()
+    dispatch, database = FakeBatch(), MagicMock()
     task = SimpleNamespace(job_id_ext="batch-job-1", status=JobStatus.RUNNING)
     database.get_task = AsyncMock(return_value=task)
     database.update_task_status = AsyncMock(return_value="updated")
-    service = RayTaskService(dispatch)
+    service = RayTaskService(dispatch, latest_commit=_latest_commit, results_uri=_results_uri)
 
     unchanged: Any = await service.get_task_status(1, database)
     assert unchanged is task  # Batch has not heard of it yet
@@ -138,3 +142,53 @@ async def test_a_task_status_is_what_batch_says_or_unchanged_when_batch_does_not
     dispatch.statuses["batch-job-1"] = JobStatus.FAILED
     updated: Any = await service.get_task_status(1, database)
     assert updated == "updated"
+
+
+# ------------------------------------------------------------------ one Batch layer, shared
+
+
+@pytest.mark.asyncio
+async def test_everything_that_submits_is_handed_the_same_batch_layer() -> None:
+    """``service.batch`` is ONE object for the service's lifetime, and the composed services are
+    handed that object -- not a copy, not a fresh one. That is what lets a test (or a
+    deployment that wraps the layer) change one place and reach every submitter. A service
+    built around its own ``RayBatchLayer()`` would behave identically against real AWS and
+    silently ignore the patch; no differential run can see that, so it is pinned here."""
+    from viva_api.simulation.ray.batch_layer import RayBatchLayer
+    from viva_api.simulation.simulation_service_ray import SimulationServiceRay
+
+    service = SimulationServiceRay()
+    assert isinstance(service.batch, RayBatchLayer)
+    assert service.batch is service.batch  # an attribute, not a property that builds one per access
+
+    submitted: list[str] = []
+
+    def submit(**kwargs: Any) -> str:
+        submitted.append(kwargs["job_name"])
+        return "batch-job-1"
+
+    simulator = SimpleNamespace(environment_key="abc1234")
+    dataset = SimpleNamespace(parca_dataset_request=SimpleNamespace(simulator_version=simulator))
+    database = MagicMock()
+    database.record_task = AsyncMock(return_value="row")
+    with (
+        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+        patch.object(service.batch, "ensure_container_job_def", return_value="jobdef:1"),
+        patch.object(service.batch, "submit_container", side_effect=submit),
+    ):
+        await service.submit_parca_job(dataset)  # type: ignore[arg-type]
+        await service.parca.submit_variant_cache_job(commit="abc1234", variant="kd", perturbations={"EG1": 2.0})
+        await service.tasks.submit_task(TaskRunRequest(script="scripts/x.py", commit="abc1234"), database)
+
+    assert [name.split("-")[0] for name in submitted] == ["ray", "variant", "task"], submitted
+
+
+def test_a_layer_handed_to_the_constructor_is_the_one_the_service_uses() -> None:
+    """The seam PR 6 needs: compose builds ONE layer and may share it, and a strategy is
+    handed the service's. Defaulting to a fresh ``RayBatchLayer()`` must not override one given."""
+    from viva_api.simulation.ray.batch_layer import RayBatchLayer
+    from viva_api.simulation.simulation_service_ray import SimulationServiceRay
+
+    layer = RayBatchLayer()
+    assert SimulationServiceRay(batch=layer).batch is layer

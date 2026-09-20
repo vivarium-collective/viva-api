@@ -96,7 +96,7 @@ def test_image_uri_with_commit_delegates_to_the_shared_ensemble_primitive(monkey
     monkeypatch.setattr(mod, "get_settings", lambda: _settings(compose_ray_image_tag="deploy-wide-tag"))
     svc = ComposeSimulationServiceRay()
     uri = svc._image_uri(commit="a-different-per-run-commit")
-    assert uri == svc._ray._image_uri("a-different-per-run-commit")
+    assert uri == svc._ray.batch.image_uri("a-different-per-run-commit")
     # NOT the static deploy-wide tag -- the resolved per-run commit took over.
     assert "deploy-wide-tag" not in uri
     assert "a-different-per-run-commit" in uri
@@ -237,7 +237,7 @@ async def test_submit_simulation_job_uses_the_unified_ray_num_nodes_setting(
     )
 
     svc = ComposeSimulationServiceRay()
-    monkeypatch.setattr(svc._ray, "_ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
+    monkeypatch.setattr(svc._ray.batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
 
     captured: dict[str, object] = {}
 
@@ -245,7 +245,7 @@ async def test_submit_simulation_job_uses_the_unified_ray_num_nodes_setting(
         captured.update(kwargs)
         return "batch-job-id"
 
-    monkeypatch.setattr(svc._ray, "_submit_mnp", _capture_submit_mnp)
+    monkeypatch.setattr(svc._ray.batch, "submit_mnp", _capture_submit_mnp)
 
     fake_file_service = AsyncMock()
     fake_file_service.upload_file = AsyncMock()
@@ -301,7 +301,7 @@ async def test_submit_simulation_job_with_simulator_id_uses_the_resolved_per_com
         captured_job_def_args["commit"] = commit
         return "smscdk-ray-mnp:1"
 
-    monkeypatch.setattr(svc._ray, "_ensure_mnp_job_def", _capture_ensure_job_def)
+    monkeypatch.setattr(svc._ray.batch, "ensure_mnp_job_def", _capture_ensure_job_def)
 
     captured_submit: dict[str, object] = {}
 
@@ -309,7 +309,7 @@ async def test_submit_simulation_job_with_simulator_id_uses_the_resolved_per_com
         captured_submit.update(kwargs)
         return "batch-job-id"
 
-    monkeypatch.setattr(svc._ray, "_submit_mnp", _capture_submit_mnp)
+    monkeypatch.setattr(svc._ray.batch, "submit_mnp", _capture_submit_mnp)
 
     fake_file_service = AsyncMock()
     fake_file_service.upload_file = AsyncMock()
@@ -364,7 +364,7 @@ async def test_submit_simulation_job_with_explicit_num_nodes_overrides_the_deplo
     )
 
     svc = ComposeSimulationServiceRay()
-    monkeypatch.setattr(svc._ray, "_ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
+    monkeypatch.setattr(svc._ray.batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
 
     captured: dict[str, object] = {}
 
@@ -372,7 +372,7 @@ async def test_submit_simulation_job_with_explicit_num_nodes_overrides_the_deplo
         captured.update(kwargs)
         return "batch-job-id"
 
-    monkeypatch.setattr(svc._ray, "_submit_mnp", _capture_submit_mnp)
+    monkeypatch.setattr(svc._ray.batch, "submit_mnp", _capture_submit_mnp)
 
     fake_file_service = AsyncMock()
     fake_file_service.upload_file = AsyncMock()
@@ -408,7 +408,7 @@ async def test_submit_simulation_job_omits_num_nodes_by_default(
     )
 
     svc = ComposeSimulationServiceRay()
-    monkeypatch.setattr(svc._ray, "_ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
+    monkeypatch.setattr(svc._ray.batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
 
     captured: dict[str, object] = {}
 
@@ -416,7 +416,7 @@ async def test_submit_simulation_job_omits_num_nodes_by_default(
         captured.update(kwargs)
         return "batch-job-id"
 
-    monkeypatch.setattr(svc._ray, "_submit_mnp", _capture_submit_mnp)
+    monkeypatch.setattr(svc._ray.batch, "submit_mnp", _capture_submit_mnp)
 
     fake_file_service = AsyncMock()
     fake_file_service.upload_file = AsyncMock()

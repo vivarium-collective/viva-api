@@ -77,7 +77,7 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         # takes the exact same TRUE-commit-image shape the vEcoli ensemble path uses —
         # delegate to the shared primitive rather than re-deriving it.
         if commit is not None:
-            return self._ray._image_uri(commit)
+            return self._ray.batch.image_uri(commit)
         settings = get_settings()
         if not settings.compose_ray_image_tag:
             # Fail here, at submit, with the setting name — not 10 minutes later as an
@@ -197,14 +197,14 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         # `_ensure_mnp_job_def` keys the derived revision by a tag string — reuse the
         # resolved commit (or, absent one, the deploy-wide image tag) as that key so
         # resubmits against the same image reuse the revision.
-        job_def = self._ray._ensure_mnp_job_def(image, commit or get_settings().compose_ray_image_tag)
+        job_def = self._ray.batch.ensure_mnp_job_def(image, commit or get_settings().compose_ray_image_tag)
         stage_s3, stage_dir = self._parca_staging(commit)
         # Per-request override (item 102) -- None preserves today's exact
         # behavior (the deploy-wide default). See ComposeSimulationRequest's
         # own num_nodes field docstring for why this is safe to read directly
         # off simulation.sim_request with no DB/call-chain threading needed.
         num_nodes = simulation.sim_request.num_nodes or get_settings().ray_num_nodes
-        batch_job_id = self._ray._submit_mnp(
+        batch_job_id = self._ray.batch.submit_mnp(
             job_name=f"compose-{experiment_id}"[:128],
             job_definition=job_def,
             num_nodes=num_nodes,
@@ -293,7 +293,7 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         sim_data_uri = f"{data_layout.RayLayout.parca_cache_uri(cache_key)}simData.cPickle"
         analysis_name = f"compose-analysis-{experiment_id[:20]}-{_rand_suffix()}"
         result_uri = f"{sweep_dir}/analyses/{analysis_name}"
-        job_def = self._ray._ensure_container_job_def(self._image_uri(commit), cache_key)
+        job_def = self._ray.batch.ensure_container_job_def(self._image_uri(commit), cache_key)
         db_config: dict[str, Any] = {
             "out_uri": sweep_dir,
             "analysis_name": analysis_name,
@@ -312,7 +312,7 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
             sim_data_uri=sim_data_uri,
             result_out_dir=result_uri,
             v2ecoli_dir=V2ECOLI_DIR,
-            submit_container=self._ray._submit_container,
+            submit_container=self._ray.batch.submit_container,
             job_definition=job_def,
             job_name=f"compose-analysis-{experiment_id}-{_rand_suffix()}"[:128],
             out_s3=data_layout.RayLayout.results_uri(experiment_id),

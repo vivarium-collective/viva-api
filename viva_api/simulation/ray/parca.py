@@ -20,12 +20,10 @@ layer), which is why the member names are that class's private ones; PR 5 replac
 Protocol and ``TaskDispatch`` with one ``ContainerSubmitter``.
 """
 
-from typing import Protocol
-
 from viva_api.common.models import JobId
 from viva_api.simulation.models import ParcaDataset
 from viva_api.simulation.ray import parca_spec
-from viva_api.simulation.ray.batch_layer import _rand_suffix
+from viva_api.simulation.ray.batch_layer import ContainerSubmitter, _rand_suffix
 from viva_api.simulation.ray.image_paths import (
     NEW_GENE_INDUCED_CACHE_DIR,
     PARCA_CACHE_DIR,
@@ -33,32 +31,11 @@ from viva_api.simulation.ray.image_paths import (
 )
 
 
-class ParcaDispatch(Protocol):
-    """What a cache job needs from whatever dispatches container jobs for it. Only the
-    keyword arguments the three jobs actually pass are declared."""
-
-    def _image_uri(self, commit: str) -> str: ...
-
-    def _ensure_container_job_def(self, image: str, commit: str) -> str: ...
-
-    def _submit_container(
-        self,
-        *,
-        job_name: str,
-        job_definition: str,
-        job_cmd: str,
-        out_s3: str,
-        out_dir: str,
-        stage_s3: str | None = ...,
-        stage_dir: str | None = ...,
-    ) -> str: ...
-
-
 class RayParcaService:
-    def __init__(self, dispatch: ParcaDispatch) -> None:
-        # Held, not copied: every call below looks the method up on ``dispatch`` when it
-        # runs, so a test that swaps ``service._submit_container`` is what a cache job gets.
-        self._dispatch = dispatch
+    def __init__(self, batch: ContainerSubmitter) -> None:
+        # Held, not copied: every call below looks the method up on ``batch`` when it runs,
+        # so a test that swaps ``service.batch.submit_container`` is what a cache job gets.
+        self._batch = batch
 
     async def submit_parca_job(self, parca_dataset: ParcaDataset) -> JobId:
         """Submit ParCa as a standalone container job (backlog item 71), capturing
@@ -67,8 +44,8 @@ class RayParcaService:
         ``_submit_container``."""
         simulator_version = parca_dataset.parca_dataset_request.simulator_version
         commit = simulator_version.environment_key
-        job_def = self._dispatch._ensure_container_job_def(self._dispatch._image_uri(commit), commit)
-        job_id = self._dispatch._submit_container(
+        job_def = self._batch.ensure_container_job_def(self._batch.image_uri(commit), commit)
+        job_id = self._batch.submit_container(
             job_name=f"ray-parca-{commit}-{_rand_suffix()}",
             job_definition=job_def,
             job_cmd=parca_spec.parca_command(),
@@ -115,8 +92,8 @@ class RayParcaService:
         not re-validated here, matching this class's existing pure-passthrough
         philosophy for ``injected_processes``/``variants``/``composite_id``.
         """
-        job_def = self._dispatch._ensure_container_job_def(self._dispatch._image_uri(commit), commit)
-        job_id = self._dispatch._submit_container(
+        job_def = self._batch.ensure_container_job_def(self._batch.image_uri(commit), commit)
+        job_id = self._batch.submit_container(
             job_name=f"new-gene-cache-{commit}-{_rand_suffix()}",
             job_definition=job_def,
             job_cmd=parca_spec.new_gene_cache_command(
@@ -167,8 +144,8 @@ class RayParcaService:
         responsibility, not re-validated here, matching this class's existing
         pure-passthrough philosophy.
         """
-        job_def = self._dispatch._ensure_container_job_def(self._dispatch._image_uri(commit), commit)
-        job_id = self._dispatch._submit_container(
+        job_def = self._batch.ensure_container_job_def(self._batch.image_uri(commit), commit)
+        job_id = self._batch.submit_container(
             job_name=f"variant-cache-{commit}-{_rand_suffix()}",
             job_definition=job_def,
             job_cmd=parca_spec.variant_cache_command(

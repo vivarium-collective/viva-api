@@ -77,24 +77,32 @@ def test_a_patch_on_the_seam_reaches_the_service() -> None:
 
     fake = SimpleNamespace(ecr_account_id="123456789012", batch_region="xx-test-1", ray_ecr_repository="some-repo")
     with patch("viva_api.simulation.ray._seams.get_settings", lambda: fake):
-        uri = simulation_service_ray.SimulationServiceRay()._image_uri("abc1234")
+        uri = simulation_service_ray.SimulationServiceRay().batch.image_uri("abc1234")
     assert "123456789012" in uri and "xx-test-1" in uri and uri.endswith("some-repo:abc1234")
 
 
-def test_no_method_is_defined_twice_across_the_carved_classes() -> None:
-    """The carve moves methods out of ``SimulationServiceRay`` into mixins it inherits. A
-    method left behind in the service -- or copied into two mixins -- would silently shadow
-    the other by MRO, and the shadowed copy would rot unnoticed. One definition each."""
-    carved = [
-        c
+def test_the_service_composes_the_ray_package_and_inherits_nothing_from_it() -> None:
+    """The carve ended with no mixin (``docs/plan-core.md`` P2.1, PR 5): the pieces in
+    ``viva_api.simulation.ray`` are functions, composed services and -- soon -- strategies. A
+    class from that package reappearing in the MRO would bring back shadowing by MRO, which
+    is what the guard this one replaced existed to catch."""
+    inherited = [
+        c.__name__
         for c in simulation_service_ray.SimulationServiceRay.__mro__
         if c.__module__.startswith("viva_api.simulation.ray.")
     ]
-    assert carved, "SimulationServiceRay inherits nothing from viva_api.simulation.ray -- has the carve been undone?"
-    owners: dict[str, list[str]] = {}
-    for cls in [simulation_service_ray.SimulationServiceRay, *carved]:
-        for name, value in vars(cls).items():
-            if callable(value) or isinstance(value, staticmethod | classmethod):
-                owners.setdefault(name, []).append(cls.__name__)
-    twice = {name: classes for name, classes in owners.items() if len(classes) > 1 and not name.startswith("__")}
-    assert not twice, f"defined in more than one class of the hierarchy: {twice}"
+    assert not inherited, f"SimulationServiceRay inherits from the ray package again: {inherited}"
+
+
+def test_the_service_repeats_only_the_two_batch_questions_the_scheduler_asks_it() -> None:
+    """A method on BOTH the service and its Batch layer is a delegate, and a delegate is a
+    debt: it exists because something outside still asks the service. Two are intended (the
+    scheduler's status and detail lookups, until P6). A third is someone re-growing the
+    facade."""
+    from viva_api.simulation.ray.batch_layer import RayBatchLayer
+
+    def public(cls: type) -> set[str]:
+        return {n for n, v in vars(cls).items() if callable(v) and not n.startswith("_")}
+
+    both = public(simulation_service_ray.SimulationServiceRay) & public(RayBatchLayer)
+    assert both == {"get_batch_job_statuses", "get_batch_job_details"}, both

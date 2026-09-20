@@ -1,34 +1,38 @@
-"""The Ray service's Batch layer: how THIS service reaches the engine in viva_core.
+"""The Ray service's Batch layer: how THIS application reaches the engine in ``viva_core``.
 
-Carved out of simulation_service_ray.py (docs/plan-core.md P2.1, cut 3) as a pure
-move -- every method below is byte-for-byte what it was in SimulationServiceRay. It is
-the base class the service's mixins share: each of them (tasks, build, ParCa, analysis, the
-four dispatch mechanisms) submits through _submit_container / _submit_mnp and
-resolves an image through _image_uri, so those have to live somewhere a mixin can
-inherit from rather than in the class that inherits the mixins.
+``RayBatchLayer`` is a composed object -- ``SimulationServiceRay.batch`` -- and no longer a base
+class (``docs/plan-core.md`` P2.1, PR 5 of the 2026-09-20 sequence; it was the service's base
+from cut 3 until then). It inherits nothing and holds no state: every method reads settings
+through ``_seams`` when it runs. One instance lives on the service for the service's
+lifetime, so ``patch.object(service.batch, "submit_container")`` is what every caller gets.
 
-It also owns the constructor, because the two other backends the service composes --
-LocalTaskService (in-process tasks: image builds, the chain-dispatch background submit)
-and K8sJobService (the Nextflow head) -- are what the mixins reach for as self._local
-and self._k8s.
+What is here is SMS's half of the Batch seam, not the engine: read settings, pick the
+queue, append this application's entries to the env, then hand over to
+``viva_core.backends.batch.BatchJobClient``. What is NOT here any more: the service's other
+two backends (``LocalTaskService``, ``K8sJobService``) -- they are the service's own
+constructor arguments, and become constructor arguments of the strategies that need them.
 
-What is here is SMS's half of the Batch seam, not the engine: read settings through
-_seams, pick the queue, append this application's entries to the env, then hand over to
-viva_core.backends.batch.BatchJobClient.
+Consumers do not take a ``RayBatchLayer``. They take the narrowest of the Protocols below
+that covers what they call, so a consumer's needs are written down where it is defined:
+
+* ``ContainerSubmitter`` -- one container job in an image: the ParCa cache jobs, tasks,
+  the analysis DAG node, and the container-shaped dispatch mechanisms.
+* ``MnpSubmitter`` -- one multi-node-parallel job: the ensemble and multi-node composite
+  mechanisms, and compose.
+
+They are SMS Protocols on purpose. Until a second backend implements them they would be
+quietly Batch-shaped, and ``submit_container`` still carries E. coli keywords; promoting a
+dispatcher Protocol into core waits for both (plan P2.3).
 """
 
 import logging
 import random
 import string
-from typing import Any
+from typing import Any, Protocol
 
-from viva_api.common.hpc.k8s_job_service import K8sJobService
-from viva_api.common.hpc.local_task_service import LocalTaskService
 from viva_api.common.models import JobStatus
-from viva_api.common.storage import data_layout
 from viva_api.simulation.ray import _seams
 from viva_api.simulation.ray.image_paths import REPORT_PATH
-from viva_api.simulation.simulation_service import SimulationService
 from viva_core.backends.batch import BatchJobClient, BatchJobDetail, ecr_image_uri, stage_out_env
 
 logger = logging.getLogger(__name__)
@@ -38,38 +42,88 @@ def _rand_suffix() -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
 
 
-class RayBatchLayer(SimulationService):
-    """Abstract: it implements none of SimulationService's interface, only what the
-    implementations of it are built from."""
+class ContainerSubmitter(Protocol):
+    """Run ONE container job in an image: resolve the image, get a job definition for it,
+    submit. The whole of what a cache job, a task, an analysis node or a container-shaped
+    dispatch mechanism asks of the Batch layer."""
 
-    def __init__(
+    def image_uri(self, commit: str) -> str: ...
+
+    def ensure_container_job_def(self, image: str, commit: str) -> str: ...
+
+    def submit_container(
         self,
-        local_task_service: LocalTaskService | None = None,
-        k8s_job_service: "K8sJobService | None" = None,
-    ) -> None:
-        self._local = local_task_service or LocalTaskService()
-        # Only the Nextflow dispatch uses this: its HEAD runs as a K8s Job so it
-        # inherits the `batch-submit` ServiceAccount's IRSA identity. Every other
-        # path here submits to Batch directly and needs no cluster access.
-        self._k8s = k8s_job_service
+        *,
+        job_name: str,
+        job_definition: str,
+        job_cmd: str,
+        out_s3: str,
+        out_dir: str,
+        stage_s3: str | None = None,
+        stage_dir: str | None = None,
+        depends_on: list[str] | None = None,
+        depends_type: str | None = "SEQUENTIAL",
+        tags: dict[str, str] | None = None,
+        retry_strategy: dict[str, Any] | None = None,
+        batch_client: Any = None,
+        expect_new_genes: str | None = None,
+        expect_bundle_overrides: str | list[str] | None = None,
+        require_clean_chain: bool = False,
+        lineage_debug_division: bool = False,
+        task_env: dict[str, str] | None = None,
+        memory_class: str = "standard",
+    ) -> str: ...
 
-    def _batch(self) -> Any:
+
+class MnpSubmitter(Protocol):
+    """Run ONE multi-node-parallel job in an image (a Ray head plus workers)."""
+
+    def image_uri(self, commit: str) -> str: ...
+
+    def ensure_mnp_job_def(self, image: str, commit: str) -> str: ...
+
+    def submit_mnp(
+        self,
+        *,
+        job_name: str,
+        job_definition: str,
+        num_nodes: int,
+        ray_job_cmd: str,
+        out_s3: str,
+        out_dir: str,
+        stage_s3: str | None = None,
+        stage_dir: str | None = None,
+        depends_on: list[str] | None = None,
+        depends_type: str | None = "SEQUENTIAL",
+        tags: dict[str, str] | None = None,
+        retry_strategy: dict[str, Any] | None = None,
+        batch_client: Any = None,
+        expect_new_genes: str | None = None,
+        expect_bundle_overrides: str | list[str] | None = None,
+        require_clean_chain: bool = False,
+        lineage_debug_division: bool = False,
+        task_env: dict[str, str] | None = None,
+    ) -> str: ...
+
+
+class RayBatchLayer:
+    """Implements ``ContainerSubmitter`` and ``MnpSubmitter``, plus what the service's own
+    status, cancel and log paths need of Batch (``engine``, ``client``, ``resolve_log_group``)."""
+
+    def client(self) -> Any:
         return _seams.boto3.client("batch", region_name=_seams.get_settings().batch_region)
 
-    def _batch_jobs(self) -> BatchJobClient:
+    def engine(self) -> BatchJobClient:
         """The Batch engine (``viva_core.backends.batch``), composed, not inherited.
 
-        Built per call and handed ``self._batch`` LATE (the lambda), so a test that swaps
+        Built per call and handed ``self.client`` LATE (the lambda), so a test that swaps
         ``service._batch`` -- or patches the seam under it -- is what the engine gets. The
         engine takes no settings; every method below reads them here, through the seam,
         and passes values in.
         """
-        return BatchJobClient(lambda: self._batch())
+        return BatchJobClient(lambda: self.client())
 
-    def _results_s3_uri(self, experiment_id: str) -> str:
-        return data_layout.RayLayout.results_uri(experiment_id)
-
-    def _image_uri(self, commit: str) -> str:
+    def image_uri(self, commit: str) -> str:
         """The TRUE commit image for a run: <account>.dkr.ecr.<region>/v2ecoli:<commit>."""
         settings = _seams.get_settings()
         return ecr_image_uri(
@@ -79,7 +133,7 @@ class RayBatchLayer(SimulationService):
             tag=commit,
         )
 
-    def _submit_image_uri(self, commit: str) -> str:
+    def submit_image_uri(self, commit: str) -> str:
         """The Nextflow HEAD image for a commit: ``<repo>:<commit>-submit``.
 
         Only the process running ``nextflow run`` needs a JVM; Batch TASKS run the
@@ -92,7 +146,7 @@ class RayBatchLayer(SimulationService):
         registry = f"{settings.ecr_account_id}.dkr.ecr.{settings.batch_region}.amazonaws.com"
         return f"{registry}/{settings.ray_ecr_repository}:{commit}-submit"
 
-    def _ensure_mnp_job_def(self, image: str, commit: str) -> str:
+    def ensure_mnp_job_def(self, image: str, commit: str) -> str:
         """Return an MNP job definition (name:revision) whose image is the commit's image.
 
         Batch MNP can't override the image per-submission, so — symmetric with how K8s
@@ -102,11 +156,11 @@ class RayBatchLayer(SimulationService):
         register it as ``<base>-<commit>``. An existing active revision already pointing
         at this image is reused, so resubmits don't churn revisions.
         """
-        return self._batch_jobs().ensure_mnp_job_definition(
+        return self.engine().ensure_mnp_job_definition(
             base_definition=_seams.get_settings().ray_mnp_job_definition, image=image, suffix=commit
         )
 
-    def _submit_mnp(
+    def submit_mnp(
         self,
         *,
         job_name: str,
@@ -151,11 +205,11 @@ class RayBatchLayer(SimulationService):
         which (unlike the Array job definition) declares none of its own; omitted
         (``None``) everywhere else, unchanged from existing behavior.
 
-        ``batch_client``, when given, is used INSTEAD of ``self._batch()`` for this
+        ``batch_client``, when given, is used INSTEAD of ``self.client()`` for this
         one call — lets a caller submitting many jobs in a tight loop (chain
         dispatch) supply its own retry-configured client without changing what
         every other existing call site in this class gets from the shared
-        ``self._batch()`` factory.
+        ``self.client()`` factory.
         """
         settings = _seams.get_settings()
         # Per-node knobs every node acts on (stage cache in, sync results out, ship logs).
@@ -190,7 +244,7 @@ class RayBatchLayer(SimulationService):
         # dispatch_validation.validate_task_env, reaching EVERY node -- e.g.
         # V2ECOLI_SKIP_CACHE_VERIFY=1 after a cache-re-keying v2ecoli commit),
         # composes the head env and the single "0:" node override, and submits.
-        return self._batch_jobs().submit_mnp(
+        return self.engine().submit_mnp(
             job_name=job_name,
             job_queue=job_queue,
             job_definition=job_definition,
@@ -293,7 +347,7 @@ class RayBatchLayer(SimulationService):
             env.append({"name": "LINEAGE_DEBUG_DIVISION", "value": "1"})
         return env
 
-    def _ensure_container_job_def(self, image: str, commit: str) -> str:
+    def ensure_container_job_def(self, image: str, commit: str) -> str:
         """Return a container job definition (name:revision) whose image is the commit's image.
 
         Mirrors ``_ensure_mnp_job_def`` exactly, for the plain (non-MNP, non-array)
@@ -313,11 +367,11 @@ class RayBatchLayer(SimulationService):
             # Matches this file's own compose_ray_image_tag precedent: fail loud with
             # the setting name rather than submit a doomed job with a blank job-def.
             raise RuntimeError("ray_container_job_definition is not set; cannot submit a container-type Batch job.")
-        return self._batch_jobs().ensure_container_job_definition(
+        return self.engine().ensure_container_job_definition(
             base_definition=settings.ray_container_job_definition, image=image, suffix=commit
         )
 
-    def _submit_container(
+    def submit_container(
         self,
         *,
         job_name: str,
@@ -378,7 +432,7 @@ class RayBatchLayer(SimulationService):
             )
 
         # task_env (sms-ecoli#166): see _submit_mnp -- same passthrough, one container.
-        return self._batch_jobs().submit_container(
+        return self.engine().submit_container(
             job_name=job_name,
             job_queue=job_queue,
             job_definition=job_definition,
@@ -404,7 +458,7 @@ class RayBatchLayer(SimulationService):
             client=batch_client,
         )
 
-    def _resolve_log_group(self, job_definition: str | None) -> str | None:
+    def resolve_log_group(self, job_definition: str | None) -> str | None:
         """The CloudWatch log group a container job writes to: the configured
         ``ray_batch_log_group`` if set, else the awslogs-group from the job
         definition's logConfiguration. None when neither is available."""
@@ -413,7 +467,7 @@ class RayBatchLayer(SimulationService):
             return configured
         if not job_definition:
             return None
-        return self._batch_jobs().job_definition_log_group(job_definition)
+        return self.engine().job_definition_log_group(job_definition)
 
     def get_batch_job_statuses(self, job_ids: list[str]) -> dict[str, JobStatus]:
         """Batched ``describe_jobs`` status lookup for arbitrary AWS Batch job
@@ -428,11 +482,11 @@ class RayBatchLayer(SimulationService):
         71 Phase 4), which needs the same batching for a campaign's
         ``chain_current_job_ids`` on every tick.
         """
-        return self._batch_jobs().job_statuses(job_ids)
+        return self.engine().job_statuses(job_ids)
 
     def get_batch_job_details(self, job_ids: list[str]) -> dict[str, BatchJobDetail]:
         """``get_batch_job_statuses`` plus what a failed job SAID: Batch's
         ``statusReason``, the container exit code and the attempt count. Used
         where a bare job id is not an answer -- a chain campaign's failed seeds
         (observability plan D4c). Same chunking, same missing-id semantics."""
-        return self._batch_jobs().job_details(job_ids)
+        return self.engine().job_details(job_ids)

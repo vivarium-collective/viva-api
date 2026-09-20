@@ -7,6 +7,7 @@ basis is the failure this endpoint exists to prevent (see the module docstring
 and the 2026-08-19 production incident).
 """
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -30,7 +31,8 @@ class _FakeService:
 
     def __init__(self, *, container: bool = False, comparison: bool = False) -> None:
         if container:
-            self._submit_container = lambda **_: "job-id"
+            # the Batch layer is composed: the probe looks for ``service.batch.submit_container``
+            self.batch = SimpleNamespace(submit_container=lambda **_: "job-id")
         if comparison:
             self.submit_comparison_dispatch_job = lambda **_: "job-id"
 
@@ -65,6 +67,19 @@ def test_detect_capabilities_is_sorted_for_stable_output() -> None:
 
 
 # --- container-jobs: code AND configuration ------------------------------
+
+
+def test_the_real_ray_service_still_answers_every_code_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The probes are ``hasattr`` on the service: a rename or a move makes a capability vanish
+    SILENTLY, and every test above uses a fake that a rename does not touch. When the Batch
+    layer became a composed object (P2.1 PR 5), ``_submit_container`` left the class and this
+    probe would have gone quiet on every deployment. So: the REAL class, fully configured,
+    must advertise every capability whose code half lives on it."""
+    from viva_api.simulation.simulation_service_ray import SimulationServiceRay
+
+    _patch(monkeypatch, service=SimulationServiceRay(), settings=_FakeSettings(queue="q", job_def="d"))
+    advertised = set(detect_capabilities())
+    assert {"container-jobs", "chain-dispatch", "chain-progress"} <= advertised, advertised
 
 
 def test_container_jobs_absent_when_code_missing(monkeypatch: pytest.MonkeyPatch) -> None:

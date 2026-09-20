@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tests.simulation.test_ray_backend import _ray_settings, _v2ecoli_simulator
+from viva_api.common.storage import data_layout
 from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
 
@@ -155,7 +156,7 @@ def test_head_image_is_the_submit_tag_not_the_task_image() -> None:
     rather than at submit time."""
     service = SimulationServiceRay()
     with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-        assert service._submit_image_uri("abc1234").endswith("/v2ecoli:abc1234-submit")
+        assert service.batch.submit_image_uri("abc1234").endswith("/v2ecoli:abc1234-submit")
 
 
 # --- Phase 4: the awsbatch profile's inputs ---------------------------------
@@ -332,7 +333,7 @@ async def test_status_of_a_k8s_head_does_not_go_to_describe_jobs() -> None:
     from viva_api.common.models import JobId
 
     service, k8s = _svc_with_k8s()
-    with patch.object(service, "_batch") as batch:
+    with patch.object(service.batch, "client") as batch:
         await service.get_job_status(JobId.k8s_nextflow("nf-exp-abc"))
     assert batch.call_count == 0
     k8s.get_job_status.assert_called_once_with("nf-exp-abc")
@@ -631,7 +632,7 @@ async def test_publish_dir_points_at_the_runs_own_results_prefix() -> None:
     publishes to a task-local `results` dir that dies with the pod."""
     service, _ = _svc_with_k8s()
     with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-        expected = service._results_s3_uri("sim133-exp-nf-a1b2").rstrip("/")
+        expected = data_layout.RayLayout.results_uri("sim133-exp-nf-a1b2").rstrip("/")
     _, k8s = await _dispatch(executor="awsbatch")
     assert _dispatched_nf_params(k8s)["publish_dir"] == expected
 
@@ -740,7 +741,7 @@ async def test_reap_defers_while_the_head_still_exists() -> None:
     k8s.get_job_status.return_value = MagicMock()  # 404 would be None
     with (
         patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-        patch.object(service, "_batch") as batch,
+        patch.object(service.batch, "client") as batch,
     ):
         assert await service.reap_cancelled_campaign("nf-sim159-run-a1b2-xyz123") is None
     batch.assert_not_called()
@@ -781,7 +782,7 @@ async def test_reap_paginates_and_scans_every_queue() -> None:
     settings = MagicMock(batch_amd64_queue="q-amd", batch_arm64_queue="q-arm", batch_region="r")
     with (
         patch("viva_api.simulation.ray._seams.get_settings", return_value=settings),
-        patch.object(service, "_batch", return_value=batch),
+        patch.object(service.batch, "client", return_value=batch),
     ):
         reaped = await service.reap_cancelled_campaign("nf-sim159-run-a1b2-xyz123")
 

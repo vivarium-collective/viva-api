@@ -126,7 +126,8 @@ def _has_chain_progress() -> bool:
 def _has_container_jobs() -> bool:
     """Container-type Batch submission, gated on code AND configuration.
 
-    BOTH halves are required. viva-api #258's ``_submit_container`` raises
+    BOTH halves are required. viva-api #258's ``submit_container`` (on the service's composed
+    Batch layer, ``service.batch``, since the core split's P2.1 PR 5) raises
     ``RuntimeError`` naming the unset setting when ``ray_container_queue`` /
     ``ray_container_job_definition`` are blank, so a build that carries the code
     onto an unconfigured deployment cannot serve this -- advertising it there
@@ -137,7 +138,7 @@ def _has_container_jobs() -> bool:
     mean the same thing here.
     """
     service = _ray_service()
-    if service is None or not hasattr(service, "_submit_container"):
+    if service is None or not hasattr(getattr(service, "batch", None), "submit_container"):
         return False
     settings = get_settings()
     return bool(getattr(settings, "ray_container_queue", "")) and bool(

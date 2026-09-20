@@ -75,8 +75,8 @@ async def test_submit_simulation_job_chains_analysis_when_analysis_options_prese
     simulation = _simulation(tmp_path, analysis_options=_ANALYSIS_OPTIONS)
     svc = ComposeSimulationServiceRay()
 
-    monkeypatch.setattr(svc._ray, "_ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
-    monkeypatch.setattr(svc._ray, "_submit_mnp", lambda **kwargs: "compose-sim-job-1")
+    monkeypatch.setattr(svc._ray.batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
+    monkeypatch.setattr(svc._ray.batch, "submit_mnp", lambda **kwargs: "compose-sim-job-1")
 
     captured_job_def_args: dict[str, str] = {}
 
@@ -85,7 +85,7 @@ async def test_submit_simulation_job_chains_analysis_when_analysis_options_prese
         captured_job_def_args["commit"] = commit
         return "smscdk-ray-container:1"
 
-    monkeypatch.setattr(svc._ray, "_ensure_container_job_def", _capture_ensure_container_job_def)
+    monkeypatch.setattr(svc._ray.batch, "ensure_container_job_def", _capture_ensure_container_job_def)
 
     captured_submit_container: dict[str, object] = {}
 
@@ -93,7 +93,7 @@ async def test_submit_simulation_job_chains_analysis_when_analysis_options_prese
         captured_submit_container.update(kwargs)
         return "analysis-job-1"
 
-    monkeypatch.setattr(svc._ray, "_submit_container", _capture_submit_container)
+    monkeypatch.setattr(svc._ray.batch, "submit_container", _capture_submit_container)
 
     fake_file_service = AsyncMock()
     fake_file_service.upload_file = AsyncMock()
@@ -150,13 +150,13 @@ async def test_submit_simulation_job_submits_no_analysis_when_analysis_options_a
     simulation = _simulation(tmp_path, analysis_options=None)
     svc = ComposeSimulationServiceRay()
 
-    monkeypatch.setattr(svc._ray, "_ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
-    monkeypatch.setattr(svc._ray, "_submit_mnp", lambda **kwargs: "compose-sim-job-1")
+    monkeypatch.setattr(svc._ray.batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
+    monkeypatch.setattr(svc._ray.batch, "submit_mnp", lambda **kwargs: "compose-sim-job-1")
 
     ensure_container_job_def = AsyncMock()
     submit_container = AsyncMock()
-    monkeypatch.setattr(svc._ray, "_ensure_container_job_def", ensure_container_job_def)
-    monkeypatch.setattr(svc._ray, "_submit_container", submit_container)
+    monkeypatch.setattr(svc._ray.batch, "ensure_container_job_def", ensure_container_job_def)
+    monkeypatch.setattr(svc._ray.batch, "submit_container", submit_container)
 
     fake_file_service = AsyncMock()
     fake_file_service.upload_file = AsyncMock()
