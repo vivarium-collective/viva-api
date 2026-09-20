@@ -42,6 +42,7 @@ and has a rollback. There is no big-bang step.
 | D9 | **BioModels and the curated COPASI / Tellurium simulators move to core** (not SMS), and are eventually factored back out into the reproducible-biology hosted-services application. | 2026-09-18 | Jim |
 | D10 | **Core's default path is *select or build* an acceptable environment, then run.** The reproducibility application on core accepts a composite and either selects a known compatible environment or builds one from the composite's dependencies. A barebones environment (built-ins only) is rarely useful; an uber-container does not scale. Extends D6: an environment is a **spec** (explicit `repo@commit` + recipe, or derived from a composite), an **environment** (spec hash *and* image digest, status, build job, what it provides) and a **resolver**. "Default path" is reserved for this. | 2026-09-20 | Jim |
 | D11 | **Simulators are write-once provenance; a marked-temporary simulator is the only exception.** A simulator record, its container image and its image tag are the provenance of every simulation that ran on them. With one exception, **all of them are write-once, immutable and never deleted** — on every site, not only those that predate this work. The exception is a simulator that says so about itself: `temporary`, with a `label` naming who or what made it and its **own marked image tag** (`tmp-<commit>-<nonce>`, never `<commit>`). A temporary simulator may be overwritten or removed, and it is **marked back to the end user** — in the API, in the CLI, TUI and GUI lists, and left out of every "latest" or default choice — so nobody takes it for an authoritative one. A standing rule of the final design, not only of the migration. | 2026-09-20 | Jim |
+| D12 | **`viva_core` carries no `Any`.** `disallow_any_explicit` and `disallow_any_unimported` are on for `viva_core.*` as a mypy per-module override, on top of `strict`. JSON-shaped values are a `JsonValue` alias or a `TypedDict`; an untyped third-party client is wrapped behind a typed Protocol or given stubs. Because the override is a **package glob**, every module that moves into `viva_core` in P3 / P4 / P5 comes under it the day it moves, so code arrives in core `Any`-free or does not arrive. The same ban covers `viva_api.simulation.ray` — by module now, as `ray.*` once the strategies have landed. The rest of the repository is ratcheted by count, not banned. | 2026-09-20 | Jim ("I especially want viva_core.* with strong mypy coverage within this initiative") |
 
 ## 3. The issues, in one page
 
@@ -267,12 +268,15 @@ P2.0a guard caught. So:
   | 3 ✅ | pure `ray/analysis_spec.py` + the static-guard glob fix; the two analysis submitters stay in the class until their mechanisms move. **#715 is closed, not reshaped:** it was never merged, so on `main` the submitters had never left the class and `job_scheduler.py` still calls them there — there is nothing for a `service.analysis` shim to delegate to, and none was added | analysis is a spec + a pattern + per-mechanism glue, not one service |
   | 4 ✅ | ParCa: commands and cache URIs → `ray/parca_spec.py` (pure); `RayParcaService` (`service.parca`) holds only the three cache jobs; `_stage_seed_override_caches` back in the class (the multi-node composite's) | half of it is pure; only the cache jobs work one way |
   | 5 ✅ | **`RayBatchLayer` stops being a base class** and becomes a composed `service.batch`, behind two small SMS Protocols, `ContainerSubmitter` and `MnpSubmitter`, replacing `TaskDispatch` / `AnalysisDispatch`. `local` and `k8s` are constructor arguments of the strategies that need them, never Protocol members | done **first**, so every strategy is handed a real object; done last, each strategy would be rewired twice (~80 call sites, ~24 `patch.object`) |
-  | 6 | `compose` uses `RayBatchLayer` directly, not a whole `SimulationServiceRay()` | one of the three broken `compose-is-domain-free` edges goes |
+  | 6 ✅ | `compose` is **handed** a Batch layer (its own `ComposeBatch` Protocol; `dependencies.py` provides `RayBatchLayer()`), not a whole `SimulationServiceRay()` — and not an import of the layer either, which would only have renamed the edge | one of the three broken `compose-is-domain-free` edges goes (9 → 8 broken edges in all) |
+  | 6a | **typed boto3**: add `types-boto3[batch,s3,logs,ecr]` as a dev dependency and type the client factory (`BatchJobClient`'s `client_factory`, `RayBatchLayer.client()`, the `_seams` boto3 seam) (Jim, 2026-09-20: "inject into the plan soon") | the Batch engine — the one module everything submits through, and the first thing in core — is the **least** precisely typed code being restructured (72.7 % of its expressions; the repo is 92.7 %), because an untyped `boto3` makes the client `Any` and everything it returns `Any`. Before the strategies, so mypy is a real net for the five PRs that move the code that calls it |
+  | 6b | **no `Any` in core (D12)**: per-module overrides turning on `disallow_any_explicit` + `disallow_any_unimported` for **`viva_core.*`** (55 explicit, 9 unimported — the kubernetes client in `backends/k8s_job_service.py`) and for the ray package's **existing modules, listed by name** (18 sites). JSON `Any` → a `JsonValue` alias or `TypedDict`s | right after 6a, which removes the biggest single cause. `viva_core.*` as a glob, so it is a standing rule for everything that later moves in. The ray package **by name, not `ray.*`**: PRs 7–11 move ~2,200 lines (and 28 `Any`) from the service file into that package, and a ban on `ray.*` would make every strategy PR change annotations in the code it moves — which breaks the AST-identity proof that makes those PRs reviewable. Widened to `ray.*` in PR 12 |
   | 7 | strategy: **mbp-tracked** | smallest (225 lines); first use of the shape |
   | 8 | strategy: **Nextflow** (needs `k8s`; `reap_cancelled_campaign` travels with it); then **C3** | 464 lines |
   | 9 | strategy: **multi-node composite** (+ its analysis submitter) | 346 lines |
   | 10 | strategy: **ensemble**, extracted from the router (+ `_sim_command`) | the router shrinks to ~20 lines of precedence |
   | 11 | strategy: **chain** (+ its analysis submitter; needs `local`); delete the facade shims and `scripts/prove_ray_carve_is_move_only.py`; **checkpoint C** | largest (848 lines) and it bills real money, so last |
+  | 12 | **the ray package is `Any`-free (D12, second half)**: widen the override to `viva_api.simulation.ray.*` and type what the strategies brought with them | a type change, kept out of the five move PRs on purpose; after checkpoint C, so it is judged against a deployed, smoke-tested carve |
 - **P2.2 — absorbed into P2.1** (2026-09-20). There are no mixins to turn into strategies.
 - **P2.3 — the environment model and its *select* half** (no database, no build). D10 says
   core's default path is *select or build an environment, then run*; this is the select half.
@@ -638,8 +642,23 @@ gating latency compared to the baseline.
   dispatch once because "the module was simply not scanned"; it now scans `simulation/ray/*`.
 - **Tests move with the code.** `tests/simulation/test_ray_backend.py` (5,866 lines, 200
   instantiations) is split per mechanism in the same PR as each strategy.
-- **Import edges ratchet.** Twelve report-only edges are broken today; the count never
-  rises, and a PR that touches one burns it down.
+- **Type coverage: `strict` is not "no `Any`".** Measured 2026-09-20 on `main`: `strict = true` over
+  339 files, 0 errors — but strict does not set `disallow_any_explicit`, `_unimported`,
+  `_decorated` or `_expr`. Turning them on reports 1,028 explicit `Any` (482 of them in
+  tests; 55 in `viva_core`, 18 in `simulation/ray`), 91 decorated, 13 unimported (mostly
+  `viva_core/backends/k8s_job_service.py`: the kubernetes client has no stubs). Of the 546
+  outside tests, 39 % are JSON-shaped (`dict[str, Any]`). Explicit `Any` understates it:
+  by mypy's any-expression report `viva_core/backends/batch.py` is 72.7 % precise, against
+  100 % for `ray/parca.py` and `ray/parca_spec.py`, because `boto3` is untyped. Sequence
+  PR 6a fixes that one cause. **Decided (D12):** `viva_core` carries no `Any` — sequence PR 6b
+  turns on `disallow_any_explicit` + `disallow_any_unimported` for `viva_core.*` (a glob: a
+  standing rule for everything that moves into core later) and for the ray package's
+  existing modules; PR 12 widens that to `ray.*` once the strategies have landed. Still
+  only proposed: ratcheting the rest of the repository by count, like the import edges.
+  Not worth doing repo-wide at once (482 of the 1,028 are in tests).
+- **Import edges ratchet.** Report-only edges still broken: **8** (measured with `lint-imports`
+  at P2.1 PR 6; it was 12 at the audit and 9 before that PR). The count never rises, and a
+  PR that touches one burns it down.
 - **Deploy early and often within one kind of change** (C1, C2, C3): a Tier 2 failure then
   has two or three suspects, not ten.
 - **Have the design attacked before building it.** An independent review overturned three
@@ -684,7 +703,7 @@ split; each has an owner-less issue or a named moment.
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — #696; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — #698; all merged 2026-09-19 |
 | D11 | write-once simulators + the marked-temporary exception: migration `f4c8a2e6d0b3`, `environment_key`, `force` guarded (409), the marker in all three clients, smoke `build` on a temporary simulator — #722 | — | — (checkpoint **B2**, a database deploy, before C2) | — | open |
-| P2.1 | carve `simulation_service_ray.py` (5,019 → 3,395 lines so far; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `ray/analysis_spec.py` — PR 3 (#726) · ParCa split → `ray/parca_spec.py` + `RayParcaService` — PR 4 (#727) · `RayBatchLayer` composed as `service.batch` — PR 5. Remaining: PRs 6–11 of the 2026-09-20 sequence; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.149 carries cuts 1–5, #710, #714, #722 | **2026-09-20** (checkpoints C1, B2, C2) | — | **in progress.** Deployed to dev: everything through #722. Merged after C2 (→ C3): PR 3 (a pure move), PR 4 (the three cache jobs rewired), PR 5 (every Batch call respelled through `service.batch`). Next: PR 6 (compose uses `RayBatchLayer` directly) |
+| P2.1 | carve `simulation_service_ray.py` (5,019 → 3,395 lines so far; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `ray/analysis_spec.py` — PR 3 (#726) · ParCa split → `ray/parca_spec.py` + `RayParcaService` — PR 4 (#727) · `RayBatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6. Remaining: PRs 7–11 (the five strategies) of the 2026-09-20 sequence; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.149 carries cuts 1–5, #710, #714, #722 | **2026-09-20** (checkpoints C1, B2, C2) | — | **in progress.** Deployed to dev: everything through #722. Merged after C2 (→ C3): PR 3 (a pure move), PR 4 (the three cache jobs rewired), PR 5 (every Batch call respelled through `service.batch`). PR 6 (compose no longer builds a simulation service). Next: PR 7 (strategy: mbp-tracked) |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image | | | | not started (checkpoint D) |
 | P3 | | | | | not started (checkpoint E) |
@@ -698,6 +717,45 @@ split; each has an owner-less issue or a named moment.
 | P10 | | | | | not started (checkpoint —) |
 
 ## Decision log
+
+- **2026-09-20** — **Typed boto3 injected into the sequence as PR 6a** (Jim: "inject `Add
+  types-boto3[batch,s3,logs,ecr] as a dev dependency and type the client factory` into the
+  plan soon"). It came out of his question about the state of strict coverage with no explicit
+  `Any`; the measurement is in section 9. Placed before the strategies on purpose: PR 5 leaned
+  on mypy as the net for 145 respellings, and the net has a hole exactly where the Batch client
+  is. **The `Any` ban followed minutes later and is D12** (Jim: "inject … per-module overrides
+  for viva_core.* and viva_api.simulation.ray.* … into the plan after the types-boto3 task —
+  use your judgement where it goes but I especially want viva_core.* with strong mypy
+  coverage within this initiative"). My judgement on placement: **6b, straight after 6a, for
+  `viva_core.*` as a glob** — the earlier the ban is on, the less core code is ever written
+  with an `Any`, and a glob makes it the rule for every later move into core (P3, P4, P5)
+  without anyone remembering it. **The ray package by module name in 6b, as `ray.*` only in
+  PR 12:** the five strategy PRs are reviewable because a moved method is AST-identical to
+  what it was, and an annotation change is an AST change; a `ray.*` ban before them would
+  force one into every move. The third follow-up (ratchet the rest by count) stays proposed.
+
+- **2026-09-20** — **PR 6: compose is handed its Batch layer.** `ComposeSimulationServiceRay` built a
+  whole `SimulationServiceRay()` — an E. coli simulation service with its scheduler-facing
+  surface and two other backends — to call five Batch methods and one status lookup on it.
+  **The plan row was wrong in a way worth recording:** "compose uses `RayBatchLayer`
+  directly" would have replaced the import of `viva_api.simulation.simulation_service_ray`
+  with an import of `viva_api.simulation.ray.batch_layer`. The contract forbids compose →
+  `viva_api.simulation` *at all*, so the broken edge would have been renamed, not removed,
+  and the ledger would have claimed a burn-down that `lint-imports` did not show. Checked
+  before writing code. What removes the edge is dependency inversion: compose declares
+  `ComposeBatch` (six members, only the keywords it passes) and the composition root,
+  `dependencies.py`, hands it `RayBatchLayer()`. Measured: 9 → 8 broken edges; compose's
+  remaining two (`common.analysis_dag`, `ray.image_paths`) both belong to its analysis leg.
+  `get_job_status` no longer borrows the simulation service's three-backend version: a
+  compose job id is always a Batch job id, so it asks the layer for that one status. It had
+  **no test of its own**; it has one now. Differential against `origin/main`, every Batch
+  state plus an unknown id plus image resolution: 13 cases, 0 differences, outward calls
+  included. **My first mutation was equivalent and the harness correctly said 0:** I changed
+  the `.get(..., UNKNOWN)` default, which is dead code because every `JobStatus` is mapped.
+  A zero from a mutation is a question about the mutation before it is a verdict on the
+  harness; a real one (the lookup takes the wrong job) gives 10 of 13. The layer is
+  stateless, so compose gets its own instance rather than sharing the Ray service's.
+  A unit test pins the removed edge, since the contract itself is report-only.
 
 - **2026-09-20** — **PR 5: the Batch layer is composed — `service.batch` — and the class inherits
   nothing from `simulation/ray/`.** Measured first: 13 members, 43 call sites in the service,
