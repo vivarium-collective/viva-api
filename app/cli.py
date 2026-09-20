@@ -3017,6 +3017,15 @@ def smoke_run(
         default=None,
         help="Tier R: how to restart this deployment. Must return once the API answers again at the same URL.",
     ),
+    repo_script: str = Option(
+        default="scripts/build_cache.py",
+        help="`task-repo`: a script that exists in the image, run with --help; its log must contain 'usage:'.",
+    ),
+    aws_region: str | None = Option(
+        default=None,
+        help="Region for the cancel checks' look at AWS Batch (default: AWS_DEFAULT_REGION / the profile's). "
+        "They use YOUR credentials, read-only, and SKIP without them.",
+    ),
     timeout: float = Option(default=900.0, help="Seconds to wait for any one dispatched job."),
     sim_timeout: float = Option(default=7200.0, help="Seconds to wait for any one tier-2 simulation."),
     json_out: Path | None = Option(default=None, help="Write the full result, with evidence, as JSON."),
@@ -3040,7 +3049,19 @@ def smoke_run(
         raise typer.Exit(code=2) from e
 
     service = E2EDataService(base_url=target, timeout=int(timeout) + 120)  # per REQUEST, not per job
+    # The cancel checks assert on AWS Batch itself, with the operator's own credentials.
+    # Built only when one of them will run; no access is a SKIP with the reason, not an error.
+    batch_jobs = None
+    batch_unavailable = "no cancel check selected"
+    if any(check.name in smoke.NEEDS_BATCH_ACCESS for check in checks):
+        try:
+            batch_jobs = smoke.AwsBatchJobLister(region=aws_region)
+        except Exception as e:
+            batch_unavailable = f"{type(e).__name__}: {str(e)[:160]}"
     options = smoke.SmokeOptions(
+        repo_script=repo_script,
+        active_batch_jobs=batch_jobs,
+        active_batch_jobs_unavailable=batch_unavailable,
         commit=commit,
         simulation_id=simulation_id,
         biomodel_id=biomodel,
