@@ -1,14 +1,18 @@
 """Tasks: run one script in the simulator image as a standalone Batch container job
 (viva-api#631), follow its status, read its logs.
 
-Carved out of simulation_service_ray.py (docs/plan-core.md P2.1, cut 3) as a pure
-move -- every method below is byte-for-byte what it was in SimulationServiceRay, which
-now inherits them from this mixin.
+``RayTaskService`` is a SERVICE, not a mixin of ``SimulationServiceRay`` (it was one for two
+PRs, P2.1 cut 3; ``docs/plan-core.md`` decision log, 2026-09-20). It is handed what it
+needs -- a ``TaskDispatch`` -- instead of inheriting a class to find it.
 
-Tasks are a core service in the target architecture (viva_core/tasks, plan P4b). They
-are not there yet because two things they touch are still SMS: the task table behind
-DatabaseService, and the image they run in (this application's simulator image, via
-_image_uri). P4b gives them a JobStore and an EnvironmentRef and moves them.
+``TaskDispatch`` is the point of this file. It is the whole of what a task asks of whatever
+runs container jobs for it: resolve an image, get a job definition for it, submit one
+container job, ask what happened to it, find its log group. Today the thing that answers
+is ``SimulationServiceRay`` (through its Batch layer), which is why the member names are
+the private ones that class already has. In the target architecture tasks are a core
+service (``viva_core/tasks``, plan P4b) and the same seven questions are answered by an
+``EnvironmentRef`` and ``BatchJobClient``; the other thing still SMS here is the ``task``
+table behind ``DatabaseService``, which P4b replaces with a ``JobStore``.
 """
 
 import json
@@ -16,11 +20,13 @@ import logging
 import re
 import shlex
 from pathlib import Path
+from typing import Any, Protocol
 
+from viva_api.common.models import JobStatus
 from viva_api.simulation.database_service import DatabaseService
 from viva_api.simulation.models import TaskDTO, TaskLogsDTO, TaskRunRequest
 from viva_api.simulation.ray import _seams
-from viva_api.simulation.ray.batch_layer import RayBatchLayer, _rand_suffix
+from viva_api.simulation.ray.batch_layer import _rand_suffix
 from viva_api.simulation.ray.image_paths import TASK_OUT_DIR, TASK_STAGE_DIR
 from viva_api.simulation.tables_orm import TaskStatusDB
 
@@ -36,7 +42,38 @@ def _safe_task_name(raw: str) -> str:
     return cleaned or "task"
 
 
-class RayTasksMixin(RayBatchLayer):
+class TaskDispatch(Protocol):
+    """What a task needs from whatever dispatches container jobs for it. Only the keyword
+    arguments tasks actually pass are declared; the implementation may accept more."""
+
+    async def get_latest_commit_hash(self) -> str: ...
+    def _image_uri(self, commit: str) -> str: ...
+    def _ensure_container_job_def(self, image: str, commit: str) -> str: ...
+    def _results_s3_uri(self, experiment_id: str) -> str: ...
+    def _submit_container(
+        self,
+        *,
+        job_name: str,
+        job_definition: str,
+        job_cmd: str,
+        out_s3: str,
+        out_dir: str,
+        stage_s3: str | None = ...,
+        stage_dir: str | None = ...,
+        task_env: dict[str, str] | None = ...,
+        memory_class: str = ...,
+    ) -> str: ...
+    def get_batch_job_statuses(self, job_ids: list[str]) -> dict[str, JobStatus]: ...
+    def _batch(self) -> Any: ...
+    def _resolve_log_group(self, job_definition: str | None) -> str | None: ...
+
+
+class RayTaskService:
+    def __init__(self, dispatch: TaskDispatch) -> None:
+        # Held, not copied: every call below looks the method up on ``dispatch`` when it
+        # runs, so a test that swaps ``service._submit_container`` is what a task gets.
+        self._dispatch = dispatch
+
     async def submit_task(self, request: TaskRunRequest, database_service: DatabaseService) -> TaskDTO:
         """Submit a self-contained repo-path script as a standalone AWS Batch
         container job (viva-api#631 slice 1).
@@ -57,7 +94,7 @@ class RayTasksMixin(RayBatchLayer):
         is caller-defined (script-specific reference names -> URIs), so there
         is no fixed set of env-var names to emit.
         """
-        commit = request.commit or await self.get_latest_commit_hash()
+        commit = request.commit or await self._dispatch.get_latest_commit_hash()
         task_name = _safe_task_name(request.name or Path(request.script).stem)
         job_cmd = self._task_job_cmd(request.script, request.args)
         return await self._dispatch_task(
@@ -86,12 +123,12 @@ class RayTasksMixin(RayBatchLayer):
         change is needed -- this reuses the same stage-in path ParCa's cache
         staging already uses.
         """
-        commit = request.commit or await self.get_latest_commit_hash()
+        commit = request.commit or await self._dispatch.get_latest_commit_hash()
         safe_name = Path(filename).name  # never trust an uploaded path
         if not safe_name:
             raise ValueError("uploaded task script has no filename")
         task_name = _safe_task_name(request.name or Path(safe_name).stem)
-        stage_s3 = self._results_s3_uri(f"tasks/scripts/{task_name}-{_rand_suffix()}").rstrip("/")
+        stage_s3 = self._dispatch._results_s3_uri(f"tasks/scripts/{task_name}-{_rand_suffix()}").rstrip("/")
         self._upload_task_script(stage_s3, safe_name, script_bytes)
         job_cmd = self._task_job_cmd(f"{TASK_STAGE_DIR}/{safe_name}", request.args)
         return await self._dispatch_task(
@@ -140,12 +177,12 @@ class RayTasksMixin(RayBatchLayer):
         """Shared submit path for repo-path and uploaded tasks: one-node container
         job (``_ensure_container_job_def`` + ``_submit_container``) recorded on the
         ``task`` table so ``GET /tasks/{id}/status`` has a row to poll."""
-        job_def = self._ensure_container_job_def(self._image_uri(commit), commit)
-        out_uri = self._results_s3_uri(f"tasks/{task_name}-{_rand_suffix()}").rstrip("/")
+        job_def = self._dispatch._ensure_container_job_def(self._dispatch._image_uri(commit), commit)
+        out_uri = self._dispatch._results_s3_uri(f"tasks/{task_name}-{_rand_suffix()}").rstrip("/")
         task_env: dict[str, str] | None = None
         if request.sim_data_refs:
             task_env = {"TASK_SIM_DATA_REFS": json.dumps(request.sim_data_refs)}
-        batch_job_id = self._submit_container(
+        batch_job_id = self._dispatch._submit_container(
             job_name=f"task-{task_name}-{_rand_suffix()}"[:128],
             job_definition=job_def,
             job_cmd=job_cmd,
@@ -177,7 +214,7 @@ class RayTasksMixin(RayBatchLayer):
         task = await database_service.get_task(task_id)
         if task.job_id_ext is None:
             return task
-        statuses = self.get_batch_job_statuses([task.job_id_ext])
+        statuses = self._dispatch.get_batch_job_statuses([task.job_id_ext])
         batch_status = statuses.get(task.job_id_ext)
         if batch_status is None:
             return task
@@ -197,14 +234,14 @@ class RayTasksMixin(RayBatchLayer):
             result.report_uri = f"{log_prefix.rstrip('/')}/{task.job_id_ext}/report.json"
         if not task.job_id_ext:
             return result
-        jobs = self._batch().describe_jobs(jobs=[task.job_id_ext]).get("jobs", [])
+        jobs = self._dispatch._batch().describe_jobs(jobs=[task.job_id_ext]).get("jobs", [])
         if not jobs:
             return result
         job = jobs[0]
         stream = job.get("container", {}).get("logStreamName")
         if not stream:
             return result  # container not started yet
-        group = self._resolve_log_group(job.get("jobDefinition"))
+        group = self._dispatch._resolve_log_group(job.get("jobDefinition"))
         if not group:
             return result
         result.log_stream = stream

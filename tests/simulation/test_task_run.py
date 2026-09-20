@@ -57,7 +57,7 @@ def _submit_task(
     ):
         import asyncio
 
-        result = asyncio.run(service.submit_task(request, database_service))
+        result = asyncio.run(service.tasks.submit_task(request, database_service))
     return result, batch
 
 
@@ -107,7 +107,7 @@ def test_submit_task_routes_large_memory_class_to_large_queue() -> None:
     ):
         import asyncio
 
-        asyncio.run(service.submit_task(request, database_service))
+        asyncio.run(service.tasks.submit_task(request, database_service))
 
     (call,) = batch.submit_job.call_args_list
     assert call.kwargs["jobQueue"] == "smscdk-ray-standalone-large"
@@ -147,7 +147,7 @@ async def test_get_task_status_maps_succeeded_to_ready() -> None:
     database_service.update_task_status.return_value = _submitted_task_dto(status=JobStatus.COMPLETED)
 
     with patch.object(service, "get_batch_job_statuses", return_value={"c-1": JobStatus.COMPLETED}):
-        result = await service.get_task_status(1, database_service)
+        result = await service.tasks.get_task_status(1, database_service)
 
     database_service.update_task_status.assert_awaited_once_with(1, TaskStatusDB.READY)
     assert result.status == JobStatus.COMPLETED
@@ -161,7 +161,7 @@ async def test_get_task_status_maps_failed_to_failed() -> None:
     database_service.update_task_status.return_value = _submitted_task_dto(status=JobStatus.FAILED)
 
     with patch.object(service, "get_batch_job_statuses", return_value={"c-1": JobStatus.FAILED}):
-        result = await service.get_task_status(1, database_service)
+        result = await service.tasks.get_task_status(1, database_service)
 
     database_service.update_task_status.assert_awaited_once_with(1, TaskStatusDB.FAILED)
     assert result.status == JobStatus.FAILED
@@ -173,7 +173,7 @@ async def test_get_task_status_without_job_id_ext_skips_batch_poll() -> None:
     database_service = AsyncMock()
     database_service.get_task.return_value = _submitted_task_dto(job_id_ext=None)
 
-    result = await service.get_task_status(1, database_service)
+    result = await service.tasks.get_task_status(1, database_service)
 
     database_service.update_task_status.assert_not_called()
     assert result.job_id_ext is None
@@ -189,7 +189,7 @@ async def test_get_task_status_not_yet_visible_in_batch_leaves_status_unchanged(
     database_service.get_task.return_value = _submitted_task_dto(status=JobStatus.RUNNING)
 
     with patch.object(service, "get_batch_job_statuses", return_value={}):
-        result = await service.get_task_status(1, database_service)
+        result = await service.tasks.get_task_status(1, database_service)
 
     database_service.update_task_status.assert_not_called()
     assert result.status == JobStatus.RUNNING
@@ -216,7 +216,7 @@ def test_submit_uploaded_task_stages_script_and_runs_staged_path() -> None:
         import asyncio
 
         asyncio.run(
-            service.submit_uploaded_task(
+            service.tasks.submit_uploaded_task(
                 request, script_bytes=b"print('hi')\n", filename="myscript.py", database_service=database_service
             )
         )
@@ -257,7 +257,7 @@ def test_submit_uploaded_task_sanitizes_filename_to_basename() -> None:
         import asyncio
 
         asyncio.run(
-            service.submit_uploaded_task(
+            service.tasks.submit_uploaded_task(
                 request, script_bytes=b"x", filename="../../etc/evil.py", database_service=database_service
             )
         )
@@ -319,7 +319,7 @@ def test_get_task_logs_reads_cloudwatch_stream() -> None:
     ):
         import asyncio
 
-        result = asyncio.run(service.get_task_logs(1, database_service))
+        result = asyncio.run(service.tasks.get_task_logs(1, database_service))
     assert result.lines == ["hello", "world"]
     assert result.log_stream == "stream/abc"
     # group resolved from the job def's logConfiguration
@@ -340,7 +340,7 @@ def test_get_task_logs_empty_before_container_starts() -> None:
     ):
         import asyncio
 
-        result = asyncio.run(service.get_task_logs(1, database_service))
+        result = asyncio.run(service.tasks.get_task_logs(1, database_service))
     assert result.lines == []
     fake.get_log_events.assert_not_called()
 
@@ -357,7 +357,7 @@ def test_get_task_logs_prefers_configured_log_group() -> None:
     ):
         import asyncio
 
-        result = asyncio.run(service.get_task_logs(1, database_service))
+        result = asyncio.run(service.tasks.get_task_logs(1, database_service))
     assert result.lines == ["x"]
     assert fake.get_log_events.call_args.kwargs["logGroupName"] == "/configured/group"
     fake.describe_job_definitions.assert_not_called()  # configured group short-circuits resolution

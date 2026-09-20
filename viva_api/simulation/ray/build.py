@@ -1,34 +1,39 @@
 """Building a simulator image: a Docker-out-of-Docker build on AWS Batch, run as a LOCAL
 task that submits the Batch job and polls it to completion.
 
-Carved out of simulation_service_ray.py (docs/plan-core.md P2.1, cut 4) as a pure
-move -- every method below is byte-for-byte what it was in SimulationServiceRay, which
-now inherits them from this mixin.
+``RayImageBuilder`` is a SERVICE, not a mixin of ``SimulationServiceRay`` (it was one for a
+single PR, P2.1 cut 4; ``docs/plan-core.md`` decision log, 2026-09-20). A build needs one
+collaborator -- the ``LocalTaskService`` that owns the task -- and nothing else of the
+service: not the Batch layer, not ParCa, not dispatch. Inheriting all of that to reach one
+attribute was the wrong shape, and it was a dead end besides: a build's destination is
+core (``viva_core/backends/build.py`` + a recipe SMS registers; plan P2.3 / P5), and a mixin
+that inherits an SMS class cannot go there. A service that is handed its dependencies can.
 
-In the target architecture a build is a core job running a **recipe**
-(viva_core/backends/build.py, plan P2.3 / P5): core ships the generic recipes (a repo
-Dockerfile, a pbg-template workspace), and what is below -- the private-fork staging, the
--submit image, the new-gene data -- becomes the recipe SMS registers. It is not there yet
-because viva_api.simulation.batch_build still reads this application's settings and
-names this application's jobs.
+What keeps it in SMS today is what it still reaches for: this application's settings
+(through ``_seams``), and ``viva_api.simulation.batch_build``, which names this
+application's jobs and is shared with ``SimulationServiceK8s``.
+
+``SimulationServiceRay.submit_build_image_job`` remains -- it is part of the
+``SimulationService`` interface the handlers call -- and delegates here.
 """
 
 import logging
-from typing import override
 
+from viva_api.common.hpc.local_task_service import LocalTaskService
 from viva_api.common.models import JobId
 from viva_api.common.simulator_defaults import RepoUrl
 from viva_api.simulation import batch_build
 from viva_api.simulation.models import SimulatorVersion
 from viva_api.simulation.ray import _seams
-from viva_api.simulation.ray.batch_layer import RayBatchLayer
 
 logger = logging.getLogger(__name__)
 
 
-class RayBuildMixin(RayBatchLayer):
-    @override
-    async def submit_build_image_job(
+class RayImageBuilder:
+    def __init__(self, local_task_service: LocalTaskService) -> None:
+        self._local = local_task_service
+
+    async def submit(
         self,
         simulator_version: SimulatorVersion,
         *,
@@ -43,18 +48,18 @@ class RayBuildMixin(RayBatchLayer):
         DooD Batch build job that clones the workload repo at the commit and runs its own
         build-and-push recipe (v2ecoli/docker/build-and-push-ecr.sh) → v2ecoli:<commit>
         (plus the :latest deploy tag the Ray-MNP job def references). Returns immediately
-        with a LOCAL JobId; _run_build polls the Batch job to completion.
+        with a LOCAL JobId; ``run`` polls the Batch job to completion.
 
         ``include_new_gene_data`` (item 87): False for every existing caller -- identical
-        build to before this param existed. See ``_build_command``'s own docstring.
+        build to before this param existed. See ``build_command``'s own docstring.
 
         ``stage_private_fork``/``vecoli_private_commit``: False for every existing caller --
-        identical build to before these params existed. See ``_build_command``'s own
+        identical build to before these params existed. See ``build_command``'s own
         docstring.
         """
         commit = simulator_version.git_commit_hash
         return self._local.submit(
-            self._run_build(
+            self.run(
                 simulator_version,
                 include_new_gene_data=include_new_gene_data,
                 include_submit_image=include_submit_image,
@@ -64,7 +69,7 @@ class RayBuildMixin(RayBatchLayer):
             name=f"ray-build-{commit}",
         )
 
-    def _build_command(
+    def build_command(
         self,
         simulator_version: SimulatorVersion,
         *,
@@ -191,7 +196,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
 """
         return ["sh", "-c", script]
 
-    async def _run_build(
+    async def run(
         self,
         simulator_version: SimulatorVersion,
         *,
@@ -206,7 +211,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{commit}-
         job_id = await batch_build.submit_batch_build(
             job_name=batch_build.ray_build_job_name(commit),
             queue=settings.build_amd64_queue,
-            command=self._build_command(
+            command=self.build_command(
                 simulator_version,
                 include_new_gene_data=include_new_gene_data,
                 include_submit_image=include_submit_image,

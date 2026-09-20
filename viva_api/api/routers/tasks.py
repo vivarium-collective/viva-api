@@ -59,7 +59,7 @@ async def run_task(request: TaskRunRequest = Body(...)) -> TaskDTO:
     simulation_service = _require_ray_service()
     database_service = _require_database_service()
     try:
-        return await simulation_service.submit_task(request, database_service)
+        return await simulation_service.tasks.submit_task(request, database_service)
     except HTTPException:
         raise
     except Exception as e:
@@ -99,7 +99,7 @@ async def run_uploaded_task(
         script=filename, args=args, sim_data_refs=refs, memory_class=memory_class, commit=commit, name=name
     )
     try:
-        return await simulation_service.submit_uploaded_task(
+        return await simulation_service.tasks.submit_uploaded_task(
             request, script_bytes=script_bytes, filename=filename, database_service=database_service
         )
     except HTTPException:
@@ -122,7 +122,7 @@ async def get_task_status(
     simulation_service = _require_ray_service()
     database_service = _require_database_service()
     try:
-        return await simulation_service.get_task_status(task_id, database_service)
+        return await simulation_service.tasks.get_task_status(task_id, database_service)
     except HTTPException:
         raise
     except Exception as e:
@@ -144,7 +144,7 @@ async def get_task_logs(
     simulation_service = _require_ray_service()
     database_service = _require_database_service()
     try:
-        return await simulation_service.get_task_logs(task_id, database_service, limit=limit)
+        return await simulation_service.tasks.get_task_logs(task_id, database_service, limit=limit)
     except HTTPException:
         raise
     except Exception as e:
