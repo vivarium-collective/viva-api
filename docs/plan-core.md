@@ -261,7 +261,7 @@ P2.0a guard caught. So:
 
   | PR | what | why here |
   |---|---|---|
-  | 1 | **docs truth** (this PR) | both living documents made true before more work |
+  | 1 | **docs truth** (#719) | both living documents made true before more work |
   | 2 | smoke: `sim-mbp` and an opt-in `build` check; then deploy the merged-but-undeployed build cuts (**C2**) | no check builds an image or exercises mbp, and both are about to be rewired |
   | 3 | reshape #715: pure `ray/analysis_spec.py` + the static-guard glob fix; the two analysis submitters stay in the class until their mechanisms move; `service.analysis` kept as a delegating shim for `job_scheduler.py` | analysis is a spec + a pattern + per-mechanism glue, not one service |
   | 4 | ParCa: commands and cache URIs → a pure module; `RayParcaService` holds only the three cache jobs | half of it is pure; only the cache jobs work one way |
@@ -710,7 +710,7 @@ split; each has an owner-less issue or a named moment.
   (7) **These documents had drifted**: three different line counts, a ledger saying "nothing
   deployed", P2.2 describing mixins that do not exist, `EnvironmentRef` / `JobStore` /
   build → core each in two or three phases, seven open questions with no owner, and no
-  mention at all of the default backend on both Stanford sites. This PR makes them true;
+  mention at all of the default backend on both Stanford sites. #719 makes them true;
   #716, #717 and #718 were filed from what the audit found.
 - **2026-09-20** — **Checkpoint C1 passed on dev (0.9.148, #711, tag `v0.9.148`).** `kubectl
   diff` = one line (the api image); the apply alone rolled it, the workbench did not roll;
