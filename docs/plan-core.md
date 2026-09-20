@@ -569,7 +569,7 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 | A2 ✅ 0.9.146, 2026-09-19 | P1b + the `run_pbg` fix (#689) | configuration plumbing — how the storage settings reach the file services — kept apart from P2.1's dispatch change (one kind per deploy) | Tier 0 + Tier 1; `compose` flips FAIL → PASS; `atlantis simulation outputs` (the S3 file service end to end); marker `/app/viva_core/settings.py` |
 | B ✅ 0.9.147, 2026-09-19 | P0 second wave + #661 | `create_all` off and the FRESH path changed — how every database bootstraps | alone; `--analyze` per site; migration Job; boot against an already-migrated DB |
 | C1 ✅ 0.9.148, 2026-09-20 | P2.1 cuts 1–3 + the #709 fix (#710) | the first **dispatch** checkpoint, taken early: the Batch engine now lives in core and every submit goes through it; cancel now stops a run's ParCa job | Tier 0 + 1 + 2, including `sim-cancel` and `chain-cancel`, which must flip FAIL → PASS; markers `/app/viva_core/backends/batch.py` and `cancel_companion_jobs` |
-| B2 | the write-once marker (D11): migration `f4c8a2e6d0b3` adds `simulator.temporary / label / image_tag` | a **database** change, so on its own before C2 (one kind per deploy). Additive with defaults: the previous image keeps working | `--analyze`, then the migration Job; Tier 0 (`database` at the new head) + Tier 1; `force` on a built simulator answers 409; on dev only, mark simulator 214 (the unmarked smoke artifact of 2026-09-20) temporary by hand |
+| B2 | the write-once marker (D11): migration `f4c8a2e6d0b3` adds `simulator.temporary / label / image_tag` | a **database** change, so on its own before C2 (one kind per deploy). `main` also carries undeployed dispatch changes that #722 sits on top of, so B2 and C2 cannot be two images; they are **one image (0.9.149) and two deploys**: B2 runs only the migration Job and leaves the API on 0.9.148, which the additive migration allows; C2 rolls the API | `--analyze`, then the migration Job; Tier 0 + Tier 1 against the **old** API on the new schema (`database` reports the schema ahead of 0.9.148's head: expected); `force` → 409 is checked at C2, when the code that refuses it is running; on dev only, mark simulator 214 (the unmarked smoke artifact of 2026-09-20) temporary by hand |
 | C2 | cuts 4–5, build + tasks as services (#712–#714), PR 2's smoke checks | the image build and the task path were rewired and are merged but undeployed | Tier 0 + 1 + 2, `sim-mbp`, and the opt-in **`build`** check: a real image build of a **marked-temporary** simulator, which Tier 2 then runs on |
 | C3 | PRs 3–8 (analysis spec, ParCa split, the composed Batch layer, `compose` on it, the mbp-tracked and Nextflow strategies) | every submit now goes through a composed object; two mechanisms are strategies | Tier 0 + 1 + 2; `compose`, `sim-mbp`, `sim-nextflow`, `nextflow-cancel` especially |
 | C | PRs 9–11 (composite, ensemble, chain strategies); the end of P2.1 | the last three mechanisms, chain among them | Tier 0 + 1 + 2, **plus a real 2 x 2 chain campaign** and `chain-cancel`: chain bills real money and fakes share their author's blind spots |
@@ -695,6 +695,16 @@ split; each has an owner-less issue or a named moment.
 
 ## Decision log
 
+- **2026-09-20** — **B2 and C2 are one image and two deploys.** I had promised B2 "on its own,
+  before C2". By the time #722 merged, `main` also held cuts 4–5 and #714, undeployed, and
+  #722 is written on top of them (it edits `ray/build.py` and `ray/parca.py`, which exist
+  only after those cuts) — so no image can contain the migration without the dispatch
+  changes. The one-kind-per-deploy rule is kept by separating them in time: **B2** applies
+  only the `<ns>-db-migration` overlay (RDS snapshot, `--analyze`, the Job) and leaves the API
+  on 0.9.148; the migration is additive with defaults, so the old code is untouched by it —
+  which is also the rollback story. **C2** then applies the app overlay. A lesson for the
+  ledger: a database PR should merge *before* undeployed code it does not depend on, or
+  not be written on top of it.
 - **2026-09-20** — **D11 made real: write-once simulators and the marked-temporary exception.**
   Jim sharpened the rule three times in one afternoon — preserve what predates 2026-09-19;
   a test simulator should be a *clearly marked temporary* record, image and tag; it must be
