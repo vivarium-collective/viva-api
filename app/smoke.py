@@ -878,8 +878,27 @@ def _describe_batch_job(job: dict[str, Any]) -> str:
     return f"{text}, waiting on {', '.join(waiting)}" if waiting else text
 
 
+def _wait_until_cancellable(
+    opts: SmokeOptions, ready: Callable[[int], bool] | None, simulation_id: int, kind: str
+) -> None:
+    """Work in Batch does not mean the API's row is the one a cancel must act on yet: a chain
+    campaign is a placeholder until its background submit records the campaign."""
+    deadline = opts.clock() + 120.0
+    while ready is not None and not ready(simulation_id):
+        if opts.clock() >= deadline:
+            raise CheckFailed(f"{kind} {simulation_id} has work in Batch but never became cancellable")
+        opts.sleep(opts.poll_seconds)
+
+
 def _cancel_and_verify(
-    svc: SmokeService, opts: SmokeOptions, kind: str, *, extra_params: dict[str, object] | None = None
+    svc: SmokeService,
+    opts: SmokeOptions,
+    kind: str,
+    *,
+    extra_params: dict[str, object] | None = None,
+    generations: int = 1,
+    seeds: int = 1,
+    ready: Callable[[int], bool] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Submit a run, wait until AWS Batch shows work for it, cancel it, and pass only when
     Batch shows NONE of it still active -- and the run is still CANCELLED afterwards.
@@ -896,8 +915,8 @@ def _cancel_and_verify(
     simulation = svc.run_workflow(
         experiment_id=experiment_id,
         simulator_id=simulator_id,
-        num_generations=None if extra_params else 1,
-        num_seeds=None if extra_params else 1,
+        num_generations=None if extra_params else generations,
+        num_seeds=None if extra_params else seeds,
         description=f"atlantis smoke: {kind} (submitted to be cancelled)",
         tags=["smoke", f"smoke-{kind}"],
         extra_params=extra_params,
@@ -920,6 +939,7 @@ def _cancel_and_verify(
             on_tick=_still_cancellable,
         )
         evidence["active_before_cancel"] = sorted({str(j.get("jobName")) for j in before})
+        _wait_until_cancellable(opts, ready, simulation_id, kind)
         answered = _status_text(getattr(svc.cancel_workflow(simulation_id), "status", None))
         evidence["cancel_answered"] = answered
         if answered != "cancelled":
@@ -957,6 +977,23 @@ def check_sim_cancel(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[s
     return _cancel_and_verify(svc, opts, "cancel")
 
 
+def check_chain_cancel(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
+    """Cancel a chain campaign (2 seeds x 2 generations) as soon as Batch shows work for it --
+    which is its ParCa phase, where no seed has a job yet and the only thing to stop is the
+    campaign's ParCa job. A cancel that walks the per-seed jobs alone stops nothing there
+    (viva-api#709)."""
+
+    def _campaign_recorded(simulation_id: int) -> bool:
+        resp = svc.client.get(f"/api/v1/simulations/{simulation_id}/chain-progress")
+        return resp.status_code == 200 and resp.json().get("seeds_total") == 2
+
+    summary, evidence = _cancel_and_verify(svc, opts, "chaincancel", generations=2, seeds=2, ready=_campaign_recorded)
+    names = evidence["active_before_cancel"]
+    phase = "ParCa phase" if all(name.startswith("ray-parca") for name in names) else "seeds already running"
+    evidence["phase_at_cancel"] = phase
+    return f"{summary} (cancelled in the {phase}: {', '.join(names)})", evidence
+
+
 def check_nextflow_cancel(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
     """Cancel a Nextflow run. The API deletes the head Job; the tasks Nextflow submitted are
     stopped by its own shutdown hook, or -- if any outlive the head -- by the scheduler's
@@ -981,8 +1018,9 @@ class AwsBatchJobLister:
     raises if Batch cannot be reached with the caller's credentials -- the CLI turns that
     into a SKIP reason.
 
-    Read-only (Describe*/List*). A default-path job carries the experiment id in its NAME;
-    a Nextflow task carries it only in its COMMAND (the campaign's work dir), hence both.
+    Read-only (Describe*/List*). A default-path job carries the experiment id in its NAME; a
+    Nextflow task only in its COMMAND (the campaign's work dir); a ParCa job only in its
+    ``ExperimentId`` TAG. Hence all three.
     """
 
     ACTIVE = ("SUBMITTED", "PENDING", "RUNNABLE", "STARTING", "RUNNING")
@@ -1031,8 +1069,17 @@ class AwsBatchJobLister:
                 by_command.append(job["jobId"])
         for i in range(0, len(by_command), 100):
             for job in self._client.describe_jobs(jobs=by_command[i : i + 100]).get("jobs", []):
-                if token in " ".join((job.get("container") or {}).get("command") or []):
+                if any(token in text for text in self._identifying_text(job)):
                     yield job
+
+    @staticmethod
+    def _identifying_text(job: dict[str, Any]) -> Iterator[str]:
+        """Where a run's experiment id can be found on a job that is not NAMED for it: a
+        Nextflow task's command (the campaign work dir), and the cost-allocation tags every
+        dispatch path sets (``ExperimentId``) -- the only place a ParCa job carries it, since
+        a ParCa job is named for the COMMIT."""
+        yield " ".join((job.get("container") or {}).get("command") or [])
+        yield from (str(value) for value in (job.get("tags") or {}).values())
 
     def __call__(self, token: str) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
@@ -1147,6 +1194,12 @@ CHECKS: tuple[Check, ...] = (
     Check("sim-composite", 2, "multi-node composite on Ray completes and writes output", check_sim_composite),
     Check("sim-cancel", 2, "a cancelled simulation leaves no active Batch job (needs AWS access)", check_sim_cancel),
     Check(
+        "chain-cancel",
+        2,
+        "a chain campaign cancelled in its ParCa phase leaves no active Batch job (needs AWS access)",
+        check_chain_cancel,
+    ),
+    Check(
         "nextflow-cancel",
         2,
         "a cancelled Nextflow run leaves no active Batch task (needs AWS access)",
@@ -1156,7 +1209,7 @@ CHECKS: tuple[Check, ...] = (
 )
 
 #: Checks that assert on AWS Batch directly and so need the operator's own AWS access.
-NEEDS_BATCH_ACCESS = frozenset({"sim-cancel", "nextflow-cancel"})
+NEEDS_BATCH_ACCESS = frozenset({"sim-cancel", "chain-cancel", "nextflow-cancel"})
 
 #: Tier 2 checks spend their time waiting on AWS Batch, so they run side by side.
 CONCURRENT_TIERS = frozenset({2})

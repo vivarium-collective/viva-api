@@ -926,3 +926,66 @@ def test_the_batch_lister_reports_what_a_matched_job_depends_on() -> None:
     [job] = smoke.AwsBatchJobLister(client=Client())("TOKEN")
     assert job["terminated"] is True
     assert job["waiting_on"] == [{"jobId": "parca", "jobName": "ray-parca-abc-xyz", "status": "RUNNING"}]
+
+
+# ------------------------------------------------------------------ chain cancel
+
+CHAIN_PROGRESS = "/api/v1/simulations/901/chain-progress"
+
+
+class ParcaPhase(FakeBatchJobs):
+    """A chain campaign in its ParCa phase: the only job in Batch is named for the COMMIT."""
+
+    def __call__(self, token: str) -> list[dict[str, Any]]:
+        jobs = super().__call__(token)
+        for job in jobs:
+            job["jobName"] = "ray-parca-d67b0a7-abc123"
+        return jobs
+
+
+def test_chain_cancel_submits_a_campaign_and_passes_when_batch_shows_its_parca_job_gone() -> None:
+    svc = FakeService({("GET", CHAIN_PROGRESS): httpx.Response(200, json={"seeds_total": 2, "terminal": False})})
+    svc.simulation_status = "running"
+    result = _run("chain-cancel", svc, active_batch_jobs=ParcaPhase(svc))
+    assert result.outcome is smoke.Outcome.PASS, result.detail
+    assert (svc.workflows[0]["num_generations"], svc.workflows[0]["num_seeds"]) == (2, 2)  # what selects chain
+    assert "ParCa phase" in result.detail and "ray-parca-d67b0a7-abc123" in result.detail
+    assert result.evidence["phase_at_cancel"] == "ParCa phase"
+    assert svc.cancelled == [901]
+
+
+def test_chain_cancel_says_so_when_the_seeds_were_already_running() -> None:
+    svc = FakeService({("GET", CHAIN_PROGRESS): httpx.Response(200, json={"seeds_total": 2})})
+    svc.simulation_status = "running"
+    result = _run("chain-cancel", svc, active_batch_jobs=FakeBatchJobs(svc))  # named ray-sim-..., not ray-parca
+    assert result.outcome is smoke.Outcome.PASS, result.detail
+    assert result.evidence["phase_at_cancel"] == "seeds already running"
+
+
+def test_chain_cancel_does_not_cancel_a_placeholder_that_never_becomes_a_campaign() -> None:
+    """Until the background submit records the campaign, the row a cancel would act on is a
+    placeholder. The check waits for the campaign, and fails -- cleaning up -- if it never comes."""
+    svc = FakeService({("GET", CHAIN_PROGRESS): httpx.Response(404, json={"detail": "not a chain campaign"})})
+    svc.simulation_status = "running"
+    result = _run("chain-cancel", svc, active_batch_jobs=ParcaPhase(svc))
+    assert result.outcome is smoke.Outcome.FAIL
+    assert "never became cancellable" in result.detail
+
+
+def test_the_batch_lister_finds_a_parca_job_by_its_experiment_tag() -> None:
+    """A ParCa job is named for the commit; the run's experiment id is only in its tags."""
+
+    class Client:
+        def describe_job_queues(self, **kw: Any) -> dict[str, Any]:
+            return {"jobQueues": [] if kw.get("maxResults") == 1 else [{"jobQueueName": "q"}]}
+
+        def list_jobs(self, **kw: Any) -> dict[str, Any]:
+            hit = kw["jobStatus"] == "RUNNING"
+            jobs = [{"jobId": "p", "jobName": "ray-parca-d67b0a7-x"}, {"jobId": "o", "jobName": "ray-parca-d67b0a7-y"}]
+            return {"jobSummaryList": jobs if hit else []}
+
+        def describe_jobs(self, **kw: Any) -> dict[str, Any]:
+            tags = {"p": {"ExperimentId": "smoke-chaincancel-TOKEN", "Phase": "parca"}, "o": {"ExperimentId": "other"}}
+            return {"jobs": [{"jobId": j, "jobName": f"ray-parca-{j}", "tags": tags[j]} for j in kw["jobs"]]}
+
+    assert [job["jobId"] for job in smoke.AwsBatchJobLister(client=Client())("TOKEN")] == ["p"]
