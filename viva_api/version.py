@@ -1394,7 +1394,27 @@
 #            per simulation per batch, 25 simulations a minute). Standalone analyses are traced
 #            runs. Also carries P2.0b (#696, settings/boto3 seam -- no behaviour change).
 #            MARKER: /app/viva_api/simulation/db_startup.py exists.
-__version__ = "0.9.147"
+#           0.9.148 -- core split, deploy checkpoint C1: the first DISPATCH checkpoint
+#            (docs/plan-core.md section 8). Taken early, with three of P2.1's ten cuts in,
+#            rather than waiting for all ten -- so a dispatch failure has three suspects.
+#            * P2.1 cut 1 (#705): config interpretation -> simulation/ray/config_interpretation.py
+#              (byte-identical move).
+#            * P2.1 cut 2 (#706): the AWS Batch engine -> viva_core/backends/batch.py
+#              (BatchJobClient; takes no settings). SimulationServiceRay delegates. Proven by a
+#              2,178-case differential against the previous implementation: 0 differences.
+#            * P2.1 cut 3 (#707): tasks -> simulation/ray/tasks.py (RayTasksMixin) on a shared
+#              base, simulation/ray/batch_layer.py (RayBatchLayer). All 74 methods compared by
+#              source: 0 differ.
+#            * #710 (fixes #709): a cancelled run stops EVERY Batch job it owns. Cancelling a
+#              default-path simulation used to leave its ParCa job running under a CANCELLED
+#              row; a chain campaign cancelled during ParCa stopped nothing. Companion job ids
+#              are recorded in hpcrun.external_job_ids and terminated first.
+#              `atlantis smoke run --only sim-cancel --only chain-cancel` must flip FAIL -> PASS.
+#            Also merged, client side: five smoke checks (#708, #710).
+#            Code-only: NO new migration, DB stays at e7b3c9a1d5f2.
+#            MARKERS: /app/viva_core/backends/batch.py exists; `cancel_companion_jobs` in
+#            /app/viva_api/simulation/simulation_service_ray.py.
+__version__ = "0.9.148"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in
