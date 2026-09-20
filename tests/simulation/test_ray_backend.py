@@ -2754,7 +2754,7 @@ class TestSimulationServiceRayBuild:
     def test_build_command_clones_v2ecoli_and_runs_its_recipe(self) -> None:
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._build_command(_v2ecoli_simulator())
+            cmd = service._image_builder().build_command(_v2ecoli_simulator())
         assert cmd[0] == "sh" and cmd[1] == "-c"
         script = cmd[2]
         assert "git clone --branch main --single-branch" in script
@@ -2769,7 +2769,7 @@ class TestSimulationServiceRayBuild:
         -R us-gov-west-1, and the PAT must still be unset right after the outer clone."""
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            script = service._build_command(_v2ecoli_simulator())[2]
+            script = service._image_builder().build_command(_v2ecoli_simulator())[2]
         assert " -g" not in script
         assert script.count("unset GH_PAT") == 1
         # GH_PAT is unset BEFORE the build recipe runs, not after -- confirms it's not left
@@ -2779,7 +2779,7 @@ class TestSimulationServiceRayBuild:
     def test_build_command_include_new_gene_data_passes_g_and_keeps_pat_exported(self) -> None:
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            script = service._build_command(_v2ecoli_simulator(), include_new_gene_data=True)[2]
+            script = service._image_builder().build_command(_v2ecoli_simulator(), include_new_gene_data=True)[2]
         assert "docker/build-and-push-ecr.sh -i abc1234 -r v2ecoli -R us-gov-west-1 -g" in script
         # GH_PAT must still be exported (not unset) by the time the recipe runs, or -g's own
         # `[[ -n "${GH_PAT:-}" ]]` guard in the recipe would fail even though this method
@@ -2792,7 +2792,7 @@ class TestSimulationServiceRayBuild:
         existed."""
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            script = service._build_command(_v2ecoli_simulator())[2]
+            script = service._image_builder().build_command(_v2ecoli_simulator())[2]
         assert " -s " not in script
         assert "vecoli-private-fork.yaml" not in script
         assert script.count("unset GH_PAT") == 1
@@ -2806,12 +2806,12 @@ class TestSimulationServiceRayBuild:
             patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
             pytest.raises(ValueError, match="vecoli_private_commit"),
         ):
-            service._build_command(_v2ecoli_simulator(), stage_private_fork=True)
+            service._image_builder().build_command(_v2ecoli_simulator(), stage_private_fork=True)
 
     def test_build_command_stage_private_fork_passes_s_and_keeps_pat_exported(self) -> None:
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            script = service._build_command(
+            script = service._image_builder().build_command(
                 _v2ecoli_simulator(), stage_private_fork=True, vecoli_private_commit="deadbee"
             )[2]
         assert (
@@ -4301,8 +4301,8 @@ class TestRaySubmitImage:
         flagged one -- not merely 'similar'."""
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            default = service._build_command(_v2ecoli_simulator())[2]
-            flagged = service._build_command(_v2ecoli_simulator(), include_submit_image=True)[2]
+            default = service._image_builder().build_command(_v2ecoli_simulator())[2]
+            flagged = service._image_builder().build_command(_v2ecoli_simulator(), include_submit_image=True)[2]
         assert "Dockerfile-submit" not in default
         assert "default-jre-headless" not in default
         assert flagged.startswith(default)
@@ -4310,7 +4310,7 @@ class TestRaySubmitImage:
     def test_submit_image_adds_java_and_a_pinned_nextflow(self) -> None:
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            script = service._build_command(_v2ecoli_simulator(), include_submit_image=True)[2]
+            script = service._image_builder().build_command(_v2ecoli_simulator(), include_submit_image=True)[2]
         assert "default-jre-headless" in script
         # Pinned, not floating: an unpinned `nextflow` download would silently change the
         # renderer's runtime between two builds of the same commit.
@@ -4321,7 +4321,7 @@ class TestRaySubmitImage:
         launches is not the code the simulator record names."""
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            script = service._build_command(_v2ecoli_simulator(), include_submit_image=True)[2]
+            script = service._image_builder().build_command(_v2ecoli_simulator(), include_submit_image=True)[2]
         assert "BASE_URI=$ECR_REGISTRY/v2ecoli:abc1234" in script
         assert 'docker push "$ECR_REGISTRY/v2ecoli:abc1234-submit"' in script
 
@@ -4331,7 +4331,7 @@ class TestRaySubmitImage:
         reason the awsbatch profile must also export PYTHONPATH."""
         service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            script = service._build_command(_v2ecoli_simulator(), include_submit_image=True)[2]
+            script = service._image_builder().build_command(_v2ecoli_simulator(), include_submit_image=True)[2]
         assert "WORKDIR /app/v2ecoli" in script
 
     @pytest.mark.asyncio
@@ -4348,7 +4348,7 @@ class TestRaySubmitImage:
                 new=AsyncMock(),
             ),
         ):
-            await service._run_build(_v2ecoli_simulator(), include_submit_image=True)
+            await service._image_builder().run(_v2ecoli_simulator(), include_submit_image=True)
         assert "Dockerfile-submit" in mock_submit.call_args.kwargs["command"][2]
 
 
@@ -4369,7 +4369,7 @@ class TestSimulationServiceRayBuildSubmit:
                 new=AsyncMock(),
             ) as mock_poll,
         ):
-            await service._run_build(_v2ecoli_simulator())
+            await service._image_builder().run(_v2ecoli_simulator())
         assert mock_submit.await_count == 1
         assert mock_submit.call_args.kwargs["queue"] == "smscdk-vecoli-build-amd64"
         assert "docker/build-and-push-ecr.sh" in mock_submit.call_args.kwargs["command"][2]

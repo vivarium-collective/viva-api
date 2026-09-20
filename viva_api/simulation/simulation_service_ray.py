@@ -70,7 +70,7 @@ from viva_api.simulation.models import (
 )
 from viva_api.simulation.ray import _seams
 from viva_api.simulation.ray.batch_layer import RayBatchLayer, _rand_suffix
-from viva_api.simulation.ray.build import RayBuildMixin
+from viva_api.simulation.ray.build import RayImageBuilder
 from viva_api.simulation.ray.config_interpretation import (
     _batch_domain_overrides,
     _is_upstream_vecoli,
@@ -84,7 +84,7 @@ from viva_api.simulation.ray.image_paths import (
     V2ECOLI_DIR,
 )
 from viva_api.simulation.ray.parca import RayParcaMixin
-from viva_api.simulation.ray.tasks import RayTasksMixin
+from viva_api.simulation.ray.tasks import RayTaskService
 from viva_api.simulation.tables_orm import AnalysisStatusDB
 from viva_core.backends.batch import (
     SUBMIT_JOB_MAX_ATTEMPTS,
@@ -377,7 +377,7 @@ def _command_belongs_to_campaign(command: str, campaign_stem: str) -> bool:
     return False
 
 
-class SimulationServiceRay(RayTasksMixin, RayBuildMixin, RayParcaMixin, RayBatchLayer):
+class SimulationServiceRay(RayParcaMixin, RayBatchLayer):
     """Ray-on-Batch (MNP) implementation of SimulationService."""
 
     async def stage_render_nf(self, experiment_id: str) -> str:
@@ -1603,6 +1603,40 @@ class SimulationServiceRay(RayTasksMixin, RayBuildMixin, RayParcaMixin, RayBatch
             backend="ray",
             db_config=params,
             result_uri=result_uri,
+        )
+
+    @property
+    def tasks(self) -> RayTaskService:
+        """The task service (``POST /api/v1/tasks`` and friends), composed: it is handed this
+        service as the thing that dispatches container jobs for it. Built per access; it
+        holds no state of its own."""
+        return RayTaskService(self)
+
+    def _image_builder(self) -> RayImageBuilder:
+        """The build service, composed. Built per call around ``self._local`` so that a test
+        (or anything else) that swaps the local task service is what the builder gets --
+        the same late binding as ``_batch_jobs``."""
+        return RayImageBuilder(self._local)
+
+    @override
+    async def submit_build_image_job(
+        self,
+        simulator_version: SimulatorVersion,
+        *,
+        include_new_gene_data: bool = False,
+        include_submit_image: bool = False,
+        stage_private_fork: bool = False,
+        vecoli_private_commit: str | None = None,
+    ) -> JobId:
+        """Build the simulator image (``RayImageBuilder.submit``). The keyword arguments are
+        spelled out, not ``**kwargs``: ``handlers.simulators`` inspects this signature to
+        decide which of them this backend supports."""
+        return await self._image_builder().submit(
+            simulator_version,
+            include_new_gene_data=include_new_gene_data,
+            include_submit_image=include_submit_image,
+            stage_private_fork=stage_private_fork,
+            vecoli_private_commit=vecoli_private_commit,
         )
 
     @override
