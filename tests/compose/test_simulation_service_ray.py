@@ -6,10 +6,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from viva_api.common.models import JobBackend
+from viva_api.common.models import JobBackend, JobStatus
 from viva_api.compose import simulation_service_ray as mod
 from viva_api.compose.container_def import ContainerizationFileRepr
 from viva_api.compose.models import (
+    ComposeJobStatus,
     ComposeSimulation,
     ComposeSimulationRequest,
     ComposeSimulatorVersion,
@@ -17,6 +18,7 @@ from viva_api.compose.models import (
 )
 from viva_api.compose.simulation_service_ray import ComposeSimulationServiceRay
 from viva_api.simulation.models import SimulatorVersion
+from viva_api.simulation.ray.batch_layer import RayBatchLayer
 
 
 def _settings(**overrides: object) -> types.SimpleNamespace:
@@ -33,13 +35,13 @@ def _settings(**overrides: object) -> types.SimpleNamespace:
 
 
 def test_backend_flags() -> None:
-    svc = ComposeSimulationServiceRay()
+    svc = ComposeSimulationServiceRay(batch=RayBatchLayer())
     assert svc.backend == JobBackend.RAY
     assert svc.requires_container_build is False
 
 
 def test_compose_command_stages_doc_and_runner_from_s3() -> None:
-    svc = ComposeSimulationServiceRay()
+    svc = ComposeSimulationServiceRay(batch=RayBatchLayer())
     cmd = svc._compose_command("s3://bucket/exp/input.pbg", "s3://bucket/exp/run_pbg.py", steps=7)
     # downloads BOTH the doc and the runner from S3, then runs with -n steps
     assert "aws s3 cp s3://bucket/exp/input.pbg" in cmd
@@ -57,7 +59,7 @@ def test_compose_command_stays_under_batch_8192_limit(monkeypatch: pytest.Monkey
     monkeypatch.setattr(
         mod, "get_settings", lambda: _settings(compose_pbg_core_builder="some.long.workspace.module:build_core")
     )
-    cmd = ComposeSimulationServiceRay()._compose_command(
+    cmd = ComposeSimulationServiceRay(batch=RayBatchLayer())._compose_command(
         "s3://bucket/very/long/experiment/prefix/input.pbg",
         "s3://bucket/very/long/experiment/prefix/run_pbg.py",
         steps=1000,
@@ -76,12 +78,12 @@ def test_image_uri_raises_when_tag_unset(monkeypatch: pytest.MonkeyPatch) -> Non
     only ever resolve to a nonexistent image. Fail here, naming the setting."""
     monkeypatch.setattr(mod, "get_settings", lambda: _settings(compose_ray_image_tag=""))
     with pytest.raises(RuntimeError, match="compose_ray_image_tag"):
-        ComposeSimulationServiceRay()._image_uri()
+        ComposeSimulationServiceRay(batch=RayBatchLayer())._image_uri()
 
 
 def test_image_uri_builds_the_commit_pinned_uri(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mod, "get_settings", lambda: _settings(compose_ray_image_tag="a08e20bd"))
-    uri = ComposeSimulationServiceRay()._image_uri()
+    uri = ComposeSimulationServiceRay(batch=RayBatchLayer())._image_uri()
     assert uri == "111122223333.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:a08e20bd"
 
 
@@ -94,9 +96,9 @@ def test_image_uri_with_commit_delegates_to_the_shared_ensemble_primitive(monkey
     Asserted by direct equality against the real delegation target, not a hardcoded
     string, so this doesn't need to know or duplicate that primitive's own format."""
     monkeypatch.setattr(mod, "get_settings", lambda: _settings(compose_ray_image_tag="deploy-wide-tag"))
-    svc = ComposeSimulationServiceRay()
+    svc = ComposeSimulationServiceRay(batch=RayBatchLayer())
     uri = svc._image_uri(commit="a-different-per-run-commit")
-    assert uri == svc._ray.batch.image_uri("a-different-per-run-commit")
+    assert uri == svc._batch.image_uri("a-different-per-run-commit")
     # NOT the static deploy-wide tag -- the resolved per-run commit took over.
     assert "deploy-wide-tag" not in uri
     assert "a-different-per-run-commit" in uri
@@ -108,7 +110,7 @@ def test_image_uri_with_commit_delegates_to_the_shared_ensemble_primitive(monkey
 def test_parca_staging_disabled_when_no_cache_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     """Generic default: a composite that needs no prebuilt cache stages nothing."""
     monkeypatch.setattr(mod, "get_settings", lambda: _settings(compose_parca_cache_dir=""))
-    assert ComposeSimulationServiceRay()._parca_staging() == (None, None)
+    assert ComposeSimulationServiceRay(batch=RayBatchLayer())._parca_staging() == (None, None)
 
 
 def test_parca_staging_is_keyed_by_the_image_tag_commit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -121,7 +123,7 @@ def test_parca_staging_is_keyed_by_the_image_tag_commit(monkeypatch: pytest.Monk
         "get_settings",
         lambda: _settings(compose_ray_image_tag="a08e20bd", compose_parca_cache_dir="/app/v2ecoli/out/cache"),
     )
-    stage_s3, stage_dir = ComposeSimulationServiceRay()._parca_staging()
+    stage_s3, stage_dir = ComposeSimulationServiceRay(batch=RayBatchLayer())._parca_staging()
     assert stage_dir == "/app/v2ecoli/out/cache"
     assert stage_s3 is not None
     assert stage_s3.endswith("ray-parca-cache/a08e20bd/")
@@ -138,7 +140,9 @@ def test_parca_staging_with_commit_keys_by_the_resolved_commit_not_the_deploy_ta
         "get_settings",
         lambda: _settings(compose_ray_image_tag="deploy-wide-tag", compose_parca_cache_dir="/app/v2ecoli/out/cache"),
     )
-    stage_s3, stage_dir = ComposeSimulationServiceRay()._parca_staging(commit="resolved-per-run-commit")
+    stage_s3, stage_dir = ComposeSimulationServiceRay(batch=RayBatchLayer())._parca_staging(
+        commit="resolved-per-run-commit"
+    )
     assert stage_dir == "/app/v2ecoli/out/cache"
     assert stage_s3 is not None
     assert stage_s3.endswith("ray-parca-cache/resolved-per-run-commit/")
@@ -152,13 +156,17 @@ def test_compose_command_passes_core_builder_when_configured(monkeypatch: pytest
     # The runner is no longer inlined, so the whole command is the exec line — a plain
     # substring check is meaningful (it can't false-match on the runner's own source).
     monkeypatch.setattr(mod, "get_settings", lambda: _settings(compose_pbg_core_builder="v2ecoli.core:build_core"))
-    cmd = ComposeSimulationServiceRay()._compose_command("s3://b/i.pbg", "s3://b/run_pbg.py", steps=3)
+    cmd = ComposeSimulationServiceRay(batch=RayBatchLayer())._compose_command(
+        "s3://b/i.pbg", "s3://b/run_pbg.py", steps=3
+    )
     assert "PBG_CORE_BUILDER=v2ecoli.core:build_core" in cmd
 
 
 def test_compose_command_omits_core_builder_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mod, "get_settings", lambda: _settings(compose_pbg_core_builder=""))
-    cmd = ComposeSimulationServiceRay()._compose_command("s3://b/i.pbg", "s3://b/run_pbg.py", steps=3)
+    cmd = ComposeSimulationServiceRay(batch=RayBatchLayer())._compose_command(
+        "s3://b/i.pbg", "s3://b/run_pbg.py", steps=3
+    )
     assert "PBG_CORE_BUILDER" not in cmd
 
 
@@ -170,7 +178,7 @@ async def test_resolve_commit_returns_none_when_simulator_id_unset() -> None:
     """None preserves today's exact behavior (the deploy-wide static image) and must
     not touch the database service at all."""
     with patch("viva_api.dependencies.get_database_service") as get_db:
-        assert await ComposeSimulationServiceRay()._resolve_commit(None) is None
+        assert await ComposeSimulationServiceRay(batch=RayBatchLayer())._resolve_commit(None) is None
         get_db.assert_not_called()
 
 
@@ -180,7 +188,7 @@ async def test_resolve_commit_resolves_the_git_commit_hash() -> None:
     fake_db = AsyncMock()
     fake_db.get_simulator = AsyncMock(return_value=fake_simulator)
     with patch("viva_api.dependencies.get_database_service", return_value=fake_db):
-        commit = await ComposeSimulationServiceRay()._resolve_commit(42)
+        commit = await ComposeSimulationServiceRay(batch=RayBatchLayer())._resolve_commit(42)
     assert commit == "9e2040093e"
     fake_db.get_simulator.assert_awaited_once_with(simulator_id=42)
 
@@ -195,7 +203,7 @@ async def test_resolve_commit_raises_when_simulator_not_found() -> None:
         patch("viva_api.dependencies.get_database_service", return_value=fake_db),
         pytest.raises(ValueError, match="Simulator 42 not found"),
     ):
-        await ComposeSimulationServiceRay()._resolve_commit(42)
+        await ComposeSimulationServiceRay(batch=RayBatchLayer())._resolve_commit(42)
 
 
 @pytest.mark.asyncio
@@ -204,7 +212,7 @@ async def test_resolve_commit_raises_when_database_service_not_initialized() -> 
         patch("viva_api.dependencies.get_database_service", return_value=None),
         pytest.raises(RuntimeError, match="Database service not initialized"),
     ):
-        await ComposeSimulationServiceRay()._resolve_commit(42)
+        await ComposeSimulationServiceRay(batch=RayBatchLayer())._resolve_commit(42)
 
 
 @pytest.mark.asyncio
@@ -236,8 +244,8 @@ async def test_submit_simulation_job_uses_the_unified_ray_num_nodes_setting(
         ),
     )
 
-    svc = ComposeSimulationServiceRay()
-    monkeypatch.setattr(svc._ray.batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
+    svc = ComposeSimulationServiceRay(batch=RayBatchLayer())
+    monkeypatch.setattr(svc._batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
 
     captured: dict[str, object] = {}
 
@@ -245,7 +253,7 @@ async def test_submit_simulation_job_uses_the_unified_ray_num_nodes_setting(
         captured.update(kwargs)
         return "batch-job-id"
 
-    monkeypatch.setattr(svc._ray.batch, "submit_mnp", _capture_submit_mnp)
+    monkeypatch.setattr(svc._batch, "submit_mnp", _capture_submit_mnp)
 
     fake_file_service = AsyncMock()
     fake_file_service.upload_file = AsyncMock()
@@ -292,7 +300,7 @@ async def test_submit_simulation_job_with_simulator_id_uses_the_resolved_per_com
         ),
     )
 
-    svc = ComposeSimulationServiceRay()
+    svc = ComposeSimulationServiceRay(batch=RayBatchLayer())
 
     captured_job_def_args: dict[str, str] = {}
 
@@ -301,7 +309,7 @@ async def test_submit_simulation_job_with_simulator_id_uses_the_resolved_per_com
         captured_job_def_args["commit"] = commit
         return "smscdk-ray-mnp:1"
 
-    monkeypatch.setattr(svc._ray.batch, "ensure_mnp_job_def", _capture_ensure_job_def)
+    monkeypatch.setattr(svc._batch, "ensure_mnp_job_def", _capture_ensure_job_def)
 
     captured_submit: dict[str, object] = {}
 
@@ -309,7 +317,7 @@ async def test_submit_simulation_job_with_simulator_id_uses_the_resolved_per_com
         captured_submit.update(kwargs)
         return "batch-job-id"
 
-    monkeypatch.setattr(svc._ray.batch, "submit_mnp", _capture_submit_mnp)
+    monkeypatch.setattr(svc._batch, "submit_mnp", _capture_submit_mnp)
 
     fake_file_service = AsyncMock()
     fake_file_service.upload_file = AsyncMock()
@@ -363,8 +371,8 @@ async def test_submit_simulation_job_with_explicit_num_nodes_overrides_the_deplo
         ),
     )
 
-    svc = ComposeSimulationServiceRay()
-    monkeypatch.setattr(svc._ray.batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
+    svc = ComposeSimulationServiceRay(batch=RayBatchLayer())
+    monkeypatch.setattr(svc._batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
 
     captured: dict[str, object] = {}
 
@@ -372,7 +380,7 @@ async def test_submit_simulation_job_with_explicit_num_nodes_overrides_the_deplo
         captured.update(kwargs)
         return "batch-job-id"
 
-    monkeypatch.setattr(svc._ray.batch, "submit_mnp", _capture_submit_mnp)
+    monkeypatch.setattr(svc._batch, "submit_mnp", _capture_submit_mnp)
 
     fake_file_service = AsyncMock()
     fake_file_service.upload_file = AsyncMock()
@@ -407,8 +415,8 @@ async def test_submit_simulation_job_omits_num_nodes_by_default(
         ),
     )
 
-    svc = ComposeSimulationServiceRay()
-    monkeypatch.setattr(svc._ray.batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
+    svc = ComposeSimulationServiceRay(batch=RayBatchLayer())
+    monkeypatch.setattr(svc._batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
 
     captured: dict[str, object] = {}
 
@@ -416,7 +424,7 @@ async def test_submit_simulation_job_omits_num_nodes_by_default(
         captured.update(kwargs)
         return "batch-job-id"
 
-    monkeypatch.setattr(svc._ray.batch, "submit_mnp", _capture_submit_mnp)
+    monkeypatch.setattr(svc._batch, "submit_mnp", _capture_submit_mnp)
 
     fake_file_service = AsyncMock()
     fake_file_service.upload_file = AsyncMock()
@@ -425,3 +433,48 @@ async def test_submit_simulation_job_omits_num_nodes_by_default(
         await svc.submit_simulation_job(simulation, experiment_id="exp-1")
 
     assert captured["num_nodes"] == 4
+
+
+# ------------------------------------------------------------------ the Batch layer is handed in
+
+
+class _StatusOnlyBatch:
+    """The one question ``get_job_status`` asks. Anything else compose touched would raise."""
+
+    def __init__(self, statuses: dict[str, JobStatus]) -> None:
+        self.statuses = statuses
+        self.asked: list[list[str]] = []
+
+    def get_batch_job_statuses(self, job_ids: list[str]) -> dict[str, JobStatus]:
+        self.asked.append(job_ids)
+        return {j: self.statuses[j] for j in job_ids if j in self.statuses}
+
+
+@pytest.mark.asyncio
+async def test_a_compose_job_status_is_what_the_batch_layer_says_or_none_when_it_does_not_know() -> None:
+    """Until P2.1 PR 6 this went through a whole ``SimulationServiceRay.get_job_status`` and had
+    no test of its own. A compose job id is always a Batch job id, so it asks the layer."""
+    batch = _StatusOnlyBatch({"job-1": JobStatus.COMPLETED, "job-2": JobStatus.RUNNING})
+    svc = ComposeSimulationServiceRay(batch=batch)  # type: ignore[arg-type]
+
+    assert await svc.get_job_status("job-1") == ComposeJobStatus.COMPLETED
+    assert await svc.get_job_status("job-2") == ComposeJobStatus.RUNNING
+    assert await svc.get_job_status("not-visible-yet") is None
+    assert batch.asked == [["job-1"], ["job-2"], ["not-visible-yet"]]
+
+
+def test_compose_is_handed_its_batch_layer_and_imports_no_simulation_service() -> None:
+    """The import contract that says this (``compose-is-domain-free``) is report-only, so the one
+    edge this PR removed is pinned here: compose names what it needs (``ComposeBatch``) and the
+    composition root provides it. Importing the simulation service -- or the layer's own
+    module -- from compose would put the edge back under another name."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(mod))
+    imported = {
+        node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module is not None
+    } | {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+    offenders = sorted(m for m in imported if m.endswith(("simulation_service_ray", "ray.batch_layer")))
+    assert not offenders, f"compose imports SMS's Batch plumbing again: {offenders}"
+    assert "batch" in inspect.signature(ComposeSimulationServiceRay.__init__).parameters

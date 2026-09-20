@@ -502,8 +502,12 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         compose_registry: dict[ComputeBackend, ComposeSimulationService] = {}
         if settings.ray_mnp_queue:
             from viva_api.compose.simulation_service_ray import ComposeSimulationServiceRay
+            from viva_api.simulation.ray.batch_layer import RayBatchLayer
 
-            compose_registry[ComputeBackend.RAY] = ComposeSimulationServiceRay()
+            # Compose names what it needs of Batch (``ComposeBatch``) and imports no SMS code to
+            # get it; this is the composition root, so this is where it is handed SMS's layer.
+            # The layer holds no state, so compose has its own rather than the Ray service's.
+            compose_registry[ComputeBackend.RAY] = ComposeSimulationServiceRay(batch=RayBatchLayer())
             logger.info("✓ Compose backend registered: ray (AWS Batch MNP)")
         if default_backend == ComputeBackend.SLURM:
             compose_registry[ComputeBackend.SLURM] = ComposeSimulationServiceHpc()

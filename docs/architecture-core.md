@@ -111,8 +111,9 @@ templates (`copasi`, `tellurium`, `ecoli`), and BioModels (`identifiers`, `metad
 Where it reaches into SMS:
 
 - `simulator_id` resolves against the SMS `simulator` table.
-- `ComposeSimulationServiceRay` instantiates `SimulationServiceRay` and calls four of its
-  private methods (`_image_uri`, `_ensure_mnp_job_def`, `_submit_mnp`, `_submit_container`).
+- `ComposeSimulationServiceRay` is **handed** a Batch layer (its own `ComposeBatch` Protocol;
+  `dependencies.py` provides SMS's `RayBatchLayer`). Until P2.1 PR 6 it instantiated a whole
+  `SimulationServiceRay` to call five Batch methods and one status lookup on it.
 - It stages a ParCa cache (`RayLayout.parca_cache_uri`) and imports `V2ECOLI_DIR`,
   `ANALYSIS_OUT_DIR`.
 - `analysis_options` chains a v2ecoli analysis job and **writes a row into the SMS
@@ -253,7 +254,7 @@ api.routers.env_worker       ──► compose
         ▲
 dependencies ──► api.routers.{compose,env_worker}, simulation, compose, common.*   (inverted)
 
-compose            ──► simulation (simulation_service_ray), dependencies, common.*
+compose            ──► simulation (ray.image_paths only, since P2.1 PR 6), dependencies, common.*
 compose.env_worker ──► common.hpc, config                                          (clean)
 simulation         ──► common.*, dependencies, analysis, compose (resources + schema_diff)
 common.handlers    ──► simulation (18 imports), analysis, app, dependencies

@@ -214,6 +214,10 @@ if it changes structure, moves the item from target to current in `architecture-
 and flips its delta row — in the same PR. A change of plan is a dated decision-log entry,
 not a silent rewrite. Core carries no domain terms (ecoli, parca, …) in its identifiers and
 never imports `viva_api` or `app`.
+Core also carries no `Any` (D12): `viva_core.*` is type-checked with `disallow_any_explicit` and
+`disallow_any_unimported` on top of `strict` (sequence PR 6b), so a module that moves into
+core arrives `Any`-free -- JSON is a `JsonValue` alias or a `TypedDict`, an untyped client is
+wrapped or stubbed.
 
 Two rules from the 2026-09-20 plan audit. **Choose a shape by what the thing *is*:** a common
 capability that works one way regardless of dispatch mechanism is a composed service (image
