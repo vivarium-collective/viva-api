@@ -185,7 +185,7 @@ def test_stop_is_idempotent_when_already_deleted(service: tuple[EnvWorkerService
     from kubernetes import client as k8s_client
 
     svc, k8s = service
-    k8s.delete_job.side_effect = k8s_client.rest.ApiException(status=404)
+    k8s.delete_job.side_effect = k8s_client.ApiException(status=404)
     svc.stop("env-worker-234dc76-shared")  # must not raise
 
 
@@ -193,8 +193,8 @@ def test_stop_propagates_a_real_failure(service: tuple[EnvWorkerService, MagicMo
     from kubernetes import client as k8s_client
 
     svc, k8s = service
-    k8s.delete_job.side_effect = k8s_client.rest.ApiException(status=403)
-    with pytest.raises(k8s_client.rest.ApiException):
+    k8s.delete_job.side_effect = k8s_client.ApiException(status=403)
+    with pytest.raises(k8s_client.ApiException):
         svc.stop("env-worker-234dc76-shared")
 
 
@@ -298,7 +298,7 @@ def test_job_already_exists_is_a_conflict_not_a_crash(
     from viva_api.compose.env_worker_service import EnvWorkerJobExists
 
     svc, k8s = service
-    k8s.create_job.side_effect = k8s_client.rest.ApiException(status=409)
+    k8s.create_job.side_effect = k8s_client.ApiException(status=409)
     with pytest.raises(EnvWorkerJobExists):
         svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN)
 

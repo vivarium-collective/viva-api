@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from viva_core.settings import get_core_settings
 
 
-class HPCFilePath(BaseModel):
+class HPCFilePath(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Represents a file path on the HPC remote system.
 
     Configuration via JSON in .env files:
@@ -78,7 +78,7 @@ class HPCFilePath(BaseModel):
         return HPCFilePath(remote_path=self.remote_path / other)
 
 
-class ScratchFilePath(BaseModel):
+class ScratchFilePath(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Represents a local scratch file path.
 
     Configuration via JSON in .env files:
@@ -104,7 +104,7 @@ class ScratchFilePath(BaseModel):
         return ScratchFilePath(local_path=self.local_path / other)
 
 
-class S3FilePath(BaseModel):
+class S3FilePath(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Represents an S3 file path without the bucket.
 
     Configuration via JSON in .env files:

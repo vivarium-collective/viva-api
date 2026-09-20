@@ -145,7 +145,7 @@ class EnvWorkerService:
         )
         try:
             self._k8s.create_job(job)
-        except k8s_client.rest.ApiException as e:
+        except k8s_client.ApiException as e:
             if e.status == 409:
                 raise EnvWorkerJobExists(f"env-worker Job {job_name} already exists or is terminating") from e
             raise
@@ -181,7 +181,7 @@ class EnvWorkerService:
         """Delete the Job (foreground propagation kills the pod). Idempotent."""
         try:
             self._k8s.delete_job(job_name)
-        except k8s_client.rest.ApiException as e:
+        except k8s_client.ApiException as e:
             if e.status != 404:
                 raise
             logger.info("env-worker Job %s already gone", job_name)

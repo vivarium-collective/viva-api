@@ -195,7 +195,7 @@ _BATCH_STATE_MAP: dict[str, JobStatus] = {
 }
 
 
-class DataId(BaseModel):
+class DataId(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     scope: str
     label: str
     timestamp: str

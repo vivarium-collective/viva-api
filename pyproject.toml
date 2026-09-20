@@ -103,6 +103,7 @@ dev = [
     "types-python-dateutil>=2.9.0.20251115",
     "import-linter>=2.15",
     "types-boto3[batch,ecr,logs,s3]>=1.40,<2",
+    "kubernetes-stubs-elephant-fork>=36.0.3.post1",
 ]
 docs = [
     "sphinx>=8.2.3,<10",
@@ -150,8 +151,32 @@ strict = true
 exclude = ['^notes/', '^viva_api/api/client/.*', '^app/ui/.*', '^app/gui\\.py$', '^app/tui\\.py$', '^sms_api/.*']
 
 [[tool.mypy.overrides]]
-module = ["kubernetes.*", "textual", "textual.*", "process_bigraph", "process_bigraph.*", "bigraph_schema", "bigraph_schema.*", "pbg_emitters", "pbg_emitters.*", "viva_emitters", "viva_emitters.*", "v2ecoli", "v2ecoli.*", "biosimulators_utils.*", "libsedml.*", "libsbml.*", "spython.*", "nats.*", "biomodels", "biomodels.*", "fsspec", "fsspec.*", "pyarrow", "pyarrow.*"]
+module = ["textual", "textual.*", "process_bigraph", "process_bigraph.*", "bigraph_schema", "bigraph_schema.*", "pbg_emitters", "pbg_emitters.*", "viva_emitters", "viva_emitters.*", "v2ecoli", "v2ecoli.*", "biosimulators_utils.*", "libsedml.*", "libsbml.*", "spython.*", "nats.*", "biomodels", "biomodels.*", "fsspec", "fsspec.*", "pyarrow", "pyarrow.*"]
 ignore_missing_imports = true
+
+# D12 (docs/plan-core.md): core carries no `Any`. `strict` does not forbid `Any`; these two flags
+# do. `viva_core.*` is a GLOB on purpose -- a module that moves into core later comes under the
+# ban the day it moves. The ray package is listed BY NAME until the dispatch strategies have
+# landed (plan sequence PR 12 widens it to `viva_api.simulation.ray.*`): those PRs move code
+# and are proven by AST identity, which an annotation change would break.
+# tests/core/test_no_any_in_core.py fails if a ray module is neither listed here nor named there.
+[[tool.mypy.overrides]]
+module = [
+    "viva_core",
+    "viva_core.*",
+    "viva_api.simulation.ray",
+    "viva_api.simulation.ray._seams",
+    "viva_api.simulation.ray.analysis_spec",
+    "viva_api.simulation.ray.batch_layer",
+    "viva_api.simulation.ray.build",
+    "viva_api.simulation.ray.config_interpretation",
+    "viva_api.simulation.ray.image_paths",
+    "viva_api.simulation.ray.parca",
+    "viva_api.simulation.ray.parca_spec",
+    "viva_api.simulation.ray.tasks",
+]
+disallow_any_explicit = true
+disallow_any_unimported = true
 
 [[tool.mypy.overrides]]
 module = ["app.tui", "app.gui"]

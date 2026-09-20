@@ -86,7 +86,7 @@ class TestGetJobBackend:
 
 class TestK8sJobService:
     def test_get_job_status_not_found(self) -> None:
-        from kubernetes.client.rest import ApiException
+        from kubernetes.client import ApiException
 
         service = MagicMock(spec=K8sJobService)
         service._namespace = "test-ns"

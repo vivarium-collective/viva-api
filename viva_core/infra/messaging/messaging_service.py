@@ -2,7 +2,6 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from typing import Any
 
 # Type alias for message handler callbacks
 MessageHandler = Callable[[bytes], Awaitable[None]]
@@ -12,13 +11,12 @@ class MessagingService(ABC):
     """Abstract base class for messaging services (Redis, etc.)."""
 
     @abstractmethod
-    async def connect(self, host: str, port: int, **kwargs: Any) -> None:
+    async def connect(self, host: str, port: int) -> None:
         """Connect to the messaging service.
 
         Args:
             host: Connection host for the messaging service
             port: Connection port for the messaging service
-            **kwargs: Additional connection parameters
         """
         pass
 

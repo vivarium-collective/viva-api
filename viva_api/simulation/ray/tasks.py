@@ -21,7 +21,7 @@ import re
 import shlex
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from viva_api.common.models import JobStatus
 from viva_api.simulation.database_service import DatabaseService
@@ -30,6 +30,10 @@ from viva_api.simulation.ray import _seams
 from viva_api.simulation.ray.batch_layer import ContainerSubmitter, _rand_suffix
 from viva_api.simulation.ray.image_paths import TASK_OUT_DIR, TASK_STAGE_DIR
 from viva_api.simulation.tables_orm import TaskStatusDB
+
+if TYPE_CHECKING:
+    # a dev dependency (annotations only): never imported at runtime
+    from types_boto3_batch import BatchClient
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +53,7 @@ class TaskBatch(ContainerSubmitter, Protocol):
 
     def get_batch_job_statuses(self, job_ids: list[str]) -> dict[str, JobStatus]: ...
 
-    def client(self) -> Any: ...
+    def client(self) -> "BatchClient": ...
 
     def resolve_log_group(self, job_definition: str | None) -> str | None: ...
 

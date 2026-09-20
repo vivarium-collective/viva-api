@@ -23,6 +23,10 @@ TYPED_MODULES = (
     "viva_api.simulation.batch_build",
     "viva_api.simulation.simulation_service_ray",
     "viva_api.simulation.simulation_service_k8s",
+    # typed in PR 6b (D12)
+    "viva_api.simulation.ray.tasks",
+    "viva_core.storage.file_service_qumulo_s3",
+    "viva_core.backends.k8s_job_service",
 )
 
 

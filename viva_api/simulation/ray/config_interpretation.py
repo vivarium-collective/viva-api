@@ -15,7 +15,6 @@ there only because that was where everything sat.
 """
 
 import logging
-from typing import Any
 
 from viva_api.simulation.models import CompositeEngine
 
@@ -33,7 +32,7 @@ def _is_upstream_vecoli(composite: CompositeEngine | None) -> bool:
     return composite == "vecoli"
 
 
-def strain_from_config(config: Any) -> tuple[str | None, str | None]:
+def strain_from_config(config: object) -> tuple[str | None, str | None]:
     """Return ``(new_genes, bundle_overrides)`` — the strain a run requested — from
     a config's ``parca_options``, or ``(None, None)`` for a wild-type/unset build.
 
@@ -44,7 +43,7 @@ def strain_from_config(config: Any) -> tuple[str | None, str | None]:
     """
     parca_options = getattr(config, "parca_options", None)
 
-    def _norm(value: Any) -> str | None:
+    def _norm(value: object) -> str | None:
         # bundle_overrides can now be a list (multiple stacked --bundle-overrides
         # flags, see ParcaOptions.bundle_overrides) -- joined with "," for this
         # single EXPECT_* env-var string. No consumer reads *_EXPECT_BUNDLE_
@@ -63,7 +62,7 @@ def strain_from_config(config: Any) -> tuple[str | None, str | None]:
     )
 
 
-def injected_processes_from_config(config: Any) -> dict[str, Any] | None:
+def injected_processes_from_config(config: object) -> dict[str, object] | None:
     """Build ``ecoli_baseline.baseline()``'s own ``injected_processes`` kwarg
     (backlog item 93) from a legacy config's ``swap_processes``/
     ``add_processes``/``exclude_processes`` -- real ``ExperimentRequest``
@@ -106,7 +105,7 @@ def injected_processes_from_config(config: Any) -> dict[str, Any] | None:
     # independently -- the nested value wins when set, else fall back to flat --
     # so a caller sending only ``swap_processes`` keeps the config's own
     # ``add_processes``/``exclude_processes`` rather than losing them.
-    def _read(src: Any, key: str, default: Any) -> Any:
+    def _read(src: object, key: str, default: object) -> object:
         if isinstance(src, dict):
             return src.get(key) or default
         return getattr(src, key, None) or default
@@ -162,7 +161,7 @@ def injected_processes_from_config(config: Any) -> dict[str, Any] | None:
     # replacement for it, so this stays byte-identical for the flat/legacy
     # shape (nothing to carry through there) and for any nested submit that
     # never set the four keys to begin with.
-    result: dict[str, Any] = dict(nested) if isinstance(nested, dict) and nested_has_intent else {}
+    result: dict[str, object] = dict(nested) if isinstance(nested, dict) and nested_has_intent else {}
     result.update({
         "swap_processes": swap_processes,
         "add_processes": add_processes,
@@ -172,7 +171,7 @@ def injected_processes_from_config(config: Any) -> dict[str, Any] | None:
     return result
 
 
-def _thread_injected_processes_into_params(params: dict[str, Any], config: Any) -> None:
+def _thread_injected_processes_into_params(params: dict[str, object], config: object) -> None:
     """Thread the config's own injection intent into a multi-node composite's params.
 
     sms-ecoli#166 (2026-09-09): a config's top-level ``swap_processes`` /
@@ -198,13 +197,13 @@ def _thread_injected_processes_into_params(params: dict[str, Any], config: Any) 
 
 def _batch_domain_overrides(
     *,
-    injected_processes: dict[str, Any] | None = None,
-    variants: dict[str, Any] | None = None,
-    config_overrides: dict[str, Any] | None = None,
-    features: list[Any] | None = None,
-    exchange_fluxes: dict[str, Any] | None = None,
+    injected_processes: dict[str, object] | None = None,
+    variants: dict[str, object] | None = None,
+    config_overrides: dict[str, object] | None = None,
+    features: list[object] | None = None,
+    exchange_fluxes: dict[str, object] | None = None,
     exchange_flux_basis: str | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """The submitted config's DOMAIN fields as ``ecoli_baseline.baseline()``'s own
     batch-mode ``--overrides`` keys (the CD2 native seam).
 
@@ -217,7 +216,7 @@ def _batch_domain_overrides(
     chain-dispatch passthrough. ``exchange_flux_basis`` rides only alongside a flux
     map (the composite defaults it to "").
     """
-    out: dict[str, Any] = {}
+    out: dict[str, object] = {}
     if injected_processes:
         out["injected_processes"] = injected_processes
     if variants:

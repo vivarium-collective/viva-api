@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Any
+from collections.abc import Mapping
 from urllib.parse import quote
 
 __all__ = [
@@ -100,7 +100,7 @@ def parse_traceparent(value: str) -> tuple[str, str] | None:
     return match.group(1), match.group(2)
 
 
-def baggage(fields: dict[str, Any]) -> str:
+def baggage(fields: Mapping[str, object]) -> str:
     """W3C ``baggage``-style ``key=value,key=value``; ``None`` values are skipped.
 
     Percent-encodes everything outside ``[A-Za-z0-9._~-]`` so the result is safe
@@ -111,18 +111,18 @@ def baggage(fields: dict[str, Any]) -> str:
     return ",".join(parts)
 
 
-def _str_setting(settings: Any, name: str) -> str | None:
+def _str_setting(settings: object, name: str) -> str | None:
     """A settings attribute only if it is a real string (tests use MagicMock settings)."""
     value = getattr(settings, name, None)
     return value if isinstance(value, str) else None
 
 
-def _int_setting(settings: Any, name: str, default: int) -> int:
+def _int_setting(settings: object, name: str, default: int) -> int:
     value = getattr(settings, name, None)
     return value if isinstance(value, int) and not isinstance(value, bool) else default
 
 
-def events_s3_prefix(settings: Any, experiment_id: str) -> str | None:
+def events_s3_prefix(settings: object, experiment_id: str) -> str | None:
     """Where a run's ``events.jsonl`` objects go, or ``None`` when S3 events are off.
 
     ``Settings.events_s3_prefix`` is a template with ``{experiment_id}``; empty means
@@ -147,9 +147,9 @@ def events_env(
     correlation_id: str | None,
     experiment_id: str,
     backend: str,
-    settings: Any,
+    settings: object,
     sim_id: int | str | None = None,
-    tags: dict[str, Any] | None = None,
+    tags: Mapping[str, object] | None = None,
     analysis_id: int | str | None = None,
 ) -> dict[str, str]:
     """The ``PBG_*`` identity env for one dispatch. Empty when events are disabled.
@@ -182,8 +182,27 @@ def events_env(
     return env
 
 
-def with_events_env(task_env: dict[str, str] | None, **kwargs: Any) -> dict[str, str]:
-    """``events_env(**kwargs)`` merged UNDER ``task_env`` (the request's values win)."""
-    merged = events_env(**kwargs)
+def with_events_env(
+    task_env: dict[str, str] | None,
+    *,
+    correlation_id: str | None,
+    experiment_id: str,
+    backend: str,
+    settings: object,
+    sim_id: int | str | None = None,
+    tags: Mapping[str, object] | None = None,
+    analysis_id: int | str | None = None,
+) -> dict[str, str]:
+    """``events_env(...)`` merged UNDER ``task_env`` (the request's values win). The keywords are
+    ``events_env``'s own, spelled out: ``**kwargs: Any`` would accept a misspelled one."""
+    merged = events_env(
+        correlation_id=correlation_id,
+        experiment_id=experiment_id,
+        backend=backend,
+        settings=settings,
+        sim_id=sim_id,
+        tags=tags,
+        analysis_id=analysis_id,
+    )
     merged.update(task_env or {})
     return merged

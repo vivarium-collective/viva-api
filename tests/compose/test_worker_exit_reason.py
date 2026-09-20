@@ -16,6 +16,7 @@ jsonpath` revealed `OOMKilled (exit 137)` — a 2Gi limit, not a bug in the stud
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -74,7 +75,8 @@ def test_an_unreachable_api_yields_nothing_rather_than_raising() -> None:
     from kubernetes import client as k8s_client
 
     svc = _service([])
-    svc._core_api.list_namespaced_pod.side_effect = k8s_client.rest.ApiException(status=403)
+    core_api = cast(MagicMock, svc._core_api)  # ``_service`` installs a mock; the attribute is typed as the real client
+    core_api.list_namespaced_pod.side_effect = k8s_client.ApiException(status=403)
     assert svc.get_pod_termination(JOB) is None
 
 

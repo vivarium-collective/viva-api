@@ -22,7 +22,8 @@ It is SMS code and stays SMS code: scales, generations and the sizing copied fro
 image are all domain knowledge. Nothing is re-exported from the old location.
 """
 
-from typing import Any
+from collections.abc import Mapping
+from typing import cast
 
 from pydantic import BaseModel
 
@@ -66,7 +67,7 @@ _ANALYSIS_MULTI_CELL_SCALES = frozenset({"multigeneration", "multiseed"})
 
 
 def analysis_memory_class(
-    analysis_options: dict[str, Any] | str | None,
+    analysis_options: Mapping[str, object] | str | None,
     *,
     n_seeds: int | None = None,
     n_generations: int | None = None,
@@ -78,7 +79,7 @@ def analysis_memory_class(
     params}}`` shape, e.g. from ``analysis_modules_for``) and the sweep's
     ``n_generations``. Generations drive the per-lineage peak; ``n_seeds`` is
     accepted for interface parity with v2ecoli's function but the chunked readers
-    make it a non-factor. Any multiseed/multigeneration analysis over enough
+    make it a non-factor. object multiseed/multigeneration analysis over enough
     generations routes the whole job to the large instance; everything else stays
     standard. Mirrors ``v2ecoli.workflow.analysis_runner.analysis_memory_class``
     -- see the note above on why sms-api keeps a local copy."""
@@ -93,7 +94,7 @@ def analysis_memory_class(
     return "standard"
 
 
-def analysis_modules_for(config: Any) -> dict[str, dict[str, Any]] | str:
+def analysis_modules_for(config: object) -> dict[str, dict[str, object]] | str:
     """The analyses the analysis DAG node should run for this simulation.
 
     Reads the simulation's OWN ``config.analysis_options`` — the field the run
@@ -107,8 +108,11 @@ def analysis_modules_for(config: Any) -> dict[str, dict[str, Any]] | str:
     nothing" — which resolves to the ``applicable`` keyword like any other
     unset case.
     """
-    options: Any = getattr(config, "analysis_options", None)
-    raw: dict[str, Any] = options.model_dump() if isinstance(options, BaseModel) else dict(options or {})
+    options: object = getattr(config, "analysis_options", None)
+    # ``cast``, not a narrowing branch: what ``dict(...)`` accepts or refuses here is unchanged.
+    raw: dict[str, object] = (
+        options.model_dump() if isinstance(options, BaseModel) else dict(cast("Mapping[str, object]", options or {}))
+    )
     modules = {
         scale: dict(entries)
         for scale, entries in raw.items()

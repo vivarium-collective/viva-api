@@ -4,7 +4,6 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
 
 import asyncssh
 from asyncssh import SSHCompletedProcess
@@ -130,7 +129,7 @@ class SSHSession:
 
         raise RuntimeError(f"SSH command failed after {self._max_retries} retries") from last_exc
 
-    async def scp_upload(self, local_file: Path, remote_path: HPCFilePath, **kwargs: Any) -> None:
+    async def scp_upload(self, local_file: Path, remote_path: HPCFilePath) -> None:
         """Upload a file to the remote host via SCP with automatic reconnection.
 
         :param local_file: Path to the local file
@@ -141,7 +140,7 @@ class SSHSession:
 
         for attempt in range(self._max_retries + 1):
             try:
-                await asyncssh.scp(local_file, (self._conn, remote_path.remote_path), **kwargs)
+                await asyncssh.scp(local_file, (self._conn, remote_path.remote_path))
                 logger.info(f"Uploaded {local_file} -> {remote_path}")
                 return
 
