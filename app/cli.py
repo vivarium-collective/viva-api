@@ -3021,6 +3021,15 @@ def smoke_run(
         default="scripts/build_cache.py",
         help="`task-repo`: a script that exists in the image, run with --help; its log must contain 'usage:'.",
     ),
+    build_simulator_id: int | None = Option(
+        default=None,
+        help="Enables `build`: REBUILD this simulator's image (force) and verify the registry received it. "
+        "~20 min; the API refuses simulations on that simulator meanwhile. Runs before tier 2.",
+    ),
+    ecr_repository: str = Option(default="v2ecoli", help="`build`: the ECR repository the image is pushed to."),
+    mbp_variant: str = Option(
+        default="baseline-reference-multigen", help="`sim-mbp`: the run_mbp_tracked.py variant to dispatch."
+    ),
     aws_region: str | None = Option(
         default=None,
         help="Region for the cancel checks' look at AWS Batch (default: AWS_DEFAULT_REGION / the profile's). "
@@ -3058,8 +3067,19 @@ def smoke_run(
             batch_jobs = smoke.AwsBatchJobLister(region=aws_region)
         except Exception as e:
             batch_unavailable = f"{type(e).__name__}: {str(e)[:160]}"
+    image_pushed_at = None
+    registry_unavailable = "no build check selected"
+    if build_simulator_id is not None and any(check.name in smoke.NEEDS_REGISTRY_ACCESS for check in checks):
+        try:
+            image_pushed_at = smoke.AwsImagePushedAt(ecr_repository, region=aws_region)
+        except Exception as e:
+            registry_unavailable = f"{type(e).__name__}: {str(e)[:160]}"
     options = smoke.SmokeOptions(
         repo_script=repo_script,
+        mbp_variant=mbp_variant,
+        build_simulator_id=build_simulator_id,
+        image_pushed_at=image_pushed_at,
+        image_pushed_at_unavailable=registry_unavailable,
         active_batch_jobs=batch_jobs,
         active_batch_jobs_unavailable=batch_unavailable,
         commit=commit,

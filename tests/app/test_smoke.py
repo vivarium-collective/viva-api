@@ -12,6 +12,7 @@ import io
 import json
 import tarfile
 import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -72,6 +73,9 @@ class FakeService:
         self.task_refs_reach_container = True
         self.repo_tasks: list[Any] = []
         self.cancelled: list[int] = []
+        self.uploads: list[tuple[Any, bool]] = []
+        self.rebuilt_as: int | None = None  # None = the same simulator id, as a real forced rebuild
+        self.build_statuses = ["running", "completed"]
         self.cancel_answer = "cancelled"
         self.nextflow_task_states = ["COMPLETED", "COMPLETED"]
         self.output_seed_summaries = 2
@@ -86,7 +90,10 @@ class FakeService:
                 database_id=1, git_repo_url="https://github.com/CovertLabEcoli/vEcoli-private", git_commit_hash="aaa"
             ),
             SimpleNamespace(
-                database_id=7, git_repo_url="https://github.com/CovertLabEcoli/sms-ecoli", git_commit_hash="new"
+                database_id=7,
+                git_repo_url="https://github.com/CovertLabEcoli/sms-ecoli",
+                git_commit_hash="new",
+                git_branch="main",
             ),
             SimpleNamespace(
                 database_id=3, git_repo_url="https://github.com/vivarium-collective/v2ecoli", git_commit_hash="old"
@@ -107,6 +114,13 @@ class FakeService:
         self.task_commit = commit
         self.submitted_refs = sim_data_refs
         return SimpleNamespace(database_id=42)
+
+    def submit_upload_simulator(self, simulator: Any, force: bool = False) -> Any:
+        self.uploads.append((simulator, force))
+        return SimpleNamespace(database_id=7 if self.rebuilt_as is None else self.rebuilt_as)
+
+    def get_simulator_status(self, simulator_id: int) -> str:
+        return self.build_statuses.pop(0) if len(self.build_statuses) > 1 else self.build_statuses[0]
 
     def run_task(self, request: Any) -> Any:
         self.repo_tasks.append(request)
@@ -989,3 +1003,125 @@ def test_the_batch_lister_finds_a_parca_job_by_its_experiment_tag() -> None:
             return {"jobs": [{"jobId": j, "jobName": f"ray-parca-{j}", "tags": tags[j]} for j in kw["jobs"]]}
 
     assert [job["jobId"] for job in smoke.AwsBatchJobLister(client=Client())("TOKEN")] == ["p"]
+
+
+# ------------------------------------------------------------------ sim-mbp
+
+
+def test_sim_mbp_dispatches_the_reference_variant_briefly_and_needs_output() -> None:
+    svc = FakeService()
+    result = _run("sim-mbp", svc)
+    assert result.outcome is smoke.Outcome.PASS, result.detail
+    dispatch = svc.workflows[0]["extra_params"]["mbp_dispatch"]
+    assert dispatch == {"variant": "baseline-reference-multigen", "duration_sec": 60, "max_generations": 1}
+    assert svc.workflows[0]["num_generations"] is None  # the dispatch block selects the path, not the counts
+
+
+def test_sim_mbp_fails_when_the_run_completes_and_leaves_nothing() -> None:
+    """The bug this mechanism exists to fix: three hours of run, zero retrievable output."""
+    svc = FakeService()
+    svc.output_seed_summaries = 0
+
+    def empty_output(simulation_id: int, dest: Path) -> Path:
+        root = dest / "experiment"
+        root.mkdir(parents=True)
+        return root
+
+    svc.get_output_data_sync = empty_output  # type: ignore[method-assign]
+    result = _run("sim-mbp", svc)
+    assert result.outcome is smoke.Outcome.FAIL
+    assert "output is empty" in result.detail
+
+
+# ------------------------------------------------------------------ build
+
+
+class FakeRegistry:
+    """``image_pushed_at``: the tag's push time moves forward only if a build really pushed."""
+
+    def __init__(self, svc: FakeService, *, pushes: bool = True, present: bool = True) -> None:
+        self.svc, self.pushes, self.present = svc, pushes, present
+        self.before = datetime(2026, 9, 1, tzinfo=UTC)
+        self.after = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+
+    def __call__(self, tag: str) -> datetime | None:
+        if not self.present:
+            return None
+        return self.after if (self.svc.uploads and self.pushes) else self.before
+
+
+def _build_opts(registry: FakeRegistry | None, **overrides: Any) -> dict[str, Any]:
+    return {
+        "build_simulator_id": 7,
+        "image_pushed_at": registry,
+        "now": lambda: datetime(2026, 9, 20, 11, 0, tzinfo=UTC),
+        **overrides,
+    }
+
+
+def test_build_is_opt_in_and_skips_without_a_view_of_the_registry() -> None:
+    svc = FakeService()
+    assert _run("build", svc).outcome is smoke.Outcome.SKIP
+    result = _run("build", svc, **_build_opts(None, image_pushed_at_unavailable="NoCredentialsError: none"))
+    assert result.outcome is smoke.Outcome.SKIP
+    assert "NoCredentialsError" in result.detail
+    assert svc.uploads == []
+
+
+def test_build_forces_a_rebuild_of_that_simulator_and_passes_on_a_newer_push() -> None:
+    svc = FakeService()
+    result = _run("build", svc, **_build_opts(FakeRegistry(svc)))
+    assert result.outcome is smoke.Outcome.PASS, result.detail
+    [(simulator, force)] = svc.uploads
+    assert force is True
+    assert (simulator.git_commit_hash, simulator.git_branch) == ("new", "main")
+    assert result.evidence["pushed_before"] < result.evidence["pushed_after"]
+
+
+def test_build_fails_when_the_api_says_completed_and_the_registry_saw_no_push() -> None:
+    """COMPLETED can be last week's build. Only the registry knows whether anything was built."""
+    svc = FakeService()
+    result = _run("build", svc, **_build_opts(FakeRegistry(svc, pushes=False)))
+    assert result.outcome is smoke.Outcome.FAIL
+    assert "nothing was built" in result.detail
+    assert result.evidence["simulator_id"] == 7
+
+
+def test_build_fails_when_the_build_fails_or_the_tag_is_missing() -> None:
+    svc = FakeService()
+    svc.build_statuses = ["failed"]
+    assert _run("build", svc, **_build_opts(FakeRegistry(svc))).outcome is smoke.Outcome.FAIL
+
+    svc = FakeService()
+    result = _run("build", svc, **_build_opts(FakeRegistry(svc, present=False)))
+    assert result.outcome is smoke.Outcome.FAIL
+    assert "has no image tagged new" in result.detail
+
+
+def test_build_refuses_an_unknown_simulator_and_a_rebuild_that_changes_identity() -> None:
+    svc = FakeService()
+    unknown = _run("build", svc, **_build_opts(FakeRegistry(svc), build_simulator_id=999))
+    assert unknown.outcome is smoke.Outcome.FAIL and "not registered" in unknown.detail
+    assert svc.uploads == []
+
+    svc.rebuilt_as = 8
+    assert "came back as simulator 8" in _run("build", svc, **_build_opts(FakeRegistry(svc))).detail
+
+
+def test_the_registry_inspector_reads_a_tags_push_time_and_none_when_absent() -> None:
+    class ImageNotFoundException(Exception):
+        pass
+
+    class Client:
+        def describe_repositories(self, **kw: Any) -> dict[str, Any]:
+            return {}
+
+        def describe_images(self, **kw: Any) -> dict[str, Any]:
+            tag = kw["imageIds"][0]["imageTag"]
+            if tag == "gone":
+                raise ImageNotFoundException
+            return {"imageDetails": [{"imagePushedAt": datetime(2026, 9, 20, 12, 0)}]}  # naive, as boto3 can return
+
+    inspect = smoke.AwsImagePushedAt("v2ecoli", client=Client())
+    assert inspect("abc") == datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+    assert inspect("gone") is None

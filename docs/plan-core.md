@@ -262,7 +262,7 @@ P2.0a guard caught. So:
   | PR | what | why here |
   |---|---|---|
   | 1 | **docs truth** (#719) | both living documents made true before more work |
-  | 2 | smoke: `sim-mbp` and an opt-in `build` check; then deploy the merged-but-undeployed build cuts (**C2**) | no check builds an image or exercises mbp, and both are about to be rewired |
+  | 2 | smoke: `sim-mbp` and an opt-in `build` check (**this PR**); then deploy the merged-but-undeployed build cuts (**C2**) | no check builds an image or exercises mbp, and both are about to be rewired |
   | 3 | reshape #715: pure `ray/analysis_spec.py` + the static-guard glob fix; the two analysis submitters stay in the class until their mechanisms move; `service.analysis` kept as a delegating shim for `job_scheduler.py` | analysis is a spec + a pattern + per-mechanism glue, not one service |
   | 4 | ParCa: commands and cache URIs → a pure module; `RayParcaService` holds only the three cache jobs | half of it is pure; only the cache jobs work one way |
   | 5 | **`RayBatchLayer` stops being a base class** and becomes a composed `service.batch`, behind two small SMS Protocols, `ContainerSubmitter` and `MnpSubmitter`, replacing `TaskDispatch` / `AnalysisDispatch`. `local` and `k8s` are constructor arguments of the strategies that need them, never Protocol members | done **first**, so every strategy is handed a real object; done last, each strategy would be rewired twice (~80 call sites, ~24 `patch.object`) |
@@ -579,8 +579,8 @@ is reported separately from PASS and says why; `--json-out` is the record a rele
 | Tier | Cost | What it proves |
 |---|---|---|
 | 0 | seconds, free, read-only | `/version` = `/health`; every spec operation is served; capabilities; the relay is routed and live (JSON 404, not the gateway's HTML); the database-backed list endpoints; an events read |
-| 1 | minutes, cents | one tiny real dispatch per mechanism: a container **task** (uploaded script; the nonce *and* the `sim_data_refs` it was given must come back in its log); **`task-fail`** (a script that exits 3 must be reported FAILED, with proof in its log that it ran); **`task-repo`** (a script already in the image, by repo path — the other entry point); a relayed env **worker** (a K8s Job) + a task on its task tier, always stopped; a five-step **composite** that must return 1.1^5; opt-in: a standalone **analysis** (`--simulation-id`), a **BioModels** run (`--biomodel`) |
-| 2 | tens of minutes, dollars | **one real simulation per dispatch mechanism**, submitted the way a real client selects each and run **concurrently**: `sim-default` (1 seed x 1 generation), `sim-chain` (2 x 2 — more than one generation is what selects chain dispatch; every seed must have succeeded), `sim-nextflow` (`extra_params.nextflow_dispatch`; every traced task completed), `sim-composite` (`extra_params.multi_node_dispatch`). Each must show **output**, not just COMPLETED. Three more **cancel** what they submit — `sim-cancel` (the run's ParCa job, then its own), `chain-cancel` (a 2 x 2 campaign cancelled in its ParCa phase, where no seed has a job yet) and `nextflow-cancel` (head Job deleted; tasks stopped by Nextflow's hook or the scheduler's reaper) — and assert on **AWS Batch itself**, with the operator's own read-only credentials, that no job carrying the run's experiment id is still active: the API cannot be the witness, because the cancel handler writes CANCELLED to its own row whether or not anything stopped. Without AWS access they SKIP, before submitting anything. Not covered: an image build, and the upstream K8s + Nextflow path (`scripts/qualification_test.sh` stays the check for that) |
+| 1 | minutes, cents | one tiny real dispatch per mechanism: a container **task** (uploaded script; the nonce *and* the `sim_data_refs` it was given must come back in its log); **`task-fail`** (a script that exits 3 must be reported FAILED, with proof in its log that it ran); **`task-repo`** (a script already in the image, by repo path — the other entry point); opt-in **`build`** (`--build-simulator-id`: force a rebuild of that simulator's image and pass only when the **registry** shows a push newer than the check's start — the API would answer COMPLETED from last week's build; ~20 min, and it runs before Tier 2 so the simulations then run on the image it built); a relayed env **worker** (a K8s Job) + a task on its task tier, always stopped; a five-step **composite** that must return 1.1^5; opt-in: a standalone **analysis** (`--simulation-id`), a **BioModels** run (`--biomodel`) |
+| 2 | tens of minutes, dollars | **one real simulation per dispatch mechanism**, submitted the way a real client selects each and run **concurrently**: `sim-default` (1 seed x 1 generation), `sim-chain` (2 x 2 — more than one generation is what selects chain dispatch; every seed must have succeeded), `sim-nextflow` (`extra_params.nextflow_dispatch`; every traced task completed), `sim-composite` (`extra_params.multi_node_dispatch`), `sim-mbp` (`extra_params.mbp_dispatch`: the reference variant of `run_mbp_tracked.py` for one simulated minute — the mechanism exists so that output *survives the container*, so that is what is asserted). Each must show **output**, not just COMPLETED. Three more **cancel** what they submit — `sim-cancel` (the run's ParCa job, then its own), `chain-cancel` (a 2 x 2 campaign cancelled in its ParCa phase, where no seed has a job yet) and `nextflow-cancel` (head Job deleted; tasks stopped by Nextflow's hook or the scheduler's reaper) — and assert on **AWS Batch itself**, with the operator's own read-only credentials, that no job carrying the run's experiment id is still active: the API cannot be the witness, because the cancel handler writes CANCELLED to its own row whether or not anything stopped. Without AWS access they SKIP, before submitting anything. Not covered: the upstream K8s + Nextflow path (`scripts/qualification_test.sh` stays the check for that) |
 | R (`--tier 3`) | minutes | a task is put in flight, the deployment is restarted with the operator's own `--restart-command` (`scripts/smoke_restart_k8s.sh`), `/version` must be unchanged and the task must still resolve with its output. Status that lives only in a pod's memory fails this. The shutdown order in the terminated pod's log is still read by hand |
 
 Required: **A** = 0 + `task`. **A2** = 0 + 1 + an outputs download. **B** = 0 + 1. **C1**, **C1**, **C2**, **C3**, **C** = 0 + 1 + 2 (P2.1 is the first change that
@@ -643,8 +643,8 @@ split; each has an owner-less issue or a named moment.
 
 | Item | Where | When |
 |---|---|---|
-| An image build has never been exercised by any smoke tier, and the build path was rewired in cut 4 and #714 (merged, undeployed) | PR 2: an opt-in `build` smoke check | before checkpoint C2 |
-| `mbp_dispatch` has no smoke check | PR 2: `sim-mbp` | before the mbp-tracked strategy (PR 7) |
+| An image build had never been exercised by any smoke tier, and the build path was rewired in cut 4 and #714 (merged, undeployed) | **done**: the opt-in `build` check (this PR) | run it at checkpoint C2 |
+| `mbp_dispatch` had no smoke check | **done**: `sim-mbp` (this PR) | baseline before the mbp-tracked strategy (PR 7) |
 | compose on Ray / Batch accepts `extra_pip_deps` and never installs them | #716 | refuse now, or honour in P5 |
 | compose on SLURM: a FAILED container build suppresses every later rebuild | #717 | folded into the P5 resolver; live in `compose-api` |
 | 153 simulation runs stuck RUNNING on dev | #718 | — |
@@ -680,6 +680,18 @@ split; each has an owner-less issue or a named moment.
 
 ## Decision log
 
+- **2026-09-20** — **PR 2: the two smoke checks the carve needs before it goes on.** `sim-mbp`
+  (Tier 2) and an opt-in `build` (Tier 1). Design points for `build`: (1) like the cancel
+  checks it asserts on the **outside world**, here the image registry: a forced rebuild's
+  status endpoint answers COMPLETED from whatever build ran last, so the check passes only
+  when ECR shows `<repository>:<commit>` pushed *after* the check began. (2) It is opt-in by
+  naming the simulator (`--build-simulator-id`), because for ~20 minutes the API refuses
+  simulations on a simulator that is rebuilding, and because it overwrites that commit's tag
+  with a fresh build of the same commit (the recipe pushes only `<sha>`; the comments that
+  say it also moves `:latest` are stale — it would need `-t`). (3) It sits in Tier 1, which
+  finishes before Tier 2 starts, so the simulations then run on the image it just built —
+  the strongest proof a rewired build path can get. (4) No registry access ⇒ SKIP before
+  anything is touched.
 - **2026-09-20** — **Plan audit after cut 6, at Jim's request** ("a good time to double-check
   our plan given all we have learned"). Method: three read-only explorations — what is left
   in the class, these two documents against themselves, how far `viva_core` really is — and
