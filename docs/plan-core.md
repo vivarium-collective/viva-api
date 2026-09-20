@@ -470,7 +470,7 @@ repo and PyPI distribution, with the core CLI.
   `repo-recipe` in P5, which is what removes the duplication; `scripts/qualification_test.sh`
   stays its check, and `atlantis smoke` does not cover it. (Decided 2026-09-20. Before the
   audit the plan did not mention it at all.)
-- **Production.** Prod is on **0.9.78**; dev is at 0.9.148. A catch-up is *not part of this
+- **Production.** Prod is on **0.9.78**; dev is at 0.9.149. A catch-up is *not part of this
   work* (Jim, 2026-09-20): the plan only records the gap and what closing it needs — an RDS
   snapshot, `db_reconcile --analyze` against prod, the migration Job across every revision in
   between (section 7a, risk 3), then smoke Tier 0 + 1 and Tier 2 including the cancel checks.
@@ -570,7 +570,7 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 | B ✅ 0.9.147, 2026-09-19 | P0 second wave + #661 | `create_all` off and the FRESH path changed — how every database bootstraps | alone; `--analyze` per site; migration Job; boot against an already-migrated DB |
 | C1 ✅ 0.9.148, 2026-09-20 | P2.1 cuts 1–3 + the #709 fix (#710) | the first **dispatch** checkpoint, taken early: the Batch engine now lives in core and every submit goes through it; cancel now stops a run's ParCa job | Tier 0 + 1 + 2, including `sim-cancel` and `chain-cancel`, which must flip FAIL → PASS; markers `/app/viva_core/backends/batch.py` and `cancel_companion_jobs` |
 | B2 ✅ 2026-09-20 (migration Job from 0.9.149; API still 0.9.148) | the write-once marker (D11): migration `f4c8a2e6d0b3` adds `simulator.temporary / label / image_tag` | a **database** change, so on its own before C2 (one kind per deploy). `main` also carries undeployed dispatch changes that #722 sits on top of, so B2 and C2 cannot be two images; they are **one image (0.9.149) and two deploys**: B2 runs only the migration Job and leaves the API on 0.9.148, which the additive migration allows; C2 rolls the API | `--analyze`, then the migration Job; Tier 0 + Tier 1 against the **old** API on the new schema (`database` still says "at head `e7b3c9a1d5f2`": `/health` reads the revision **at startup** and the pod was not restarted, so between B2 and C2 that check is stale, not evidence); `force` → 409 is checked at C2, when the code that refuses it is running; on dev only, mark simulator 214 (the unmarked smoke artifact of 2026-09-20) temporary by hand |
-| C2 | cuts 4–5, build + tasks as services (#712–#714), PR 2's smoke checks | the image build and the task path were rewired and are merged but undeployed | Tier 0 + 1 + 2, `sim-mbp`, and the opt-in **`build`** check: a real image build of a **marked-temporary** simulator, which Tier 2 then runs on |
+| C2 ✅ 0.9.149, 2026-09-20 | cuts 4–5, build + tasks as services (#712–#714), PR 2's smoke checks, and #722's code (write-once, the marker) | the image build and the task path were rewired and are merged but undeployed | Tier 0 + 1 + 2, `sim-mbp`, and the opt-in **`build`** check: a real image build of a **marked-temporary** simulator, which Tier 2 then runs on |
 | C3 | PRs 3–8 (analysis spec, ParCa split, the composed Batch layer, `compose` on it, the mbp-tracked and Nextflow strategies) | every submit now goes through a composed object; two mechanisms are strategies | Tier 0 + 1 + 2; `compose`, `sim-mbp`, `sim-nextflow`, `nextflow-cancel` especially |
 | C | PRs 9–11 (composite, ensemble, chain strategies); the end of P2.1 | the last three mechanisms, chain among them | Tier 0 + 1 + 2, **plus a real 2 x 2 chain campaign** and `chain-cancel`: chain bills real money and fakes share their author's blind spots |
 | D | P2.3 | one resolver replaces four image derivations; the core runtime image | workbench through the relay; `vwb smoke`; `atlantis worker`, `task`, `compose` on the new image |
@@ -665,7 +665,9 @@ split; each has an owner-less issue or a named moment.
 | The dataset walk re-lists every simulation forever (~$5–6 / month / site); walking terminal simulations once a day would cut it ~10x | decision log, 2026-09-19 | P4a, when the walker moves to core |
 | Draft #670 conflicts with P1's move of `gcs_aio.py`; a resolution was offered | #670 | when its author picks it up |
 | RDS snapshot `pre-0-9-147-checkpoint-b-20260919t1955z` | dev | delete once 0.9.148 has soaked |
-| RDS snapshot `pre-0-9-149-checkpoint-b2-20260920t1433z` | dev | delete once C2 has passed and soaked |
+| RDS snapshot `pre-0-9-149-checkpoint-b2-20260920t1433z` | dev | C2 passed 2026-09-20; delete once it has soaked |
+| Smoke `sim-chain` downloads the whole chain output (~3.6 GB uncompressed) through the SSM tunnel at ~0.35 MB/s: about 30 of its 77 minutes at C2 were the download, long after the server was done | `app/smoke.py` | assert on a listing plus the per-seed `summary.json` files instead of the full archive |
+| Temporary simulators 214 and 215 and the images `tmp-d01dc07-b64227[-submit]` on dev / in the shared ECR | dev | the purge for temporary simulators (not built yet); until then they stay, marked |
 | `/health` reports the database revision **as read at startup**, so smoke's `database` check cannot see a migration applied under a running pod (seen at B2) | viva-api | read it per request, or label it `db_revision_at_startup` |
 | `CLAUDE.md` still says backend selection is by `deployment_namespace` and that tests use SQLite | `CLAUDE.md` | any docs PR |
 | `scripts/prove_ray_carve_is_move_only.py` | — | delete in PR 11 |
@@ -682,7 +684,7 @@ split; each has an owner-less issue or a named moment.
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — #696; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — #698; all merged 2026-09-19 |
 | D11 | write-once simulators + the marked-temporary exception: migration `f4c8a2e6d0b3`, `environment_key`, `force` guarded (409), the marker in all three clients, smoke `build` on a temporary simulator — #722 | — | — (checkpoint **B2**, a database deploy, before C2) | — | open |
-| P2.1 | carve `simulation_service_ray.py` (5,019 → 3,361 lines so far). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. Remaining: PRs 1–11 of the 2026-09-20 sequence; #715 (analysis as a service) is open and **to be reshaped** as PR 3 | 0.9.148 carries cuts 1–3 + #710 | **2026-09-20** (checkpoint C1) | — | **in progress.** Deployed: cuts 1–3, #710. **Merged, undeployed:** cuts 4–5, #714 (→ C2) |
+| P2.1 | carve `simulation_service_ray.py` (5,019 → 3,361 lines so far). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. Remaining: PRs 1–11 of the 2026-09-20 sequence; #715 (analysis as a service) is open and **to be reshaped** as PR 3 | 0.9.149 carries cuts 1–5, #710, #714, #722 | **2026-09-20** (checkpoints C1, B2, C2) | — | **in progress.** Everything merged is deployed to dev. Next: PR 3 (reshape #715) |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image | | | | not started (checkpoint D) |
 | P3 | | | | | not started (checkpoint E) |
@@ -697,6 +699,33 @@ split; each has an owner-less issue or a named moment.
 
 ## Decision log
 
+- **2026-09-20** — **Checkpoint C2 passed on dev (0.9.149, tag `v0.9.149`): the API roll.** Jim:
+  "merge #724 and deploy C2". `kubectl diff` of the app overlay at `79fb0b21` against the live
+  cluster was one line (the api image); apply rolled the api pod only (workbench and ptools
+  pods unchanged, 4 d old). Markers on the newest pod: `environment_key` in `models.py`,
+  `SimulatorIsWriteOnce` in the handler and the router, `ray/build.py`, `ray/parca.py`,
+  `ray/tasks.py` present. `/health`: 0.9.149, `db_at_head=true` at `f4c8a2e6d0b3` — a fresh
+  reading this time, because the pod restarted.
+  **The marker reaches the user:** `atlantis simulator list` now prints 214 as "TEMPORARY -- a
+  test artifact, NOT an authoritative simulator", and the smoke `task` checks went back to the
+  newest *authoritative* simulator (213, `d67b0a7`) where at B2 they had picked 214.
+  **Smoke, Tier 0 + 1 + 2 with `--build --build-commit d01dc07`: 21 passed, 0 failed, 2 skipped**
+  (`analysis`, `biomodels`: opt-in). `build` made temporary simulator **215**
+  (`atlantis-smoke 6dfe2521`, image `tmp-d01dc07-b64227` + `-submit`) in 588 s on the rewired
+  build service — 702 s on the old path (214), same commit. All eight Tier 2 checks then ran
+  **on 215**: every Batch job, the ParCa cache and the job definitions carried the marked tag
+  (`ray-parca-tmp-d01dc07-b64227-…`, `mbp-parca-tmp-…`, `v2ecoli-ray-build-tmp-…`), so the
+  temporary simulator wrote nothing into an authoritative namespace. `sim-mbp` 1,005.9 s vs
+  1,005 s baseline. The three cancels PASS, `chain-cancel` in the ParCa phase.
+  **Provenance, measured:** digests and push times of `:d01dc07`, `:d01dc07-submit` and
+  `:d67b0a7` in ECR were recorded before the build and are identical after it.
+  **`force` → 409 was NOT probed live, on purpose:** a `?force=true` against a real simulator
+  is the overwrite if the refusal is somehow not running. It is proven by the marker on the
+  pod plus `tests/simulation/test_simulators_write_once.py`.
+  Two tracebacks in the pod log during the run are one event and mine: a diagnostic `curl -m
+  240` of the chain's output, cut off client-side (`BrokenPipeError` in `s3_streaming`). That
+  diagnostic was needed because `sim-chain` looked hung for 30 minutes; it was downloading
+  (deferred list).
 - **2026-09-20** — **Checkpoint B2 passed on dev: the D11 migration, and nothing else.** Image
   0.9.149 built from `79fb0b21` (#723). RDS snapshot
   `pre-0-9-149-checkpoint-b2-20260920t1433z`; `--analyze` from the new image (a one-off Job:
