@@ -29,12 +29,14 @@ from starlette.responses import RedirectResponse
 
 from viva_api.common.gateway.models import ServerMode
 from viva_api.config import get_settings
+from viva_api.core_wiring import core_container
 from viva_api.dependencies import (
     get_job_scheduler,
     init_standalone,
     shutdown_standalone,
 )
 from viva_api.version import __version__
+from viva_core.api import build_core_router
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +155,14 @@ for api_name in APP_ROUTERS:
         )
     except ImportError:
         logger.exception(f"Could not register the following api: {api_name}")
+
+# -- viva core (docs/plan-core.md P3): core's own router, under /viva/v1 -- #
+# INCLUDED, not mounted: the paths are the ones a standalone core serves (`create_core_app`), they
+# stay in this application's OpenAPI document (the union, until core has a client of its own), and
+# the container is asked for per request -- so it may be built from services that exist only once
+# the lifespan has run. Not to be confused with the `core` router above (`/core/v1/simulator/*`),
+# which is SMS's and older than the split.
+app.include_router(build_core_router(core_container))
 
 # -- compose (process-bigraph) router -- #
 try:
