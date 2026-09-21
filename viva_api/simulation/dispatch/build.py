@@ -145,6 +145,30 @@ apk add --no-cache aws-cli git bash
 # Docker daemon runs on the host (DooD) — verify the mounted socket.
 docker info >/dev/null 2>&1 || {{ echo "ERROR: Docker socket not available"; exit 1; }}
 
+# An image that already exists is ADOPTED, never rebuilt (docs/plan-core.md D11). The sites share
+# this ONE repository and each has its own database: a site with no record of a commit another site
+# already built used to build it again and push the same tag, REPLACING the first site's image with
+# a different one. The repository's tags are write-once now (sms-cdk: IMMUTABLE), so that push would
+# be refused; adopting is what makes the second site's request succeed, on the SAME image. It also
+# lets a build that failed half way be retried: what was pushed is kept, what was not is built.
+# Exit 0 = exists. Any answer other than "not found" is reported and treated as absent: build, as
+# before -- a permissions gap must not turn every build into a silent no-op.
+image_exists() {{
+    found=$(aws ecr describe-images --repository-name {settings.ray_ecr_repository} --region {settings.batch_region} \
+        --image-ids imageTag="$1" --query 'imageDetails[0].imageDigest' --output text 2>&1) && {{
+        echo "ADOPTED existing image {settings.ray_ecr_repository}:$1 ($found) -- not rebuilt"
+        return 0
+    }}
+    case "$found" in
+        *ImageNotFoundException*|*RepositoryNotFoundException*) ;;
+        *) echo "WARNING: could not ask ECR whether {settings.ray_ecr_repository}:$1 exists; building. ($found)" ;;
+    esac
+    return 1
+}}
+
+if image_exists {tag}; then
+    : # nothing to clone, nothing to build
+else
 # GitHub PAT (Secrets Manager) for the clone; x-access-token is GitHub's HTTPS convention.
 # Disable xtrace around the secret so the PAT (and the clone URL embedding it) never lands
 # in the build logs (CloudWatch). Re-enable tracing once the clone is done.
@@ -162,6 +186,7 @@ git checkout {commit}
 {private_fork_spec_block}# The v2ecoli image is self-contained (bundles the AWS CLI + Ray entrypoint); its own
 # recipe builds + pushes v2ecoli:<sha> and the :latest deploy tag the MNP job def uses.
 bash docker/build-and-push-ecr.sh -i {tag} -r {settings.ray_ecr_repository} -R {settings.batch_region}{build_flags}
+fi
 """
         if include_submit_image:
             # The Nextflow HEAD image. Deliberately a thin derived layer, not a change to the
@@ -179,6 +204,12 @@ bash docker/build-and-push-ecr.sh -i {tag} -r {settings.ray_ecr_repository} -R {
             # attemptDurationSeconds -- see its §11.1 -- and the skew is resolved here in
             # favour of what already ships.)
             script += f"""
+if image_exists {tag}-submit; then
+    :
+else
+# The recipe above logs docker in to the registry -- but it did not run if its image was adopted.
+aws ecr get-login-password --region {settings.batch_region} \\
+    | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 BASE_URI=$ECR_REGISTRY/{settings.ray_ecr_repository}:{tag}
 
 cat > /tmp/Dockerfile-submit <<'DOCKERFILE'
@@ -198,6 +229,7 @@ docker build -t "$ECR_REGISTRY/{settings.ray_ecr_repository}:{tag}-submit" \
     -f /tmp/Dockerfile-submit /tmp
 docker push "$ECR_REGISTRY/{settings.ray_ecr_repository}:{tag}-submit"
 echo "Submit image pushed: $ECR_REGISTRY/{settings.ray_ecr_repository}:{tag}-submit"
+fi
 """
         return ["sh", "-c", script]
 
