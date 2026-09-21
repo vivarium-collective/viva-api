@@ -13,7 +13,7 @@ a test that patches that seam must be what this sees.
 
 from typing import Protocol
 
-from viva_core.environments import ExplicitSpec, RegistryEnvironmentResolver, ecr_registry
+from viva_core.environments import DerivedSpec, ExplicitSpec, RegistryEnvironmentResolver, ecr_registry
 
 
 class RegistrySettings(Protocol):
@@ -44,13 +44,33 @@ def site_resolver(settings: RegistrySettings) -> RegistryEnvironmentResolver:
     """``CORE_RUNTIME_IMAGE``, when the site sets it, is registered as the environment for a composite
     that needs nothing beyond the built-ins. Read with ``getattr``: it is optional, and the settings
     handed in here are often a test double that names only what its test is about."""
+    named = getattr(settings, "core_runtime_image", "")
     return RegistryEnvironmentResolver(
         registry=_registry(settings),
         repository=settings.ray_ecr_repository,
-        runtime_image=getattr(settings, "core_runtime_image", "") or None,
+        # a str, and not empty: a MagicMock settings double answers every attribute with a Mock
+        runtime_image=named if isinstance(named, str) and named else None,
     )
 
 
 def environment_image(settings: RegistrySettings, key: str, *, variant: str = "") -> str:
     """The image of the environment named ``key`` (optionally its ``variant`` image) at this site."""
     return site_resolver(settings).resolve(ExplicitSpec(key=key, variant=variant)).image
+
+
+#: The environments a request may ask for BY NAME -- registered ones, as opposed to the image of a
+#: commit. One today: the core runtime image, for work that needs nothing of any application.
+#: Curated environments (D10) are further names here, not a new field on every request.
+RUNTIME_ENVIRONMENT = "runtime"
+NAMED_ENVIRONMENTS = frozenset({RUNTIME_ENVIRONMENT})
+
+
+def named_environment_image(settings: RegistrySettings, name: str) -> str:
+    """The image of the registered environment ``name`` at this site.
+
+    Raises ``EnvironmentNotResolvable`` when the site registers none (``CORE_RUNTIME_IMAGE`` unset):
+    the request is refused rather than run in something else.
+    """
+    if name not in NAMED_ENVIRONMENTS:
+        raise ValueError(f"unknown environment {name!r}; known: {sorted(NAMED_ENVIRONMENTS)}")
+    return site_resolver(settings).resolve(DerivedSpec()).image

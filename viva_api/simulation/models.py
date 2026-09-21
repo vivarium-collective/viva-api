@@ -856,6 +856,28 @@ class TaskRunRequest(BaseModel):
     memory_class: str = "standard"
     commit: str | None = None  # image commit to run in; None -> latest/default
     name: str | None = None  # optional human label; defaults to the script name
+    #: Run in a REGISTERED environment instead of a simulator's image. ``"runtime"`` is the core
+    #: runtime image (Python + the process-bigraph engine, no application's code): for an UPLOADED
+    #: script that needs nothing of the science image, it starts in seconds instead of minutes.
+    #: Mutually exclusive with ``commit``, which names a simulator's image.
+    environment: str | None = None
+
+    @field_validator("environment")
+    @classmethod
+    def _validate_environment(cls, v: str | None) -> str | None:
+        from viva_api.common.site_environments import NAMED_ENVIRONMENTS
+
+        if v is not None and v not in NAMED_ENVIRONMENTS:
+            raise ValueError(f"unknown environment {v!r}; known: {sorted(NAMED_ENVIRONMENTS)}")
+        return v
+
+    @model_validator(mode="after")
+    def _environment_or_commit(self) -> "TaskRunRequest":
+        if self.environment is not None and self.commit is not None:
+            raise ValueError(
+                "give `environment` (a registered environment) or `commit` (a simulator's image), not both"
+            )
+        return self
 
     @field_validator("name")
     @classmethod

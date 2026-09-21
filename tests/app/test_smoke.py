@@ -114,9 +114,11 @@ class FakeService:
         memory_class: str,
         commit: str | None,
         name: str | None,
+        environment: str | None = None,
     ) -> Any:
         self.submitted_script = Path(local_path).read_text(encoding="utf-8")
         self.task_commit = commit
+        self.task_environment = environment
         self.submitted_refs = sim_data_refs
         return SimpleNamespace(database_id=42)
 
@@ -331,6 +333,43 @@ def test_task_passes_only_when_the_nonce_comes_back() -> None:
     assert result.outcome is smoke.Outcome.PASS
     assert svc.task_commit == "new"  # newest container-path simulator, not the vEcoli one
     assert result.evidence["nonce"] in svc.submitted_script
+
+
+def test_the_task_checks_can_run_in_a_registered_environment_and_then_need_no_simulator() -> None:
+    """``--task-environment runtime``: the uploaded-task checks run in the core runtime image. No commit
+    is resolved -- a plumbing check should not need (or pull) a science image."""
+    svc = FakeService()
+    result = _run("task", svc, task_environment="runtime")
+    assert result.outcome is smoke.Outcome.PASS
+    assert (svc.task_environment, svc.task_commit) == ("runtime", None)
+    assert "in the 'runtime' environment" in result.detail
+    assert result.evidence["environment"] == "runtime"
+
+    default = FakeService()
+    assert _run("task", default).outcome is smoke.Outcome.PASS
+    assert (default.task_environment, default.task_commit) == (None, "new")  # unchanged without the option
+
+
+def test_the_task_cli_refuses_an_environment_it_cannot_honour_before_calling_the_server(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    called: list[str] = []
+
+    def data_service(**_: Any) -> FakeService:
+        called.append("server")
+        return FakeService()
+
+    monkeypatch.setattr("app.cli.get_data_service", data_service)
+    script = tmp_path / "s.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+
+    repo_path = CliRunner().invoke(cli, ["task", "run", "scripts/x.py", "--environment", "runtime"])
+    assert repo_path.exit_code == 1 and "needs --upload" in " ".join(repo_path.output.split())
+    both = CliRunner().invoke(
+        cli, ["task", "run", "--upload", str(script), "--environment", "runtime", "--commit", "abc1234"]
+    )
+    assert both.exit_code == 1 and "not both" in both.output
+    assert called == []
 
 
 def test_task_completed_without_its_output_is_a_failure() -> None:
