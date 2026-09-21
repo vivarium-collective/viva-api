@@ -43,6 +43,7 @@ and has a rollback. There is no big-bang step.
 | D10 | **Core's default path is *select or build* an acceptable environment, then run.** The reproducibility application on core accepts a composite and either selects a known compatible environment or builds one from the composite's dependencies. A barebones environment (built-ins only) is rarely useful; an uber-container does not scale. Extends D6: an environment is a **spec** (explicit `repo@commit` + recipe, or derived from a composite), an **environment** (spec hash *and* image digest, status, build job, what it provides) and a **resolver**. "Default path" is reserved for this. | 2026-09-20 | Jim |
 | D11 | **Simulators are write-once provenance; a marked-temporary simulator is the only exception.** A simulator record, its container image and its image tag are the provenance of every simulation that ran on them. With one exception, **all of them are write-once, immutable and never deleted** — on every site, not only those that predate this work. The exception is a simulator that says so about itself: `temporary`, with a `label` naming who or what made it and its **own marked image tag** (`tmp-<commit>-<nonce>`, never `<commit>`). A temporary simulator may be overwritten or removed, and it is **marked back to the end user** — in the API, in the CLI, TUI and GUI lists, and left out of every "latest" or default choice — so nobody takes it for an authoritative one. A standing rule of the final design, not only of the migration. | 2026-09-20 | Jim |
 | D12 | **`viva_core` carries no `Any`.** `disallow_any_explicit` and `disallow_any_unimported` are on for `viva_core.*` as a mypy per-module override, on top of `strict`. JSON-shaped values are a `JsonValue` alias or a `TypedDict`; an untyped third-party client is wrapped behind a typed Protocol or given stubs. Because the override is a **package glob**, every module that moves into `viva_core` in P3 / P4 / P5 comes under it the day it moves, so code arrives in core `Any`-free or does not arrive. The same ban covers `viva_api.simulation.dispatch` — by module now, as `ray.*` once the strategies have landed. The rest of the repository is ratcheted by count, not banned. | 2026-09-20 | Jim ("I especially want viva_core.* with strong mypy coverage within this initiative") |
+| D13 | **ptools is SMS's, and private.** Pathway Tools and its PGDBs are licensed material (Jim, 2026-09-21: "ptools is a private repo due to licensing concerns and belongs to the sms-api not viva-core"). Everything of it — `Dockerfile-ptools`, `assets/ptools/`, the ptools analyses, the `sms-ptools` image and Deployment, the PTools page — stays on the **SMS** side of the split and **stays private**. Core is meant to be public, with public images, so this boundary is a legal one, not only an architectural one: nothing of ptools enters `viva_core/`, the core runtime image, or any package that is or may become public; and **before anything is made public, what it contains is listed first**. Guards: `ptools` is a forbidden term in core's constructs (`tests/core/test_core_is_standalone.py`); the public runtime image may `COPY` only from `viva_core/runtime/` (`tests/core/test_runtime_entrypoint.py`) |
 
 ## 3. The issues, in one page
 
@@ -781,6 +782,17 @@ split; each has an owner-less issue or a named moment.
   `task-fail` and now `compose`; `task-repo`, `worker` and Tier 2 always need a simulator's image.
   **Run for real, locally:** the published image, pulled from ghcr, ran the compose command shape with
   `PBG_REQUIRE_OUTPUT=1` and returned `level = 1.61051 = 1.1^5`. On Batch it is checkpoint D's to prove.
+- **2026-09-21** — **D13: ptools is SMS's, and private.** Jim, right after making the `viva-core-runtime` package
+  public: "just to be clear, ptools is a private repo due to licensing concerns and belongs to the
+  sms-api not viva-core." Nothing had crossed the line, and it was **checked rather than assumed**: the
+  public image's `/opt` holds one file from this repository (the entrypoint), its Dockerfile `COPY`s
+  only `viva_core/runtime/requirements.txt` and that script, a search of the image finds no ptools,
+  PGDB or BioCyc material, and `sms-ptools` is still private (the API says so; an anonymous manifest
+  request answers 403). What changes is that the rule is now written down where the split is planned,
+  because **core is headed for public and ptools can never be**: a decision (D13), and a guard — the
+  runtime image's Dockerfile may `COPY` from the build context only out of `viva_core/runtime/`, so
+  making that image public can never publish anything else in this repository. The lesson for the
+  process, recorded with it: before *anything* is made public, list what it contains, first.
 - **2026-09-21** — **P2.3d-2: Batch pulls the runtime image from ghcr — tried, not assumed.** Jim: "merge #751, I
   made the package public, try the pull." An anonymous manifest request now answers 200. **The trial
   used the code the API will use**, not a hand-written job: core's `BatchJobClient` derived
