@@ -350,7 +350,7 @@ its code is read — that is how 2.3c and 2.3d-3 turned out different from their
 |---|---|---|
 | 3a ✅ | **`create_core_app()` and a test that boots it**: `viva_core/container.py` (`CoreContainer`), `viva_core/api/` (one router under `/viva/v1`; `create_core_app()`), the boot test (core alone, the application unimportable), and the SMS app **including** that router with its own container (`viva_api/core_wiring.py`). First route: `POST /viva/v1/environments/resolve` — the one service core has | the plan's own order: nothing moves into a package nothing boots |
 | 3b ✅ | **env-worker: the 22 models out of the router**, in place → `viva_api/compose/env_worker_schemas.py` (1,170 → 978 lines). **The "service logic" half of this row did not exist**: with the models gone the file is 30 routes and 16 helpers, none over 36 lines of code, and the helpers are HTTP mapping — turning the worker's four ways of saying no into status codes — which is a router's job. The service logic was already in `compose/env_worker_service.py`, `env_worker_relay.py` and the task runner. What still ties the router to SMS is its **two setters, `get_settings` and `viva_api.api.auth`** — 3d's and 3e's | a router that holds models cannot be moved: everything that wants a model has to import the HTTP layer |
-| 3c | **compose imports nothing of SMS** (its ties sit in one file) — the `compose-is-domain-free` contract goes from report-only to enforced | the precondition for moving it, checkable on its own |
+| 3c ✅ | **compose's two forbidden imports are gone, and `compose-is-domain-free` is ENFORCED**: the science analysis SMS chains onto a compose run moved out of `compose/simulation_service_ray.py` into `viva_api/simulation/compose_analysis.py` (`ComposeAnalysisChainer`), handed to compose as a **hook** (`AfterSubmit`) by the composition root. **The contract is narrower than the row's title**: compose still imports the application's *wiring* — `viva_api.config` (6 modules), `viva_api.dependencies` (4 lookups), `common/site_environments`, `common/storage/data_layout` — which is 3d's and 3e's work, listed in the log | the precondition for moving it, checkable on its own |
 | 3d | **compose and env-worker move into `viva_core`**; their routes are served by core's router; `/compose/v1` and `/env-worker/v1` stay as aliases | the move, once both are movable |
 | 3e | **containers replace the setters** for what moved (`dependencies.py` shrinks by exactly that); the lifespan no longer requires the SMS scheduler | the wiring follows the code |
 | 3f | **settings split finished; two OpenAPI documents** (the SMS one still the union). **Checkpoint E** | what unblocks the generated core client (D8) |
@@ -750,7 +750,7 @@ split; each has an owner-less issue or a named moment.
 | P2.1 | carve `simulation_service_ray.py` (5,019 → **628** lines; PR 11 took 960; PR 10 took 377; PR 9 took 648; PR 8 took 548; PR 7 took 252; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `BatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `dispatch/analysis_spec.py` — PR 3 (#726) · ParCa split → `dispatch/parca_spec.py` + `ParcaService` — PR 4 (#727) · `BatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a (#731) · #730 fixed (#732) · the D12 ban — PR 6b (#733) · strategy: mbp-tracked — PR 7 (#734) · strategy: Nextflow — PR 8 (#735) · strategy: multi-node composite — PR 9 (#738) · strategy: ensemble — PR 10 (#740) · strategy: chain — PR 11 · the package `Any`-free — PR 12 · `simulation/ray/` renamed `simulation/dispatch/`. **All five mechanisms are strategies**, and the 2026-09-20 sequence is complete; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.151 carries the whole carve: every strategy (PRs 7–11), 6a/6b, and the #730 fix | **2026-09-21** (checkpoints C1, B2, C2, C3, C) | — | **done — the carve is deployed.** **Dev is 0.9.151 (checkpoint C, 2026-09-21, tag `v0.9.151`):** all five dispatch mechanisms run as strategy objects on a deployment. Merged after C and **not deployed** (no behaviour in them to deploy for; they ride checkpoint D): PR 12 (#744, annotations only) and the `dispatch/` rename (#745, names only). The service's nine scheduler delegates and its progress / cancel / staging methods stay until **P6**. **Next: P2.3**, the environment model and its *select* half |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image. 2.3a the model + `RegistryEnvironmentResolver` (`viva_core/environments/`, no caller changed) — #748 · 2.3b the four derivations ask it (`common/site_environments.py`) — #749 · 2.3c the core runtime image + core's container entrypoint (`Dockerfile-core-runtime`, `viva_core/runtime/`) — #750 · 2.3d-1 a task may name an environment (`TaskRunRequest.environment`) — #751 · 2.3d-2 Batch pulls the image; dev names it — #752 · 2.3d-3 a compose run may name an environment (one container) | | | | **code complete, not deployed** — 2.3a–d done. The runtime image is pushed, public, proven pullable by Batch from dev's VPC, and named in dev's `api.env`. **Next: checkpoint D** |
-| P3 | settings, DI, app factory. 3a `create_core_app()` boots alone; SMS includes core's router under `/viva/v1` | | | | **in progress** — 3a, 3b done (not deployed); next 3c (compose imports nothing of SMS) |
+| P3 | settings, DI, app factory. 3a `create_core_app()` boots alone; SMS includes core's router under `/viva/v1` | | | | **in progress** — 3a, 3b, 3c done (not deployed); next 3d (compose and env-worker move into `viva_core`), which starts with the wiring ties 3c listed |
 | P4a | | | | | not started (checkpoint F) |
 | P4b | | | | | not started (checkpoint F) |
 | P5 | | | | | not started (checkpoint G) |
@@ -767,6 +767,32 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-21** — **P3c: the first hook. Compose stops importing SMS's science; the contract is enforced.**
+  Jim: "merge #756 and #757, then start on 3c." `compose-is-domain-free` had two broken edges, both in
+  `compose/simulation_service_ray.py`, both for one method: `_submit_analysis_job`, which chains the
+  **simulator's** analysis onto a compose run (`common/analysis_dag`, and the simulator's in-image paths
+  from `simulation/dispatch/image_paths`). That is SMS's business inside a composite runner. It is now
+  `viva_api/simulation/compose_analysis.py::ComposeAnalysisChainer`, and compose declares what it
+  offers instead: **`AfterSubmit`** — "a run was submitted; here is its job, its commit, the image it
+  runs under" — which the composition root (`dependencies.py`) fills with the chainer, sharing the one
+  Batch layer. This is the plan's hook mechanism (P5) arriving early and small, because it is the
+  honest shape: a core with no application registers nothing, and a test pins that such a compose
+  service submits the run and chains nothing, even when the request carries `analysis_options`.
+  **Proof:** the method's 14 statements are the chainer's 14, AST-identical after the one respelling
+  (`self._image_uri(commit)` → the `image` argument); same gate (`analysis_options`), same
+  best-effort guard around it; the two chaining tests pass unchanged but for how they build the
+  service (as the composition root does). `compose-is-domain-free` is **KEPT and in
+  `ENFORCED_IMPORT_CONTRACTS`**: `make check` now fails on a new edge. Report-only broken edges 8 → 6.
+  **What the contract does not cover — 3d's list.** The row said "compose imports nothing of SMS";
+  the contract forbids the *domain* (`simulation`, `analysis`, `data`, handlers, simulator defaults,
+  the analysis DAG), and that is now true. Compose still imports the application's **wiring**:
+  `viva_api.config` in 6 modules (`get_settings`, `Settings`, `ComputeBackend`); `viva_api.dependencies`
+  for 4 lookups (database, file service, SSH session — two of them lazy, inside functions, which is
+  how they hid); `common/site_environments` (2); `common/storage/data_layout` (the results prefix and
+  the ParCa cache URI — the second of which is domain, and wants the same hook treatment). The rest
+  of its `viva_api.common.*` imports are already aliases of `viva_core` modules. None of that can move
+  until settings and services arrive through a container — which is why 3d and 3e are one piece of
+  work in two PRs, and why 3d starts from this list.
 - **2026-09-21** — **P3b: the env-worker router's models move out; its "service logic" was never there.** Written
   while checkpoint D's smoke ran. The 22 pydantic models that sat between the routes of
   `api/routers/env_worker.py` are in `viva_api/compose/env_worker_schemas.py`, verbatim: **22 of 22

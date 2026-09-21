@@ -242,7 +242,7 @@ forbidden_modules = [
 
 [[tool.importlinter.contracts]]
 id = "compose-is-domain-free"
-name = "Future core: compose imports no SMS application code"
+name = "Future core: compose imports no SMS application code (ENFORCED)"
 type = "forbidden"
 allow_indirect_imports = true
 source_modules = ["viva_api.compose"]

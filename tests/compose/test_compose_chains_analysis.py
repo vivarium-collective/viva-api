@@ -26,6 +26,8 @@ from viva_api.compose.models import (
     SimulationFileType,
 )
 from viva_api.compose.simulation_service_ray import ComposeSimulationServiceRay
+from viva_api.simulation import compose_analysis as chainer_mod
+from viva_api.simulation.compose_analysis import ComposeAnalysisChainer
 from viva_api.simulation.dispatch.batch_layer import BatchLayer
 from viva_api.simulation.tables_orm import AnalysisStatusDB
 
@@ -72,9 +74,11 @@ async def test_submit_simulation_job_chains_analysis_when_analysis_options_prese
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(mod, "get_settings", lambda: _settings())
+    monkeypatch.setattr(chainer_mod, "get_settings", lambda: _settings())
 
     simulation = _simulation(tmp_path, analysis_options=_ANALYSIS_OPTIONS)
-    svc = ComposeSimulationServiceRay(batch=BatchLayer())
+    layer = BatchLayer()
+    svc = ComposeSimulationServiceRay(batch=layer, after_submit=ComposeAnalysisChainer(layer))
 
     monkeypatch.setattr(svc._batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
     monkeypatch.setattr(svc._batch, "submit_mnp", lambda **kwargs: "compose-sim-job-1")
@@ -147,9 +151,11 @@ async def test_submit_simulation_job_submits_no_analysis_when_analysis_options_a
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(mod, "get_settings", lambda: _settings())
+    monkeypatch.setattr(chainer_mod, "get_settings", lambda: _settings())
 
     simulation = _simulation(tmp_path, analysis_options=None)
-    svc = ComposeSimulationServiceRay(batch=BatchLayer())
+    layer = BatchLayer()
+    svc = ComposeSimulationServiceRay(batch=layer, after_submit=ComposeAnalysisChainer(layer))
 
     monkeypatch.setattr(svc._batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
     monkeypatch.setattr(svc._batch, "submit_mnp", lambda **kwargs: "compose-sim-job-1")
@@ -174,3 +180,31 @@ async def test_submit_simulation_job_submits_no_analysis_when_analysis_options_a
     ensure_container_job_def.assert_not_called()
     submit_container.assert_not_called()
     fake_db.record_analysis.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_compose_service_with_no_hook_submits_the_run_and_chains_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The analysis is the APPLICATION's, handed in as a hook (``docs/plan-core.md`` P3c). A compose
+    service nobody handed one to -- a core with no application -- runs the composite and stops there:
+    no container job, no database, no crash, even when the request carries ``analysis_options``."""
+    monkeypatch.setattr(mod, "get_settings", lambda: _settings())
+    svc = ComposeSimulationServiceRay(batch=BatchLayer())
+    monkeypatch.setattr(svc._batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
+    monkeypatch.setattr(svc._batch, "submit_mnp", lambda **kwargs: "compose-sim-job-1")
+    for name in ("ensure_container_job_def", "submit_container"):
+        monkeypatch.setattr(svc._batch, name, lambda *a, _n=name, **k: pytest.fail(f"{_n} was called"))
+
+    with patch("viva_api.dependencies.get_file_service", return_value=AsyncMock()):
+        job_id = await svc.submit_simulation_job(
+            _simulation(tmp_path, analysis_options=_ANALYSIS_OPTIONS), experiment_id="exp-1"
+        )
+    assert job_id == "compose-sim-job-1"
+
+
+def test_the_sms_chainer_is_the_hook_compose_declares() -> None:
+    from viva_api.compose.simulation_service_ray import AfterSubmit
+
+    hook: AfterSubmit = ComposeAnalysisChainer(BatchLayer())  # the assignment is the assertion (mypy checks tests)
+    assert callable(hook)
