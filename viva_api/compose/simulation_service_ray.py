@@ -23,12 +23,12 @@ from pathlib import Path
 from typing import Protocol, override
 
 from viva_api.common.models import JobBackend, JobStatus
-from viva_api.common.site_environments import environment_image, job_definition_key, named_environment_image
 from viva_api.common.storage import data_layout
 from viva_api.common.storage.file_paths import S3FilePath
 from viva_api.compose.database_service import ComposeDatabaseService
 from viva_api.compose.models import ComposeHpcRun, ComposeJobStatus, ComposeSimulation, ComposeSimulatorVersion
 from viva_api.compose.simulation_service import ComposeSimulationService
+from viva_core.environments.site import environment_image, job_definition_key, named_environment_image
 from viva_core.settings import get_core_settings as get_settings
 from viva_core.storage.file_service import FileService
 
