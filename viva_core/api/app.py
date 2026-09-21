@@ -41,8 +41,10 @@ def _spec(request: ResolveEnvironmentRequest) -> EnvironmentSpec:
     return DerivedSpec(tuple(Dependency(d.name, d.source, d.version) for d in request.dependencies))
 
 
-def build_core_router(container: Callable[[], CoreContainer]) -> APIRouter:
-    router = APIRouter(prefix=CORE_PREFIX)
+def build_core_router(container: Callable[[], CoreContainer], *, prefix: str = CORE_PREFIX) -> APIRouter:
+    """``prefix`` is configurable for a deployment that must serve core somewhere else; every client and
+    every document assumes the default."""
+    router = APIRouter(prefix=prefix)
 
     @router.get("/health", response_model=CoreHealth, operation_id="core-health", tags=["Viva Core"])
     def health() -> CoreHealth:
