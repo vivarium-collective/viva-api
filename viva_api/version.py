@@ -1452,7 +1452,25 @@
 #            MARKERS: /app/viva_api/simulation/ray/nextflow.py and mbp_tracked.py exist;
 #            `jobDefinitions=[job_definition]` in simulation_service_ray.py;
 #            `hasattr(getattr(service, "batch"` in /app/viva_api/common/capabilities.py.
-__version__ = "0.9.150"
+#           0.9.151 -- core split, deploy checkpoint C (docs/plan-core.md section 8): the carve is done.
+#            Rewiring only, each part proven equal to what it replaced; NO behaviour change intended.
+#            The last three dispatch mechanisms are strategy objects (P2.1 PRs 9-11):
+#              #738 MultiNodeCompositeStrategy -- with its analysis submitter, its founder-cache
+#                   staging and the vCPU lookup that sizes RAY_SHARDS_DEFAULT (#730, live since 0.9.150)
+#              #740 EnsembleStrategy -- it was never a method: the router's last 36 statements
+#              #741 ChainStrategy(batch, local) -- the campaign submit, its background wrapper, the
+#                   per-lineage submits and the campaign's analysis
+#            With #734 / #735 (0.9.150) all FIVE mechanisms are strategies. simulation_service_ray.py
+#            is 628 lines, from 5,019: the SimulationService interface, a 12-statement router, five
+#            strategy builders, `parca` / `tasks`, and nine one-call delegates the scheduler still
+#            asks the service for (pinned by a test; they go in P6).
+#            Client only, nothing to deploy: smoke `sim-chain` lists a run's output in S3 instead of
+#            downloading it (#737).
+#            No migration; the -db-migration overlay tag is bumped to stay equal, the Job is not run.
+#            MARKERS: /app/viva_api/simulation/ray/chain.py, ensemble.py and multi_node.py exist;
+#            `_submit_chain_dispatch_background` is GONE from simulation_service_ray.py;
+#            `def _chain(self)` is present there.
+__version__ = "0.9.151"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in
