@@ -43,6 +43,19 @@ def _submit_uploaded(request: TaskRunRequest, settings: Any, service: Simulation
     return batch
 
 
+def _submit_uploaded_with(batch: Any, request: TaskRunRequest, settings: Any) -> None:
+    with (
+        patch("viva_api.simulation.dispatch._seams.get_settings", settings),
+        patch("viva_api.common.storage.data_layout.get_settings", settings),
+        patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=batch),
+    ):
+        asyncio.run(
+            SimulationServiceRay().tasks.submit_uploaded_task(
+                request, script_bytes=b"print(1)\n", filename="s.py", database_service=AsyncMock()
+            )
+        )
+
+
 # ------------------------------------------------------------------ the request
 
 
@@ -136,3 +149,16 @@ def test_the_routes_say_whose_fault_it_is(client: TestClient) -> None:
         # nobody's: the request is fine, this deployment registers no runtime image
         unavailable = client.post("/api/v1/tasks/upload", files=upload, data={"environment": "runtime"})
         assert unavailable.status_code == 501 and "not available here" in unavailable.json()["detail"]
+
+
+def test_a_site_with_no_ecr_account_refuses_a_commits_image_before_anything_is_registered_or_submitted() -> None:
+    """The Batch layer is where the malformed name used to become a job definition."""
+    from viva_core.environments import EnvironmentResolverNotConfigured
+
+    batch = _fake_container_batch(["c-1"])
+    with pytest.raises(EnvironmentResolverNotConfigured, match="ECR_ACCOUNT_ID"):
+        _submit_uploaded_with(
+            batch, TaskRunRequest(script="s.py", commit="abc1234"), lambda: _container_settings(ecr_account_id="")
+        )
+    batch.register_job_definition.assert_not_called()
+    batch.submit_job.assert_not_called()

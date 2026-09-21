@@ -12,9 +12,19 @@ a test that patches that seam must be what this sees.
 """
 
 import re
+from dataclasses import dataclass
 from typing import Protocol
 
-from viva_core.environments import DerivedSpec, ExplicitSpec, RegistryEnvironmentResolver, ecr_registry
+from viva_core.environments import (
+    DerivedSpec,
+    Environment,
+    EnvironmentResolver,
+    EnvironmentResolverNotConfigured,
+    EnvironmentSpec,
+    ExplicitSpec,
+    RegistryEnvironmentResolver,
+    ecr_registry,
+)
 
 
 class RegistrySettings(Protocol):
@@ -28,29 +38,47 @@ class RegistrySettings(Protocol):
     def ray_ecr_repository(self) -> str: ...
 
 
-def _registry(settings: RegistrySettings) -> str:
-    """The registry host. With ``ecr_account_id`` UNSET this is the malformed
-    ``.dkr.ecr.<region>.amazonaws.com`` the four derivations produced -- preserved ON PURPOSE for
-    now: P2.3b is a rewiring, proven by saying what they said for every input, and eight tests run
-    with the account unset without ever looking at the image. Refusing here, by name, instead of at
-    the Batch pull ten minutes later is a behaviour change, and its own PR (``docs/plan-core.md``,
-    deferred list). The env-worker service already refuses, and still does.
+#: Named in the refusal, so whoever reads it knows what to set.
+ACCOUNT_UNSET = "ecr_account_id is unset (ECR_ACCOUNT_ID): cannot say where this site's environment images live"
+
+
+@dataclass(frozen=True, slots=True)
+class _RegistryNotConfigured:
+    """The site's resolver when ``ECR_ACCOUNT_ID`` is unset: it REFUSES, by name, the one kind of
+    request that needs the registry -- an explicit spec, whose image lives in the site's ECR
+    repository. Until 2026-09-21 that produced ``.dkr.ecr.<region>.amazonaws.com/<repo>:<key>``: a
+    malformed name nobody looked at, which became a job definition, then a submitted job, then a
+    Batch image-pull failure ten minutes later that never mentions the setting.
+
+    What does NOT need the registry still works: a composite that needs nothing resolves to the
+    runtime image (a full reference of its own), and building the resolver never fails -- core's
+    health route, and every request that asks it nothing, are unaffected.
     """
-    if not settings.ecr_account_id:
-        return f".dkr.ecr.{settings.batch_region}.amazonaws.com"
-    return ecr_registry(account_id=settings.ecr_account_id, region=settings.batch_region)
+
+    runtime_image: str | None
+
+    def resolve(self, spec: EnvironmentSpec) -> Environment:
+        if isinstance(spec, ExplicitSpec):
+            raise EnvironmentResolverNotConfigured(ACCOUNT_UNSET)
+        inner = RegistryEnvironmentResolver(
+            registry="unconfigured.invalid", repository="-", runtime_image=self.runtime_image
+        )
+        return inner.resolve(spec)
 
 
-def site_resolver(settings: RegistrySettings) -> RegistryEnvironmentResolver:
+def site_resolver(settings: RegistrySettings) -> EnvironmentResolver:
     """``CORE_RUNTIME_IMAGE``, when the site sets it, is registered as the environment for a composite
     that needs nothing beyond the built-ins. Read with ``getattr``: it is optional, and the settings
     handed in here are often a test double that names only what its test is about."""
     named = getattr(settings, "core_runtime_image", "")
+    # a str, and not empty: a MagicMock settings double answers every attribute with a Mock
+    runtime_image = named if isinstance(named, str) and named else None
+    if not settings.ecr_account_id:
+        return _RegistryNotConfigured(runtime_image=runtime_image)
     return RegistryEnvironmentResolver(
-        registry=_registry(settings),
+        registry=ecr_registry(account_id=settings.ecr_account_id, region=settings.batch_region),
         repository=settings.ray_ecr_repository,
-        # a str, and not empty: a MagicMock settings double answers every attribute with a Mock
-        runtime_image=named if isinstance(named, str) and named else None,
+        runtime_image=runtime_image,
     )
 
 

@@ -121,6 +121,14 @@ class EnvironmentNotResolvable(LookupError):
     """No environment answers this spec, and this resolver cannot make one."""
 
 
+class EnvironmentResolverNotConfigured(RuntimeError):
+    """This deployment has not said where its environments live, so THIS spec cannot be answered.
+
+    Not ``EnvironmentNotResolvable``: nothing was looked for and not found. The request may be
+    perfectly good; the deployment is missing a setting, and the message names it.
+    """
+
+
 class EnvironmentResolver(Protocol):
     """Select an environment that satisfies the spec -- and, from P5, build one when none does.
 
