@@ -15,8 +15,9 @@ from viva_api.compose.models import (
     ComposeWorkerEvent,
     ComposeWorkerEventMessagePayload,
 )
-from viva_api.config import ComputeBackend, get_settings
+from viva_api.config import ComputeBackend
 from viva_api.dependencies import get_ssh_session_service
+from viva_core.settings import get_core_settings as get_settings
 
 logger = logging.getLogger(__name__)
 

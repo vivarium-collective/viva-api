@@ -68,7 +68,7 @@ _TERMINAL_COMPOSE_STATUSES = (
 
 
 def _get_experiment_dir(experiment_id: str) -> str:
-    from viva_api.config import get_settings
+    from viva_core.settings import get_core_settings as get_settings
 
     settings = get_settings()
     return f"{settings.compose_sim_base_path}/experiment-{experiment_id}"
