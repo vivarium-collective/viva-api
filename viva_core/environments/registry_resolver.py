@@ -62,7 +62,5 @@ class RegistryEnvironmentResolver:
             if self.runtime_image is None:
                 raise EnvironmentNotResolvable("this site has no runtime image for a composite that needs none")
             return Environment(spec=spec, image=self.runtime_image)
-        image = image_reference(
-            registry=self.registry, repository=self.repository, key=spec.key, variant=spec.variant
-        )
+        image = image_reference(registry=self.registry, repository=self.repository, key=spec.key, variant=spec.variant)
         return Environment(spec=spec, image=image)
