@@ -17,6 +17,7 @@ from viva_api.common.hpc.k8s_job_service import K8sJobService
 from viva_api.common.hpc.local_task_service import LocalTaskService
 from viva_api.common.models import JobBackend, JobId
 from viva_api.common.simulator_defaults import DEFAULT_BRANCH, DEFAULT_REPO
+from viva_api.common.site_environments import environment_image
 from viva_api.common.storage import data_layout
 from viva_api.config import get_settings
 from viva_api.simulation import batch_build
@@ -486,8 +487,7 @@ echo "Submit image pushed: $ECR_REGISTRY/{settings.ecr_repository}:{image_tag}-s
         analysis_name = params.get("analysis_name") or experiment_id
         safe_id = analysis_name.replace("_", "-").lower()
         job_name = f"ana-{safe_id}"[:63]
-        registry = f"{settings.ecr_account_id}.dkr.ecr.{settings.batch_region}.amazonaws.com"
-        submit_image = f"{registry}/{settings.ray_ecr_repository}:{commit}"
+        submit_image = environment_image(settings, commit)
 
         configmap_name = f"{job_name}-config"
         configmap = k8s_client.V1ConfigMap(

@@ -31,6 +31,7 @@ from kubernetes import client as k8s_client
 
 from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.hpc.k8s_job_service import K8sJobService
+from viva_api.common.site_environments import environment_image
 from viva_api.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -110,8 +111,7 @@ class EnvWorkerService:
         settings = get_settings()
         if not settings.ecr_account_id:
             raise EnvWorkerLaunchError("ecr_account_id is unset; cannot resolve a worker image")
-        registry = f"{settings.ecr_account_id}.dkr.ecr.{settings.batch_region}.amazonaws.com"
-        return f"{registry}/{settings.ray_ecr_repository}:{commit}"
+        return environment_image(settings, commit)
 
     # -- lifecycle -----------------------------------------------------------
     def start(

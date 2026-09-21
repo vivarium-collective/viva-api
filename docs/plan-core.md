@@ -293,7 +293,7 @@ P2.0a guard caught. So:
   | # | PR | why here |
   |---|---|---|
   | 2.3a ✅ | **the model and the one resolver**: `viva_core/environments/` — `ExplicitSpec` / `DerivedSpec`, `spec_hash`, `Environment`, the `EnvironmentResolver` Protocol, `RegistryEnvironmentResolver`. Pure: no settings, no network, **no caller changed** | the vocabulary first, reviewable on its own; a test pins that the resolver says what each of the four derivations says |
-  | 2.3b | **the four derivations ask the one resolver**, built once from settings on the SMS side. One behaviour to decide there: an unset ECR account fails at once for env workers and compose today, and yields a malformed image name in the Batch layer | a rewiring: differential against `main`, mutation-checked |
+  | 2.3b ✅ | **the four derivations ask the one resolver**: `viva_api/common/site_environments.py` builds it from the settings it is *handed* (each caller already holds them, through its own seam, and a test that patches that seam must be what it sees). The Batch layer's `image_uri` / `submit_image_uri`, compose's pinned tag, the env worker's `image_for_commit` and the K8s analysis Job ask it. The behaviour decision was **taken out**, not taken: an unset account still yields the malformed host it always did (deferred list) | a rewiring: differential against `main` over 432 cases, mutation-checked twice |
   | 2.3c | **the core runtime image**: `Dockerfile-core-runtime` + its CI build, registered as the resolver's `runtime_image` | infrastructure, and the image must exist before anything can select it |
   | 2.3d | **tasks, compose and env workers may name an environment** (today none takes an image parameter); Tier 1 smoke moves to the runtime image. **Checkpoint D** | the API change, last, once there is something other than a science image to name |
 
@@ -711,6 +711,7 @@ split; each has an owner-less issue or a named moment.
 | ~~`atlantis smoke` probes AWS Batch once, at startup, and reports a failure only where the affected checks print — behind the chain, an hour in~~ **done** (2026-09-21, the smoke-probe PR): the probe is tried twice; what a failed probe changes is printed **before the run** (`NOTE … sim-cancel will SKIP`, `sim-chain will DOWNLOAD`); `--require-aws` stops there with exit 2, which is what a deploy checkpoint wants; and a Tier 2 verdict is reported the moment it lands instead of in check order, so nothing queues behind the chain | `app/cli.py` (`smoke_run`), `app/smoke.py` | use `--require-aws` for every checkpoint from D on |
 | `AwsRunOutputLister` finds no prefix for a multi-node run: it reads a job's container environment, and an MNP job keeps `RAY_OUT_S3` under `nodeProperties`. Harmless today (only `sim-chain` lists) | `app/smoke.py` | read `nodeProperties.nodeRangeProperties[].container.environment` too, then let `sim-default` and `sim-composite` list instead of download |
 | Every simulation row's `last_updated` is the API pod's boot time: `Simulation.last_updated` defaults to `str(datetime.datetime.now())`, evaluated once at import (`simulation/models.py`) | viva-api | `default_factory`; its own small PR, with a test that two rows made a second apart differ |
+| With `ECR_ACCOUNT_ID` unset, every image reference is the malformed `.dkr.ecr.<region>.amazonaws.com/<repo>:<key>`, found out by a Batch pull ten minutes later. The default settings leave it unset, and eight tests run that way without looking at the image. P2.3b preserved it on purpose (`site_environments._registry`), so the rewiring could be proven to say what the four derivations said | `viva_api/common/site_environments.py` | refuse by name, in the one place there now is; give those eight tests an account; flip `test_an_unset_account_still_yields_what_it_always_did_until_that_is_decided`. Its own small PR — Jim's call |
 | The dispatch blocks `mbp_dispatch` and `multi_node_dispatch` are **declared** (`TypedDict`s, PR 12) but not **validated** at the API boundary beyond `task_env`; `nextflow_dispatch` is checked for two rules only. A wrongly-typed value reaches the container command line | `common/dispatch_validation.py`, `handlers/simulations.py` | a behaviour change (requests that work today could be refused), so its own PR; the `TypedDict`s are the spec to validate against |
 | `CLAUDE.md` still says backend selection is by `deployment_namespace` and that tests use SQLite | `CLAUDE.md` | any docs PR |
 | `job_scheduler.py` (1,370 lines), `handlers/simulations.py` (2,463), `routers/env_worker.py` (1,170), `dependencies.py` (691) have no detailed plan yet | P3, P6 | before those phases start |
@@ -728,7 +729,7 @@ split; each has an owner-less issue or a named moment.
 | D11 | write-once simulators + the marked-temporary exception: migration `f4c8a2e6d0b3`, `environment_key`, `force` guarded (409), the marker in all three clients, smoke `build` on a temporary simulator — #722 | — | — (checkpoint **B2**, a database deploy, before C2) | — | open |
 | P2.1 | carve `simulation_service_ray.py` (5,019 → **628** lines; PR 11 took 960; PR 10 took 377; PR 9 took 648; PR 8 took 548; PR 7 took 252; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `BatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `dispatch/analysis_spec.py` — PR 3 (#726) · ParCa split → `dispatch/parca_spec.py` + `ParcaService` — PR 4 (#727) · `BatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a (#731) · #730 fixed (#732) · the D12 ban — PR 6b (#733) · strategy: mbp-tracked — PR 7 (#734) · strategy: Nextflow — PR 8 (#735) · strategy: multi-node composite — PR 9 (#738) · strategy: ensemble — PR 10 (#740) · strategy: chain — PR 11 · the package `Any`-free — PR 12 · `simulation/ray/` renamed `simulation/dispatch/`. **All five mechanisms are strategies**, and the 2026-09-20 sequence is complete; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.151 carries the whole carve: every strategy (PRs 7–11), 6a/6b, and the #730 fix | **2026-09-21** (checkpoints C1, B2, C2, C3, C) | — | **done — the carve is deployed.** **Dev is 0.9.151 (checkpoint C, 2026-09-21, tag `v0.9.151`):** all five dispatch mechanisms run as strategy objects on a deployment. Merged after C and **not deployed** (no behaviour in them to deploy for; they ride checkpoint D): PR 12 (#744, annotations only) and the `dispatch/` rename (#745, names only). The service's nine scheduler delegates and its progress / cancel / staging methods stay until **P6**. **Next: P2.3**, the environment model and its *select* half |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
-| P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image. 2.3a the model + `RegistryEnvironmentResolver` (`viva_core/environments/`, no caller changed) | | | | **in progress** — 2.3a done; next 2.3b (the four derivations ask the resolver); checkpoint D after 2.3d |
+| P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image. 2.3a the model + `RegistryEnvironmentResolver` (`viva_core/environments/`, no caller changed) — #748 · 2.3b the four derivations ask it (`common/site_environments.py`) | | | | **in progress** — 2.3a, 2.3b done (neither deployed: no behaviour in them); next 2.3c (the core runtime image); checkpoint D after 2.3d |
 | P3 | | | | | not started (checkpoint E) |
 | P4a | | | | | not started (checkpoint F) |
 | P4b | | | | | not started (checkpoint F) |
@@ -746,6 +747,32 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-21** — **P2.3b: four derivations, one place — and a behaviour change taken out of it.** Jim:
+  "merge #748, then start on 2.3b." `viva_api/common/site_environments.py` turns the site's three
+  settings into core's `RegistryEnvironmentResolver`; the Batch layer (`image_uri`,
+  `submit_image_uri`), compose (its site-pinned tag), the env-worker service and the K8s analysis Job
+  ask it. **The settings are handed in, not read:** the dispatch package reads them through
+  `_seams.get_settings`, compose and the env worker through `config.get_settings`, and hundreds of test
+  patches sit on those names — a function that read settings itself would see none of them.
+  **The decision that was in this PR is not in it any more.** Refusing an unset ECR account at once
+  looked like a free improvement; the first run of the suite said otherwise: **8 tests fail**, because
+  the default settings leave the account unset and those tests have been building
+  `.dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:<key>` all along without looking at it. That makes it
+  a behaviour change with a blast radius, and this PR a rewiring that is proven by *saying what the
+  four said*. So the malformed host is preserved on purpose, in one named function with the reason
+  on it, pinned by a test whose name says it is temporary, and the refusal is on the deferred list as
+  its own PR. (The env-worker service refused already, and still does.)
+  **Proof.** A differential of all six call paths (two in the Batch layer, two in compose, the env
+  worker, the K8s Job's container image) against `origin/main`'s source executed under another name,
+  over a grid of account (set, unset) x region x repository x pinned tag (set, unset) x key (commit,
+  temporary tag, 40-char sha): **432 cases — 240 return, 192 raise, the same value or the same
+  exception and message as `main` in all but 96.** Those 96 are one input, put in the grid as a
+  probe: an **empty repository setting**, for which `main` silently produced `<host>/:<key>` and core's
+  resolver refuses. No configuration and no test sets one; it is the single declared difference,
+  pinned by a test. **Mutation-checked twice:** dropping the `submit` variant gives 48 further
+  differences, a wrong repository 192. A static guard counts hand-spelled registry hosts in
+  `viva_api/`: two remain, both in `SimulationServiceK8s`'s upstream vEcoli path (another repository,
+  `-amd64-submit`; out of scope until P5), and the number may only shrink.
 - **2026-09-21** — **P2.3a: what an environment is, as code — and nothing calls it yet.** Jim: "merge #747,
   then start on P2.3." `viva_core/environments/`: the vocabulary of D10 and the one resolver there can
   be before a table exists. **Three choices worth recording.**

@@ -24,6 +24,7 @@ from typing import Any, Protocol, override
 
 from viva_api.common import analysis_dag
 from viva_api.common.models import JobBackend, JobStatus
+from viva_api.common.site_environments import environment_image
 from viva_api.common.storage import data_layout
 from viva_api.common.storage.file_paths import S3FilePath
 from viva_api.compose.database_service import ComposeDatabaseService
@@ -123,8 +124,7 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
                 "compose_ray_image_tag is unset; set COMPOSE_RAY_IMAGE_TAG to the workspace "
                 f"commit to run compose jobs on {settings.ray_ecr_repository}."
             )
-        registry = f"{settings.ecr_account_id}.dkr.ecr.{settings.batch_region}.amazonaws.com"
-        return f"{registry}/{settings.ray_ecr_repository}:{settings.compose_ray_image_tag}"
+        return environment_image(settings, settings.compose_ray_image_tag)
 
     def _compose_command(self, doc_s3_uri: str, runner_s3_uri: str, steps: int) -> str:
         """Download the doc AND the runner from S3, run it → RAY_OUT_DIR.
