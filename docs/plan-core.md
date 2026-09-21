@@ -354,8 +354,12 @@ its code is read — that is how 2.3c and 2.3d-3 turned out different from their
 | 3d-1 ✅ | **compose's ParCa staging is a hook** (`StageInputs`): the last *domain* knowledge inside compose (`_parca_staging`, and the `compose_parca_cache_dir` setting it reads) moves to `viva_api/simulation/compose_staging.py`; the composition root hands it in. A compose service with no hook stages nothing | a setting named after ParCa cannot become a core setting (the vocabulary guard), so this goes before the settings move |
 | 3d-2 ✅ | **the 14 settings compose and env-worker read are `CoreSettings` fields** (same names, same environment variables — SMS's `Settings` inherits them), and the four compose modules on the Batch / K8s path read them through core's accessor. Two of the 14 carry an **application default** (`env_worker_workspace_path`, `ray_ecr_repository`): core declares them empty and SMS redefines only the default, under a named allow-list in the settings guard. Proof: `Settings.model_fields` identical before and after, all 146 (name, annotation, default). **Not moved:** `slurm_log_base_path` (an import cycle — `viva_core.storage.file_paths` imports `viva_core.settings`), so `compose/hpc_utils.py` still reads the application's settings; and the SLURM compose service, which takes SMS's `Settings` whole (see the log) | settings first: nothing can move while it imports `viva_api.config` |
 | 3d-3 ✅ | **compose's four `viva_api.dependencies` lookups arrive as constructor arguments**: the file service (`files=`), SMS's simulator registry (a third hook, `EnvironmentKeyOf`, filled by `viva_api/simulation/compose_simulators.py`), and the SLURM SSH sessions, twice (`slurm_ssh=`, a provider asked at the moment of use — a site without SLURM never has them). A parsed guard: nothing under `viva_api/compose/` imports `viva_api.dependencies`, lazily or not | services second |
-| 3d-4 | **compose and env-worker move into `viva_core`**; their routes are served by core's router; `/compose/v1` and `/env-worker/v1` stay as aliases. In the order core's gates allow — the per-module measurement and the steps 3d-4a … 3d-4d are in #767 | the move, once each module is movable |
+| 3d-4 | **compose and env-worker move into `viva_core`** — in the order the three gates allow (measured per module, 2026-09-21: domain terms in constructs · `Any` · imports of the application). **The SLURM compose service stays in SMS** (Jim, 2026-09-21; see the log) | the move, once each module is movable |
+| 3d-4a ✅ | **the two modules that pass every gate today**: `compose/env_worker_service.py` → `viva_core/env_worker/service.py`; `common/site_environments.py` → `viva_core/environments/site.py`. Byte-identical apart from four import lines; the old names are self-replacing shims (the P1a pattern) | leaves first; `site` is what the env-worker service and the Batch compose service both need |
 | 3d-4b-1 ✅ | **the `Any`-free pass** over the compose modules with no domain terms — `database_service`, `job_monitor`, `env_worker_relay`, plus `tables_orm` and `env_worker_schemas` (none of their own) — and **the D12 ban is ON for all five, by name**, until the move puts them under core's glob. `render_nf` waits: it loads `run_pbg`, and goes with it | D12 is a glob: a module arrives `Any`-free or not at all |
+| 3d-4b-2 | **those five move**: `database_service` and `tables_orm` → `viva_core/db/`, `job_monitor` → `viva_core/services/`, `env_worker_relay` and `env_worker_schemas` → `viva_core/env_worker/`; the by-name entries leave the D12 override as core's glob takes over | the move itself, once nothing in them says `Any` |
+| 3d-4c | **`models.py` and `simulation_service_ray.py`**: the default allow-list entry that names one model's repository becomes an application-supplied default; `ComputeBackend` gets a core home; the S3 layout (`data_layout`) is handed in. `run_pbg.py` (32 `Any`, 7 terms, 1,165 lines — the runner that is staged INTO the job) and `container_def.py`, which reads it as package data, move together | the two files that still name the application |
+| 3d-4d | **the routes**: compose's and env-worker's are served by core's router; `/compose/v1` and `/env-worker/v1` stay as aliases. `handlers.py::run_compose_v2ecoli` and BioModels (`contrib/sysbio`) are decided here | routes last: they are what clients see |
 | 3e | **containers replace the setters** for what moved (`dependencies.py` shrinks by exactly that); the lifespan no longer requires the SMS scheduler | the wiring follows the code |
 | 3f | **settings split finished; two OpenAPI documents** (the SMS one still the union). **Checkpoint E** | what unblocks the generated core client (D8) |
 
@@ -709,6 +713,7 @@ split; each has an owner-less issue or a named moment.
 
 | Item | Where | When |
 |---|---|---|
+| The env-worker Job names one deployment: label `app: sms-api`, service account `batch-submit`, module path `/app/vivarium-workbench/…` — now inside core (found at 3d-4a; moved unchanged) | `viva_core/env_worker/service.py` | become settings with today's values as the application's defaults; before a second application runs env workers |
 | An image build had never been exercised by any smoke tier, and the build path was rewired in cut 4 and #714 (merged, undeployed) | **done**: the opt-in `build` check (#720) | run it at checkpoint C2 |
 | `mbp_dispatch` had no smoke check | **done**: `sim-mbp` (#720) | baseline before the mbp-tracked strategy (PR 7) |
 | compose on Ray / Batch accepts `extra_pip_deps` and never installs them | #716 | refuse now, or honour in P5 |
@@ -756,7 +761,7 @@ split; each has an owner-less issue or a named moment.
 | P2.1 | carve `simulation_service_ray.py` (5,019 → **628** lines; PR 11 took 960; PR 10 took 377; PR 9 took 648; PR 8 took 548; PR 7 took 252; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `BatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `dispatch/analysis_spec.py` — PR 3 (#726) · ParCa split → `dispatch/parca_spec.py` + `ParcaService` — PR 4 (#727) · `BatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a (#731) · #730 fixed (#732) · the D12 ban — PR 6b (#733) · strategy: mbp-tracked — PR 7 (#734) · strategy: Nextflow — PR 8 (#735) · strategy: multi-node composite — PR 9 (#738) · strategy: ensemble — PR 10 (#740) · strategy: chain — PR 11 · the package `Any`-free — PR 12 · `simulation/ray/` renamed `simulation/dispatch/`. **All five mechanisms are strategies**, and the 2026-09-20 sequence is complete; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.151 carries the whole carve: every strategy (PRs 7–11), 6a/6b, and the #730 fix | **2026-09-21** (checkpoints C1, B2, C2, C3, C) | — | **done — the carve is deployed.** **Dev is 0.9.151 (checkpoint C, 2026-09-21, tag `v0.9.151`):** all five dispatch mechanisms run as strategy objects on a deployment. Merged after C and **not deployed** (no behaviour in them to deploy for; they ride checkpoint D): PR 12 (#744, annotations only) and the `dispatch/` rename (#745, names only). The service's nine scheduler delegates and its progress / cancel / staging methods stay until **P6**. **Next: P2.3**, the environment model and its *select* half |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image. 2.3a the model + `RegistryEnvironmentResolver` (`viva_core/environments/`, no caller changed) — #748 · 2.3b the four derivations ask it (`common/site_environments.py`) — #749 · 2.3c the core runtime image + core's container entrypoint (`Dockerfile-core-runtime`, `viva_core/runtime/`) — #750 · 2.3d-1 a task may name an environment (`TaskRunRequest.environment`) — #751 · 2.3d-2 Batch pulls the image; dev names it — #752 · 2.3d-3 a compose run may name an environment (one container) | | | | **done and deployed** — dev is 0.9.152 (checkpoint D, 2026-09-21, tag `v0.9.152`): the four image derivations ask one resolver, `CORE_RUNTIME_IMAGE` is live, a task and a compose run may name `environment="runtime"`. Measured on dev: `compose` 21.6 s in the runtime image against 495.9 s on the science image; a cold-fleet `task` starts in 106 s against 221 s. Prod: repeat the one-job trial pull from its VPC before it names the image |
-| P3 | settings, DI, app factory. 3a `create_core_app()` boots alone; SMS includes core's router under `/viva/v1` | | | | **in progress** — 3a, 3b, 3c done (not deployed); 3d-1 done (compose's ParCa staging is a hook); 3d-2 done (the 14 settings compose and env-worker read are `CoreSettings` fields); 3d-3 done (compose is handed its services; it imports nothing of `viva_api.dependencies`); next 3d-4 (the move — what still ties the package to `viva_api` is listed in the 3d-3 log entry) |
+| P3 | settings, DI, app factory. 3a `create_core_app()` boots alone; SMS includes core's router under `/viva/v1` | | | | **in progress** — 3a, 3b, 3c done (not deployed); 3d-1 done (compose's ParCa staging is a hook); 3d-2 done (the 14 settings compose and env-worker read are `CoreSettings` fields); 3d-3 done (compose is handed its services; it imports nothing of `viva_api.dependencies`); 3d-4a done (the env-worker service and the site resolver are in `viva_core`); 3d-4b-1 done (five compose modules `Any`-free, the D12 ban on for them by name); next 3d-4b-2 (those five move). **SLURM compose stays in SMS** until a SLURM site can test it |
 | P4a | | | | | not started (checkpoint F) |
 | P4b | | | | | not started (checkpoint F) |
 | P5 | | | | | not started (checkpoint G) |
@@ -800,6 +805,37 @@ split; each has an owner-less issue or a named moment.
   **Not in this pass:** `render_nf` (8) loads `run_pbg` and goes with it (3d-4c); `models` (12) and
   `run_pbg` (32) name the application as well; BioModels (19) is `contrib/sysbio`'s question (3d-4d).
   **Proof:** `make check` clean twice; suite 2203 passed.
+- **2026-09-21** — **P3d-4: the SLURM compose service stays in SMS for now; and the move is four steps, ordered by measurement.**
+  **The decision (Jim).** Asked what the SLURM compose service amounts to: about 320 SLURM-only lines
+  in a 5,772-line package — `ComposeSimulationServiceHpc` (~215 lines: a `singularity build` job and
+  the run job, over SSH), `hpc_utils.py` (42), the monitor's `squeue` branch (~30), one branch each in
+  the handler and the results download. No unit test submits either job. Half of the run path is one
+  model's: a `mode == "v2ecoli"` branch and `_write_v2ecoli_script`, 15 domain terms in constructs.
+  Neither Stanford site deploys AWS PCS, and the site that has SLURM — UConn Health's on-premise K8s
+  cluster and HPC cluster, the `sms-api-rke` overlays — is paused. Jim: *"we will eventually like SLURM
+  as a core technology, but now it can wait."* So `ComposeSimulationServiceHpc` and `hpc_utils.py`
+  **stay in `viva_api/compose/`** as that site's compose backend, registered from the composition root
+  exactly as today; everything generic around them moves (the abstract `ComposeSimulationService`,
+  the monitor with its SLURM branch — handed its SSH provider, so a core with no SLURM never calls it
+  — and `container_def.py`, which is D10's `python-deps` recipe). **D4 is unchanged**: SLURM is a core
+  backend, and `SlurmService`, the SSH sessions and the SLURM job models have been in `viva_core`
+  since P1b. What waits is the *consumer*, until a SLURM site can prove the move — which also makes
+  it the second backend that D4's trigger asks for before a core Protocol is called final.
+  **The order.** Every module under `viva_api/compose/` was scored against the three gates core
+  enforces — the vocabulary guard's own AST scan, a count of `Any`, and imports of the application
+  that are not already shims over core. Two modules pass all three today; six need only the `Any`
+  pass; two name the application in a construct; the runner is the largest on both counts. The
+  sequence table carries the numbers. `hpc_utils.py` and the SLURM service are not in it.
+  **3d-4a, in this PR.** `env_worker_service.py` and `site_environments.py` moved with `git mv`; a
+  diff of each against its old self shows four import lines changed in the first and nothing in the
+  second. The old names are self-replacing shims, so every importer, every string patch and every
+  `isinstance` is untouched. Core's gates pass with them inside: standalone import (the application
+  blocked), vocabulary, and mypy's no-`Any` glob.
+  **Found inside the moved code, not changed (a move changes nothing):** the worker Job carries the
+  label `app: sms-api`, the service account `batch-submit`, and the module path
+  `/app/vivarium-workbench/…`. None is a domain term and the guard does not object, but each is one
+  deployment's name inside core — deferred list.
+  **Proof:** `make check` clean twice; suite 2209 passed.
 - **2026-09-21** — **P3d-3: compose is handed its services — and one of the four was not a service but a third hook.**
   The row said "four lookups (database, file service, SSH session)". Reading them: the *database*
   lookup is `_resolve_commit`, which turns `ComposeSimulationRequest.simulator_id` into an image key by
