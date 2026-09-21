@@ -408,6 +408,7 @@ def test_memory_scales_on_137_and_only_on_137() -> None:
     from viva_api.simulation.ray.nextflow import _merge_nf_resources
 
     mem = _merge_nf_resources(None)["parca"]["memory"]
+    assert isinstance(mem, str)
     assert mem.lstrip().startswith("{"), "must be a Groovy closure, not a quoted string"
     assert "task.exitStatus == 137" in mem
     assert "task.attempt" in mem
@@ -420,9 +421,9 @@ def test_overriding_one_key_does_not_drop_the_others() -> None:
 
     merged = _merge_nf_resources({"lineage": {"time": "24 h"}})
     assert merged["lineage"]["time"] == "24 h"
-    assert "137" in merged["lineage"]["memory"]
+    assert "137" in str(merged["lineage"]["memory"])
     assert merged["lineage"]["cpus"] == 4
-    assert "137" in merged["parca"]["memory"]
+    assert "137" in str(merged["parca"]["memory"])
 
 
 def test_an_unknown_label_is_additive() -> None:
@@ -487,6 +488,7 @@ def test_session_and_work_dir_are_keyed_the_same() -> None:
     with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
         session = nextflow.nf_session_s3_uri("exp-nf")
         work = service._nextflow()._awsbatch_nf_params("abc1234", "exp-nf")["work_dir"]
+    assert isinstance(work, str)
     assert session.rsplit("/", 1)[0] == work.rsplit("/", 1)[0]
 
 
@@ -810,6 +812,7 @@ def test_the_gather_starts_above_the_size_a_3x2_oom_killed() -> None:
     from viva_api.simulation.ray.nextflow import _merge_nf_resources
 
     mem = _merge_nf_resources(None)["analysis"]["memory"]
+    assert isinstance(mem, str)
     m = re.search(r"(\d+)\.GB \* task\.attempt", mem)
     assert m is not None, mem
     base = int(m.group(1))

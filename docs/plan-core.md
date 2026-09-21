@@ -276,7 +276,7 @@ P2.0a guard caught. So:
   | 9 ✅ | strategy: **multi-node composite** → `ray/multi_node.py` (`MultiNodeCompositeStrategy(batch, stage_runner=)`, + its analysis submitter, its founder-cache staging, its vCPU lookup); `PBG_RUNNER_ENV` → the leaf `ray/runner_env.py` | 346 lines (it was 615 with its analysis, staging and lookup) |
   | 10 ✅ | strategy: **ensemble** → `ray/ensemble.py` (`EnsembleStrategy(batch, stage_runner=)`, `sim_command`), extracted from the router's tail | the router is now precedence and a hand-over: 12 statements (93 lines with the docstring and the comments that say why the order is what it is) |
   | 11 ✅ | strategy: **chain** → `ray/chain.py` (`ChainStrategy(batch, local)`, + its analysis submitter, the two seed commands, the analysis command, `chain_base_tags`); then **checkpoint C**. **Not done, and the row was wrong to promise it:** "delete the facade shims" — nine one-call delegates remain because the scheduler, a handler, the capability probe and the integration tests ask the *service*, and the audit itself put the scheduler off until P6. They are named and pinned by a test (they may only shrink). `scripts/prove_ray_carve_is_move_only.py` goes with the checkpoint-C ledger PR, not here: deleting it in the PR it proves would make the claim unrunnable | largest (1,002 lines with its analysis) and it bills real money, so last |
-  | 12 | **the ray package is `Any`-free (D12, second half)**: widen the override to `viva_api.simulation.ray.*` and type what the strategies brought with them | a type change, kept out of the five move PRs on purpose; after checkpoint C, so it is judged against a deployed, smoke-tested carve |
+  | 12 ✅ | **the ray package is `Any`-free (D12, second half)**: the override is `viva_api.simulation.ray.*` — a glob, like core's — and `NOT_YET_BANNED` is gone. The 26 sites the strategies brought: the three dispatch blocks are `TypedDict`s (`MbpDispatch`, `MultiNodeDispatch`, `NextflowDispatch`), JSON that is only read is `Mapping[str, object]`, chain's optional client is a `BatchClient`, the Nextflow head is a `V1Job`. **Annotation-only, and shown to be:** with every annotation erased, three units differ from `main`, all inert (two `cast`s, a tuple that became a constant, `str()` of a `str`) | a type change, kept out of the five move PRs on purpose; after checkpoint C, so it is judged against a deployed, smoke-tested carve |
 - **P2.2 — absorbed into P2.1** (2026-09-20). There are no mixins to turn into strategies.
 - **P2.3 — the environment model and its *select* half** (no database, no build). D10 says
   core's default path is *select or build an environment, then run*; this is the select half.
@@ -657,7 +657,9 @@ gating latency compared to the baseline.
   **Decided (D12):** `viva_core` carries no `Any` — sequence PR 6b
   turns on `disallow_any_explicit` + `disallow_any_unimported` for `viva_core.*` (a glob: a
   standing rule for everything that moves into core later) and for the ray package's
-  existing modules; PR 12 widens that to `ray.*` once the strategies have landed. Still
+  existing modules; PR 12 widened that to `ray.*` once the strategies had landed (the five
+  strategy modules: 34 imprecise expressions → **4**, all in the Nextflow head's kubernetes
+  calls; `simulation/ray` 99.33 % → **99.87 %** precise; `viva_core` unchanged at 99.17 %). Still
   only proposed: ratcheting the rest of the repository by count, like the import edges.
   Not worth doing repo-wide at once (482 of the 1,028 are in tests).
 - **Import edges ratchet.** Report-only edges still broken: **8** (measured with `lint-imports`
@@ -695,6 +697,7 @@ split; each has an owner-less issue or a named moment.
 | ~~Smoke `sim-chain` downloads the whole chain output~~ **done** (2026-09-21): it lists the run's output in S3 instead — the prefixes come from what the run's own finished Batch jobs declare (`*_OUT_S3`), since the API says nothing about where a run wrote. Checked against C2's real chain run: 53 objects and 2 seed summaries, the same as the download, in 5 s instead of ~30 min. Falls back to the download without AWS access | `app/smoke.py` | an API that LISTS a run's outputs (names and sizes) would let any client do this, and is worth having for users who should not have to download GBs to see what is there — not planned |
 | Temporary simulators 214 and 215 and the images `tmp-d01dc07-b64227[-submit]` on dev / in the shared ECR | dev | the purge for temporary simulators (not built yet); until then they stay, marked |
 | `/health` reports the database revision **as read at startup**, so smoke's `database` check cannot see a migration applied under a running pod (seen at B2) | viva-api | read it per request, or label it `db_revision_at_startup` |
+| The dispatch blocks `mbp_dispatch` and `multi_node_dispatch` are **declared** (`TypedDict`s, PR 12) but not **validated** at the API boundary beyond `task_env`; `nextflow_dispatch` is checked for two rules only. A wrongly-typed value reaches the container command line | `common/dispatch_validation.py`, `handlers/simulations.py` | a behaviour change (requests that work today could be refused), so its own PR; the `TypedDict`s are the spec to validate against |
 | `CLAUDE.md` still says backend selection is by `deployment_namespace` and that tests use SQLite | `CLAUDE.md` | any docs PR |
 | `scripts/prove_ray_carve_is_move_only.py` | — | delete in PR 11 |
 | `job_scheduler.py` (1,370 lines), `handlers/simulations.py` (2,463), `routers/env_worker.py` (1,170), `dependencies.py` (691) have no detailed plan yet | P3, P6 | before those phases start |
@@ -710,7 +713,7 @@ split; each has an owner-less issue or a named moment.
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — #696; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — #698; all merged 2026-09-19 |
 | D11 | write-once simulators + the marked-temporary exception: migration `f4c8a2e6d0b3`, `environment_key`, `force` guarded (409), the marker in all three clients, smoke `build` on a temporary simulator — #722 | — | — (checkpoint **B2**, a database deploy, before C2) | — | open |
-| P2.1 | carve `simulation_service_ray.py` (5,019 → **628** lines; PR 11 took 960; PR 10 took 377; PR 9 took 648; PR 8 took 548; PR 7 took 252; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `ray/analysis_spec.py` — PR 3 (#726) · ParCa split → `ray/parca_spec.py` + `RayParcaService` — PR 4 (#727) · `RayBatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a (#731) · #730 fixed (#732) · the D12 ban — PR 6b (#733) · strategy: mbp-tracked — PR 7 (#734) · strategy: Nextflow — PR 8 (#735) · strategy: multi-node composite — PR 9 (#738) · strategy: ensemble — PR 10 (#740) · strategy: chain — PR 11. **All five mechanisms are strategies.** Remaining: checkpoint C, PR 12, the `ray/` rename of the 2026-09-20 sequence; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.150 carries everything through PR 8 (#735), 6a/6b, and the #730 fix | **2026-09-21** (checkpoints C1, B2, C2, C3) | — | **in progress.** **Deployed to dev as 0.9.150 (checkpoint C3, 2026-09-21):** everything through PR 8 (#735), typed clients (6a), the D12 ban (6b) and the #730 fix. Merged after C3 (→ checkpoint C): PR 9 (strategy: multi-node composite), PR 10 (strategy: ensemble), PR 11 (strategy: chain). **Next: checkpoint C** (deploy), then PR 12 |
+| P2.1 | carve `simulation_service_ray.py` (5,019 → **628** lines; PR 11 took 960; PR 10 took 377; PR 9 took 648; PR 8 took 548; PR 7 took 252; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `ray/analysis_spec.py` — PR 3 (#726) · ParCa split → `ray/parca_spec.py` + `RayParcaService` — PR 4 (#727) · `RayBatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a (#731) · #730 fixed (#732) · the D12 ban — PR 6b (#733) · strategy: mbp-tracked — PR 7 (#734) · strategy: Nextflow — PR 8 (#735) · strategy: multi-node composite — PR 9 (#738) · strategy: ensemble — PR 10 (#740) · strategy: chain — PR 11 · the ray package `Any`-free — PR 12. **All five mechanisms are strategies.** Remaining: checkpoint C, PR 12, the `ray/` rename of the 2026-09-20 sequence; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.150 carries everything through PR 8 (#735), 6a/6b, and the #730 fix | **2026-09-21** (checkpoints C1, B2, C2, C3) | — | **in progress.** **Deployed to dev as 0.9.150 (checkpoint C3, 2026-09-21):** everything through PR 8 (#735), typed clients (6a), the D12 ban (6b) and the #730 fix. Merged after C3 (→ checkpoint C): PR 9 (strategy: multi-node composite), PR 10 (strategy: ensemble), PR 11 (strategy: chain). **Next: checkpoint C** (deploy), then PR 12 |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image | | | | not started (checkpoint D) |
 | P3 | | | | | not started (checkpoint E) |
@@ -725,6 +728,35 @@ split; each has an owner-less issue or a named moment.
 
 ## Decision log
 
+- **2026-09-21** — **PR 12: the ray package is `Any`-free, and the ban is a glob.** Jim: "start on PR 12
+  while the smoke runs." The override now reads `viva_core.*` and `viva_api.simulation.ray.*`; the by-name
+  list and `NOT_YET_BANNED` are gone, so a new module of the package is under the ban the day it appears
+  and nobody has to remember to list it. Twenty-six sites, four kinds. **(1) The three dispatch blocks**
+  (`mbp_dispatch`, `multi_node_dispatch`, `nextflow_dispatch`) were `dict[str, Any]` whose values flowed
+  into typed parameters — the `Any` was hiding that nothing checks them. They are `TypedDict`s now, in the
+  module of the mechanism that reads them. **That declares a contract; it does not enforce one:** the
+  blocks arrive as JSON through the config's passthrough fields, and only `task_env` (all three) and
+  `composite_id` / `resume_from` (Nextflow) are validated at the API boundary. Said in each docstring,
+  and on the deferred list — enforcing it is a behaviour change (a request that works today could start
+  being refused) and does not belong in a type PR. **(2) JSON that is only read** (`injected_processes`,
+  `variants`, `config_overrides`, `exchange_fluxes`) is `Mapping[str, object]`, not `dict[str, object]`:
+  `dict` is invariant, so a caller holding a `dict[str, list[str]]` could not pass it — the tests found
+  that in nine places the moment the `Any` went. `resolve_task_env` and `_batch_domain_overrides` take
+  a `Mapping` for the same reason. **(3) Two untyped clients:** chain's `batch_client` is a
+  `BatchClient | None`, the Nextflow head Job is a `V1Job`, both under `TYPE_CHECKING` (stub packages
+  are dev-only; `tests/core/test_typed_boto3.py`). **(4) The generator's own `params`** stay
+  `dict[str, object]` — they are passed through unread but for two counts, read through `cast`s that say
+  only "`int()` decides, as it always did".
+  **Proof that it is annotation-only.** The strategy PRs were proven by AST identity, which an annotation
+  change breaks by definition, so this PR's proof is the complement: erase every annotation (parameter,
+  return, `x: T = v` → `x = v`, `typing` imports, `TYPE_CHECKING` blocks, `TypedDict` classes) from
+  `origin/main` and from the branch, and compare what is left, per function, over the seven files
+  touched (164 units). **Three differ, all inert:** two `cast`s around values handed to `int()` /
+  `float()` / a function (identity at runtime), the tuple of three retry keys lifted into a
+  `Literal`-typed constant (a `TypedDict` cannot be indexed by a plain `str`), and `str()` around a value
+  built as an f-string two statements earlier. The ban is mutation-checked: an `Any` added to
+  `ray/runner_env.py` — a module never listed by name — fails mypy. Suite 2119 passed, unchanged;
+  `make check` clean.
 - **2026-09-21** — **PR 11: `ChainStrategy` — the last mechanism. The class is its interface, five
   builders, two composed services, and a named list.** 5,019 lines → 628. Chain was twelve
   methods and 1,002 lines: four never touched `self` (the two seed commands, the analysis command,

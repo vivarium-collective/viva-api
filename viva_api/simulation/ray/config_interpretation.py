@@ -15,6 +15,7 @@ there only because that was where everything sat.
 """
 
 import logging
+from collections.abc import Mapping
 
 from viva_api.simulation.models import CompositeEngine
 
@@ -197,11 +198,11 @@ def _thread_injected_processes_into_params(params: dict[str, object], config: ob
 
 def _batch_domain_overrides(
     *,
-    injected_processes: dict[str, object] | None = None,
-    variants: dict[str, object] | None = None,
-    config_overrides: dict[str, object] | None = None,
+    injected_processes: Mapping[str, object] | None = None,
+    variants: Mapping[str, object] | None = None,
+    config_overrides: Mapping[str, object] | None = None,
     features: list[object] | None = None,
-    exchange_fluxes: dict[str, object] | None = None,
+    exchange_fluxes: Mapping[str, object] | None = None,
     exchange_flux_basis: str | None = None,
 ) -> dict[str, object]:
     """The submitted config's DOMAIN fields as ``ecoli_baseline.baseline()``'s own

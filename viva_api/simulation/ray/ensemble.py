@@ -21,8 +21,7 @@ SMS code, and it stays SMS code.
 import json
 import logging
 import shlex
-from collections.abc import Awaitable, Callable
-from typing import Any
+from collections.abc import Awaitable, Callable, Mapping
 
 from viva_api.common.dispatch_validation import resolve_task_env
 from viva_api.common.models import JobId
@@ -56,11 +55,11 @@ def sim_command(
     n_generations: int = 1,
     experiment_id: str | None = None,
     runner_s3_uri: str | None = None,
-    injected_processes: dict[str, Any] | None = None,
-    variants: dict[str, Any] | None = None,
-    config_overrides: dict[str, Any] | None = None,
-    features: list[Any] | None = None,
-    exchange_fluxes: dict[str, Any] | None = None,
+    injected_processes: Mapping[str, object] | None = None,
+    variants: Mapping[str, object] | None = None,
+    config_overrides: Mapping[str, object] | None = None,
+    features: list[object] | None = None,
+    exchange_fluxes: Mapping[str, object] | None = None,
     exchange_flux_basis: str | None = None,
 ) -> str:
     # When ``composite`` is set, run the two-engine comparison driver — both
@@ -108,7 +107,7 @@ def sim_command(
                 "runner_s3_uri is required for multi-generation batch dispatch "
                 "(the generic run_pbg.py runner must be staged to S3 first)"
             )
-        overrides: dict[str, Any] = {
+        overrides: dict[str, object] = {
             "n_seeds": int(n_seeds),
             "n_generations": int(n_generations),
             "cache_dir": PARCA_CACHE_DIR,
