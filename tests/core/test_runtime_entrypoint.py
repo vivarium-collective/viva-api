@@ -191,6 +191,18 @@ def test_the_image_installs_the_entrypoint_at_the_path_job_definitions_call() ->
     assert ENTRYPOINT.stat().st_mode & stat.S_IXUSR
 
 
+def test_the_public_image_can_only_contain_cores_runtime_directory() -> None:
+    """The runtime image is PUBLIC, and this repository also holds what can never be (D13: ptools is
+    licensed). Whatever the build context is, the image takes files from it only out of
+    ``viva_core/runtime/`` -- so publishing the image can never publish anything else."""
+    copies = [line.split() for line in DOCKERFILE.read_text(encoding="utf-8").splitlines() if line.startswith("COPY")]
+    from_context = [parts[1] for parts in copies if not parts[1].startswith("--from=")]
+    assert from_context, "expected the Dockerfile to COPY the entrypoint and the requirements"
+    outside = [src for src in from_context if not src.startswith("viva_core/runtime/")]
+    assert not outside, f"the public runtime image copies from outside viva_core/runtime/: {outside}"
+    assert "ADD " not in DOCKERFILE.read_text(encoding="utf-8")  # ADD can fetch and unpack; COPY is all it needs
+
+
 def test_the_runtime_is_no_applications() -> None:
     """Comments may name the application that motivated something; what RUNS may not."""
     for path in (ENTRYPOINT, DOCKERFILE, REQUIREMENTS):
