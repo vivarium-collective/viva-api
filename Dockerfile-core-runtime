@@ -1,0 +1,70 @@
+# syntax=docker/dockerfile:1
+# ─────────────────────────────────────────────────────────────────────────────
+# The CORE RUNTIME IMAGE (docs/plan-core.md P2.3c; decision D10).
+#
+# A reference environment that is no application's science image: Python, the
+# process-bigraph engine and its emitters, the AWS CLI, and core's container
+# entrypoint (the stage-in / run / stage-out contract). It is what the
+# EnvironmentResolver selects for a composite that needs nothing beyond the
+# built-ins -- the "barebones" end of D10's line, and rarely the useful one for
+# science. Why it still matters: tasks, compose and env workers take no image
+# parameter today, so a plumbing smoke test pulls a 5.74 GB (compressed) science
+# image and spends 250-320 s in queue + scale-up + pull for 2 s of work.
+#
+# SHAPE: serves CONTAINER-type Batch jobs (/opt/batch-container-entrypoint.sh, the
+# absolute path every container job definition calls). It does NOT yet carry the
+# multi-node Ray entrypoint: the only copies of that script are in the science
+# repositories and have model-specific steps inside them; a core copy is its own
+# step. Nor the env-worker module, which ships in the workbench image.
+#
+#   docker build -f Dockerfile-core-runtime -t viva-core-runtime:dev .
+# ─────────────────────────────────────────────────────────────────────────────
+FROM python:3.12-slim-bookworm AS build
+
+# git only to fetch the two engine packages pinned by commit; it stays in this stage.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY viva_core/runtime/requirements.txt /tmp/requirements.txt
+RUN python -m venv /opt/venv \
+ && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
+ && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt
+
+
+FROM python:3.12-slim-bookworm
+
+# AWS CLI v2: the entrypoint stages inputs in and syncs outputs out with `aws s3 sync`.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl unzip ca-certificates \
+ && arch="$(uname -m)" \
+ && case "$arch" in \
+      x86_64)  awscli_url="https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" ;; \
+      aarch64) awscli_url="https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" ;; \
+      *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL "$awscli_url" -o /tmp/awscliv2.zip \
+ && unzip -q /tmp/awscliv2.zip -d /tmp \
+ && /tmp/aws/install \
+ && rm -rf /tmp/aws /tmp/awscliv2.zip \
+ && apt-get purge -y unzip && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/* \
+ && aws --version
+
+COPY --from=build /opt/venv /opt/venv
+# On PATH for non-login shells (ENV) AND login shells: the entrypoint runs the workload under
+# `bash -lc`, and Debian's /etc/profile RESETS PATH for a login shell.
+ENV PATH="/opt/venv/bin:${PATH}" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONUTF8=1
+RUN printf 'export PATH="/opt/venv/bin:$PATH"\n' > /etc/profile.d/venv.sh
+
+COPY viva_core/runtime/batch-container-entrypoint.sh /opt/batch-container-entrypoint.sh
+RUN chmod +x /opt/batch-container-entrypoint.sh \
+ && python -c "import process_bigraph.protocols, bigraph_schema, viva_emitters; print('engine ok')" \
+ && bash -lc 'python -c "import process_bigraph.protocols"'
+
+WORKDIR /work
+# A job definition names the entrypoint by its absolute path; this default makes a bare
+# `docker run -e CONTAINER_JOB_CMD=... <image>` keep the same contract.
+ENTRYPOINT ["/opt/batch-container-entrypoint.sh"]

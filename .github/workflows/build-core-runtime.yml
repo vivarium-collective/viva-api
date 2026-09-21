@@ -1,0 +1,69 @@
+name: Build and Push the Core Runtime Image
+
+# The core runtime image (Dockerfile-core-runtime, docs/plan-core.md P2.3c): Python, the
+# process-bigraph engine, the AWS CLI and core's container entrypoint -- no application's code.
+# Its own workflow because it versions on its own line: it changes when the engine pin or the
+# entrypoint changes, not when viva-api does. Dispatched by hand, like build-and-push.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to push (e.g. 0.1.0). Tags are WRITE-ONCE: an existing tag is refused."
+        required: true
+
+jobs:
+  contract:
+    # The gate: the entrypoint's stage-in / run / stage-out contract, run for real against a fake
+    # `aws`, plus the static checks on the Dockerfile. No image is pushed without it.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Set up the environment
+        uses: ./.github/actions/setup-python-env
+        with:
+          python-version: "3.13"
+
+      - name: Run the container-contract tests
+        run: uv run python -m pytest tests/core/test_runtime_entrypoint.py -v
+
+  build-and-push:
+    needs: contract
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # Required for pushing to ghcr.io
+    env:
+      IMAGE: ghcr.io/vivarium-collective/viva-core-runtime
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Set up QEMU (the Batch fleet has amd64 and arm64 queues)
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry (ghcr.io)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Refuse to overwrite an existing tag
+        # A built environment is write-once (decision D11): a rebuild is a NEW tag.
+        run: |
+          if docker buildx imagetools inspect "${IMAGE}:${{ inputs.tag }}" >/dev/null 2>&1; then
+            echo "::error::${IMAGE}:${{ inputs.tag }} already exists; environments are write-once. Choose a new tag."
+            exit 1
+          fi
+
+      - name: Build, check that a composite runs in it, and push
+        run: |
+          docker buildx build --platform=linux/amd64 --load -f Dockerfile-core-runtime -t core-runtime:check .
+          docker run --rm -e CONTAINER_JOB_CMD='python -c "import process_bigraph.protocols, viva_emitters; print(\"engine ok\")"' core-runtime:check
+          docker buildx build --platform=linux/amd64,linux/arm64 --push -f Dockerfile-core-runtime -t "${IMAGE}:${{ inputs.tag }}" .
+          echo "pushed ${IMAGE}:${{ inputs.tag }}"

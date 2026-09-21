@@ -294,7 +294,7 @@ P2.0a guard caught. So:
   |---|---|---|
   | 2.3a ✅ | **the model and the one resolver**: `viva_core/environments/` — `ExplicitSpec` / `DerivedSpec`, `spec_hash`, `Environment`, the `EnvironmentResolver` Protocol, `RegistryEnvironmentResolver`. Pure: no settings, no network, **no caller changed** | the vocabulary first, reviewable on its own; a test pins that the resolver says what each of the four derivations says |
   | 2.3b ✅ | **the four derivations ask the one resolver**: `viva_api/common/site_environments.py` builds it from the settings it is *handed* (each caller already holds them, through its own seam, and a test that patches that seam must be what it sees). The Batch layer's `image_uri` / `submit_image_uri`, compose's pinned tag, the env worker's `image_for_commit` and the K8s analysis Job ask it. The behaviour decision was **taken out**, not taken: an unset account still yields the malformed host it always did (deferred list) | a rewiring: differential against `main` over 432 cases, mutation-checked twice |
-  | 2.3c | **the core runtime image**: `Dockerfile-core-runtime` + its CI build, registered as the resolver's `runtime_image` | infrastructure, and the image must exist before anything can select it |
+  | 2.3c ✅ | **the core runtime image**: `Dockerfile-core-runtime` (370 MB: Python slim, the engine at the commits the science image runs, `viva-emitters`, the AWS CLI) + **core's own container entrypoint** (`viva_core/runtime/batch-container-entrypoint.sh`, installed at the `/opt/` path every container job definition calls) + its first contract test + `build-core-runtime.yml` (dispatch-only, write-once tags) + `CORE_RUNTIME_IMAGE`, registered as the resolver's `runtime_image`. **Container-shape jobs only**: no multi-node Ray entrypoint yet. **Not pushed, not deployed** | infrastructure, and the image must exist before anything can select it |
   | 2.3d | **tasks, compose and env workers may name an environment** (today none takes an image parameter); Tier 1 smoke moves to the runtime image. **Checkpoint D** | the API change, last, once there is something other than a science image to name |
 
   Then **the core runtime image**: a small reference environment that is not any
@@ -711,6 +711,10 @@ split; each has an owner-less issue or a named moment.
 | ~~`atlantis smoke` probes AWS Batch once, at startup, and reports a failure only where the affected checks print — behind the chain, an hour in~~ **done** (2026-09-21, the smoke-probe PR): the probe is tried twice; what a failed probe changes is printed **before the run** (`NOTE … sim-cancel will SKIP`, `sim-chain will DOWNLOAD`); `--require-aws` stops there with exit 2, which is what a deploy checkpoint wants; and a Tier 2 verdict is reported the moment it lands instead of in check order, so nothing queues behind the chain | `app/cli.py` (`smoke_run`), `app/smoke.py` | use `--require-aws` for every checkpoint from D on |
 | `AwsRunOutputLister` finds no prefix for a multi-node run: it reads a job's container environment, and an MNP job keeps `RAY_OUT_S3` under `nodeProperties`. Harmless today (only `sim-chain` lists) | `app/smoke.py` | read `nodeProperties.nodeRangeProperties[].container.environment` too, then let `sim-default` and `sim-composite` list instead of download |
 | Every simulation row's `last_updated` is the API pod's boot time: `Simulation.last_updated` defaults to `str(datetime.datetime.now())`, evaluated once at import (`simulation/models.py`) | viva-api | `default_factory`; its own small PR, with a test that two rows made a second apart differ |
+| The **generic** container entrypoint lives in the science repositories, and their copies have **diverged**: v2ecoli's (2026-08-19) is application-free; sms-ecoli's (2026-09-12) imports its model's cache verifier inside the stage-in step. Core now has its own copy (2.3c), which no science image uses | `v2ecoli/docker/`, `sms-ecoli/docker/`, `viva_core/runtime/` | give core's entrypoint one hook (run `/opt/post-stage-hook` if it exists) so an application keeps its verification **without forking the contract**, then have the science images `COPY` core's script. Needs the science repos' owners |
+| The core runtime image serves **container-shape** jobs only. The multi-node Ray entrypoint (`ray-batch-entrypoint.sh`, 330 lines) exists only in the science repositories and has model-specific steps inside it (`V2E_BUILD_UPSTREAM_PARCA`) | `viva_core/runtime/` | a core copy with those steps behind the same hook; until then `compose` on the MNP shape cannot run on the runtime image, and 2.3d starts with tasks |
+| Where Batch pulls the runtime image from is **undecided**: CI pushes to ghcr (as it does for `sms-api`, which EKS pulls); every image Batch pulls today is in ECR, and whether the Batch compute environments can reach ghcr from the VPC has not been tried | deployment | try one pull at 2.3d; if it fails, mirror the tag into ECR (a new repository: it is not a simulator, so D11's simulator rules do not apply, but its tags are write-once all the same) |
+| `process-bigraph` (at `55b70676`) imports `requests` without declaring it; the science image has it by accident. Pinned explicitly in `viva_core/runtime/requirements.txt` | upstream | an upstream issue / one-line PR to process-bigraph's dependencies |
 | With `ECR_ACCOUNT_ID` unset, every image reference is the malformed `.dkr.ecr.<region>.amazonaws.com/<repo>:<key>`, found out by a Batch pull ten minutes later. The default settings leave it unset, and eight tests run that way without looking at the image. P2.3b preserved it on purpose (`site_environments._registry`), so the rewiring could be proven to say what the four derivations said | `viva_api/common/site_environments.py` | refuse by name, in the one place there now is; give those eight tests an account; flip `test_an_unset_account_still_yields_what_it_always_did_until_that_is_decided`. Its own small PR — Jim's call |
 | The dispatch blocks `mbp_dispatch` and `multi_node_dispatch` are **declared** (`TypedDict`s, PR 12) but not **validated** at the API boundary beyond `task_env`; `nextflow_dispatch` is checked for two rules only. A wrongly-typed value reaches the container command line | `common/dispatch_validation.py`, `handlers/simulations.py` | a behaviour change (requests that work today could be refused), so its own PR; the `TypedDict`s are the spec to validate against |
 | `CLAUDE.md` still says backend selection is by `deployment_namespace` and that tests use SQLite | `CLAUDE.md` | any docs PR |
@@ -729,7 +733,7 @@ split; each has an owner-less issue or a named moment.
 | D11 | write-once simulators + the marked-temporary exception: migration `f4c8a2e6d0b3`, `environment_key`, `force` guarded (409), the marker in all three clients, smoke `build` on a temporary simulator — #722 | — | — (checkpoint **B2**, a database deploy, before C2) | — | open |
 | P2.1 | carve `simulation_service_ray.py` (5,019 → **628** lines; PR 11 took 960; PR 10 took 377; PR 9 took 648; PR 8 took 548; PR 7 took 252; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `BatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `dispatch/analysis_spec.py` — PR 3 (#726) · ParCa split → `dispatch/parca_spec.py` + `ParcaService` — PR 4 (#727) · `BatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a (#731) · #730 fixed (#732) · the D12 ban — PR 6b (#733) · strategy: mbp-tracked — PR 7 (#734) · strategy: Nextflow — PR 8 (#735) · strategy: multi-node composite — PR 9 (#738) · strategy: ensemble — PR 10 (#740) · strategy: chain — PR 11 · the package `Any`-free — PR 12 · `simulation/ray/` renamed `simulation/dispatch/`. **All five mechanisms are strategies**, and the 2026-09-20 sequence is complete; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.151 carries the whole carve: every strategy (PRs 7–11), 6a/6b, and the #730 fix | **2026-09-21** (checkpoints C1, B2, C2, C3, C) | — | **done — the carve is deployed.** **Dev is 0.9.151 (checkpoint C, 2026-09-21, tag `v0.9.151`):** all five dispatch mechanisms run as strategy objects on a deployment. Merged after C and **not deployed** (no behaviour in them to deploy for; they ride checkpoint D): PR 12 (#744, annotations only) and the `dispatch/` rename (#745, names only). The service's nine scheduler delegates and its progress / cancel / staging methods stay until **P6**. **Next: P2.3**, the environment model and its *select* half |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
-| P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image. 2.3a the model + `RegistryEnvironmentResolver` (`viva_core/environments/`, no caller changed) — #748 · 2.3b the four derivations ask it (`common/site_environments.py`) | | | | **in progress** — 2.3a, 2.3b done (neither deployed: no behaviour in them); next 2.3c (the core runtime image); checkpoint D after 2.3d |
+| P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image. 2.3a the model + `RegistryEnvironmentResolver` (`viva_core/environments/`, no caller changed) — #748 · 2.3b the four derivations ask it (`common/site_environments.py`) — #749 · 2.3c the core runtime image + core's container entrypoint (`Dockerfile-core-runtime`, `viva_core/runtime/`) | | | | **in progress** — 2.3a, 2.3b, 2.3c done (none deployed: no behaviour in them; the image is built locally, not pushed); next 2.3d (tasks, compose and env workers may name an environment), then checkpoint D |
 | P3 | | | | | not started (checkpoint E) |
 | P4a | | | | | not started (checkpoint F) |
 | P4b | | | | | not started (checkpoint F) |
@@ -747,6 +751,42 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-21** — **P2.3c: the core runtime image — and the entrypoint turned out not to be ours.** Jim:
+  "merge #749, then do 2.3c, the core runtime image." The plan said the image carries "the Batch
+  container entrypoint". Looking for it found the real state: **the stage-in / run / stage-out
+  script is not in this repository at all.** It lives in the science repositories (`docker/`), the
+  job definitions in sms-cdk call it by absolute path (`/opt/batch-container-entrypoint.sh`), and the
+  two copies have **diverged** — v2ecoli's says "nothing in this script is workload-aware" and is;
+  sms-ecoli's, three weeks newer, imports `v2ecoli.library.cache_version` inside the stage-in step.
+  That is what happens to a generic contract kept in an application's repository, and it is the
+  strongest argument yet for core owning it. So 2.3c is four things, not one:
+  **(1) Core's own entrypoint**, `viva_core/runtime/batch-container-entrypoint.sh`: v2ecoli's copy at
+  `fb4e091ce` (the last application-free one), its examples de-domained, plus the one generic check
+  the newer copy had grown — a stage prefix that syncs *nothing* fails the job (`aws s3 sync` exits 0
+  on an empty prefix). **(2) The contract's first test** (`tests/core/test_runtime_entrypoint.py`): the
+  script run for real under `bash` against a fake `aws` that maps `s3://` to a directory — exit code
+  propagated, inputs staged before the command, an empty stage refused before the command runs,
+  outputs uploaded whether the command succeeds or fails, **a failed upload fails a job whose command
+  succeeded** (mutation-checked), the report uploaded, and every variable `stage_out_env` writes is one
+  the script reads. **(3) The image**, `Dockerfile-core-runtime`: two stages (git only in the first),
+  Python 3.12 slim, the engine pinned to **the exact commits the deployed science image runs**
+  (process-bigraph `55b70676`, the first with `process_bigraph.events`; bigraph-schema `8268aa14`),
+  `viva-emitters[parquet]`, the AWS CLI. **370 MB** uncompressed against the science image's 5.74 GB
+  compressed. **(4) Registration**: `CORE_RUNTIME_IMAGE` (a `CoreSettings` field, empty by default) is
+  what `site_resolver` hands the resolver as `runtime_image`, so an empty `DerivedSpec` resolves to it
+  where a site names one and is refused where it does not.
+  **Proved by running it, which found a bug a static check would not:** built locally, the image ran
+  the smoke composite through `viva_api/compose/run_pbg.py` under the entrypoint and returned
+  `level = 1.61051 = 1.1^5`, with `events.jsonl` beside it. The first attempt failed — process-bigraph
+  imports `requests` without declaring it, and `import process_bigraph` alone never reaches that
+  module. It is pinned now, the Dockerfile's build-time check imports the module that needs it, and
+  the upstream fix is on the deferred list.
+  **What this is not.** Container-shape jobs only: the multi-node Ray entrypoint has model-specific
+  steps inside it and needs its own de-domaining, so `compose` on the MNP shape cannot run here yet
+  and 2.3d starts with tasks. **Nothing is pushed or deployed:** `build-core-runtime.yml` is
+  dispatch-only, gated on the contract test, multi-arch, and **refuses an existing tag** (an
+  environment is write-once, D11); running it, and where Batch pulls from (ghcr or an ECR mirror), are
+  2.3d's — both on the deferred list with the science repositories adopting core's entrypoint.
 - **2026-09-21** — **P2.3b: four derivations, one place — and a behaviour change taken out of it.** Jim:
   "merge #748, then start on 2.3b." `viva_api/common/site_environments.py` turns the site's three
   settings into core's `RegistryEnvironmentResolver`; the Batch layer (`image_uri`,
