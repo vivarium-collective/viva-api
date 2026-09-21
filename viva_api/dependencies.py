@@ -461,6 +461,11 @@ async def init_standalone(enable_ssl: bool = True) -> None:
         raise
 
 
+def _slurm_ssh() -> SSHSessionService:
+    """The SLURM SSH sessions, asked for at the moment of use: a site without SLURM never has them."""
+    return get_ssh_session_service(SSHTarget.SLURM)
+
+
 async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
     """Initialize the compose (process-bigraph) subsystem using the shared Postgres engine."""
     try:
@@ -503,6 +508,7 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         if settings.ray_mnp_queue:
             from viva_api.compose.simulation_service_ray import ComposeSimulationServiceRay
             from viva_api.simulation.compose_analysis import ComposeAnalysisChainer
+            from viva_api.simulation.compose_simulators import simulator_environment_key
             from viva_api.simulation.compose_staging import compose_parca_staging
             from viva_api.simulation.dispatch.batch_layer import BatchLayer
 
@@ -512,23 +518,27 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
             # What SMS chains onto a compose run (its science analysis) and stages into one (its
             # ParCa cache) are SMS's, handed to compose as hooks (docs/plan-core.md P3c, P3d-1):
             # compose itself imports nothing of the application's domain.
+            # The file service and the simulator registry arrive the same way (P3d-3): compose is
+            # handed them and looks nothing up in this module.
             compose_batch = BatchLayer()
             compose_registry[ComputeBackend.RAY] = ComposeSimulationServiceRay(
                 batch=compose_batch,
                 after_submit=ComposeAnalysisChainer(compose_batch),
                 stage_inputs=compose_parca_staging,
+                files=get_file_service(),
+                environment_key_of=simulator_environment_key,
             )
             logger.info("✓ Compose backend registered: ray (AWS Batch MNP)")
         if default_backend == ComputeBackend.SLURM:
-            compose_registry[ComputeBackend.SLURM] = ComposeSimulationServiceHpc()
+            compose_registry[ComputeBackend.SLURM] = ComposeSimulationServiceHpc(slurm_ssh=_slurm_ssh)
             logger.info("✓ Compose backend registered: slurm (HPC)")
         # Default: the deployment's compute backend if built, else whatever's available
         # (Stanford runs COMPUTE_BACKEND=ray → Ray; UCONN → SLURM).
         compose_sim = compose_registry.get(default_backend) or next(
-            iter(compose_registry.values()), ComposeSimulationServiceHpc()
+            iter(compose_registry.values()), ComposeSimulationServiceHpc(slurm_ssh=_slurm_ssh)
         )
         compose_monitor = ComposeJobMonitor(
-            nats_client=None, database_service=compose_db, sim_registry=compose_registry
+            nats_client=None, database_service=compose_db, sim_registry=compose_registry, slurm_ssh=_slurm_ssh
         )
 
         # Bootstrap compose_allow_list on a fresh deployment only — never overwrites an
