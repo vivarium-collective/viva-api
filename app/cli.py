@@ -3075,6 +3075,11 @@ def smoke_run(
         help="Region for the cancel checks' look at AWS Batch (default: AWS_DEFAULT_REGION / the profile's). "
         "They use YOUR credentials, read-only, and SKIP without them.",
     ),
+    require_aws: bool = Option(
+        default=False,
+        help="Stop before running anything (exit 2) if a selected check would SKIP, or download instead of "
+        "list, for want of AWS access. For a deploy checkpoint, where a SKIP is not a verdict.",
+    ),
     timeout: float = Option(default=900.0, help="Seconds to wait for any one dispatched job."),
     sim_timeout: float = Option(default=7200.0, help="Seconds to wait for any one tier-2 simulation."),
     json_out: Path | None = Option(default=None, help="Write the full result, with evidence, as JSON."),
@@ -3100,21 +3105,28 @@ def smoke_run(
     service = E2EDataService(base_url=target, timeout=int(timeout) + 120)  # per REQUEST, not per job
     # The cancel checks assert on AWS Batch itself, with the operator's own credentials.
     # Built only when one of them will run; no access is a SKIP with the reason, not an error.
+    # Each probe is tried twice (``smoke.probe_access``): one failed call must not decide an hour.
     batch_jobs = None
     batch_unavailable = "no cancel check selected"
-    if any(check.name in smoke.NEEDS_BATCH_ACCESS | smoke.LISTS_RUN_OUTPUTS for check in checks):
-        try:
-            batch_jobs = smoke.AwsBatchJobLister(region=aws_region)
-        except Exception as e:
-            batch_unavailable = f"{type(e).__name__}: {str(e)[:160]}"
+    wants_batch = any(check.name in smoke.NEEDS_BATCH_ACCESS | smoke.LISTS_RUN_OUTPUTS for check in checks)
+    if wants_batch:
+        batch_jobs, batch_unavailable = smoke.probe_access(lambda: smoke.AwsBatchJobLister(region=aws_region))
     list_run_outputs = _smoke_output_lister(batch_jobs, checks, aws_region)
     image_pushed_at = None
     registry_unavailable = "no build check selected"
-    if build and any(check.name in smoke.NEEDS_REGISTRY_ACCESS for check in checks):
-        try:
-            image_pushed_at = smoke.AwsImagePushedAt(ecr_repository, region=aws_region)
-        except Exception as e:
-            registry_unavailable = f"{type(e).__name__}: {str(e)[:160]}"
+    wants_registry = build and any(check.name in smoke.NEEDS_REGISTRY_ACCESS for check in checks)
+    if wants_registry:
+        image_pushed_at, registry_unavailable = smoke.probe_access(
+            lambda: smoke.AwsImagePushedAt(ecr_repository, region=aws_region)
+        )
+    # ...and what a failed probe changes about this run is said NOW, not where the affected
+    # checks print (tier 2 used to report in check order: behind the chain, an hour in).
+    notices = smoke.access_notices(
+        checks,
+        batch_unavailable=batch_unavailable if wants_batch and batch_jobs is None else None,
+        outputs_unlisted=list_run_outputs is None,
+        registry_unavailable=registry_unavailable if wants_registry and image_pushed_at is None else None,
+    )
     options = smoke.SmokeOptions(
         repo_script=repo_script,
         mbp_variant=mbp_variant,
@@ -3145,6 +3157,11 @@ def smoke_run(
         )
 
     console.print(f"[memphis.primary]atlantis smoke[/] -> {target}  ({len(checks)} checks)")
+    for notice in notices:
+        console.print(f"  [memphis.error]NOTE[/] {notice}")
+    if notices and require_aws:
+        console.print("  [memphis.error]--require-aws: not running[/] (refresh your AWS session, or drop the flag)")
+        raise typer.Exit(code=2)
     results = smoke.run_checks(service, checks, options, on_result=show)
     summary = smoke.summarize(results)
     console.print(f"  [bold]{summary['pass']} passed, {summary['fail']} failed, {summary['skip']} skipped[/]")

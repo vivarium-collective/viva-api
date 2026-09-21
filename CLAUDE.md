@@ -266,6 +266,7 @@ make e2e BASE_URL=<url>    # = make smoke TIER=1 (task, env worker, composite). 
                            # TIER=2 = one real simulation per dispatch path, concurrently (tens of minutes, dollars);
                            #   plus sim-cancel / chain-cancel / nextflow-cancel, which verify on AWS Batch itself and so need
                            #   your AWS credentials (read-only); without them they SKIP;
+                           #   SMOKE_ARGS='--require-aws' stops at startup (exit 2) instead -- use it for a deploy checkpoint;
                            #   `build` is opt-in: SMOKE_ARGS='--build' builds a marked-TEMPORARY simulator (own record,
                            #   own tag tmp-<commit>-<nonce>) and checks ECR for the push (~15 min); tier 2 then runs on it;
                            # TIER=3 adds the restart check (needs SMOKE_ARGS='--restart-command "scripts/smoke_restart_k8s.sh <ns> <port>"')
