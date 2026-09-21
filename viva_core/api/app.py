@@ -21,6 +21,7 @@ from viva_core.environments import (
     Dependency,
     DerivedSpec,
     EnvironmentNotResolvable,
+    EnvironmentResolverNotConfigured,
     EnvironmentSpec,
     ExplicitSpec,
     RegistryEnvironmentResolver,
@@ -67,6 +68,9 @@ def build_core_router(container: Callable[[], CoreContainer], *, prefix: str = C
         except EnvironmentNotResolvable as e:
             # Not something close: no environment answers this, and core's select half cannot build one.
             raise HTTPException(404, str(e)) from e
+        except EnvironmentResolverNotConfigured as e:
+            # The request is fine; the DEPLOYMENT is missing a setting, and the message names it.
+            raise HTTPException(501, str(e)) from e
         return EnvironmentModel(image=found.image, spec_hash=found.spec_hash, image_digest=found.image_digest)
 
     return router

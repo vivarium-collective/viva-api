@@ -6,6 +6,12 @@ import socket
 # simulator_defaults.py reads these at import time).
 os.environ.setdefault("COMPUTE_BACKEND", "slurm")
 os.environ.setdefault("PUBLIC_MODE", "false")
+# A configured site has an ECR account; the suite runs as one. Until 2026-09-21 an unset account
+# produced a malformed image name that eight tests built without ever looking at it. Now it is
+# REFUSED by name (viva_api/common/site_environments.py), so the suite says which site it is.
+# Obviously fake on purpose, and `no_real_aws` (below) blocks the network regardless. The unset
+# case has tests of its own, which pass their own settings.
+os.environ.setdefault("ECR_ACCOUNT_ID", "000000000000")
 
 
 def _hpc_reachable() -> bool:

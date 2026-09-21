@@ -731,7 +731,7 @@ split; each has an owner-less issue or a named moment.
 | The core runtime image serves **container-shape** jobs only. The multi-node Ray entrypoint (`ray-batch-entrypoint.sh`, 330 lines) exists only in the science repositories and has model-specific steps inside it (`V2E_BUILD_UPSTREAM_PARCA`) | `viva_core/runtime/` | a core copy with those steps behind a hook. **Less urgent since 2.3d-3**: a composite that needs only the built-ins runs there as one container; the Ray shape matters when a curated environment wants a cluster |
 | ~~Where Batch pulls the runtime image from~~ **decided and proven** (2026-09-21): ghcr, anonymously — Jim made `viva-core-runtime` public, and a trial job on `smsvpctest-ray-standalone` pulled `:0.1.0` from inside the VPC and ran. No ECR mirror | deployment | **prod is a separate VPC**: repeat the one-job trial there before prod names the image. If ghcr is ever unreachable from a Batch VPC, the fallback is still an ECR mirror |
 | `process-bigraph` (at `55b70676`) imports `requests` without declaring it; the science image has it by accident. Pinned explicitly in `viva_core/runtime/requirements.txt` | upstream | an upstream issue / one-line PR to process-bigraph's dependencies |
-| With `ECR_ACCOUNT_ID` unset, every image reference is the malformed `.dkr.ecr.<region>.amazonaws.com/<repo>:<key>`, found out by a Batch pull ten minutes later. The default settings leave it unset, and eight tests run that way without looking at the image. P2.3b preserved it on purpose (`site_environments._registry`), so the rewiring could be proven to say what the four derivations said | `viva_api/common/site_environments.py` | refuse by name, in the one place there now is; give those eight tests an account; flip `test_an_unset_account_still_yields_what_it_always_did_until_that_is_decided`. Its own small PR — Jim's call |
+| ~~With `ECR_ACCOUNT_ID` unset, every image reference is the malformed `.dkr.ecr.<region>.amazonaws.com/<repo>:<key>`~~ **done** (2026-09-21, Jim's call): an explicit spec is **refused by name** (`EnvironmentResolverNotConfigured`: "ecr_account_id is unset (ECR_ACCOUNT_ID) …"; 501 through core's route), before a job definition is registered or a job submitted. What needs no registry — core's health route, the runtime image — is unaffected. The suite now runs as a configured site (`tests/conftest.py`) | `viva_api/common/site_environments.py` | — |
 | The dispatch blocks `mbp_dispatch` and `multi_node_dispatch` are **declared** (`TypedDict`s, PR 12) but not **validated** at the API boundary beyond `task_env`; `nextflow_dispatch` is checked for two rules only. A wrongly-typed value reaches the container command line | `common/dispatch_validation.py`, `handlers/simulations.py` | a behaviour change (requests that work today could be refused), so its own PR; the `TypedDict`s are the spec to validate against |
 | `CLAUDE.md` still says backend selection is by `deployment_namespace` and that tests use SQLite | `CLAUDE.md` | any docs PR |
 | `job_scheduler.py` (1,370 lines), `handlers/simulations.py` (2,463), `routers/env_worker.py` (1,170), `dependencies.py` (691) have no detailed plan yet | P3, P6 | before those phases start |
@@ -767,6 +767,27 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-21** — **An unset ECR account is refused by name.** Jim, after asking what that meant: "okay … make a
+  PR refusing an unset ECR account by name." The default settings leave `ECR_ACCOUNT_ID` empty, and
+  until now every image reference was then `.dkr.ecr.<region>.amazonaws.com/<repo>:<key>` — a malformed
+  name nobody looked at, which became a Batch job definition, then a submitted job, then an image-pull
+  failure ten minutes later that never mentions the setting; since P3a it was also handed to clients
+  by `POST /viva/v1/environments/resolve`. 2.3b preserved it on purpose so that rewiring could be
+  proven to say what the four derivations said; this is the behaviour change it deferred.
+  **Narrower than "refuse when unset", and that is the design.** The site's resolver is built on every
+  request to core's health route, and the runtime image is a full ghcr reference that needs no ECR
+  account. So `site_resolver` never fails; with the account unset it returns a resolver that refuses
+  **the one kind of request that needs the registry — an explicit spec** — and answers everything else
+  as before. Core gained the name for it: `EnvironmentResolverNotConfigured` ("the request may be
+  perfectly good; the deployment is missing a setting"), distinct from `EnvironmentNotResolvable`
+  ("looked, found nothing"), and core's route maps it to **501** where the other is 404.
+  **The tests said what it would cost, exactly:** 9 failed — the 8 predicted in 2.3b plus the one test
+  whose name said this PR would flip it. The 8 were not fixed one by one: they fail because the suite
+  ran as an *unconfigured* site, so `tests/conftest.py` now sets an obviously fake account
+  (`000000000000`; the no-real-AWS guard blocks the network regardless), and the unset case has tests
+  of its own that pass their own settings — at the resolver, at the Batch layer (nothing registered,
+  nothing submitted), and through core's route (501, the setting named, no `.dkr.ecr.` in the body,
+  health and the runtime image still answering). Dev and prod set the account: nothing changes there.
 - **2026-09-21** — **P3c: the first hook. Compose stops importing SMS's science; the contract is enforced.**
   Jim: "merge #756 and #757, then start on 3c." `compose-is-domain-free` had two broken edges, both in
   `compose/simulation_service_ray.py`, both for one method: `_submit_analysis_job`, which chains the

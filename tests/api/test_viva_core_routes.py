@@ -50,3 +50,17 @@ def test_cores_routes_are_in_the_applications_openapi_document_under_their_own_p
     core = sorted(p for p in paths if p.startswith(CORE_PREFIX))
     assert core == [f"{CORE_PREFIX}/environments/resolve", f"{CORE_PREFIX}/health"]
     assert "/core/v1/simulator/latest" in paths  # SMS's own, older `core` router: a different thing, untouched
+
+
+def test_an_unset_account_is_the_deployments_fault_and_the_answer_names_the_setting() -> None:
+    """Until 2026-09-21 this route handed a client ``.dkr.ecr.<region>.amazonaws.com/v2ecoli:<key>``.
+    Now: 501, naming ``ECR_ACCOUNT_ID`` -- while health, and the runtime image, which need no
+    registry, answer as before."""
+    client = TestClient(app)
+    with patch("viva_api.core_wiring.get_settings", lambda: _settings(ecr_account_id="")):
+        refused = client.post(f"{CORE_PREFIX}/environments/resolve", json={"kind": "explicit", "key": "d67b0a7"})
+        assert refused.status_code == 501
+        assert "ECR_ACCOUNT_ID" in refused.json()["detail"] and ".dkr.ecr." not in refused.text
+        assert client.get(f"{CORE_PREFIX}/health").status_code == 200
+        runtime = client.post(f"{CORE_PREFIX}/environments/resolve", json={"kind": "derived"})
+        assert runtime.status_code == 200 and runtime.json()["image"] == RUNTIME
