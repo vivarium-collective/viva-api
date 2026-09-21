@@ -114,9 +114,11 @@ class FakeService:
         memory_class: str,
         commit: str | None,
         name: str | None,
+        environment: str | None = None,
     ) -> Any:
         self.submitted_script = Path(local_path).read_text(encoding="utf-8")
         self.task_commit = commit
+        self.task_environment = environment
         self.submitted_refs = sim_data_refs
         return SimpleNamespace(database_id=42)
 

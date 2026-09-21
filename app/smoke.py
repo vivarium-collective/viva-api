@@ -107,6 +107,9 @@ class SmokeOptions:
     something it was not given SKIPs with a reason rather than guessing."""
 
     commit: str | None = None
+    #: Run the uploaded-task checks in a registered environment (``runtime``) instead of a
+    #: simulator's image. ``None``: as before, the commit's image.
+    task_environment: str | None = None
     simulation_id: int | None = None
     biomodel_id: str | None = None
     simulator_id: int | None = None
@@ -178,6 +181,7 @@ class SmokeService(Protocol):
         memory_class: str,
         commit: str | None,
         name: str | None,
+        environment: str | None = ...,
     ) -> Any: ...
     def run_task(self, request: Any) -> Any: ...
     def get_task_status(self, task_id: int) -> Any: ...
@@ -555,11 +559,20 @@ def check_events(svc: SmokeService, _: SmokeOptions) -> tuple[str, dict[str, Any
 # --------------------------------------------------------------------------- tier 1
 
 
+def _task_image(svc: SmokeService, opts: SmokeOptions) -> tuple[str | None, str]:
+    """Where an uploaded-task check runs: a registered environment when one was asked for (no commit
+    is resolved then -- it needs nothing of a simulator), else the commit's image, as before."""
+    if opts.task_environment:
+        return None, f"in the {opts.task_environment!r} environment"
+    commit = _resolve_commit(svc, opts)
+    return commit, f"on {commit}"
+
+
 def check_task(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
     """An uploaded script on the container queue. Passes only when the nonce it prints is
     read back from the task's own log -- COMPLETED alone proves nothing -- and when the
     ``sim_data_refs`` it was submitted with reached the container's environment."""
-    commit = _resolve_commit(svc, opts)
+    commit, where = _task_image(svc, opts)
     nonce = f"smoke-{secrets.token_hex(6)}"
     ref_value = f"s3://smoke/{nonce}"
     with tempfile.TemporaryDirectory() as tmp:
@@ -576,9 +589,15 @@ def check_task(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, An
             memory_class="standard",
             commit=commit,
             name=f"atlantis-{nonce}",
+            environment=opts.task_environment,
         )
     task_id = int(task.database_id)
-    evidence: dict[str, Any] = {"task_id": task_id, "commit": commit, "nonce": nonce}
+    evidence: dict[str, Any] = {
+        "task_id": task_id,
+        "commit": commit,
+        "environment": opts.task_environment,
+        "nonce": nonce,
+    }
     _poll(opts, lambda: _status_text(svc.get_task_status(task_id).status), f"task {task_id}")
     lines = [str(line) for line in (getattr(svc.get_task_logs(task_id), "lines", None) or [])]
     if not any(nonce in line for line in lines):
@@ -586,14 +605,14 @@ def check_task(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, An
     if not any(ref_value in line for line in lines):
         seen = next((line for line in lines if line.startswith("refs:")), "no 'refs:' line")
         raise CheckFailed(f"task {task_id} ran, but its sim_data_refs did not reach the container ({seen})")
-    return f"task {task_id} ran on {commit}; nonce and sim_data_refs read back from its log", evidence
+    return f"task {task_id} ran {where}; nonce and sim_data_refs read back from its log", evidence
 
 
 def check_task_fail(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
     """A script that exits 3. Passes only when the task is reported FAILED **and** its log
     shows it really ran: a task that fails because it never started proves nothing about
     how a failure is reported, and one reported COMPLETED is a lie."""
-    commit = _resolve_commit(svc, opts)
+    commit, _where = _task_image(svc, opts)
     nonce = f"smoke-{secrets.token_hex(6)}"
     with tempfile.TemporaryDirectory() as tmp:
         script = Path(tmp) / "atlantis_smoke_task_fail.py"
@@ -605,9 +624,15 @@ def check_task_fail(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[st
             memory_class="standard",
             commit=commit,
             name=f"atlantis-{nonce}",
+            environment=opts.task_environment,
         )
     task_id = int(task.database_id)
-    evidence: dict[str, Any] = {"task_id": task_id, "commit": commit, "nonce": nonce}
+    evidence: dict[str, Any] = {
+        "task_id": task_id,
+        "commit": commit,
+        "environment": opts.task_environment,
+        "nonce": nonce,
+    }
     ended = _poll(
         opts,
         lambda: _status_text(svc.get_task_status(task_id).status),

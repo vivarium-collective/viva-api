@@ -418,6 +418,7 @@ class E2EDataService:
         memory_class: str,
         commit: str | None,
         name: str | None,
+        environment: str | None = None,
     ) -> TaskDTO:
         return self.submit_uploaded_task_run(
             local_path=local_path,
@@ -426,6 +427,7 @@ class E2EDataService:
             memory_class=memory_class,
             commit=commit,
             name=name,
+            environment=environment,
         )
 
     # -- Low-level HTTP methods: Simulator --
@@ -954,6 +956,7 @@ class E2EDataService:
         memory_class: str,
         commit: str | None,
         name: str | None,
+        environment: str | None = None,
     ) -> TaskDTO:
         import json
         from pathlib import Path
@@ -968,6 +971,8 @@ class E2EDataService:
             data["commit"] = commit
         if name:
             data["name"] = name
+        if environment:
+            data["environment"] = environment
         try:
             with path.open("rb") as fh:
                 response = self.client.post(

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from viva_api.common.models import JobStatus
+from viva_api.common.site_environments import named_environment_image
 from viva_api.simulation.database_service import DatabaseService
 from viva_api.simulation.dispatch import _seams
 from viva_api.simulation.dispatch.batch_layer import ContainerSubmitter, _rand_suffix
@@ -56,6 +57,16 @@ class TaskBatch(ContainerSubmitter, Protocol):
     def client(self) -> "BatchClient": ...
 
     def resolve_log_group(self, job_definition: str | None) -> str | None: ...
+
+
+class TaskRequestRefused(ValueError):
+    """The request cannot be run as asked -- the caller's to fix (a 400), not a server fault."""
+
+
+def _job_definition_suffix(image: str) -> str:
+    """A job-definition-safe key for an image that is not named by a commit: its repository and tag
+    (``viva-core-runtime-0-1-0``). Job definition names allow ``[A-Za-z0-9_-]``."""
+    return re.sub(r"[^A-Za-z0-9_-]+", "-", image.rsplit("/", 1)[-1]).strip("-")[:64]
 
 
 class TaskService:
@@ -96,6 +107,13 @@ class TaskService:
         is caller-defined (script-specific reference names -> URIs), so there
         is no fixed set of env-var names to emit.
         """
+        if request.environment is not None:
+            # A repo-path script is a path INSIDE a simulator's image; a registered environment
+            # has no such script. Said here, not by `python: can't open file` ten minutes on.
+            raise TaskRequestRefused(
+                f"`script` is a path inside a simulator's image, which the {request.environment!r} environment "
+                "is not; upload the script (POST /tasks/upload) to run it there"
+            )
         commit = request.commit or await self._latest_commit()
         task_name = _safe_task_name(request.name or Path(request.script).stem)
         job_cmd = self._task_job_cmd(request.script, request.args)
@@ -104,7 +122,8 @@ class TaskService:
             script_label=request.script,
             job_cmd=job_cmd,
             request=request,
-            commit=commit,
+            image=self._batch.image_uri(commit),
+            image_key=commit,
             database_service=database_service,
         )
 
@@ -125,7 +144,14 @@ class TaskService:
         change is needed -- this reuses the same stage-in path ParCa's cache
         staging already uses.
         """
-        commit = request.commit or await self._latest_commit()
+        if request.environment is not None:
+            # A registered environment (the core runtime image): nothing of a simulator is needed,
+            # so none is looked up -- not even "the latest commit".
+            image = named_environment_image(_seams.get_settings(), request.environment)
+            image_key = _job_definition_suffix(image)
+        else:
+            commit = request.commit or await self._latest_commit()
+            image, image_key = self._batch.image_uri(commit), commit
         safe_name = Path(filename).name  # never trust an uploaded path
         if not safe_name:
             raise ValueError("uploaded task script has no filename")
@@ -138,7 +164,8 @@ class TaskService:
             script_label=f"{stage_s3}/{safe_name}",
             job_cmd=job_cmd,
             request=request,
-            commit=commit,
+            image=image,
+            image_key=image_key,
             database_service=database_service,
             stage_s3=stage_s3,
             stage_dir=TASK_STAGE_DIR,
@@ -171,7 +198,8 @@ class TaskService:
         script_label: str,
         job_cmd: str,
         request: TaskRunRequest,
-        commit: str,
+        image: str,
+        image_key: str,
         database_service: DatabaseService,
         stage_s3: str | None = None,
         stage_dir: str | None = None,
@@ -179,7 +207,7 @@ class TaskService:
         """Shared submit path for repo-path and uploaded tasks: one-node container
         job (``_ensure_container_job_def`` + ``_submit_container``) recorded on the
         ``task`` table so ``GET /tasks/{id}/status`` has a row to poll."""
-        job_def = self._batch.ensure_container_job_def(self._batch.image_uri(commit), commit)
+        job_def = self._batch.ensure_container_job_def(image, image_key)
         out_uri = self._results_uri(f"tasks/{task_name}-{_rand_suffix()}").rstrip("/")
         task_env: dict[str, str] | None = None
         if request.sim_data_refs:

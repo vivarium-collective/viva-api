@@ -2466,6 +2466,11 @@ def task_run(
     ),
     memory_class: str = Option(default="standard", help="Batch instance memory class: standard or large."),
     commit: str | None = Option(default=None, help="Image commit to run in; defaults to the latest."),
+    environment: str | None = Option(
+        default=None,
+        help="With --upload: run in a registered environment instead of a simulator's image. 'runtime' is the "
+        "core runtime image (Python + the process-bigraph engine, no application code). Not with --commit.",
+    ),
     name: str | None = Option(default=None, help="Human label for the task; defaults to the script's basename."),
     wait: bool = Option(default=False, help="Poll until the task reaches a terminal status."),
     base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
@@ -2482,6 +2487,15 @@ def task_run(
             "[memphis.error]Provide exactly one of: a repo-path SCRIPT argument, or --upload <local file>.[/]"
         )
         raise typer.Exit(1)
+    if environment and not upload:
+        console.print(
+            "[memphis.error]--environment needs --upload: a repo-path SCRIPT lives inside a simulator's image, "
+            "which a registered environment is not.[/]"
+        )
+        raise typer.Exit(1)
+    if environment and commit:
+        console.print("[memphis.error]Give --environment or --commit, not both.[/]")
+        raise typer.Exit(1)
     data_service = get_data_service(base_url=base_url)
     sim_data_refs = _parse_task_env(sim_data) if sim_data else None
     with console.status("[memphis.spinner]Submitting task..."):
@@ -2493,6 +2507,7 @@ def task_run(
                 memory_class=memory_class,
                 commit=commit,
                 name=name,
+                environment=environment,
             )
         elif script is not None:  # the XOR check above guarantees this; also narrows for mypy
             request = TaskRunRequest(
@@ -3046,6 +3061,11 @@ def smoke_run(
     only: list[str] = Option(default=[], help="Run only these checks (repeatable); overrides --tier."),
     skip: list[str] = Option(default=[], help="Skip these checks (repeatable)."),
     commit: str | None = Option(default=None, help="Image commit for the task and worker checks."),
+    task_environment: str | None = Option(
+        default=None,
+        help="Run the uploaded-task checks (task, task-fail) in a registered environment instead of a "
+        "simulator's image: 'runtime' is the core runtime image. task-repo always needs a simulator's image.",
+    ),
     simulation_id: int | None = Option(default=None, help="A completed simulation WITH output: enables `analysis`."),
     biomodel: str | None = Option(default=None, help="A BioModels id: enables `biomodels`."),
     simulator_id: int | None = Option(default=None, help="Simulator for the tier-2 simulations; default: the newest."),
@@ -3140,6 +3160,7 @@ def smoke_run(
         active_batch_jobs=batch_jobs,
         active_batch_jobs_unavailable=batch_unavailable,
         commit=commit,
+        task_environment=task_environment,
         simulation_id=simulation_id,
         biomodel_id=biomodel,
         simulator_id=simulator_id,
