@@ -1498,7 +1498,31 @@
 #            exist; /app/viva_api/simulation/dispatch/ exists and /app/viva_api/simulation/ray/ does
 #            NOT; `_submit_in_environment` is in /app/viva_api/compose/simulation_service_ray.py;
 #            the pod's environment carries CORE_RUNTIME_IMAGE.
-__version__ = "0.9.152"
+#           0.9.153 -- core split, deploy checkpoint D2 (docs/plan-core.md section 8). Deployed NOW, ahead
+#            of checkpoint E, for ONE reason: the shared ECR repository's tags became write-once on
+#            2026-09-21 (sms-cdk#55, live for both sites), and 0.9.152 never asks whether an image
+#            exists -- so a build of an existing tag FAILS AT THE PUSH and a half-failed build cannot
+#            be retried. This closes that window on dev.
+#            BEHAVIOUR:
+#              #761 a simulator build ADOPTS an image that already exists (`<key>` and `<key>-submit`
+#                   independently): no clone, no build, no push; a half-failed build is finished, not
+#                   restarted; an unanswerable ECR is reported and treated as absent (build).
+#              #759 an unset ECR account is refused BY NAME for an explicit environment (501 through
+#                   core's route). Both Stanford sites set the account: nothing changes here.
+#              #756 NEW ROUTES under /viva/v1 (core's own router, included by this app):
+#                   GET /viva/v1/health, POST /viva/v1/environments/resolve.
+#            REWIRING, proven equal to what it replaced:
+#              #758 the science analysis chained onto a compose run is a HOOK (AfterSubmit) handed to
+#                   compose by dependencies.py (simulation/compose_analysis.py); compose imports nothing
+#                   of SMS's domain (contract enforced).
+#              #757 the env-worker router's 22 models live in compose/env_worker_schemas.py (pure move;
+#                   the OpenAPI document is unchanged).
+#            No migration; the -db-migration overlay tag is bumped to stay equal, the Job is not run.
+#            MARKERS: `image_exists()` is in /app/viva_api/simulation/dispatch/build.py;
+#            /app/viva_api/simulation/compose_analysis.py, /app/viva_api/compose/env_worker_schemas.py,
+#            /app/viva_core/api/app.py and /app/viva_api/core_wiring.py exist;
+#            `_submit_analysis_job` is GONE from /app/viva_api/compose/simulation_service_ray.py.
+__version__ = "0.9.153"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in
