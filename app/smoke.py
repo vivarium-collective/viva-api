@@ -48,7 +48,7 @@ import tempfile
 import time
 import zipfile
 from collections.abc import Callable, Iterator, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -1494,7 +1494,9 @@ def run_checks(
     the rest: a smoke run's value is the whole picture.
 
     Tiers 0, 1 and R run in order. Tier 2 checks are submitted together and awaited together:
-    each is tens of minutes of AWS Batch time and seconds of this client's.
+    each is tens of minutes of AWS Batch time and seconds of this client's. Each Tier 2 verdict
+    is REPORTED (``on_result``) the moment it lands -- a SKIP in the first second, not behind
+    the longest check -- and the list RETURNED is in check order, as the report wants it.
     """
     results: list[CheckResult] = []
 
@@ -1509,11 +1511,67 @@ def run_checks(
         record(_run_one(svc, check, opts))
     if concurrent:
         with ThreadPoolExecutor(max_workers=len(concurrent)) as pool:
-            for result in pool.map(lambda c: _run_one(svc, c, opts), concurrent):
-                record(result)
+            futures = {pool.submit(_run_one, svc, check, opts): check.name for check in concurrent}
+            landed: dict[str, CheckResult] = {}
+            for future in as_completed(futures):  # _run_one never raises: it turns everything into a result
+                landed[futures[future]] = future.result()
+                if on_result:
+                    on_result(landed[futures[future]])
+        results.extend(landed[check.name] for check in concurrent)
     for check in (c for c in serial if c.tier > max(CONCURRENT_TIERS)):
         record(_run_one(svc, check, opts))
     return results
+
+
+def probe_access[T](
+    build: Callable[[], T], *, attempts: int = 2, pause: float = 3.0, sleep: Callable[[float], None] = time.sleep
+) -> tuple[T | None, str]:
+    """Build something that needs the operator's AWS access, trying again once before giving up.
+
+    ONE failed call used to decide the shape of an hour-long run: at checkpoint C the single
+    startup probe of AWS Batch failed (the same call, same credentials, worked for the rest of
+    the hour), three cancel checks became SKIPs and the chain listing became a 3.6 GB download.
+    Returns ``(thing, "")`` or ``(None, reason)``.
+    """
+    reason = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            return build(), ""
+        except Exception as e:
+            reason = f"{type(e).__name__}: {str(e)[:160]}"
+            if attempt < attempts:
+                sleep(pause)
+    return None, f"{reason} (tried {attempts} times)"
+
+
+def access_notices(
+    checks: Sequence[Check],
+    *,
+    batch_unavailable: str | None,
+    outputs_unlisted: bool,
+    registry_unavailable: str | None,
+) -> list[str]:
+    """What missing AWS access will change about THIS run, said before the run starts.
+
+    A probe that decides what will be skipped must say so when it decides. These lines used to
+    exist only as the SKIP reason of each affected check -- and Tier 2 reports in check order, so
+    they printed behind the longest check, an hour in.
+    """
+    selected = {check.name for check in checks}
+    notices: list[str] = []
+    skipped = sorted(selected & NEEDS_BATCH_ACCESS)
+    if batch_unavailable and skipped:
+        notices.append(f"no AWS Batch access ({batch_unavailable}): {', '.join(skipped)} will SKIP")
+    downloads = sorted(selected & LISTS_RUN_OUTPUTS)
+    if outputs_unlisted and downloads:
+        notices.append(
+            f"cannot list run output in S3: {', '.join(downloads)} will DOWNLOAD its output instead "
+            "(GBs through the tunnel)"
+        )
+    built = sorted(selected & NEEDS_REGISTRY_ACCESS)
+    if registry_unavailable and built:
+        notices.append(f"no registry access ({registry_unavailable}): {', '.join(built)} will SKIP")
+    return notices
 
 
 def summarize(results: Sequence[CheckResult]) -> dict[str, int]:

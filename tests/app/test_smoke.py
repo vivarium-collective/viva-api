@@ -8,8 +8,10 @@ tests keep the judgement calls from regressing.
 
 from __future__ import annotations
 
+import functools
 import io
 import json
+import re
 import tarfile
 import zipfile
 from datetime import UTC, datetime
@@ -605,6 +607,113 @@ def test_tier_2_checks_run_concurrently_and_are_all_reported() -> None:
     results = smoke.run_checks(svc, checks, smoke.SmokeOptions(sleep=lambda _: None))
     assert [r.name for r in results] == ["sim-default", "sim-chain", "sim-nextflow", "sim-composite"]
     assert not barrier.broken
+
+
+# ------------------------------------------------------------------ AWS access is probed once: say what it decided
+#
+# Checkpoint C, 2026-09-21: the one startup probe of AWS Batch failed (the same call worked for the
+# rest of the hour). Three cancel checks became SKIPs and the chain listing became a 3.6 GB
+# download -- and the run said so only where those checks' lines print: behind the chain, an hour in.
+
+
+def test_a_probe_that_fails_once_is_tried_again() -> None:
+    calls: list[int] = []
+
+    def flaky() -> str:
+        calls.append(1)
+        if len(calls) == 1:
+            raise ConnectionError("endpoint hiccup")
+        return "lister"
+
+    pauses: list[float] = []
+    assert smoke.probe_access(flaky, sleep=pauses.append) == ("lister", "")
+    assert len(calls) == 2 and pauses == [3.0]
+
+
+def test_a_probe_that_keeps_failing_gives_its_reason_and_does_not_raise() -> None:
+    def denied() -> str:
+        raise PermissionError("token expired")
+
+    thing, reason = smoke.probe_access(denied, sleep=lambda _: None)
+    assert thing is None
+    assert "PermissionError: token expired" in reason and "tried 2 times" in reason
+
+
+def test_what_missing_access_changes_is_said_for_the_checks_selected_and_only_those() -> None:
+    tier_2 = smoke.select_checks(2)
+    notices = smoke.access_notices(
+        tier_2, batch_unavailable="NoCredentialsError: x", outputs_unlisted=True, registry_unavailable=None
+    )
+    assert len(notices) == 2
+    assert "chain-cancel, nextflow-cancel, sim-cancel will SKIP" in notices[0] and "NoCredentialsError" in notices[0]
+    assert "sim-chain will DOWNLOAD" in notices[1]
+
+    # nothing to say when access is there, or when no affected check was selected
+    assert smoke.access_notices(tier_2, batch_unavailable=None, outputs_unlisted=False, registry_unavailable=None) == []
+    tier_0 = smoke.select_checks(0)
+    assert smoke.access_notices(tier_0, batch_unavailable="x", outputs_unlisted=True, registry_unavailable="x") == []
+
+    build = smoke.select_checks(1, only=["build"])
+    [notice] = smoke.access_notices(build, batch_unavailable=None, outputs_unlisted=True, registry_unavailable="denied")
+    assert "build will SKIP" in notice and "denied" in notice
+
+
+def _cli_without_batch_access(monkeypatch: pytest.MonkeyPatch, svc: FakeService) -> None:
+    def no_access(**_: Any) -> Any:
+        raise ConnectionError("could not reach batch")
+
+    monkeypatch.setattr("app.cli.E2EDataService", lambda **_: svc)
+    monkeypatch.setattr(smoke, "AwsBatchJobLister", no_access)
+    monkeypatch.setattr(smoke, "probe_access", functools.partial(smoke.probe_access, sleep=lambda _: None))
+
+
+def test_the_cli_says_at_startup_what_will_skip_before_any_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
+    svc = FakeService()
+    _cli_without_batch_access(monkeypatch, svc)
+    result = CliRunner().invoke(cli, ["smoke", "run", "--only", "sim-cancel", "--url", "http://x"])
+    assert result.exit_code == 0  # a SKIP is not a failure...
+    shown = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", result.output).split())
+    assert shown.index("NOTE") < shown.index("SKIP t2")  # ...but it is announced, not discovered afterwards
+    assert "sim-cancel will SKIP" in shown and "tried 2 times" in shown
+    assert svc.workflows == []
+
+
+def test_require_aws_stops_before_anything_is_submitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    svc = FakeService()
+    _cli_without_batch_access(monkeypatch, svc)
+    result = CliRunner().invoke(
+        cli, ["smoke", "run", "--only", "sim-cancel", "--only", "sim-default", "--require-aws", "--url", "http://x"]
+    )
+    assert result.exit_code == 2
+    assert "--require-aws: not running" in result.output
+    assert svc.workflows == []  # sim-default needs no AWS access, and still was not submitted
+
+
+def test_a_tier_2_verdict_is_reported_when_it_lands_and_returned_in_check_order() -> None:
+    """The cancel checks SKIP in the first second; the chain takes an hour. Reporting in check order
+    put every other verdict behind the chain."""
+    import threading
+
+    slow_may_finish = threading.Event()
+
+    def slow(svc: smoke.SmokeService, opts: smoke.SmokeOptions) -> tuple[str, dict[str, Any]]:
+        assert slow_may_finish.wait(timeout=10), "the fast check was never reported while the slow one ran"
+        return "done", {}
+
+    def fast(svc: smoke.SmokeService, opts: smoke.SmokeOptions) -> tuple[str, dict[str, Any]]:
+        raise smoke.SkipCheck("no access")
+
+    reported: list[str] = []
+
+    def on_result(result: smoke.CheckResult) -> None:
+        reported.append(result.name)
+        slow_may_finish.set()  # only a REPORTED verdict lets the slow check end
+
+    checks = [smoke.Check("slow", 2, "", slow), smoke.Check("fast", 2, "", fast)]
+    results = smoke.run_checks(FakeService(), checks, _opts(), on_result=on_result)
+    assert reported == ["fast", "slow"]
+    assert [r.name for r in results] == ["slow", "fast"]
+    assert [r.outcome for r in results] == [smoke.Outcome.PASS, smoke.Outcome.SKIP]
 
 
 # ------------------------------------------------------------------ tier R: a job in flight survives a restart
