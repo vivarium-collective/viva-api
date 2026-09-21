@@ -122,7 +122,7 @@ def test_chain_generation_forwards_task_env() -> None:
 def _nf_params(task_env: dict[str, str] | None) -> dict[str, Any]:
     service = SimulationServiceRay()
     with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-        return service._awsbatch_nf_params("abc1234", "exp-nf", task_env=task_env)
+        return service._nextflow()._awsbatch_nf_params("abc1234", "exp-nf", task_env=task_env)
 
 
 def test_nextflow_container_env_carries_the_merged_keys() -> None:

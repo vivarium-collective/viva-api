@@ -40,3 +40,8 @@ TASK_STAGE_DIR = f"{V2ECOLI_DIR}/.pbg/task_script"
 
 # Where the head writes the entrypoint's metrics report (uploaded as report.json).
 REPORT_PATH = "/tmp/report.json"  # noqa: S108
+
+# The entry point, inside the image, that builds the core a composite is resolved against. Not a
+# path, but the same kind of fact -- something true of the IMAGE that more than one module has to
+# agree on (the runner env in the service, the Nextflow head Job) -- so it lives with them.
+V2ECOLI_CORE_BUILDER = "v2ecoli.core:build_core"

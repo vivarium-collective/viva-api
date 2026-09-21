@@ -15,6 +15,9 @@ decision log); the machinery under them does not change:
   same AST and comment lines once the listed respellings are undone. A respelling is the ONLY
   textual change allowed: how the method reaches something it used to find on ``self``.
 * ``RESPELLED_IN_SERVICE`` -- the same, for methods that stayed and call something that moved.
+* ``REWIRED`` / ``REWIRED_BODIES`` -- a method that stays on the class as a delegate (something outside
+  still asks the service): the delegate differs by design, and the body it left behind must be found,
+  unchanged, where the table says.
 * ``NEW`` -- what composing the strategy added to the class, with the reason.
 
 A method that differs, disappears or appears WITHOUT being named fails the script. Comparison is
@@ -37,33 +40,44 @@ from pathlib import Path
 ROOT = "viva_api/simulation/"
 SERVICE = (ROOT + "simulation_service_ray.py", "SimulationServiceRay")
 
-# ---- P2.1 PR 7: the mbp-tracked dispatch mechanism becomes ``MbpTrackedStrategy``.
+# ---- P2.1 PR 8: the Nextflow dispatch mechanism becomes ``NextflowStrategy``.
 
-#: old method -> (file, new function name)
+NEXTFLOW = ROOT + "ray/nextflow.py"
+
+#: old method -> (file, new function name). A ``@staticmethod`` had no ``self`` to drop.
 BECAME_FUNCTIONS: dict[str, tuple[str, str]] = {
-    "_mbp_tracked_command": (ROOT + "ray/mbp_tracked.py", "mbp_tracked_command"),
-    "_record_run_with_companions": (ROOT + "ray/run_records.py", "record_run_with_companions"),
+    "stage_render_nf": (NEXTFLOW, "stage_render_nf"),
+    "_nf_session_s3_uri": (NEXTFLOW, "nf_session_s3_uri"),
+    "_nf_generator_params": (NEXTFLOW, "nf_generator_params"),
+    "_render_nf_command": (NEXTFLOW, "render_nf_command"),
+    "_nf_head_job_name": (NEXTFLOW, "nf_head_job_name"),
+}
+#: how the strategy spells what its methods used to find on ``self`` -> how they spelled it
+_IN_STRATEGY = {
+    "self._batch.": "self.batch.",
+    "self._stage_runner(": "self.stage_runner(",
+    **{f"{new}(": f"self.{old}(" for old, (_, new) in BECAME_FUNCTIONS.items()},
 }
 #: old method -> (file, class, new method name, {new spelling: old spelling})
 BECAME_STRATEGY_METHODS: dict[str, tuple[str, str, str, dict[str, str]]] = {
-    "_submit_mbp_tracked_dispatch": (
-        ROOT + "ray/mbp_tracked.py",
-        "MbpTrackedStrategy",
-        "submit",
-        {
-            "parca_spec.cache_s3_uri(": "self.cache_s3_uri(",
-            "self._batch.": "self.batch.",
-            "mbp_tracked_command(": "self._mbp_tracked_command(",
-            "await record_run_with_companions(": "await self._record_run_with_companions(",
-        },
-    ),
+    "_awsbatch_nf_params": (NEXTFLOW, "NextflowStrategy", "_awsbatch_nf_params", _IN_STRATEGY),
+    "_nf_head_job": (NEXTFLOW, "NextflowStrategy", "_nf_head_job", _IN_STRATEGY),
+    "_submit_nextflow_dispatch": (NEXTFLOW, "NextflowStrategy", "submit", _IN_STRATEGY),
+    "_terminate_campaign_tasks": (NEXTFLOW, "NextflowStrategy", "_terminate_campaign_tasks", _IN_STRATEGY),
 }
 #: how a method that STAYED now spells a call to something that moved -> how it spelled it
 RESPELLED_IN_SERVICE = {
-    "await record_run_with_companions(": "await self._record_run_with_companions(",
-    "return await self._mbp_tracked().submit(": "return await self._submit_mbp_tracked_dispatch(",
+    "return await self._nextflow().submit(": "return await self._submit_nextflow_dispatch(",
 }
-NEW = {"_mbp_tracked": "builds MbpTrackedStrategy(self.batch)"}
+#: on the service, differing by design
+REWIRED = {
+    "reap_cancelled_campaign": "the body is NextflowStrategy's now; the service keeps a delegate for the scheduler",
+}
+#: the body a REWIRED method left behind -> where it must be found unchanged
+REWIRED_BODIES: dict[str, tuple[str, str, str, dict[str, str]]] = {
+    "reap_cancelled_campaign": (NEXTFLOW, "NextflowStrategy", "reap_cancelled_campaign", _IN_STRATEGY),
+}
+NEW = {"_nextflow": "builds NextflowStrategy(self.batch, self._k8s, stage_runner=...)"}
 
 
 def functions_of(source: str | None, class_name: str | None) -> dict[str, str]:
@@ -102,15 +116,26 @@ def undo(source: str, spellings: dict[str, str]) -> str:
     return source
 
 
-def as_method(function_source: str, new: str, old: str) -> str:
-    """A module function, as the method it was: ``self`` put back, the old name."""
+def as_method(function_source: str, new: str, old: str, *, static: bool) -> str:
+    """A module function, as the method it was: the old name, and ``self`` put back -- unless it
+    was a ``@staticmethod``, which had none (its decorator is dropped from the other side)."""
     tree = ast.parse(textwrap.dedent(function_source))
     function = tree.body[0]
     if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef) or function.name != new:
         raise SystemExit(f"{new}: not a plain function")
     function.name = old
-    function.args.args.insert(0, ast.arg(arg="self"))
+    if not static:
+        function.args.args.insert(0, ast.arg(arg="self"))
     return ast.dump(function)
+
+
+def without_staticmethod(method_source: str) -> tuple[ast.stmt, bool]:
+    node = ast.parse(textwrap.dedent(method_source)).body[0]
+    if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+        raise SystemExit("not a method")
+    static = any(isinstance(d, ast.Name) and d.id == "staticmethod" for d in node.decorator_list)
+    node.decorator_list = [d for d in node.decorator_list if not (isinstance(d, ast.Name) and d.id == "staticmethod")]
+    return node, static
 
 
 def read_origin_main(path: str) -> str | None:
@@ -137,10 +162,11 @@ def check_moved(before: dict[str, str], read: Callable[[str], str | None]) -> li
         if new not in functions:
             problems.append(f"{old} -> {path}::{new}: not there")
             continue
-        was = ast.dump(ast.parse(textwrap.dedent(before[old])).body[0])
-        if as_method(functions[new], new, old) != was or comments_of(before[old]) != comments_of(functions[new]):
+        was, static = without_staticmethod(before[old])
+        now = as_method(functions[new], new, old, static=static)
+        if now != ast.dump(was) or comments_of(before[old]) != comments_of(functions[new]):
             problems.append(f"{old} -> {new}: the function is not the method with self dropped")
-    for old, (path, class_name, new, spellings) in BECAME_STRATEGY_METHODS.items():
+    for old, (path, class_name, new, spellings) in {**BECAME_STRATEGY_METHODS, **REWIRED_BODIES}.items():
         methods = functions_of(read(path), class_name)
         if new not in methods:
             problems.append(f"{old} -> {path}::{class_name}.{new}: not there")
@@ -166,7 +192,7 @@ def main() -> int:
         if undone != source:
             respelled.append(name)
             after[name] = undone
-    differing = sorted(n for n in before if n in after and not same_code(before[n], after[n]))
+    differing = sorted(n for n in before if n in after and n not in REWIRED and not same_code(before[n], after[n]))
     lost = sorted(set(before) - set(after) - moved)
     added = sorted(set(after) - set(before) - set(NEW))
 
@@ -174,7 +200,7 @@ def main() -> int:
     print(f"became functions: {sorted(BECAME_FUNCTIONS)}")
     print(f"became strategy methods: {sorted(BECAME_STRATEGY_METHODS)}")
     print(f"moved, but not as named: {not_as_named}")
-    print(f"stayed, respelled: {sorted(respelled)}; new: {sorted(NEW)}")
+    print(f"stayed, respelled: {sorted(respelled)}; rewired: {sorted(REWIRED)}; new: {sorted(NEW)}")
     print(f"differing: {differing}")
     print(f"lost: {lost}")
     print(f"added: {added}")
