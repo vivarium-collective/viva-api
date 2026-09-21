@@ -1,6 +1,6 @@
 """The ParCa cache jobs: build a commit's ParCa cache, a new-gene cache, a variant cache.
 
-``RayParcaService`` is a SERVICE, not a mixin of ``SimulationServiceRay`` (it was
+``ParcaService`` is a SERVICE, not a mixin of ``SimulationServiceRay`` (it was
 ``RayParcaMixin`` from P2.1 cut 5 until PR 4 of the 2026-09-20 sequence; ``docs/plan-core.md``
 decision log). The test for a service is Jim's: a common requirement that works ONE way
 whatever the dispatch mechanism. These three jobs pass it -- each is one container job that
@@ -8,7 +8,7 @@ stages a cache in and captures a cache out, and no mechanism does it differently
 
 What did NOT pass, and is therefore not here:
 
-* where caches live and the commands that build them -- pure functions, ``ray/parca_spec.py``;
+* where caches live and the commands that build them -- pure functions, ``dispatch/parca_spec.py``;
 * submitting ParCa as part of a run -- a container job in two mechanisms and an MNP job in two
   others, so it stays with each mechanism;
 * ``_stage_seed_override_caches`` -- only the multi-node composite mechanism uses it; it is
@@ -21,17 +21,17 @@ Protocol and ``TaskDispatch`` with one ``ContainerSubmitter``.
 """
 
 from viva_api.common.models import JobId
-from viva_api.simulation.models import ParcaDataset
-from viva_api.simulation.ray import parca_spec
-from viva_api.simulation.ray.batch_layer import ContainerSubmitter, _rand_suffix
-from viva_api.simulation.ray.image_paths import (
+from viva_api.simulation.dispatch import parca_spec
+from viva_api.simulation.dispatch.batch_layer import ContainerSubmitter, _rand_suffix
+from viva_api.simulation.dispatch.image_paths import (
     NEW_GENE_INDUCED_CACHE_DIR,
     PARCA_CACHE_DIR,
     VARIANT_CACHE_DIR,
 )
+from viva_api.simulation.models import ParcaDataset
 
 
-class RayParcaService:
+class ParcaService:
     def __init__(self, batch: ContainerSubmitter) -> None:
         # Held, not copied: every call below looks the method up on ``batch`` when it runs,
         # so a test that swaps ``service.batch.submit_container`` is what a cache job gets.

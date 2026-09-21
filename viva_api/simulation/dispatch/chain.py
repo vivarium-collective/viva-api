@@ -31,7 +31,8 @@ import functools
 import json
 import logging
 import shlex
-from typing import Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 from botocore.config import Config
 
@@ -41,14 +42,18 @@ from viva_api.common.hpc.local_task_service import LocalTaskService
 from viva_api.common.models import JobId
 from viva_api.common.storage import data_layout
 from viva_api.simulation.database_service import DatabaseService
+from viva_api.simulation.dispatch import _seams, parca_spec
+from viva_api.simulation.dispatch.analysis_spec import analysis_memory_class, analysis_modules_for
+from viva_api.simulation.dispatch.batch_layer import ContainerSubmitter, _rand_suffix
+from viva_api.simulation.dispatch.image_paths import ANALYSIS_OUT_DIR, PARCA_CACHE_DIR, SIM_OUT_DIR, V2ECOLI_DIR
+from viva_api.simulation.dispatch.runner_env import PBG_RUNNER_ENV, V2ECOLI_BATCH_BASELINE_COMPOSITE_ID
 from viva_api.simulation.models import JobType, Simulation
-from viva_api.simulation.ray import _seams, parca_spec
-from viva_api.simulation.ray.analysis_spec import analysis_memory_class, analysis_modules_for
-from viva_api.simulation.ray.batch_layer import ContainerSubmitter, _rand_suffix
-from viva_api.simulation.ray.image_paths import ANALYSIS_OUT_DIR, PARCA_CACHE_DIR, SIM_OUT_DIR, V2ECOLI_DIR
-from viva_api.simulation.ray.runner_env import PBG_RUNNER_ENV, V2ECOLI_BATCH_BASELINE_COMPOSITE_ID
 from viva_core.backends.batch import SUBMIT_JOB_MAX_ATTEMPTS, SubmitJobPacer
 from viva_core.events.events_env import with_events_env
+
+if TYPE_CHECKING:
+    # ``types-boto3`` is a dev dependency (annotations only): never imported at runtime.
+    from types_boto3_batch import BatchClient
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +64,10 @@ def seed_generation_command(
     generation_index: int,
     experiment_id: str,
     runner_s3_uri: str,
-    injected_processes: dict[str, Any] | None = None,
-    variants: dict[str, Any] | None = None,
+    injected_processes: Mapping[str, object] | None = None,
+    variants: Mapping[str, object] | None = None,
     composite_id: str | None = None,
-    exchange_fluxes: dict[str, Any] | None = None,
+    exchange_fluxes: Mapping[str, object] | None = None,
     exchange_flux_basis: str | None = None,
 ) -> str:
     """Build ONE seed's ONE generation's command (backlog item 33 rework —
@@ -221,10 +226,10 @@ def seed_lineage_command(
     n_generations: int,
     experiment_id: str,
     runner_s3_uri: str,
-    injected_processes: dict[str, Any] | None = None,
-    variants: dict[str, Any] | None = None,
+    injected_processes: Mapping[str, object] | None = None,
+    variants: Mapping[str, object] | None = None,
     composite_id: str | None = None,
-    exchange_fluxes: dict[str, Any] | None = None,
+    exchange_fluxes: Mapping[str, object] | None = None,
     exchange_flux_basis: str | None = None,
 ) -> str:
     """Build ONE seed's WHOLE-LINEAGE command: all ``n_generations`` in a
@@ -253,7 +258,7 @@ def seed_lineage_command(
     ``_seed_generation_command`` (same per-seed S3 out layout).
     """
     seed_out_dir = data_layout.RayLayout.seed_results_uri(experiment_id, seed).rstrip("/")
-    overrides: dict[str, Any] = {
+    overrides: dict[str, object] = {
         "n_seeds": 1,
         "n_generations": int(n_generations),
         "cache_dir": PARCA_CACHE_DIR,
@@ -289,7 +294,7 @@ def seed_lineage_command(
 def analysis_command(
     *,
     experiment_id: str,
-    modules: dict[str, dict[str, Any]] | str,
+    modules: dict[str, dict[str, object]] | str,
     analysis_name: str,
     commit: str,
     cache_variant: str | None = None,
@@ -384,11 +389,11 @@ class ChainStrategy:
         cache_s3: str,
         runner_s3_uri: str,
         tags: dict[str, str],
-        batch_client: Any = None,
-        injected_processes: dict[str, Any] | None = None,
-        variants: dict[str, Any] | None = None,
+        batch_client: "BatchClient | None" = None,
+        injected_processes: Mapping[str, object] | None = None,
+        variants: Mapping[str, object] | None = None,
         composite_id: str | None = None,
-        exchange_fluxes: dict[str, Any] | None = None,
+        exchange_fluxes: Mapping[str, object] | None = None,
         exchange_flux_basis: str | None = None,
         expect_new_genes: str | None = None,
         expect_bundle_overrides: str | None = None,
@@ -452,10 +457,10 @@ class ChainStrategy:
         cache_s3: str,
         runner_s3_uri: str,
         tags: dict[str, str],
-        injected_processes: dict[str, Any] | None = None,
-        variants: dict[str, Any] | None = None,
+        injected_processes: Mapping[str, object] | None = None,
+        variants: Mapping[str, object] | None = None,
         composite_id: str | None = None,
-        exchange_fluxes: dict[str, Any] | None = None,
+        exchange_fluxes: Mapping[str, object] | None = None,
         exchange_flux_basis: str | None = None,
         expect_new_genes: str | None = None,
         expect_bundle_overrides: str | None = None,
@@ -534,11 +539,11 @@ class ChainStrategy:
         cache_s3: str,
         runner_s3_uri: str,
         tags: dict[str, str],
-        batch_client: Any = None,
-        injected_processes: dict[str, Any] | None = None,
-        variants: dict[str, Any] | None = None,
+        batch_client: "BatchClient | None" = None,
+        injected_processes: Mapping[str, object] | None = None,
+        variants: Mapping[str, object] | None = None,
         composite_id: str | None = None,
-        exchange_fluxes: dict[str, Any] | None = None,
+        exchange_fluxes: Mapping[str, object] | None = None,
         exchange_flux_basis: str | None = None,
         expect_new_genes: str | None = None,
         expect_bundle_overrides: str | None = None,
@@ -601,10 +606,10 @@ class ChainStrategy:
         cache_s3: str,
         runner_s3_uri: str,
         tags: dict[str, str],
-        injected_processes: dict[str, Any] | None = None,
-        variants: dict[str, Any] | None = None,
+        injected_processes: Mapping[str, object] | None = None,
+        variants: Mapping[str, object] | None = None,
         composite_id: str | None = None,
-        exchange_fluxes: dict[str, Any] | None = None,
+        exchange_fluxes: Mapping[str, object] | None = None,
         exchange_flux_basis: str | None = None,
         expect_new_genes: str | None = None,
         expect_bundle_overrides: str | None = None,
@@ -1011,7 +1016,7 @@ class ChainStrategy:
         result_uri = f"{out_uri}/analyses/{analysis_name}"
         modules = analysis_modules_for(simulation.config)
         sim_data_uri = f"{data_layout.RayLayout.parca_cache_uri(commit, variant=cache_variant)}simData.cPickle"
-        params: dict[str, Any] = {
+        params: dict[str, object] = {
             "out_uri": out_uri,
             "n_seeds": int(n_seeds),
             "n_generations": int(n_generations),

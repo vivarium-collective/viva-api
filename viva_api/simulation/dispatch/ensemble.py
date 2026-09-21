@@ -21,24 +21,23 @@ SMS code, and it stays SMS code.
 import json
 import logging
 import shlex
-from collections.abc import Awaitable, Callable
-from typing import Any
+from collections.abc import Awaitable, Callable, Mapping
 
 from viva_api.common.dispatch_validation import resolve_task_env
 from viva_api.common.models import JobId
 from viva_api.common.storage import data_layout
 from viva_api.simulation.database_service import DatabaseService
-from viva_api.simulation.models import CompositeEngine, Simulation, VecoliSource
-from viva_api.simulation.ray import _seams, parca_spec
-from viva_api.simulation.ray.batch_layer import MnpSubmitter, _rand_suffix
-from viva_api.simulation.ray.config_interpretation import (
+from viva_api.simulation.dispatch import _seams, parca_spec
+from viva_api.simulation.dispatch.batch_layer import MnpSubmitter, _rand_suffix
+from viva_api.simulation.dispatch.config_interpretation import (
     _batch_domain_overrides,
     _is_upstream_vecoli,
     injected_processes_from_config,
 )
-from viva_api.simulation.ray.image_paths import PARCA_CACHE_DIR, SIM_OUT_DIR, V2ECOLI_DIR
-from viva_api.simulation.ray.run_records import record_run_with_companions
-from viva_api.simulation.ray.runner_env import PBG_RUNNER_ENV, V2ECOLI_BATCH_BASELINE_COMPOSITE_ID
+from viva_api.simulation.dispatch.image_paths import PARCA_CACHE_DIR, SIM_OUT_DIR, V2ECOLI_DIR
+from viva_api.simulation.dispatch.run_records import record_run_with_companions
+from viva_api.simulation.dispatch.runner_env import PBG_RUNNER_ENV, V2ECOLI_BATCH_BASELINE_COMPOSITE_ID
+from viva_api.simulation.models import CompositeEngine, Simulation, VecoliSource
 from viva_core.events.events_env import with_events_env
 
 logger = logging.getLogger(__name__)
@@ -56,11 +55,11 @@ def sim_command(
     n_generations: int = 1,
     experiment_id: str | None = None,
     runner_s3_uri: str | None = None,
-    injected_processes: dict[str, Any] | None = None,
-    variants: dict[str, Any] | None = None,
-    config_overrides: dict[str, Any] | None = None,
-    features: list[Any] | None = None,
-    exchange_fluxes: dict[str, Any] | None = None,
+    injected_processes: Mapping[str, object] | None = None,
+    variants: Mapping[str, object] | None = None,
+    config_overrides: Mapping[str, object] | None = None,
+    features: list[object] | None = None,
+    exchange_fluxes: Mapping[str, object] | None = None,
     exchange_flux_basis: str | None = None,
 ) -> str:
     # When ``composite`` is set, run the two-engine comparison driver — both
@@ -108,7 +107,7 @@ def sim_command(
                 "runner_s3_uri is required for multi-generation batch dispatch "
                 "(the generic run_pbg.py runner must be staged to S3 first)"
             )
-        overrides: dict[str, Any] = {
+        overrides: dict[str, object] = {
             "n_seeds": int(n_seeds),
             "n_generations": int(n_generations),
             "cache_dir": PARCA_CACHE_DIR,

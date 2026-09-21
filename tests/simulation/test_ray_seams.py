@@ -1,6 +1,6 @@
 """The Ray service reaches settings and AWS through ONE seam, and only through it.
 
-``viva_api/simulation/ray/_seams.py`` explains why: the tests patch ``get_settings`` by
+``viva_api/simulation/dispatch/_seams.py`` explains why: the tests patch ``get_settings`` by
 NAME, and a name patch is positional -- it reaches only the module it names. When the
 4,305-line ``SimulationServiceRay`` is carved into several modules (``docs/plan-core.md``
 P2.1), a module that imported ``get_settings`` directly would silently stop being patched
@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-import viva_api.simulation.ray as ray_package
+import viva_api.simulation.dispatch as ray_package
 from viva_api.simulation import simulation_service_ray
 
 SEAM_NAMES = {"boto3", "get_settings"}
@@ -23,7 +23,7 @@ TESTS_DIR = Path(__file__).resolve().parents[1]
 
 
 def _ray_service_modules() -> list[Path]:
-    """``simulation_service_ray.py`` and everything in ``simulation/ray/`` except the seam."""
+    """``simulation_service_ray.py`` and everything in ``simulation/dispatch/`` except the seam."""
     carved = [p for p in sorted(RAY_PACKAGE_DIR.rglob("*.py")) if p.name != "_seams.py"]
     return [Path(simulation_service_ray.__file__).resolve(), *carved]
 
@@ -68,7 +68,9 @@ def test_no_test_patches_the_old_location() -> None:
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
         if any(f"{old}{name}" in line for name in SEAM_NAMES) and ("patch" in line or "setattr" in line)
     ]
-    assert not offenders, "patch the seam (viva_api.simulation.ray._seams.<name>) instead:\n  " + "\n  ".join(offenders)
+    assert not offenders, "patch the seam (viva_api.simulation.dispatch._seams.<name>) instead:\n  " + "\n  ".join(
+        offenders
+    )
 
 
 def test_a_patch_on_the_seam_reaches_the_service() -> None:
@@ -76,22 +78,22 @@ def test_a_patch_on_the_seam_reaches_the_service() -> None:
     from types import SimpleNamespace
 
     fake = SimpleNamespace(ecr_account_id="123456789012", batch_region="xx-test-1", ray_ecr_repository="some-repo")
-    with patch("viva_api.simulation.ray._seams.get_settings", lambda: fake):
+    with patch("viva_api.simulation.dispatch._seams.get_settings", lambda: fake):
         uri = simulation_service_ray.SimulationServiceRay().batch.image_uri("abc1234")
     assert "123456789012" in uri and "xx-test-1" in uri and uri.endswith("some-repo:abc1234")
 
 
 def test_the_service_composes_the_ray_package_and_inherits_nothing_from_it() -> None:
     """The carve ended with no mixin (``docs/plan-core.md`` P2.1, PR 5): the pieces in
-    ``viva_api.simulation.ray`` are functions, composed services and -- soon -- strategies. A
+    ``viva_api.simulation.dispatch`` are functions, composed services and -- soon -- strategies. A
     class from that package reappearing in the MRO would bring back shadowing by MRO, which
     is what the guard this one replaced existed to catch."""
     inherited = [
         c.__name__
         for c in simulation_service_ray.SimulationServiceRay.__mro__
-        if c.__module__.startswith("viva_api.simulation.ray.")
+        if c.__module__.startswith("viva_api.simulation.dispatch.")
     ]
-    assert not inherited, f"SimulationServiceRay inherits from the ray package again: {inherited}"
+    assert not inherited, f"SimulationServiceRay inherits from the dispatch package again: {inherited}"
 
 
 def test_the_service_repeats_only_the_two_batch_questions_the_scheduler_asks_it() -> None:
@@ -99,12 +101,12 @@ def test_the_service_repeats_only_the_two_batch_questions_the_scheduler_asks_it(
     debt: it exists because something outside still asks the service. Two are intended (the
     scheduler's status and detail lookups, until P6). A third is someone re-growing the
     facade."""
-    from viva_api.simulation.ray.batch_layer import RayBatchLayer
+    from viva_api.simulation.dispatch.batch_layer import BatchLayer
 
     def public(cls: type) -> set[str]:
         return {n for n, v in vars(cls).items() if callable(v) and not n.startswith("_")}
 
-    both = public(simulation_service_ray.SimulationServiceRay) & public(RayBatchLayer)
+    both = public(simulation_service_ray.SimulationServiceRay) & public(BatchLayer)
     assert both == {"get_batch_job_statuses", "get_batch_job_details"}, both
 
 

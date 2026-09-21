@@ -7,7 +7,7 @@ their commands from it, and a mechanism that has become a strategy object cannot
 (``docs/plan-core.md`` P2.1, PR 9). Moved verbatim, comments included.
 """
 
-from viva_api.simulation.ray.image_paths import SIM_OUT_DIR, V2ECOLI_CORE_BUILDER, V2ECOLI_DIR
+from viva_api.simulation.dispatch.image_paths import SIM_OUT_DIR, V2ECOLI_CORE_BUILDER, V2ECOLI_DIR
 
 # Registered composite id (process_bigraph.composite_spec) for the multi-generation
 # batch orchestrator, and the workspace core-builder that resolves its registered

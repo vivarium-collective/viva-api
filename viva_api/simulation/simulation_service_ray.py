@@ -43,6 +43,16 @@ from viva_api.common.simulator_defaults import DEFAULT_BRANCH, DEFAULT_REPO
 from viva_api.common.storage import data_layout
 from viva_api.common.storage.file_paths import S3FilePath
 from viva_api.simulation.database_service import DatabaseService
+from viva_api.simulation.dispatch import _seams, parca_spec
+from viva_api.simulation.dispatch.batch_layer import BatchLayer
+from viva_api.simulation.dispatch.build import ImageBuilder
+from viva_api.simulation.dispatch.chain import ChainStrategy, chain_base_tags
+from viva_api.simulation.dispatch.ensemble import EnsembleStrategy
+from viva_api.simulation.dispatch.mbp_tracked import MbpTrackedStrategy
+from viva_api.simulation.dispatch.multi_node import MultiNodeCompositeStrategy
+from viva_api.simulation.dispatch.nextflow import NextflowStrategy
+from viva_api.simulation.dispatch.parca import ParcaService
+from viva_api.simulation.dispatch.tasks import TaskService
 from viva_api.simulation.github_repo import (
     fetch_config_template,
     fetch_latest_commit_hash,
@@ -55,16 +65,6 @@ from viva_api.simulation.models import (
     Simulation,
     SimulatorVersion,
 )
-from viva_api.simulation.ray import _seams, parca_spec
-from viva_api.simulation.ray.batch_layer import RayBatchLayer
-from viva_api.simulation.ray.build import RayImageBuilder
-from viva_api.simulation.ray.chain import ChainStrategy, chain_base_tags
-from viva_api.simulation.ray.ensemble import EnsembleStrategy
-from viva_api.simulation.ray.mbp_tracked import MbpTrackedStrategy
-from viva_api.simulation.ray.multi_node import MultiNodeCompositeStrategy
-from viva_api.simulation.ray.nextflow import NextflowStrategy
-from viva_api.simulation.ray.parca import RayParcaService
-from viva_api.simulation.ray.tasks import RayTaskService
 from viva_api.simulation.simulation_service import SimulationService
 from viva_core.backends.batch import (
     BatchJobDetail,
@@ -121,7 +121,7 @@ class SimulationServiceRay(SimulationService):
         self,
         local_task_service: LocalTaskService | None = None,
         k8s_job_service: "K8sJobService | None" = None,
-        batch: RayBatchLayer | None = None,
+        batch: BatchLayer | None = None,
     ) -> None:
         self._local = local_task_service or LocalTaskService()
         # Only the Nextflow dispatch uses this: its HEAD runs as a K8s Job so it
@@ -132,7 +132,7 @@ class SimulationServiceRay(SimulationService):
         # for the service's lifetime: everything that submits -- this class, the ParCa and
         # task services, soon the dispatch strategies -- is handed THIS object, so a test
         # that patches ``service.batch.submit_container`` is what all of them get.
-        self.batch = batch or RayBatchLayer()
+        self.batch = batch or BatchLayer()
 
     def get_batch_job_statuses(self, job_ids: list[str]) -> dict[str, JobStatus]:
         """``self.batch.get_batch_job_statuses``, kept on the service because the scheduler
@@ -176,15 +176,15 @@ class SimulationServiceRay(SimulationService):
         return data_layout.s3_uri(runner_key)
 
     @property
-    def parca(self) -> RayParcaService:
+    def parca(self) -> ParcaService:
         """The ParCa cache jobs (a commit's cache, a new-gene cache, a variant cache), composed:
         handed this service as the thing that dispatches container jobs for them. Built per
         access; it holds no state of its own."""
-        return RayParcaService(self.batch)
+        return ParcaService(self.batch)
 
     @override
     async def submit_parca_job(self, parca_dataset: ParcaDataset) -> JobId:
-        """``SimulationService``'s contract; the work is ``RayParcaService``'s."""
+        """``SimulationService``'s contract; the work is ``ParcaService``'s."""
         return await self.parca.submit_parca_job(parca_dataset)
 
     def cache_s3_uri(self, commit: str, *, variant: str | None = None) -> str:
@@ -193,11 +193,11 @@ class SimulationServiceRay(SimulationService):
         return parca_spec.cache_s3_uri(commit, variant=variant)
 
     @property
-    def tasks(self) -> RayTaskService:
+    def tasks(self) -> TaskService:
         """The task service (``POST /api/v1/tasks`` and friends), composed: it is handed this
         service as the thing that dispatches container jobs for it. Built per access; it
         holds no state of its own."""
-        return RayTaskService(
+        return TaskService(
             self.batch,
             latest_commit=lambda: self.get_latest_commit_hash(),
             results_uri=data_layout.RayLayout.results_uri,
@@ -321,11 +321,11 @@ class SimulationServiceRay(SimulationService):
         Built per call; it holds no state of its own."""
         return MbpTrackedStrategy(self.batch)
 
-    def _image_builder(self) -> RayImageBuilder:
+    def _image_builder(self) -> ImageBuilder:
         """The build service, composed. Built per call around ``self._local`` so that a test
         (or anything else) that swaps the local task service is what the builder gets --
         the same late binding as ``_batch_jobs``."""
-        return RayImageBuilder(self._local)
+        return ImageBuilder(self._local)
 
     @override
     async def submit_build_image_job(
@@ -337,7 +337,7 @@ class SimulationServiceRay(SimulationService):
         stage_private_fork: bool = False,
         vecoli_private_commit: str | None = None,
     ) -> JobId:
-        """Build the simulator image (``RayImageBuilder.submit``). The keyword arguments are
+        """Build the simulator image (``ImageBuilder.submit``). The keyword arguments are
         spelled out, not ``**kwargs``: ``handlers.simulators`` inspects this signature to
         decide which of them this backend supports."""
         return await self._image_builder().submit(

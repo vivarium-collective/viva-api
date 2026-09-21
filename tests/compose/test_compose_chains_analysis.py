@@ -26,7 +26,7 @@ from viva_api.compose.models import (
     SimulationFileType,
 )
 from viva_api.compose.simulation_service_ray import ComposeSimulationServiceRay
-from viva_api.simulation.ray.batch_layer import RayBatchLayer
+from viva_api.simulation.dispatch.batch_layer import BatchLayer
 from viva_api.simulation.tables_orm import AnalysisStatusDB
 
 _ANALYSIS_OPTIONS = {"report_cards": ["mass_conservation"]}
@@ -74,7 +74,7 @@ async def test_submit_simulation_job_chains_analysis_when_analysis_options_prese
     monkeypatch.setattr(mod, "get_settings", lambda: _settings())
 
     simulation = _simulation(tmp_path, analysis_options=_ANALYSIS_OPTIONS)
-    svc = ComposeSimulationServiceRay(batch=RayBatchLayer())
+    svc = ComposeSimulationServiceRay(batch=BatchLayer())
 
     monkeypatch.setattr(svc._batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
     monkeypatch.setattr(svc._batch, "submit_mnp", lambda **kwargs: "compose-sim-job-1")
@@ -149,7 +149,7 @@ async def test_submit_simulation_job_submits_no_analysis_when_analysis_options_a
     monkeypatch.setattr(mod, "get_settings", lambda: _settings())
 
     simulation = _simulation(tmp_path, analysis_options=None)
-    svc = ComposeSimulationServiceRay(batch=RayBatchLayer())
+    svc = ComposeSimulationServiceRay(batch=BatchLayer())
 
     monkeypatch.setattr(svc._batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
     monkeypatch.setattr(svc._batch, "submit_mnp", lambda **kwargs: "compose-sim-job-1")

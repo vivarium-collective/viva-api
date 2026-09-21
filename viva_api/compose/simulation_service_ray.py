@@ -30,7 +30,7 @@ from viva_api.compose.database_service import ComposeDatabaseService
 from viva_api.compose.models import ComposeHpcRun, ComposeJobStatus, ComposeSimulation, ComposeSimulatorVersion
 from viva_api.compose.simulation_service import ComposeSimulationService
 from viva_api.config import get_settings
-from viva_api.simulation.ray.image_paths import ANALYSIS_OUT_DIR, V2ECOLI_DIR
+from viva_api.simulation.dispatch.image_paths import ANALYSIS_OUT_DIR, V2ECOLI_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class ComposeBatch(Protocol):
     one container job for the analysis that follows it, and what became of a job.
 
     Declared HERE, in compose's own terms, and satisfied today by the SMS Batch layer
-    (``viva_api.simulation.ray.batch_layer.RayBatchLayer``) -- which compose does not import.
+    (``viva_api.simulation.dispatch.batch_layer.BatchLayer``) -- which compose does not import.
     The composition root hands one in. That is the direction compose has to face to move into
     core (``docs/plan-core.md`` P3): it names what it needs; the application provides it.
     Only the keyword arguments compose actually passes are declared.

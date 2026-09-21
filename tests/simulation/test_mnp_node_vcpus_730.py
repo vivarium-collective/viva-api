@@ -47,9 +47,9 @@ class ValidatingBatch:
 def _vcpus(fake: Any, job_definition: str = "base-mnp-abc:3") -> tuple[int | None, Any]:
     service = SimulationServiceRay()
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
         patch.object(service.batch, "client", return_value=fake),
-        patch("viva_api.simulation.ray.multi_node.time.sleep") as slept,
+        patch("viva_api.simulation.dispatch.multi_node.time.sleep") as slept,
     ):
         return service._multi_node()._mnp_node_vcpus(job_definition), slept
 
@@ -90,7 +90,7 @@ def test_a_wrong_call_is_loud_is_not_retried_and_still_does_not_fail_the_dispatc
 
     # The module's logger is patched rather than read through ``caplog``: other tests in this
     # suite reconfigure logging, and whether a record reaches ``caplog`` then depends on test order.
-    with patch("viva_api.simulation.ray.multi_node.logger.exception") as logged:
+    with patch("viva_api.simulation.dispatch.multi_node.logger.exception") as logged:
         vcpus, slept = _vcpus(WrongCall())
     assert vcpus is None  # a sizing nicety never fails a submission
     assert WrongCall.calls == 1

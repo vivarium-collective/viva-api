@@ -29,7 +29,7 @@ import shlex
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Protocol, SupportsFloat, SupportsInt, TypedDict, cast
 
 from botocore.exceptions import ClientError, ParamValidationError
 
@@ -38,13 +38,13 @@ from viva_api.common.models import JobId
 from viva_api.common.storage import data_layout
 from viva_api.common.storage.file_paths import S3FilePath
 from viva_api.simulation.database_service import DatabaseService
+from viva_api.simulation.dispatch import _seams, parca_spec
+from viva_api.simulation.dispatch.analysis_spec import analysis_memory_class, analysis_modules_for
+from viva_api.simulation.dispatch.batch_layer import ContainerSubmitter, MnpSubmitter, _rand_suffix
+from viva_api.simulation.dispatch.config_interpretation import _thread_injected_processes_into_params
+from viva_api.simulation.dispatch.image_paths import ANALYSIS_OUT_DIR, PARCA_CACHE_DIR, SIM_OUT_DIR, V2ECOLI_DIR
+from viva_api.simulation.dispatch.runner_env import PBG_RUNNER_ENV
 from viva_api.simulation.models import JobType, Simulation
-from viva_api.simulation.ray import _seams, parca_spec
-from viva_api.simulation.ray.analysis_spec import analysis_memory_class, analysis_modules_for
-from viva_api.simulation.ray.batch_layer import ContainerSubmitter, MnpSubmitter, _rand_suffix
-from viva_api.simulation.ray.config_interpretation import _thread_injected_processes_into_params
-from viva_api.simulation.ray.image_paths import ANALYSIS_OUT_DIR, PARCA_CACHE_DIR, SIM_OUT_DIR, V2ECOLI_DIR
-from viva_api.simulation.ray.runner_env import PBG_RUNNER_ENV
 from viva_api.simulation.tables_orm import AnalysisStatusDB
 from viva_core.events.events_env import with_events_env
 
@@ -54,6 +54,24 @@ if TYPE_CHECKING:
     from types_boto3_batch.type_defs import JobDefinitionTypeDef
 
 logger = logging.getLogger(__name__)
+
+
+class MultiNodeDispatch(TypedDict, total=False):
+    """The ``multi_node_dispatch`` block of a simulation config. Every key is optional to the
+    type; ``submit`` refuses a block without ``composite_id``.
+
+    This DECLARES the contract; nothing enforces it yet (only ``task_env`` is validated at the
+    API boundary). ``params`` is the composite generator's own and is passed through unread,
+    but for the two counts the analysis submitter sizes itself by.
+    """
+
+    composite_id: str
+    num_nodes: int | None
+    steps: int | None
+    params: dict[str, object] | None
+    cache_variant: str | None
+    require_clean_chain: bool
+    task_env: dict[str, str]
 
 
 class MultiNodeBatch(MnpSubmitter, ContainerSubmitter, Protocol):
@@ -66,7 +84,7 @@ class MultiNodeBatch(MnpSubmitter, ContainerSubmitter, Protocol):
 def multi_node_composite_command(
     *,
     composite_id: str,
-    params: dict[str, Any],
+    params: dict[str, object],
     steps: int,
     runner_s3_uri: str,
     n_shards_default: int | None,
@@ -116,10 +134,10 @@ def multi_node_composite_command(
 
 def stage_seed_override_caches(
     *,
-    seed_overrides: dict[Any, dict[str, Any]],
+    seed_overrides: dict[str, dict[str, object]],
     cache_s3: str,
     stage_dir: str,
-) -> dict[Any, dict[str, Any]]:
+) -> dict[str, dict[str, object]]:
     """Server-side copy each ``seed_overrides[*].cache_dir`` S3 prefix under
     this dispatch's own ``cache_s3`` prefix, then rewrite ``cache_dir`` to the
     LOCAL path it resolves to once the existing single ``stage_s3``->``stage_dir``
@@ -151,7 +169,7 @@ def stage_seed_override_caches(
     dest_bucket = _seams.get_settings().s3_work_bucket
     dest_prefix = data_layout.key_from_uri(cache_s3).rstrip("/")
     s3_client = _seams.boto3.client("s3", region_name=_seams.get_settings().storage_s3_region)
-    rewritten: dict[Any, dict[str, Any]] = {}
+    rewritten: dict[str, dict[str, object]] = {}
     for seed, seed_override in seed_overrides.items():
         seed_override = dict(seed_override)
         cache_dir = seed_override.get("cache_dir")
@@ -191,7 +209,7 @@ def multi_node_analysis_command(
     out_uri: str,
     n_seeds: int | None = None,
     n_generations: int = 1,
-    modules: dict[str, dict[str, Any]] | str | None = None,
+    modules: dict[str, dict[str, object]] | str | None = None,
     sim_data_uri: str | None = None,
 ) -> str:
     """Build the "Analysis flush" DAG node's command for a generic
@@ -333,7 +351,7 @@ class MultiNodeCompositeStrategy:
         self,
         ecoli_simulation: Simulation,
         database_service: DatabaseService,
-        mnp_dispatch: dict[str, Any],
+        mnp_dispatch: MultiNodeDispatch,
         *,
         correlation_id: str,
     ) -> JobId:
@@ -421,7 +439,11 @@ class MultiNodeCompositeStrategy:
         # math.ceil always rounds up, so the clamp can only ever give a
         # composite AT LEAST what its own contract demands, never less.
         if "n_generations" in params:
-            required_run_interval = int(params["n_generations"]) * float(params.get("max_duration_per_gen", 3600.0))
+            # ``params`` is the generator's own JSON: ``int()`` and ``float()`` decide what they accept,
+            # as they always did. The casts say only that, to a checker that reads values as ``object``.
+            n_generations = cast("SupportsInt | str", params["n_generations"])
+            max_duration_per_gen = cast("SupportsFloat | str", params.get("max_duration_per_gen", 3600.0))
+            required_run_interval = int(n_generations) * float(max_duration_per_gen)
             steps = max(steps, math.ceil(required_run_interval))
         # cache_variant (item 105, mirrors chain-dispatch's own already-proven
         # job_scheduler.py pattern -- getattr(simulation.config, "cache_variant",
@@ -527,7 +549,7 @@ class MultiNodeCompositeStrategy:
         seed_overrides = params.get("seed_overrides")
         if seed_overrides:
             params["seed_overrides"] = stage_seed_override_caches(
-                seed_overrides=seed_overrides,
+                seed_overrides=cast("dict[str, dict[str, object]]", seed_overrides),  # JSON: keys are str
                 cache_s3=cache_s3,
                 stage_dir=PARCA_CACHE_DIR,
             )
@@ -638,7 +660,7 @@ class MultiNodeCompositeStrategy:
             "Team": getattr(settings, "cost_team_tag", None) or "covertlab",
             "Phase": "analysis",
         }
-        params: dict[str, Any] = {
+        params: dict[str, object] = {
             "composite_id": composite_id,
             "history_uri": results_uri,
             "analysis_name": analysis_name,

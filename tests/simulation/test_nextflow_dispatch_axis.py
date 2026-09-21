@@ -16,7 +16,7 @@ import pytest
 
 from tests.simulation.test_ray_backend import _ray_settings, _v2ecoli_simulator
 from viva_api.common.storage import data_layout
-from viva_api.simulation.ray import multi_node, nextflow
+from viva_api.simulation.dispatch import multi_node, nextflow
 from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
 
@@ -82,7 +82,7 @@ async def test_absent_axis_leaves_every_other_route_untouched() -> None:
 async def test_missing_composite_id_fails_rather_than_guessing() -> None:
     service = SimulationServiceRay()
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
         pytest.raises(ValueError, match="composite_id is required"),
     ):
         await service._nextflow().submit(_sim(), _db(), {})
@@ -92,7 +92,7 @@ async def test_missing_composite_id_fails_rather_than_guessing() -> None:
 
 
 def _command(**dispatch: Any) -> str:
-    with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+    with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
         return nextflow.render_nf_command(
             runner_s3_uri="s3://b/exp/render_nf.py",
             composite_id="v2ecoli.composites.workflow_nf",
@@ -155,7 +155,7 @@ def test_head_image_is_the_submit_tag_not_the_task_image() -> None:
     Java, so dispatching Nextflow against it would fail inside the container
     rather than at submit time."""
     service = SimulationServiceRay()
-    with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+    with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
         assert service.batch.submit_image_uri("abc1234").endswith("/v2ecoli:abc1234-submit")
 
 
@@ -183,7 +183,7 @@ def _nf_params(**overrides: Any) -> dict[str, Any]:
     settings = _ray_settings()
     for key, value in overrides.items():
         setattr(settings, key, value)
-    with patch("viva_api.simulation.ray._seams.get_settings", lambda: settings):
+    with patch("viva_api.simulation.dispatch._seams.get_settings", lambda: settings):
         return service._nextflow()._awsbatch_nf_params("abc1234", "exp-nf")
 
 
@@ -251,8 +251,10 @@ async def _dispatch(**dispatch: Any) -> tuple[Any, MagicMock]:
     service, k8s = _svc_with_k8s()
     sim = _sim()
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-        patch("viva_api.simulation.ray.nextflow.stage_render_nf", new=AsyncMock(return_value="s3://b/e/render_nf.py")),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+        patch(
+            "viva_api.simulation.dispatch.nextflow.stage_render_nf", new=AsyncMock(return_value="s3://b/e/render_nf.py")
+        ),
         patch.object(service, "stage_runner", new=AsyncMock(return_value="s3://b/e/run_pbg.py")),
     ):
         job_id = await service._nextflow().submit(
@@ -297,8 +299,8 @@ async def test_head_job_name_is_a_valid_dns_label() -> None:
     sim = _sim()
     sim.experiment_id = "Test_Experiment_NF_2026"
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-        patch("viva_api.simulation.ray.nextflow.stage_render_nf", new=AsyncMock(return_value="s3://b/e/r.py")),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+        patch("viva_api.simulation.dispatch.nextflow.stage_render_nf", new=AsyncMock(return_value="s3://b/e/r.py")),
         patch.object(service, "stage_runner", new=AsyncMock(return_value="s3://b/e/run_pbg.py")),
     ):
         job_id = await service._nextflow().submit(sim, _db(), {"composite_id": "v2ecoli.composites.workflow_nf"})
@@ -320,7 +322,7 @@ async def test_head_job_is_not_retried_by_kubernetes() -> None:
 async def test_dispatch_without_a_cluster_fails_loudly() -> None:
     service = SimulationServiceRay()  # no K8sJobService
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
         pytest.raises(RuntimeError, match="k8s_job_namespace"),
     ):
         await service._nextflow().submit(_sim(), _db(), {"composite_id": "v2ecoli.composites.workflow_nf"})
@@ -392,7 +394,7 @@ def test_a_dispatch_with_no_resources_still_gets_them() -> None:
     """Measured on simulation 355: no `resources` means no `withLabel` block,
     so nf-amazon's auto-registered job definition took ITS defaults (~1 GB, no
     timeout) and ParCa was killed with exit 137 before doing anything."""
-    from viva_api.simulation.ray.nextflow import _merge_nf_resources
+    from viva_api.simulation.dispatch.nextflow import _merge_nf_resources
 
     res = _merge_nf_resources(None)
     assert set(res) == {"parca", "lineage", "analysis"}
@@ -405,9 +407,10 @@ def test_memory_scales_on_137_and_only_on_137() -> None:
     """Retrying an OOM at the same size is three identical failures -- which is
     exactly what happened. Scaling on EVERY failure would instead multiply
     memory for faults that have nothing to do with it."""
-    from viva_api.simulation.ray.nextflow import _merge_nf_resources
+    from viva_api.simulation.dispatch.nextflow import _merge_nf_resources
 
     mem = _merge_nf_resources(None)["parca"]["memory"]
+    assert isinstance(mem, str)
     assert mem.lstrip().startswith("{"), "must be a Groovy closure, not a quoted string"
     assert "task.exitStatus == 137" in mem
     assert "task.attempt" in mem
@@ -416,17 +419,17 @@ def test_memory_scales_on_137_and_only_on_137() -> None:
 def test_overriding_one_key_does_not_drop_the_others() -> None:
     """Replacing wholesale would let `{'lineage': {'time': ...}}` silently take
     the run back to nf-amazon's ~1 GB."""
-    from viva_api.simulation.ray.nextflow import _merge_nf_resources
+    from viva_api.simulation.dispatch.nextflow import _merge_nf_resources
 
     merged = _merge_nf_resources({"lineage": {"time": "24 h"}})
     assert merged["lineage"]["time"] == "24 h"
-    assert "137" in merged["lineage"]["memory"]
+    assert "137" in str(merged["lineage"]["memory"])
     assert merged["lineage"]["cpus"] == 4
-    assert "137" in merged["parca"]["memory"]
+    assert "137" in str(merged["parca"]["memory"])
 
 
 def test_an_unknown_label_is_additive() -> None:
-    from viva_api.simulation.ray.nextflow import _merge_nf_resources
+    from viva_api.simulation.dispatch.nextflow import _merge_nf_resources
 
     merged = _merge_nf_resources({"custom": {"cpus": 2}})
     assert merged["custom"] == {"cpus": 2}
@@ -438,8 +441,8 @@ async def test_resources_reach_the_rendered_command() -> None:
     """The defaults are useless if the dispatcher does not pass them."""
     service, k8s = _svc_with_k8s()
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-        patch("viva_api.simulation.ray.nextflow.stage_render_nf", new=AsyncMock(return_value="s3://b/e/r.py")),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+        patch("viva_api.simulation.dispatch.nextflow.stage_render_nf", new=AsyncMock(return_value="s3://b/e/r.py")),
         patch.object(service, "stage_runner", new=AsyncMock(return_value="s3://b/e/run_pbg.py")),
     ):
         await service._nextflow().submit(
@@ -484,9 +487,10 @@ def test_session_and_work_dir_are_keyed_the_same() -> None:
     """They are only useful together: -resume matches a task by hash in the
     SESSION, then reuses outputs in the WORK DIR. Either alone resumes nothing."""
     service = SimulationServiceRay()
-    with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+    with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
         session = nextflow.nf_session_s3_uri("exp-nf")
         work = service._nextflow()._awsbatch_nf_params("abc1234", "exp-nf")["work_dir"]
+    assert isinstance(work, str)
     assert session.rsplit("/", 1)[0] == work.rsplit("/", 1)[0]
 
 
@@ -536,8 +540,8 @@ async def test_two_dispatches_of_one_config_do_not_share_a_work_dir() -> None:
         sim = _sim()
         sim.experiment_id = run
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray.nextflow.stage_render_nf", new=AsyncMock(return_value="s3://b/e/r.py")),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch.nextflow.stage_render_nf", new=AsyncMock(return_value="s3://b/e/r.py")),
             patch.object(service, "stage_runner", new=AsyncMock(return_value="s3://b/e/run_pbg.py")),
         ):
             await service._nextflow().submit(
@@ -631,7 +635,7 @@ async def test_publish_dir_points_at_the_runs_own_results_prefix() -> None:
     """`publishDir` reads `params.publish_dir`; without it set, v2ecoli's fallback
     publishes to a task-local `results` dir that dies with the pod."""
     service, _ = _svc_with_k8s()
-    with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+    with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
         expected = data_layout.RayLayout.results_uri("sim133-exp-nf-a1b2").rstrip("/")
     _, k8s = await _dispatch(executor="awsbatch")
     assert _dispatched_nf_params(k8s)["publish_dir"] == expected
@@ -661,7 +665,7 @@ def test_the_head_gets_time_to_terminate_its_own_tasks() -> None:
     minutes, and filled host disk until the NEXT campaign began failing with
     'No space left on device'."""
     service, k8s = _svc_with_k8s()
-    from viva_api.simulation.ray.nextflow import NF_HEAD_TERMINATION_GRACE_SECONDS
+    from viva_api.simulation.dispatch.nextflow import NF_HEAD_TERMINATION_GRACE_SECONDS
 
     job = service._nextflow()._nf_head_job("nf-x", "exp", "abc1234", "true")
     assert job.spec.template.spec.termination_grace_period_seconds == NF_HEAD_TERMINATION_GRACE_SECONDS
@@ -679,7 +683,7 @@ def test_a_resumed_run_reaps_NOTHING_because_it_does_not_own_the_campaign() -> N
 
     A resumed run therefore reaps nothing and falls back to the grace period --
     leaking a task is recoverable, destroying another campaign is not."""
-    from viva_api.simulation.ray.nextflow import _command_belongs_to_campaign
+    from viva_api.simulation.dispatch.nextflow import _command_belongs_to_campaign
 
     task_in_campaign_a = "aws s3 cp s3://b/nextflow/work/sim159-run-a1b2/work/ab/cd/.command.run -"
     # run B resumed campaign A; cancelling B must not touch A's tasks
@@ -694,7 +698,7 @@ def test_a_task_is_matched_to_its_campaign_by_the_work_dir() -> None:
     """There is no per-campaign Batch tag, and job names are the PROCESS names
     (`runs_v0lineage_v0_s3`) which repeat across campaigns. The S3 work dir is the
     only campaign-unique thing every task carries."""
-    from viva_api.simulation.ray.nextflow import _command_belongs_to_campaign
+    from viva_api.simulation.dispatch.nextflow import _command_belongs_to_campaign
 
     cmd = "aws s3 cp s3://b/nextflow/work/sim159-run-a1b2/work/ab/cd/.command.run - | bash"
     assert _command_belongs_to_campaign(cmd, "sim159-run-a1b2")
@@ -708,7 +712,7 @@ def test_the_campaign_key_survives_dns_sanitising() -> None:
     """`_nf_head_job_name` lowercases and replaces non-alphanumerics, so the head
     name and the raw work-dir segment are not equal; comparing them raw finds
     nothing and the reap silently does nothing."""
-    from viva_api.simulation.ray.nextflow import _command_belongs_to_campaign
+    from viva_api.simulation.dispatch.nextflow import _command_belongs_to_campaign
 
     assert _command_belongs_to_campaign("s3://b/nextflow/work/My_Exp_1/work/x", "my-exp-1")
 
@@ -723,7 +727,7 @@ async def test_cancel_deletes_the_head_and_does_NOT_reap_inline() -> None:
 
     service, k8s = _svc_with_k8s()
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
         patch.object(service, "reap_cancelled_campaign", new=AsyncMock()) as reap,
         patch.object(nextflow.NextflowStrategy, "_terminate_campaign_tasks") as terminate,
     ):
@@ -740,7 +744,7 @@ async def test_reap_defers_while_the_head_still_exists() -> None:
     service, k8s = _svc_with_k8s()
     k8s.get_job_status.return_value = MagicMock()  # 404 would be None
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
         patch.object(service.batch, "client") as batch,
     ):
         assert await service.reap_cancelled_campaign("nf-sim159-run-a1b2-xyz123") is None
@@ -781,7 +785,7 @@ async def test_reap_paginates_and_scans_every_queue() -> None:
     batch.describe_jobs.side_effect = describe_jobs
     settings = MagicMock(batch_amd64_queue="q-amd", batch_arm64_queue="q-arm", batch_region="r")
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", return_value=settings),
+        patch("viva_api.simulation.dispatch._seams.get_settings", return_value=settings),
         patch.object(service.batch, "client", return_value=batch),
     ):
         reaped = await service.reap_cancelled_campaign("nf-sim159-run-a1b2-xyz123")
@@ -807,9 +811,10 @@ def test_the_gather_starts_above_the_size_a_3x2_oom_killed() -> None:
     base. Pinned so a tidy-up cannot quietly take it back to 16."""
     import re
 
-    from viva_api.simulation.ray.nextflow import _merge_nf_resources
+    from viva_api.simulation.dispatch.nextflow import _merge_nf_resources
 
     mem = _merge_nf_resources(None)["analysis"]["memory"]
+    assert isinstance(mem, str)
     m = re.search(r"(\d+)\.GB \* task\.attempt", mem)
     assert m is not None, mem
     base = int(m.group(1))
@@ -832,8 +837,10 @@ async def test_dispatch_threads_the_runs_identity_env_into_every_batch_task() ->
     service, k8s = _svc_with_k8s()
     sim = _sim()
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-        patch("viva_api.simulation.ray.nextflow.stage_render_nf", new=AsyncMock(return_value="s3://b/e/render_nf.py")),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+        patch(
+            "viva_api.simulation.dispatch.nextflow.stage_render_nf", new=AsyncMock(return_value="s3://b/e/render_nf.py")
+        ),
         patch.object(service, "stage_runner", new=AsyncMock(return_value="s3://b/e/run_pbg.py")),
     ):
         await service._nextflow().submit(

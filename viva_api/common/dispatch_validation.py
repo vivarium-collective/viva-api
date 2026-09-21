@@ -17,6 +17,7 @@ be answered from the request anyway.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -154,7 +155,7 @@ def validate_dispatch_task_envs(config_data: dict[str, Any]) -> None:
             validate_task_env(payload["task_env"], where=f"{block}.task_env")
 
 
-def resolve_task_env(config: Any, dispatch: dict[str, Any] | None = None) -> dict[str, str]:
+def resolve_task_env(config: Any, dispatch: Mapping[str, object] | None = None) -> dict[str, str]:
     """The env a dispatch's tasks get: the config's top-level ``task_env`` with
     the dispatch block's own ``task_env`` merged over it. Re-validated here so
     the service-level entry points (reachable without the API boundary) stay

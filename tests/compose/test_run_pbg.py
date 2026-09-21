@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from viva_api.compose import run_pbg
-from viva_api.simulation.ray import chain
+from viva_api.simulation.dispatch import chain
 
 
 class FakeCore:
@@ -1446,7 +1446,7 @@ def test_chain_whole_lineage_command_passes_the_under_run_guard() -> None:
     import shlex
 
     from viva_api.compose.run_pbg import _check_required_run_interval
-    from viva_api.simulation.ray.runner_env import V2ECOLI_BATCH_BASELINE_COMPOSITE_ID
+    from viva_api.simulation.dispatch.runner_env import V2ECOLI_BATCH_BASELINE_COMPOSITE_ID
 
     cmd = chain.seed_lineage_command(
         seed=3,

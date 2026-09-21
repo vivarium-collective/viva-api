@@ -26,9 +26,9 @@ def _patched(mock_batch: Any) -> Any:
     from contextlib import ExitStack
 
     stack = ExitStack()
-    stack.enter_context(patch("viva_api.simulation.ray._seams.get_settings", _ray_settings))
+    stack.enter_context(patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings))
     stack.enter_context(patch("viva_api.common.storage.data_layout.get_settings", _ray_settings))
-    stack.enter_context(patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch))
+    stack.enter_context(patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch))
     return stack
 
 

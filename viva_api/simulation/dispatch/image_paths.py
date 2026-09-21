@@ -2,7 +2,7 @@
 
 Carved out of ``simulation_service_ray.py`` (``docs/plan-core.md`` P2.1, cut 3) as a pure
 move, because it is the leaf everything else in this package needs: a module under
-``simulation/ray/`` cannot import these from the service module, which imports *it*.
+``simulation/dispatch/`` cannot import these from the service module, which imports *it*.
 
 Constants only. No imports, so nothing here can ever be part of an import cycle.
 """

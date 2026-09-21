@@ -15,10 +15,10 @@ import pytest
 from tests.simulation.test_ray_backend import _ray_settings, _v2ecoli_simulator
 from viva_api.common.models import JobId, JobStatus
 from viva_api.simulation import batch_build
+from viva_api.simulation.dispatch.build import ImageBuilder
+from viva_api.simulation.dispatch.image_paths import TASK_OUT_DIR
+from viva_api.simulation.dispatch.tasks import TaskService
 from viva_api.simulation.models import TaskRunRequest
-from viva_api.simulation.ray.build import RayImageBuilder
-from viva_api.simulation.ray.image_paths import TASK_OUT_DIR
-from viva_api.simulation.ray.tasks import RayTaskService
 
 if TYPE_CHECKING:
     from viva_api.simulation.models import Simulation
@@ -42,8 +42,8 @@ class FakeLocalTasks:
 @pytest.mark.asyncio
 async def test_the_builder_needs_a_local_task_service_and_nothing_else() -> None:
     local = FakeLocalTasks()
-    builder = RayImageBuilder(local)  # type: ignore[arg-type]
-    with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+    builder = ImageBuilder(local)  # type: ignore[arg-type]
+    with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
         job_id = await builder.submit(_v2ecoli_simulator())
     assert job_id == JobId.local("local-1")
     assert local.submitted == [f"ray-build-{_v2ecoli_simulator().git_commit_hash}"]
@@ -66,11 +66,11 @@ async def test_a_build_records_its_batch_job_before_it_waits_on_it() -> None:
         order.append("poll")
 
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
         patch.object(batch_build, "submit_batch_build", submit),
         patch.object(batch_build, "poll_batch_jobs", poll),
     ):
-        await RayImageBuilder(local).run(_v2ecoli_simulator())  # type: ignore[arg-type]
+        await ImageBuilder(local).run(_v2ecoli_simulator())  # type: ignore[arg-type]
     assert order == ["submit", "poll"]
 
 
@@ -115,7 +115,7 @@ async def test_a_task_is_one_container_job_recorded_on_the_task_table() -> None:
     database.record_task = AsyncMock(return_value="the-task-row")
     request = TaskRunRequest(script="scripts/x.py", args=["--k", "v w"], sim_data_refs={"a": "s3://x"})
 
-    result: Any = await RayTaskService(dispatch, latest_commit=_latest_commit, results_uri=_results_uri).submit_task(
+    result: Any = await TaskService(dispatch, latest_commit=_latest_commit, results_uri=_results_uri).submit_task(
         request, database
     )
     assert result == "the-task-row"
@@ -136,7 +136,7 @@ async def test_a_task_status_is_what_batch_says_or_unchanged_when_batch_does_not
     task = SimpleNamespace(job_id_ext="batch-job-1", status=JobStatus.RUNNING)
     database.get_task = AsyncMock(return_value=task)
     database.update_task_status = AsyncMock(return_value="updated")
-    service = RayTaskService(dispatch, latest_commit=_latest_commit, results_uri=_results_uri)
+    service = TaskService(dispatch, latest_commit=_latest_commit, results_uri=_results_uri)
 
     unchanged: Any = await service.get_task_status(1, database)
     assert unchanged is task  # Batch has not heard of it yet
@@ -155,13 +155,13 @@ async def test_everything_that_submits_is_handed_the_same_batch_layer() -> None:
     """``service.batch`` is ONE object for the service's lifetime, and the composed services are
     handed that object -- not a copy, not a fresh one. That is what lets a test (or a
     deployment that wraps the layer) change one place and reach every submitter. A service
-    built around its own ``RayBatchLayer()`` would behave identically against real AWS and
+    built around its own ``BatchLayer()`` would behave identically against real AWS and
     silently ignore the patch; no differential run can see that, so it is pinned here."""
-    from viva_api.simulation.ray.batch_layer import RayBatchLayer
+    from viva_api.simulation.dispatch.batch_layer import BatchLayer
     from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
     service = SimulationServiceRay()
-    assert isinstance(service.batch, RayBatchLayer)
+    assert isinstance(service.batch, BatchLayer)
     assert service.batch is service.batch  # an attribute, not a property that builds one per access
 
     submitted: list[str] = []
@@ -175,7 +175,7 @@ async def test_everything_that_submits_is_handed_the_same_batch_layer() -> None:
     database = MagicMock()
     database.record_task = AsyncMock(return_value="row")
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
         patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         patch.object(service.batch, "ensure_container_job_def", return_value="jobdef:1"),
         patch.object(service.batch, "submit_container", side_effect=submit),
@@ -194,11 +194,11 @@ async def test_everything_that_submits_is_handed_the_same_batch_layer() -> None:
 
 def test_a_layer_handed_to_the_constructor_is_the_one_the_service_uses() -> None:
     """The seam PR 6 needs: compose builds ONE layer and may share it, and a strategy is
-    handed the service's. Defaulting to a fresh ``RayBatchLayer()`` must not override one given."""
-    from viva_api.simulation.ray.batch_layer import RayBatchLayer
+    handed the service's. Defaulting to a fresh ``BatchLayer()`` must not override one given."""
+    from viva_api.simulation.dispatch.batch_layer import BatchLayer
     from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
-    layer = RayBatchLayer()
+    layer = BatchLayer()
     assert SimulationServiceRay(batch=layer).batch is layer
 
 
@@ -226,7 +226,7 @@ class OnlyASubmitter:
 
 @pytest.mark.asyncio
 async def test_the_mbp_tracked_strategy_runs_on_a_submitter_alone() -> None:
-    from viva_api.simulation.ray.mbp_tracked import MbpTrackedStrategy
+    from viva_api.simulation.dispatch.mbp_tracked import MbpTrackedStrategy
 
     batch, database = OnlyASubmitter(), MagicMock()
     database.get_simulator = AsyncMock(return_value=SimpleNamespace(environment_key="tmp-abc1234-0a1b2c"))
@@ -234,7 +234,7 @@ async def test_the_mbp_tracked_strategy_runs_on_a_submitter_alone() -> None:
     run = SimpleNamespace(simulator_id=1, database_id=42, config=SimpleNamespace(experiment_id="exp-1", task_env=None))
 
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
         patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
     ):
         job_id = await MbpTrackedStrategy(batch).submit(run, database, {"variant": "v"}, correlation_id="corr")  # type: ignore[arg-type]
@@ -269,7 +269,7 @@ class OnlyNextflowBatch:
 
 @pytest.mark.asyncio
 async def test_the_nextflow_strategy_runs_on_two_image_names_a_cluster_and_a_runner_stager() -> None:
-    from viva_api.simulation.ray import nextflow
+    from viva_api.simulation.dispatch import nextflow
 
     batch, k8s, staged = OnlyNextflowBatch(), MagicMock(), []
 
@@ -287,11 +287,11 @@ async def test_the_nextflow_strategy_runs_on_two_image_names_a_cluster_and_a_run
     )
     strategy = nextflow.NextflowStrategy(batch, k8s, stage_runner=stage_runner)
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
         patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-        patch("viva_api.simulation.ray.nextflow.stage_render_nf", new=AsyncMock(return_value="s3://bucket/r.py")),
+        patch("viva_api.simulation.dispatch.nextflow.stage_render_nf", new=AsyncMock(return_value="s3://bucket/r.py")),
     ):
-        dispatch = {"composite_id": "pkg.composites.workflow_nf"}
+        dispatch: nextflow.NextflowDispatch = {"composite_id": "pkg.composites.workflow_nf"}
         job_id = await strategy.submit(cast("Simulation", run), database, dispatch, correlation_id="c")
 
     assert job_id.backend.name == "K8S_NEXTFLOW" and staged == ["run-a1b2"]
@@ -304,7 +304,7 @@ async def test_the_nextflow_strategy_runs_on_two_image_names_a_cluster_and_a_run
     k8s.get_job_status.return_value = "still there"
     assert await strategy.reap_cancelled_campaign("nf-sim9-run-a1b2-xyz123") is None and batch.engine_calls == 0
     k8s.get_job_status.return_value = None
-    with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+    with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
         assert await strategy.reap_cancelled_campaign("nf-sim9-run-a1b2-xyz123") == 3
     assert batch.engine_calls == 1
 
@@ -319,7 +319,7 @@ async def test_the_services_nextflow_strategy_is_handed_the_services_own_layer_a
     engine = MagicMock()
     engine.terminate_matching.return_value = 5
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
         patch.object(service.batch, "engine", return_value=engine),
     ):
         assert await service.reap_cancelled_campaign("nf-sim9-run-a1b2-xyz123") == 5
@@ -356,7 +356,7 @@ class OnlyMultiNodeBatch(OnlyASubmitter):
 async def test_the_multi_node_strategy_runs_on_a_batch_and_a_runner_stager_and_sizes_its_shards() -> None:
     """...and nothing else of the service. Also the unit-level form of viva-api#730's fix: the shard
     count a run receives is the job definition's vCPUs times its nodes."""
-    from viva_api.simulation.ray.multi_node import MultiNodeCompositeStrategy
+    from viva_api.simulation.dispatch.multi_node import MultiNodeCompositeStrategy, MultiNodeDispatch
 
     async def stage_runner(experiment_id: str) -> str:
         return f"s3://bucket/{experiment_id}/run_pbg.py"
@@ -370,9 +370,9 @@ async def test_the_multi_node_strategy_runs_on_a_batch_and_a_runner_stager_and_s
         experiment_id="exp-1",
         config=SimpleNamespace(experiment_id="exp-1", task_env=None),
     )
-    dispatch = {"composite_id": "pkg.composites.colony", "num_nodes": 2}
+    dispatch: MultiNodeDispatch = {"composite_id": "pkg.composites.colony", "num_nodes": 2}
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
         patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
     ):
         strategy = MultiNodeCompositeStrategy(batch, stage_runner=stage_runner)
@@ -387,6 +387,7 @@ async def test_the_multi_node_strategy_runs_on_a_batch_and_a_runner_stager_and_s
 
 @pytest.mark.asyncio
 async def test_the_services_multi_node_strategy_is_handed_the_services_own_layer_and_stager() -> None:
+    from viva_api.simulation.dispatch.multi_node import MultiNodeDispatch
     from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
     service, database, submitted = SimulationServiceRay(), MagicMock(), []
@@ -404,14 +405,14 @@ async def test_the_services_multi_node_strategy_is_handed_the_services_own_layer
         return f"job-{len(submitted)}"
 
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
         patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         patch.object(service.batch, "ensure_mnp_job_def", return_value="mnp:1"),
         patch.object(service.batch, "submit_mnp", side_effect=submit_mnp),
         patch.object(service.batch, "client", return_value=OnlyMultiNodeBatch().client()),
         patch.object(service, "stage_runner", new=AsyncMock(return_value="s3://bucket/run_pbg.py")) as staged,
     ):
-        dispatch = {"composite_id": "pkg.composites.colony"}
+        dispatch: MultiNodeDispatch = {"composite_id": "pkg.composites.colony"}
         await service._multi_node().submit(cast("Simulation", run), database, dispatch, correlation_id="c")
 
     assert [name.split("-")[1] for name in submitted] == ["parca", "mnp"], submitted
@@ -450,7 +451,7 @@ def _ensemble_run() -> tuple[Any, Any]:
 async def test_the_ensemble_strategy_runs_on_an_mnp_submitter_and_a_runner_stager_alone() -> None:
     """It used to be the last 217 lines of the router, with the whole service in reach. Run on an
     object that can ONLY submit MNP jobs, it has to be reaching for nothing else."""
-    from viva_api.simulation.ray.ensemble import EnsembleStrategy
+    from viva_api.simulation.dispatch.ensemble import EnsembleStrategy
 
     async def stage_runner(experiment_id: str) -> str:
         return f"s3://bucket/{experiment_id}/run_pbg.py"
@@ -458,7 +459,7 @@ async def test_the_ensemble_strategy_runs_on_an_mnp_submitter_and_a_runner_stage
     batch = OnlyAnMnpSubmitter()
     run, database = _ensemble_run()
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
         patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
     ):
         strategy = EnsembleStrategy(batch, stage_runner=stage_runner)
@@ -483,7 +484,7 @@ async def test_the_router_hands_the_fall_through_to_the_services_own_ensemble_st
         return f"job-{len(submitted)}"
 
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
         patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         patch.object(service.batch, "ensure_mnp_job_def", return_value="mnp:1"),
         patch.object(service.batch, "submit_mnp", side_effect=submit_mnp),
@@ -514,7 +515,7 @@ class RecordingLocal:
 
 @pytest.mark.asyncio
 async def test_the_chain_strategy_hands_its_campaign_to_the_local_service_it_was_given() -> None:
-    from viva_api.simulation.ray.chain import ChainStrategy
+    from viva_api.simulation.dispatch.chain import ChainStrategy
 
     local, database = RecordingLocal(), MagicMock()
     database.insert_hpcrun = AsyncMock(return_value=SimpleNamespace(database_id=7))

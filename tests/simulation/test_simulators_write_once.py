@@ -21,8 +21,8 @@ from viva_api.common.handlers.simulators import SimulatorIsWriteOnce, temporary_
 from viva_api.common.hpc.job_service import JobStatusUpdate
 from viva_api.common.models import JobId, JobStatus
 from viva_api.common.simulator_defaults import RepoUrl
+from viva_api.simulation.dispatch.build import ImageBuilder
 from viva_api.simulation.models import JobType, Simulator, SimulatorVersion
-from viva_api.simulation.ray.build import RayImageBuilder
 from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
 if TYPE_CHECKING:
@@ -211,8 +211,8 @@ def _version(image_tag: str | None) -> SimulatorVersion:
 
 
 def test_the_build_checks_out_the_commit_and_pushes_the_marked_tag() -> None:
-    with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-        builder = RayImageBuilder(local_task_service=None)  # type: ignore[arg-type]
+    with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
+        builder = ImageBuilder(local_task_service=None)  # type: ignore[arg-type]
         authoritative = builder.build_command(_version(None), include_submit_image=True)[2]
         temporary = builder.build_command(_version("tmp-abc1234-0a1b2c"), include_submit_image=True)[2]
 
@@ -229,9 +229,9 @@ def test_a_temporary_simulators_image_job_definition_and_cache_are_its_own() -> 
     service = SimulationServiceRay()
     key = _version("tmp-abc1234-0a1b2c").environment_key
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
         patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-        patch("viva_api.simulation.ray._seams.boto3.client", return_value=_fake_container_batch([])),
+        patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=_fake_container_batch([])),
     ):
         assert service.batch.image_uri(key).endswith(":tmp-abc1234-0a1b2c")
         assert "tmp-abc1234-0a1b2c" in service.cache_s3_uri(key)
