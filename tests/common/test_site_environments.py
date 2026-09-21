@@ -9,8 +9,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from viva_api.common.site_environments import environment_image, site_resolver
-from viva_core.environments import DerivedSpec, EnvironmentNotResolvable, ExplicitSpec
+from viva_api.common.site_environments import environment_image, named_environment_image, site_resolver
+from viva_core.environments import (
+    DerivedSpec,
+    EnvironmentNotResolvable,
+    EnvironmentResolverNotConfigured,
+    ExplicitSpec,
+)
 
 
 def _settings(**overrides: str) -> SimpleNamespace:
@@ -54,17 +59,32 @@ def test_the_real_settings_carry_the_runtime_image_and_default_to_none() -> None
     from viva_core.settings import CoreSettings
 
     assert CoreSettings().core_runtime_image == ""
-    assert site_resolver(get_settings()).runtime_image is None or get_settings().core_runtime_image
+    # with no image named, a composite that needs nothing is refused -- never run somewhere else
+    if not get_settings().core_runtime_image:
+        with pytest.raises(EnvironmentNotResolvable):
+            site_resolver(get_settings()).resolve(DerivedSpec())
 
 
-def test_an_unset_account_still_yields_what_it_always_did_until_that_is_decided() -> None:
-    """NOT the behaviour anyone wants: a malformed host, found out by a Batch pull ten minutes later.
-    It is what all four derivations did, the default settings leave the account unset, and eight
-    tests run that way without looking at the image -- so refusing is a behaviour change with its
-    own PR (the plan's deferred list), not a line inside a rewiring. This test is that PR's to flip."""
-    assert environment_image(_settings(ecr_account_id=""), "d67b0a7") == (
-        ".dkr.ecr.us-gov-west-1.amazonaws.com/v2ecoli:d67b0a7"
-    )
+def test_an_unset_account_is_refused_by_name_for_the_one_request_that_needs_it() -> None:
+    """Until 2026-09-21 this produced ``.dkr.ecr.<region>.amazonaws.com/<repo>:<key>``: a malformed
+    name that became a job definition, a submitted job, and ten minutes later a Batch image-pull
+    failure that never mentions the setting. Now the site says what is missing, at once."""
+    unset = _settings(ecr_account_id="")
+    with pytest.raises(EnvironmentResolverNotConfigured, match=r"ecr_account_id is unset \(ECR_ACCOUNT_ID\)"):
+        environment_image(unset, "d67b0a7")
+    with pytest.raises(EnvironmentResolverNotConfigured):
+        environment_image(unset, "d67b0a7", variant="submit")
+
+
+def test_an_unset_account_refuses_nothing_that_does_not_need_the_registry() -> None:
+    """Building the resolver never fails (core's health route builds one per request), and the
+    runtime image is a full reference of its own: a composite that needs nothing still gets it."""
+    image = "ghcr.io/vivarium-collective/viva-core-runtime:0.1.0"
+    resolver = site_resolver(_settings(ecr_account_id="", core_runtime_image=image))
+    assert resolver.resolve(DerivedSpec()).image == image
+    assert named_environment_image(_settings(ecr_account_id="", core_runtime_image=image), "runtime") == image
+    with pytest.raises(EnvironmentNotResolvable):  # unset account AND no runtime image: still the ordinary refusal
+        site_resolver(_settings(ecr_account_id="")).resolve(DerivedSpec())
 
 
 def test_an_unset_repository_is_refused() -> None:
