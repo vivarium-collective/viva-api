@@ -699,7 +699,7 @@ split; each has an owner-less issue or a named moment.
 | ~~Smoke `sim-chain` downloads the whole chain output~~ **done** (2026-09-21): it lists the run's output in S3 instead — the prefixes come from what the run's own finished Batch jobs declare (`*_OUT_S3`), since the API says nothing about where a run wrote. Checked against C2's real chain run: 53 objects and 2 seed summaries, the same as the download, in 5 s instead of ~30 min. Falls back to the download without AWS access | `app/smoke.py` | an API that LISTS a run's outputs (names and sizes) would let any client do this, and is worth having for users who should not have to download GBs to see what is there — not planned |
 | Temporary simulators 214 and 215 and the images `tmp-d01dc07-b64227[-submit]` on dev / in the shared ECR | dev | the purge for temporary simulators (not built yet); until then they stay, marked |
 | `/health` reports the database revision **as read at startup**, so smoke's `database` check cannot see a migration applied under a running pod (seen at B2) | viva-api | read it per request, or label it `db_revision_at_startup` |
-| `atlantis smoke` probes AWS Batch **once, at startup**, and reports a failure only where the affected checks print — behind the chain, an hour in. At checkpoint C one failed call silently turned three cancel checks into SKIPs and the chain listing into a 3.6 GB download | `app/cli.py` (`smoke_run`), `app/smoke.py` | say it at startup (which checks will SKIP, that the chain will download), retry the probe once, and print SKIPs as they are decided rather than in check order |
+| ~~`atlantis smoke` probes AWS Batch once, at startup, and reports a failure only where the affected checks print — behind the chain, an hour in~~ **done** (2026-09-21, the smoke-probe PR): the probe is tried twice; what a failed probe changes is printed **before the run** (`NOTE … sim-cancel will SKIP`, `sim-chain will DOWNLOAD`); `--require-aws` stops there with exit 2, which is what a deploy checkpoint wants; and a Tier 2 verdict is reported the moment it lands instead of in check order, so nothing queues behind the chain | `app/cli.py` (`smoke_run`), `app/smoke.py` | use `--require-aws` for every checkpoint from D on |
 | `AwsRunOutputLister` finds no prefix for a multi-node run: it reads a job's container environment, and an MNP job keeps `RAY_OUT_S3` under `nodeProperties`. Harmless today (only `sim-chain` lists) | `app/smoke.py` | read `nodeProperties.nodeRangeProperties[].container.environment` too, then let `sim-default` and `sim-composite` list instead of download |
 | Every simulation row's `last_updated` is the API pod's boot time: `Simulation.last_updated` defaults to `str(datetime.datetime.now())`, evaluated once at import (`simulation/models.py`) | viva-api | `default_factory`; its own small PR, with a test that two rows made a second apart differ |
 | The dispatch blocks `mbp_dispatch` and `multi_node_dispatch` are **declared** (`TypedDict`s, PR 12) but not **validated** at the API boundary beyond `task_env`; `nextflow_dispatch` is checked for two rules only. A wrongly-typed value reaches the container command line | `common/dispatch_validation.py`, `handlers/simulations.py` | a behaviour change (requests that work today could be refused), so its own PR; the `TypedDict`s are the spec to validate against |
@@ -737,6 +737,21 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-21** — **Smoke: a probe that decides what will be skipped says so when it decides.** Jim:
+  "merge #746, then fix the smoke startup probe." Checkpoint C's defect, fixed in four parts. (1) The
+  AWS probes (Batch, and the registry for `--build`) are **tried twice** — one failed call decided the
+  shape of an hour. (2) What a failed probe changes about *this* run is **printed before the run**:
+  which selected checks will SKIP, and that `sim-chain` will download instead of list. It existed only
+  as each check's SKIP reason. (3) **`--require-aws`**: with such a notice, stop with exit 2 before
+  anything is submitted — at a deploy checkpoint a SKIP is not a verdict. (4) **A Tier 2 verdict is
+  reported the moment it lands**; the returned list and the JSON report stay in check order. Tier 2
+  reported in check order (`pool.map`), so at C every verdict after `sim-default` sat behind the chain's
+  download. Tested: a probe that fails once succeeds on the retry; a probe that keeps failing gives its
+  reason; notices name only the selected checks; the CLI prints the notice before any verdict;
+  `--require-aws` submits nothing, not even a check that needs no AWS; and the ordering test deadlocks
+  by construction unless the fast SKIP is reported while the slow check is still running
+  (mutation-checked: with submission-order reporting it fails). Tried live against dev: a nonexistent
+  profile gives both notices and stops; real access says nothing.
 - **2026-09-21** — **Checkpoint C passed on dev (0.9.151, #743, tag `v0.9.151`): the carve is deployed.** Jim:
   "merge #741, then bump and deploy C". Image from `c5a1600d`; `kubectl diff` of the app overlay was one
   line (the api image); only the api pod rolled; no migration (the `-db-migration` tag was bumped to stay
