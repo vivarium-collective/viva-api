@@ -62,6 +62,11 @@ class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, n
     # (``Dockerfile-core-runtime``): what a composite that needs nothing beyond the built-ins runs in.
     # Empty = the site has none, and such a composite is refused rather than run in something else.
     core_runtime_image: str = ""
+    # Where a STANDALONE core's environments live: one registry repository, images tagged by their
+    # key. An application that embeds core usually builds the resolver itself, from its own settings
+    # (SMS does: `viva_api/common/site_environments.py`), and leaves these empty.
+    environment_registry: str = ""
+    environment_repository: str = ""
 
 
 _provider: Callable[[], CoreSettings] | None = None
