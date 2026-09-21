@@ -37,8 +37,24 @@ def test_an_environment_is_named_by_its_key_in_this_sites_one_repository() -> No
 def test_the_site_resolver_is_cores_resolver_and_selects_nothing_it_was_not_asked_for() -> None:
     resolver = site_resolver(_settings())
     assert resolver.resolve(ExplicitSpec(key="d67b0a7")).image == environment_image(_settings(), "d67b0a7")
-    with pytest.raises(EnvironmentNotResolvable):  # no runtime image is registered at this site yet (2.3c)
+    with pytest.raises(EnvironmentNotResolvable):  # this site registers no runtime image...
         resolver.resolve(DerivedSpec())
+
+
+def test_a_site_that_names_a_runtime_image_runs_a_composite_that_needs_nothing_in_it() -> None:
+    image = "ghcr.io/vivarium-collective/viva-core-runtime:0.1.0"
+    resolver = site_resolver(_settings(core_runtime_image=image))
+    assert resolver.resolve(DerivedSpec()).image == image
+    # ...and naming one changes nothing about where an explicit environment lives
+    assert resolver.resolve(ExplicitSpec(key="d67b0a7")).image == environment_image(_settings(), "d67b0a7")
+
+
+def test_the_real_settings_carry_the_runtime_image_and_default_to_none() -> None:
+    from viva_api.config import get_settings
+    from viva_core.settings import CoreSettings
+
+    assert CoreSettings().core_runtime_image == ""
+    assert site_resolver(get_settings()).runtime_image is None or get_settings().core_runtime_image
 
 
 def test_an_unset_account_still_yields_what_it_always_did_until_that_is_decided() -> None:

@@ -58,6 +58,11 @@ class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, n
     path_local_prefix: str = ""
     path_remote_prefix: str = ""
 
+    # Environments (decision D10). The full reference of this site's CORE RUNTIME IMAGE
+    # (``Dockerfile-core-runtime``): what a composite that needs nothing beyond the built-ins runs in.
+    # Empty = the site has none, and such a composite is refused rather than run in something else.
+    core_runtime_image: str = ""
+
 
 _provider: Callable[[], CoreSettings] | None = None
 

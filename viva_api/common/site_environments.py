@@ -41,7 +41,14 @@ def _registry(settings: RegistrySettings) -> str:
 
 
 def site_resolver(settings: RegistrySettings) -> RegistryEnvironmentResolver:
-    return RegistryEnvironmentResolver(registry=_registry(settings), repository=settings.ray_ecr_repository)
+    """``CORE_RUNTIME_IMAGE``, when the site sets it, is registered as the environment for a composite
+    that needs nothing beyond the built-ins. Read with ``getattr``: it is optional, and the settings
+    handed in here are often a test double that names only what its test is about."""
+    return RegistryEnvironmentResolver(
+        registry=_registry(settings),
+        repository=settings.ray_ecr_repository,
+        runtime_image=getattr(settings, "core_runtime_image", "") or None,
+    )
 
 
 def environment_image(settings: RegistrySettings, key: str, *, variant: str = "") -> str:

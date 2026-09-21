@@ -11,7 +11,7 @@ There is **no deploy skill**; this file is the closest thing.
 
 ---
 
-## 1. Three images, three different versioning schemes
+## 1. Three images, three different versioning schemes (and a fourth nothing deploys yet)
 
 This is the part that most often goes wrong, because the schemes are unrelated.
 
@@ -20,6 +20,7 @@ This is the part that most often goes wrong, because the schemes are unrelated.
 | `sms-api` | `viva_api/version.py` + `pyproject.toml` | CI — `build-and-push.yml` (`scripts/build_action.sh` builds **api only**) | semver, bumped per release |
 | `vivarium-workbench` | that repo's `pyproject.toml` | its own `build-and-push.yml`, **manual `workflow_dispatch`** | **independent line** — unrelated to sms-api's |
 | `sms-ptools` | *the sms-api version line*, sampled at build time | **by hand** — `kustomize/scripts/build_and_push.sh`; CI never builds it | follows sms-api, and **lags** |
+| `viva-core-runtime` | the tag given to its workflow | CI — `build-core-runtime.yml`, **manual `workflow_dispatch`**; refuses an existing tag | **its own line**, write-once: changes with the engine pin (`viva_core/runtime/requirements.txt`) or the entrypoint, not with sms-api. No deployment uses it yet (`CORE_RUNTIME_IMAGE` is unset everywhere) |
 
 **`vivarium-workbench` versions independently.** Nothing ties `0.3.x` to sms-api's
 `0.9.x`. Its workflow deliberately has no Release trigger — a Release is

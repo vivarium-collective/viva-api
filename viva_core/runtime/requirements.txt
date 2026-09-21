@@ -1,0 +1,12 @@
+# The core runtime image's Python environment: the process-bigraph engine and its emitters, and
+# nothing of any application. Pinned to the exact engine commits the deployed science image runs
+# (v2ecoli's uv.lock at simulator 207+: process-bigraph 55b70676 is the first with
+# `process_bigraph.events`, which viva_core's events identity feeds), so a composite that runs here
+# runs on the same engine it would there. Bump these TOGETHER with that pin, never alone.
+process-bigraph @ git+https://github.com/vivarium-collective/process-bigraph.git@55b70676cb4d91a03d6cccb32a91b7a0e62f2842
+bigraph-schema @ git+https://github.com/vivarium-collective/bigraph-schema.git@8268aa142cf2984b575f5762c773cab10c19772d
+viva-emitters[parquet]>=0.4.0
+# process-bigraph imports `requests` (process_bigraph/protocols/rest.py) without declaring it; the
+# science image has it by accident of its other dependencies. Found by running the compose runner in
+# this image: a bare `import process_bigraph` does not reach that module, running a composite does.
+requests>=2.31

@@ -247,7 +247,9 @@ own status enum.
 P1b also `settings`, `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}`; since
 P2.1 `backends/batch` — the first core module that was *extracted* rather than moved; since
 P2.3a `environments/{model,registry_resolver}` — the first that is *new*: D10's vocabulary and the
-one resolver, which nothing calls yet), which
+one resolver (since 2.3b asked by the four image derivations through `viva_api/common/site_environments.py`);
+since P2.3c `runtime/` — not imported by anything: the container entrypoint that is copied into the
+core runtime image, `Dockerfile-core-runtime`), which
 imports nothing from `viva_api` or `app`. The old `viva_api.common.*` paths for those modules
 are self-replacing stubs — same module object under both names. The graph below is otherwise
 unchanged: everything still imports them through the old names.
