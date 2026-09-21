@@ -752,6 +752,12 @@ split; each has an owner-less issue or a named moment.
   by construction unless the fast SKIP is reported while the slow check is still running
   (mutation-checked: with submission-order reporting it fails). Tried live against dev: a nonexistent
   profile gives both notices and stops; real access says nothing.
+  **The cause at C, read when the original run finally printed its SKIPs** (17 passed, 0 failed, 6
+  skipped; its own verdicts for the five simulations match the ones read by hand):
+  `TokenRetrievalError … Token has expired and refresh failed` — the operator's SSO session had lapsed
+  at the moment the run started and was refreshed minutes later by another command. So the retry is
+  the lesser part of this fix: three seconds do not renew a session. The notice and `--require-aws`
+  are the cure — the run would have stopped in its first second, naming the token.
 - **2026-09-21** — **Checkpoint C passed on dev (0.9.151, #743, tag `v0.9.151`): the carve is deployed.** Jim:
   "merge #741, then bump and deploy C". Image from `c5a1600d`; `kubectl diff` of the app overlay was one
   line (the api image); only the api pod rolled; no migration (the `-db-migration` tag was bumped to stay
