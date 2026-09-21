@@ -288,6 +288,15 @@ P2.0a guard caught. So:
   `simulation_service_k8s.py:486`). With PR 5 and PR 6 of the carve, that is the smallest slice
   that runs a third party's pbg-wrapped simulator through core.
 
+  **Sequence** (one concern per PR, as in P2.1; nothing merges without Jim's say-so):
+
+  | # | PR | why here |
+  |---|---|---|
+  | 2.3a ✅ | **the model and the one resolver**: `viva_core/environments/` — `ExplicitSpec` / `DerivedSpec`, `spec_hash`, `Environment`, the `EnvironmentResolver` Protocol, `RegistryEnvironmentResolver`. Pure: no settings, no network, **no caller changed** | the vocabulary first, reviewable on its own; a test pins that the resolver says what each of the four derivations says |
+  | 2.3b | **the four derivations ask the one resolver**, built once from settings on the SMS side. One behaviour to decide there: an unset ECR account fails at once for env workers and compose today, and yields a malformed image name in the Batch layer | a rewiring: differential against `main`, mutation-checked |
+  | 2.3c | **the core runtime image**: `Dockerfile-core-runtime` + its CI build, registered as the resolver's `runtime_image` | infrastructure, and the image must exist before anything can select it |
+  | 2.3d | **tasks, compose and env workers may name an environment** (today none takes an image parameter); Tier 1 smoke moves to the runtime image. **Checkpoint D** | the API change, last, once there is something other than a science image to name |
+
   Then **the core runtime image**: a small reference environment that is not any
   application's science image — Python slim + process-bigraph + pbg-emitters + the Batch
   container entrypoint (stage-in / stage-out contract) + the env-worker module. A few hundred
@@ -719,7 +728,7 @@ split; each has an owner-less issue or a named moment.
 | D11 | write-once simulators + the marked-temporary exception: migration `f4c8a2e6d0b3`, `environment_key`, `force` guarded (409), the marker in all three clients, smoke `build` on a temporary simulator — #722 | — | — (checkpoint **B2**, a database deploy, before C2) | — | open |
 | P2.1 | carve `simulation_service_ray.py` (5,019 → **628** lines; PR 11 took 960; PR 10 took 377; PR 9 took 648; PR 8 took 548; PR 7 took 252; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `BatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `dispatch/analysis_spec.py` — PR 3 (#726) · ParCa split → `dispatch/parca_spec.py` + `ParcaService` — PR 4 (#727) · `BatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a (#731) · #730 fixed (#732) · the D12 ban — PR 6b (#733) · strategy: mbp-tracked — PR 7 (#734) · strategy: Nextflow — PR 8 (#735) · strategy: multi-node composite — PR 9 (#738) · strategy: ensemble — PR 10 (#740) · strategy: chain — PR 11 · the package `Any`-free — PR 12 · `simulation/ray/` renamed `simulation/dispatch/`. **All five mechanisms are strategies**, and the 2026-09-20 sequence is complete; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.151 carries the whole carve: every strategy (PRs 7–11), 6a/6b, and the #730 fix | **2026-09-21** (checkpoints C1, B2, C2, C3, C) | — | **done — the carve is deployed.** **Dev is 0.9.151 (checkpoint C, 2026-09-21, tag `v0.9.151`):** all five dispatch mechanisms run as strategy objects on a deployment. Merged after C and **not deployed** (no behaviour in them to deploy for; they ride checkpoint D): PR 12 (#744, annotations only) and the `dispatch/` rename (#745, names only). The service's nine scheduler delegates and its progress / cancel / staging methods stay until **P6**. **Next: P2.3**, the environment model and its *select* half |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
-| P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image | | | | not started (checkpoint D) |
+| P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image. 2.3a the model + `RegistryEnvironmentResolver` (`viva_core/environments/`, no caller changed) | | | | **in progress** — 2.3a done; next 2.3b (the four derivations ask the resolver); checkpoint D after 2.3d |
 | P3 | | | | | not started (checkpoint E) |
 | P4a | | | | | not started (checkpoint F) |
 | P4b | | | | | not started (checkpoint F) |
@@ -737,6 +746,32 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-21** — **P2.3a: what an environment is, as code — and nothing calls it yet.** Jim: "merge #747,
+  then start on P2.3." `viva_core/environments/`: the vocabulary of D10 and the one resolver there can
+  be before a table exists. **Three choices worth recording.**
+  **(1) The registry key is not part of the request.** Every one of the four derivations takes one
+  string — called `commit` everywhere, and since D11 not always a commit: a marked-temporary
+  simulator is tagged `tmp-<commit>-<nonce>`. So `ExplicitSpec` carries a `key` (what names the image)
+  *and* a `commit` (what was asked for), and `spec_hash` covers the second, not the first: a temporary
+  build of a commit and the authoritative one have the **same spec hash and different images**. That
+  is D11's "a rebuild is a new environment" and the architecture's "two identities", as a test. A caller that holds only a key (an env worker is handed a tag) may leave the rest empty:
+  resolvable, not rebuildable; its key stands in for the commit in the hash, so two such requests differ.
+  **(2) An empty derived spec is a real request**, not a missing one: a composite that needs nothing
+  beyond the built-ins. It resolves to the site's `runtime_image` when there is one (2.3c). A derived
+  spec that *does* name dependencies is **refused** (`EnvironmentNotResolvable`, naming them) — nothing
+  is registered to select from and this resolver cannot build. Never something close: running under
+  other dependencies than were asked for is the failure the model exists to prevent.
+  **(3) Only what can be known is declared.** `Environment` has `spec`, `image`, `image_digest`
+  (`None`: a resolver that computes where an image lives does not know what was built). Status, the
+  build job and `provides` wait for P5's table; declaring them now would be fields nothing can fill.
+  Frozen dataclasses, not pydantic models: values, hashable, and `Any`-free without the pydantic
+  class-line exemption (D12). The resolver is handed `registry` and `repository` — it is not ECR-shaped;
+  `ecr_registry()` is a helper beside it. **Select, here, means "say where the image for this key
+  lives"**, exactly as the four derivations did: whether it is there is still found out by the pull.
+  Proof that it can replace them: `test_it_says_what_each_hand_rolled_derivation_said` compares the
+  resolver with core's `ecr_image_uri`, with the f-string three sites use, and with the `-submit`
+  suffix, for a commit, a second commit and a temporary tag. Core-only tests; mypy clean under the
+  ban; the standalone and vocabulary guards pass. The sequence 2.3a–d is in P2.3's section.
 - **2026-09-21** — **Smoke: a probe that decides what will be skipped says so when it decides.** Jim:
   "merge #746, then fix the smoke startup probe." Checkpoint C's defect, fixed in four parts. (1) The
   AWS probes (Batch, and the registry for `--build`) are **tried twice** — one failed call decided the
