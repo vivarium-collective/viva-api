@@ -227,6 +227,11 @@ a strategy object; a mixin is none of these. And **"default path" is reserved** 
 *select or build an acceptable environment, then run* (decision D10); the SMS ParCa +
 ensemble run is the *ensemble path*.
 
+**ptools is SMS's, and private (decision D13).** Pathway Tools and its PGDBs are licensed. Nothing of
+ptools -- `Dockerfile-ptools`, `assets/ptools/`, the `sms-ptools` image -- goes into `viva_core/`, the
+core runtime image, or anything that is or may become public; never change the visibility of a
+ptools repository or package. Before making ANY package or repository public, list what it contains.
+
 **Simulators are write-once provenance (decision D11).** Never overwrite, force-rebuild,
 re-tag or delete a simulator record, its container image or its image tag — they are what
 delivered simulations point back to, and dev and prod share one ECR registry. The server
