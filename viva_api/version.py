@@ -1433,7 +1433,26 @@
 #            Client side, nothing to deploy: smoke `sim-mbp` and `build` (#720, #722).
 #            MARKERS (C2): `environment_key` in /app/viva_api/simulation/models.py;
 #            /app/viva_api/simulation/ray/parca.py exists.
-__version__ = "0.9.149"
+#           0.9.150 -- core split, deploy checkpoint C3 (docs/plan-core.md section 8): dispatch.
+#            ONE behaviour change, the rest is rewiring proven equal to what it replaced:
+#            * #732 (viva-api#730) -- a multi-node composite's vCPU lookup passed Batch a keyword
+#              the API does not have; botocore refused it client-side every time, a blanket
+#              except retried the refusal for 3 s, and RAY_SHARDS_DEFAULT was NEVER set. Fixed:
+#              the job now receives RAY_SHARDS_DEFAULT = vCPUs x nodes (process-bigraph sizes its
+#              actor pool from it; until now, one head node's worth). Throughput, not results.
+#            Rewiring (P2.1 PRs 3-8): the analysis spec and the ParCa spec are modules of pure
+#            functions (#726, #727); the ParCa cache jobs are RayParcaService; the Batch layer is
+#            COMPOSED -- service.batch, the class inherits nothing from simulation/ray (#728);
+#            compose is handed its Batch layer instead of building a simulation service (#729);
+#            two dispatch mechanisms are strategy objects: MbpTrackedStrategy (#734) and
+#            NextflowStrategy (#735).
+#            Types only, no runtime change: typed boto3 + Kubernetes stubs, dev dependencies
+#            that are NOT in this image (#731, #733); D12, no Any in viva_core (#733).
+#            No migration; the -db-migration overlay tag is bumped to stay equal, the Job is not run.
+#            MARKERS: /app/viva_api/simulation/ray/nextflow.py and mbp_tracked.py exist;
+#            `jobDefinitions=[job_definition]` in simulation_service_ray.py;
+#            `hasattr(getattr(service, "batch"` in /app/viva_api/common/capabilities.py.
+__version__ = "0.9.150"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in
