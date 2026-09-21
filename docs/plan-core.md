@@ -714,7 +714,6 @@ split; each has an owner-less issue or a named moment.
 
 | Item | Where | When |
 |---|---|---|
-| `GET /api/v1/simulations/{id}/status` answers **500** for an id that does not exist ("Simulation with id 1402 not found"), and logs an ERROR with a traceback — found at D2 by asking for one; the only ERROR in the pod's log for the whole smoke | `api/routers/sms.py:376` area | a 404, with the others of its kind; an issue, not part of the split |
 | The env-worker Job names one deployment: label `app: sms-api`, service account `batch-submit`, module path `/app/vivarium-workbench/…` — now inside core (found at 3d-4a; moved unchanged) | `viva_core/env_worker/service.py` | become settings with today's values as the application's defaults; before a second application runs env workers |
 | An image build had never been exercised by any smoke tier, and the build path was rewired in cut 4 and #714 (merged, undeployed) | **done**: the opt-in `build` check (#720) | run it at checkpoint C2 |
 | `mbp_dispatch` had no smoke check | **done**: `sim-mbp` (#720) | baseline before the mbp-tracked strategy (PR 7) |
@@ -730,7 +729,7 @@ split; each has an owner-less issue or a named moment.
 | RDS snapshot `pre-0-9-147-checkpoint-b-20260919t1955z` | dev | delete once 0.9.148 has soaked |
 | ~~**#730**, the *deployed* half~~ **done at C3** (2026-09-21): the smoke composite job `6b34a40f…` carries `RAY_SHARDS_DEFAULT=32` in its `RAY_JOB_CMD` (16 vCPU × 2 nodes; at C2: absent); the API log has 0 `Could not determine per-node vCPUs` warnings since the roll (at C2: one per dispatch); `sim-composite` completed | dev | a many-seed A/B of throughput would be a separate, billable measurement; not planned |
 | ~~The package `viva_api/simulation/ray/` is named after one orchestration framework~~ **done for the package and its four helper classes** (2026-09-21, the rename PR): it is `viva_api/simulation/dispatch/`, and `RayBatchLayer` / `RayParcaService` / `RayTaskService` / `RayImageBuilder` lost the prefix. **Still named after Ray, on purpose:** `SimulationServiceRay` and `simulation_service_ray.py`, `ComposeSimulationServiceRay`, the `test_ray_*` files — they are what `ComputeBackend.RAY` selects — and the persisted or deployed names themselves (`ComputeBackend.RAY`, `JobBackend.RAY`, `JobId.ray`, `RayLayout`, the `ray_*` settings, the queue names). Ray runs inside only two of the five mechanisms (ensemble, multi-node composite); Nextflow orchestrates itself; mbp-tracked and chain are plain container jobs (Jim, 2026-09-21) | viva-api | one decision, later: rename the persisted names (a data and config migration) or keep them and rename nothing else. The service class moves with that decision, not before |
-| `GET /api/v1/simulations/{id}/status` answers **500**, with a traceback in the log, for an id that does not exist (seen at C3, from a diagnostic probe) | viva-api | 404; pre-existing, not from this work |
+| `GET /api/v1/simulations/{id}/status` answers **500**, with a traceback in the log, for an id that does not exist (seen at C3 and again at D2, each time from a diagnostic probe) | viva-api | 404; pre-existing, not from this work |
 | RDS snapshot `pre-0-9-149-checkpoint-b2-20260920t1433z` | dev | C2 passed 2026-09-20; delete once it has soaked |
 | ~~Smoke `sim-chain` downloads the whole chain output~~ **done** (2026-09-21): it lists the run's output in S3 instead — the prefixes come from what the run's own finished Batch jobs declare (`*_OUT_S3`), since the API says nothing about where a run wrote. Checked against C2's real chain run: 53 objects and 2 seed summaries, the same as the download, in 5 s instead of ~30 min. Falls back to the download without AWS access | `app/smoke.py` | an API that LISTS a run's outputs (names and sizes) would let any client do this, and is worth having for users who should not have to download GBs to see what is there — not planned |
 | Temporary simulators 214 and 215 and the images `tmp-d01dc07-b64227[-submit]` on dev / in the shared ECR | dev | the purge for temporary simulators (not built yet); until then they stay, marked |
@@ -807,7 +806,7 @@ split; each has an owner-less issue or a named moment.
   `smsvpctest` in 21 s; prod's stack is not deployed), and #764 added a Tier 0 **`core`** check that
   calls `/viva/v1/health` through the front door and fails on an HTML answer; it passes on dev.
   **The API log since the roll:** one ERROR with a traceback, and it was mine — asking for the status
-  of simulation 1402, which does not exist, answers 500 rather than 404. On the deferred list.
+  of simulation 1402, which does not exist, answers 500 rather than 404. Already on the deferred list, since C3.
   **Merged during or just after the smoke, not deployed:** P3d-1, 3d-2, 3d-3 (#763, #765, #766), #764,
   P3d-4a (#767) and P3d-4b-1 (#768). One of them changes behaviour, in one place — a relay frame that is
   JSON but not an object is now a named error (#768); they ride the next checkpoint.
