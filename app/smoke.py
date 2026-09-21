@@ -507,6 +507,30 @@ def check_relay(svc: SmokeService, _: SmokeOptions) -> tuple[str, dict[str, Any]
     raise CheckFailed(f"expected 404, got {resp.status_code}: {resp.text[:160]}")
 
 
+def check_core(svc: SmokeService, _: SmokeOptions) -> tuple[str, dict[str, Any]]:
+    """viva-core's own router, called THROUGH THE FRONT DOOR. ``routes`` compares two OpenAPI
+    documents and so cannot see a gateway: on 2026-09-21 the pod served ``/viva/v1`` and the ALB,
+    having no rule for ``/viva``, handed every request to another service's 404 page. A JSON answer
+    that names core's services is the pass; an HTML one means the path is not routed to this API."""
+    resp = svc.client.get("/viva/v1/health")
+    kind = resp.headers.get("content-type", "")
+    evidence: dict[str, Any] = {"status": resp.status_code, "content_type": kind}
+    if "json" not in kind:
+        raise CheckFailed(
+            f"{resp.status_code} but not JSON ({kind}) -- /viva is not routed to this API "
+            "(the gateway needs a rule for /viva, /viva/*: docs/DEPLOY.md section 2b)",
+            evidence,
+        )
+    if resp.status_code == 404:
+        raise SkipCheck("this deployment does not serve core's router yet (JSON 404 for /viva/v1/health)")
+    if resp.status_code != 200:
+        raise CheckFailed(f"expected 200, got {resp.status_code}: {resp.text[:160]}", evidence)
+    services = resp.json().get("services", {})
+    evidence["services"] = services
+    provided = sorted(name for name, present in services.items() if present) or ["none"]
+    return f"core answers through the gateway; services: {', '.join(provided)}", evidence
+
+
 _LIST_ENDPOINTS: tuple[tuple[str, str, dict[str, Any]], ...] = (
     ("simulators", "/core/v1/simulator/versions", {}),
     ("simulations", "/api/v1/simulations", {"limit": 3}),
@@ -1436,6 +1460,7 @@ CHECKS: tuple[Check, ...] = (
     Check("routes", 0, "every spec operation is served", check_routes),
     Check("capabilities", 0, "the capability registry answers", check_capabilities),
     Check("relay", 0, "the env-worker relay is routed and live", check_relay),
+    Check("core", 0, "viva-core's router (/viva/v1) answers through the gateway", check_core),
     Check("lists", 0, "database-backed list endpoints answer", check_lists),
     Check("events", 0, "a simulation's events can be read", check_events),
     Check("task", 1, "a container task runs and its output is read back", check_task),

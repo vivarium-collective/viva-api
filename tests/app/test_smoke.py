@@ -325,6 +325,25 @@ def test_size_unwraps_a_single_list_envelope() -> None:
     assert smoke._size({"a": [1], "b": [2]}) == "ok"
 
 
+def test_core_must_answer_through_the_gateway_not_only_inside_the_pod() -> None:
+    """2026-09-21: 0.9.153 served /viva/v1 and the ALB had no rule for /viva, so every request got
+    another service's 404 PAGE -- and ``routes``, which compares two OpenAPI documents, passed."""
+    path = ("GET", "/viva/v1/health")
+    served = httpx.Response(200, json={"status": "ok", "services": {"environments": True}})
+    through = _run("core", FakeService({path: served}))
+    assert through.outcome is smoke.Outcome.PASS and "environments" in through.detail
+
+    html = httpx.Response(404, text="<html>Not Found</html>", headers={"content-type": "text/html"})
+    fell_through = _run("core", FakeService({path: html}))
+    assert fell_through.outcome is smoke.Outcome.FAIL
+    assert "not routed to this API" in fell_through.detail and "/viva" in fell_through.detail
+    assert fell_through.evidence["content_type"].startswith("text/html")
+
+    # an API from before core's router existed answers a JSON 404: not a failure, and not a pass
+    older = _run("core", FakeService({path: httpx.Response(404, json={"detail": "Not Found"})}))
+    assert older.outcome is smoke.Outcome.SKIP
+
+
 # ------------------------------------------------------------------ tier 1
 
 

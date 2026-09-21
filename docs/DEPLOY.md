@@ -118,6 +118,12 @@ working perfectly in-cluster (2026-08-28).
 Routed to the **api** target group: `/openapi.json`, `/home`, `/docs`, `/ws`,
 `/api`, `/core`, `/health`, `/version`, **`/compose`**, **`/env-worker`**.
 
+> **`/viva` is NOT routed yet** (2026-09-21). viva-api 0.9.153 serves viva-core's router under
+> `/viva/v1`; it answers from inside the pod and falls through to PTools at the ALB. The rule is
+> sms-cdk#56 (one additive `ListenerRule`), not deployed. `atlantis smoke` Tier 0 **`core`** calls
+> `/viva/v1/health` through the gateway and FAILS on an HTML answer — because `routes` compares two
+> OpenAPI documents and cannot see a gateway. **A new top-level path prefix always needs a rule.**
+
 > The `/env-worker` rule became load-bearing on 2026-08-29: the env-worker
 > **relay** (a laptop's only route to a cluster worker) rides it. Its symptom
 > when missing is diagnostic — a request returns **HTML** 404 (PTools' page)
