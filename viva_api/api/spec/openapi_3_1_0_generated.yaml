@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.151
+  version: 0.9.152
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -2037,7 +2037,7 @@ paths:
                   git_branch: master
                   temporary: false
                   database_id: 25
-                  created_at: '2026-09-21T09:21:32.150323'
+                  created_at: '2026-09-21T10:53:26.127398'
                 parca_config:
                   outdir: .
                   operons: true
@@ -2635,6 +2635,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DatasetProvenanceDTO'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/health:
+    get:
+      tags:
+      - Viva Core
+      summary: Health
+      description: Which core services this deployment provides. Core's own; the application
+        has its own.
+      operationId: core-health
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoreHealth'
+  /viva/v1/environments/resolve:
+    post:
+      tags:
+      - Viva Core
+      - Environments
+      summary: Which environment would a run with this need be given? (select; never
+        builds)
+      operationId: core-resolve-environment
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveEnvironmentRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvironmentModel'
         '422':
           description: Validation Error
           content:
@@ -4978,6 +5020,22 @@ components:
       title: ContainerizationFileRepr
       description: A textual container-definition file (e.g. a Singularity/apptainer
         def).
+    CoreHealth:
+      properties:
+        status:
+          type: string
+          const: ok
+          title: Status
+          default: ok
+        services:
+          additionalProperties:
+            type: boolean
+          type: object
+          title: Services
+      type: object
+      required:
+      - services
+      title: CoreHealth
     DatasetDTO:
       properties:
         database_id:
@@ -5194,6 +5252,23 @@ components:
       - dataset
       title: DatasetProvenanceDTO
       description: '``GET /datasets/{id}/provenance``: one hop back from a dataset.'
+    DependencyModel:
+      properties:
+        name:
+          type: string
+          title: Name
+        source:
+          type: string
+          title: Source
+          default: pypi
+        version:
+          type: string
+          title: Version
+          default: ''
+      type: object
+      required:
+      - name
+      title: DependencyModel
     EnvWorkerStartRequest:
       properties:
         commit:
@@ -5278,6 +5353,29 @@ components:
       required:
       - job_name
       title: EnvWorkerStatusResponse
+    EnvironmentModel:
+      properties:
+        image:
+          type: string
+          title: Image
+        spec_hash:
+          type: string
+          title: Spec Hash
+        image_digest:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image Digest
+      type: object
+      required:
+      - image
+      - spec_hash
+      title: EnvironmentModel
+      description: 'What exists: the image a run would pull, and the two identities
+        -- the request it answers
+
+        (``spec_hash``) and what was built (``image_digest``; null until something
+        records it).'
     ExperimentAnalysisDTO:
       properties:
         database_id:
@@ -6276,6 +6374,39 @@ components:
       title: RepoDiscovery
       description: Available config filenames and analysis modules discovered from
         a simulator's repo.
+    ResolveEnvironmentRequest:
+      properties:
+        kind:
+          type: string
+          enum:
+          - explicit
+          - derived
+          title: Kind
+        key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Key
+        variant:
+          type: string
+          title: Variant
+          default: ''
+        dependencies:
+          items:
+            $ref: '#/components/schemas/DependencyModel'
+          type: array
+          title: Dependencies
+      type: object
+      required:
+      - kind
+      title: ResolveEnvironmentRequest
+      description: 'What is needed. ``explicit``: the environment named ``key`` (a
+        commit, or its own marked tag),
+
+        optionally its ``variant`` image. ``derived``: whatever satisfies ``dependencies``
+        -- an EMPTY list
+
+        is a real request, for a composite that needs only the built-ins.'
     ServerCapabilities:
       properties:
         version:
@@ -6319,7 +6450,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-09-21 09:21:32.070988'
+          default: '2026-09-21 10:53:26.042554'
         job_id:
           anyOf:
           - type: string

@@ -249,7 +249,9 @@ P2.1 `backends/batch` — the first core module that was *extracted* rather than
 P2.3a `environments/{model,registry_resolver}` — the first that is *new*: D10's vocabulary and the
 one resolver (since 2.3b asked by the four image derivations through `viva_api/common/site_environments.py`);
 since P2.3c `runtime/` — not imported by anything: the container entrypoint that is copied into the
-core runtime image, `Dockerfile-core-runtime`), which
+core runtime image, `Dockerfile-core-runtime`; since P3a `container` and `api/{app,schemas}` —
+`create_core_app()` boots core alone, and `viva_api/api/main.py` includes the same router under
+`/viva/v1`), which
 imports nothing from `viva_api` or `app`. The old `viva_api.common.*` paths for those modules
 are self-replacing stubs — same module object under both names. The graph below is otherwise
 unchanged: everything still imports them through the old names.
@@ -657,7 +659,7 @@ Status: `planned` → `in progress` → `done (PR, version)`. Phases refer to `p
 | 4 | Backends | three unrelated shapes in `viva_core/backends/` (`batch.py`, `k8s_job_service.py`, `slurm_service.py`) sharing only `JobStatus` / `JobId` | `JobBackend` adapters: batch, k8s, slurm, local | P5 (was P2.3) | planned — **deferred with a trigger**: a core Protocol with one implementation would quietly be Batch-shaped, so it waits for its second consumer (`compose` on the core seam) and is not final before a second backend implements it |
 | 5 | Image resolution | ~~`<ecr>/v2ecoli:<commit>`, derived four separate times from the same settings~~ one place: `viva_api/common/site_environments.py` builds core's `RegistryEnvironmentResolver` from the settings it is handed, and the Batch layer, compose, the env-worker service and the K8s analysis Job ask it | one `EnvironmentResolver`; the *select* half of D10 (§2.3) | P2.3 | **done for the select half** (2.3a the model, 2.3b the rewiring; a guard fails on a fifth hand-rolled derivation). Still by hand, knowingly: the upstream vEcoli path of `SimulationServiceK8s` (another repository, `-amd64-submit`; out of scope until P5). Open: refuse an unset ECR account by name (deferred list); the runtime image (2.3c) |
 | 6 | Settings | one flat `Settings` | `CoreSettings` + `SmsSettings`, same env names | P1b / P3 | in progress — P1b: `viva_core.settings.CoreSettings` holds the storage + path-prefix fields; `Settings` inherits them; the application registers a provider so core reads its object. P3 moves the rest |
-| 7 | Wiring | module globals, router setters, one `init_standalone` | `CoreContainer` + `SmsContainer`, `create_core_app()` | P3 | planned |
+| 7 | Wiring | module globals, router setters, one `init_standalone` | `CoreContainer` + `SmsContainer`, `create_core_app()` | P3 | in progress — 3a: `CoreContainer` and `create_core_app()` exist and boot alone; SMS provides the container (`viva_api/core_wiring.py`); the globals and setters are all still there, because nothing they wire has moved yet |
 | 8 | OpenAPI | one spec | core spec + SMS spec (SMS = union until P8) | P3 / P8 | planned |
 | 9 | Datasets | #661, SMS-shaped, three producer FKs | `viva_core/datasets`, owner refs, SMS facade | P4a | planned |
 | 10 | Task provenance | not implemented (#656) | built in core shape: task = core job | P4b | planned |

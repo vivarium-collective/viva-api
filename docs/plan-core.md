@@ -343,6 +343,18 @@ in one file) and of env-worker (its models and service logic lifted out of the 1
 router). Moving 5.5k lines into a package nothing boots is unverifiable. `dependencies.py`
 (691 lines of module globals and setters pushed into routers) is what the containers replace.
 
+**Sequence** (one concern per PR, as in P2.1 and P2.3; rows after 3a are a proposal, each refined when
+its code is read — that is how 2.3c and 2.3d-3 turned out different from their rows):
+
+| # | PR | why here |
+|---|---|---|
+| 3a ✅ | **`create_core_app()` and a test that boots it**: `viva_core/container.py` (`CoreContainer`), `viva_core/api/` (one router under `/viva/v1`; `create_core_app()`), the boot test (core alone, the application unimportable), and the SMS app **including** that router with its own container (`viva_api/core_wiring.py`). First route: `POST /viva/v1/environments/resolve` — the one service core has | the plan's own order: nothing moves into a package nothing boots |
+| 3b | **env-worker: models and service logic out of the 1,170-line router**, in place (no move) | a router that holds models and logic cannot be moved; it has to be a router first |
+| 3c | **compose imports nothing of SMS** (its ties sit in one file) — the `compose-is-domain-free` contract goes from report-only to enforced | the precondition for moving it, checkable on its own |
+| 3d | **compose and env-worker move into `viva_core`**; their routes are served by core's router; `/compose/v1` and `/env-worker/v1` stay as aliases | the move, once both are movable |
+| 3e | **containers replace the setters** for what moved (`dependencies.py` shrinks by exactly that); the lifespan no longer requires the SMS scheduler | the wiring follows the code |
+| 3f | **settings split finished; two OpenAPI documents** (the SMS one still the union). **Checkpoint E** | what unblocks the generated core client (D8) |
+
 Deploy: app only. Risk: medium.
 
 ### P4 — Provenance, in core shape
@@ -738,7 +750,7 @@ split; each has an owner-less issue or a named moment.
 | P2.1 | carve `simulation_service_ray.py` (5,019 → **628** lines; PR 11 took 960; PR 10 took 377; PR 9 took 648; PR 8 took 548; PR 7 took 252; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `BatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `dispatch/analysis_spec.py` — PR 3 (#726) · ParCa split → `dispatch/parca_spec.py` + `ParcaService` — PR 4 (#727) · `BatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a (#731) · #730 fixed (#732) · the D12 ban — PR 6b (#733) · strategy: mbp-tracked — PR 7 (#734) · strategy: Nextflow — PR 8 (#735) · strategy: multi-node composite — PR 9 (#738) · strategy: ensemble — PR 10 (#740) · strategy: chain — PR 11 · the package `Any`-free — PR 12 · `simulation/ray/` renamed `simulation/dispatch/`. **All five mechanisms are strategies**, and the 2026-09-20 sequence is complete; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.151 carries the whole carve: every strategy (PRs 7–11), 6a/6b, and the #730 fix | **2026-09-21** (checkpoints C1, B2, C2, C3, C) | — | **done — the carve is deployed.** **Dev is 0.9.151 (checkpoint C, 2026-09-21, tag `v0.9.151`):** all five dispatch mechanisms run as strategy objects on a deployment. Merged after C and **not deployed** (no behaviour in them to deploy for; they ride checkpoint D): PR 12 (#744, annotations only) and the `dispatch/` rename (#745, names only). The service's nine scheduler delegates and its progress / cancel / staging methods stay until **P6**. **Next: P2.3**, the environment model and its *select* half |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image. 2.3a the model + `RegistryEnvironmentResolver` (`viva_core/environments/`, no caller changed) — #748 · 2.3b the four derivations ask it (`common/site_environments.py`) — #749 · 2.3c the core runtime image + core's container entrypoint (`Dockerfile-core-runtime`, `viva_core/runtime/`) — #750 · 2.3d-1 a task may name an environment (`TaskRunRequest.environment`) — #751 · 2.3d-2 Batch pulls the image; dev names it — #752 · 2.3d-3 a compose run may name an environment (one container) | | | | **code complete, not deployed** — 2.3a–d done. The runtime image is pushed, public, proven pullable by Batch from dev's VPC, and named in dev's `api.env`. **Next: checkpoint D** |
-| P3 | | | | | not started (checkpoint E) |
+| P3 | settings, DI, app factory. 3a `create_core_app()` boots alone; SMS includes core's router under `/viva/v1` | | | | **in progress** — 3a done (not deployed); next 3b (env-worker: models and logic out of its router) |
 | P4a | | | | | not started (checkpoint F) |
 | P4b | | | | | not started (checkpoint F) |
 | P5 | | | | | not started (checkpoint G) |
@@ -755,6 +767,31 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-21** — **P3a: core boots, alone — written while checkpoint D deployed.** Jim: "while we wait for ci
+  and then deploy and smoke tests, can we start working on the next step optimistically". Yes: `main`
+  is not dev, and only *deploying* the next thing waits for D's verdict. The plan's order for P3 is
+  "`create_core_app()` and a test that boots it come first"; this is that, and no more.
+  `CoreContainer` (`viva_core/container.py`): settings, and one field per core service — `None` where a
+  deployment does not provide it, and the route then answers **501, by name**. It replaces, for core,
+  the module globals and setters of `dependencies.py`; each service that moves into core becomes a
+  field. **One router, one prefix, the same paths either way** (`/viva/v1`; question 1 of section 7 was
+  already answered "yes, configurable", and the prefix is a parameter): a standalone core serves it
+  through `create_core_app()`, and an application **includes** it — not mounts: a mounted
+  sub-application's lifespan never runs and its routes leave the application's OpenAPI document, which
+  the plan keeps as the union until P8. The container is handed in as a **provider called per
+  request**, so an application may build it from services that exist only after its lifespan ran; a
+  test builds the container *after* including the router to pin that.
+  **The first core route is the one service core has:** `POST /viva/v1/environments/resolve` — explicit
+  or derived spec in, image + spec hash + digest out; 404 (never something close) when nothing answers;
+  422 the caller's; 501 the deployment's. Small, but it makes the boot test mean something: **a fresh
+  interpreter in which `viva_api` and `app` cannot be imported builds the app from `CoreSettings`
+  alone, serves a request, writes its own OpenAPI document, and leaks no application module.**
+  SMS side: `viva_api/core_wiring.py` builds the container from the settings of the moment and the
+  site's resolver; a test checks that core answers what `environment_image` itself says, for a commit,
+  a temporary tag and the `submit` variant. Tagged **"Viva Core"**, because SMS already has a router
+  called `core` (`/core/v1/simulator/*`) that is older than the split and a different thing.
+  **Seen on the way:** with `ECR_ACCOUNT_ID` unset, the new route hands a client the malformed
+  `.dkr.ecr.<region>…` image name — the deferred-list item from 2.3b, now visible through an API.
 - **2026-09-21** — **P2.3d-3: a compose run in the runtime image is one container — and env workers stay where they are.**
   Jim: "merge #752, then start on 2.3d-3." The plan row read "compose (its container path) and env
   workers may name an environment". **Both halves were wrong about the code, and reading it said so.**
