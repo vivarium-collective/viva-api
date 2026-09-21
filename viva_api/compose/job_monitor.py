@@ -4,8 +4,8 @@ import asyncio
 import contextlib
 import logging
 from asyncio import Queue
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Protocol
 
 from viva_api.common.hpc.slurm_service import SlurmService
 from viva_api.common.models import JobBackend
@@ -16,6 +16,7 @@ from viva_api.compose.models import (
     ComposeWorkerEvent,
     ComposeWorkerEventMessagePayload,
 )
+from viva_api.compose.simulation_service import ComposeSimulationService
 from viva_api.config import ComputeBackend
 from viva_core.infra.ssh.ssh_service import SSHSessionService
 from viva_core.settings import get_core_settings as get_settings
@@ -23,23 +24,41 @@ from viva_core.settings import get_core_settings as get_settings
 logger = logging.getLogger(__name__)
 
 
+class WorkerEventMessage(Protocol):
+    """What the monitor reads of a message a worker published."""
+
+    @property
+    def data(self) -> bytes: ...
+    @property
+    def subject(self) -> str: ...
+
+
+class WorkerEventBus(Protocol):
+    """What the monitor asks of a message bus -- a ``nats.aio.client.Client`` today."""
+
+    async def subscribe(self, subject: str, *, cb: Callable[[WorkerEventMessage], Awaitable[None]]) -> object: ...
+
+    async def close(self) -> None: ...
+
+
 class ComposeJobMonitor:
     database_service: ComposeDatabaseService
-    nats_client: Any | None  # nats.aio.client.Client or None
+    nats_client: WorkerEventBus | None
     internal_listeners: dict[int, Queue[ComposeHpcRun]]
     _polling_task: asyncio.Task[None] | None = None
     _stop_event: asyncio.Event
 
     def __init__(
         self,
-        nats_client: Any | None,
+        nats_client: WorkerEventBus | None,
         database_service: ComposeDatabaseService,
-        sim_registry: "dict[ComputeBackend, Any] | None" = None,
+        sim_registry: Mapping[ComputeBackend, ComposeSimulationService] | None = None,
         slurm_ssh: Callable[[], SSHSessionService] | None = None,
     ) -> None:
         self.nats_client = nats_client
         self.database_service = database_service
-        # Per-backend compose services so non-SLURM (Ray/Batch) running jobs can be
+        # The registry of compose services, by backend -- the router reads it too, to honour a
+        # per-request ``compute_backend``. Here it is what lets non-SLURM (Ray/Batch) running jobs be
         # polled via their own get_job_status (describe_jobs) instead of squeue.
         self.sim_registry = sim_registry or {}
         # The SSH sessions SLURM is polled over, HANDED IN as a provider (P3d-3): the session service
@@ -73,7 +92,7 @@ class ComposeJobMonitor:
         subject = get_settings().compose_nats_worker_event_subject
         logger.info(f"Subscribing to NATS messages for subject '{subject}'")
 
-        async def message_handler(msg: Any) -> Any:
+        async def message_handler(msg: WorkerEventMessage) -> None:
             data = msg.data.decode("utf-8")
             logger.info(f"Received NATS message on '{msg.subject}': {data}")
             payload = ComposeWorkerEventMessagePayload.model_validate_json(data)

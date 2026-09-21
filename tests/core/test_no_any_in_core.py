@@ -40,6 +40,20 @@ def _banned_modules() -> list[str]:
     return [modules] if isinstance(modules, str) else list(modules)
 
 
+def _banned_files() -> list[Path]:
+    """Every file under the ban: the two globbed packages, and any module the override names on its
+    own -- a module on its way into core (P3d-4b) is banned by name until the move puts it under the
+    glob."""
+    files = [path for root in (Path("viva_core"), DISPATCH_PACKAGE) for path in sorted(root.rglob("*.py"))]
+    by_name = [
+        m for m in _banned_modules() if not m.endswith(".*") and m not in ("viva_core", "viva_api.simulation.dispatch")
+    ]
+    named = [Path(m.replace(".", "/") + ".py") for m in by_name]
+    missing = [str(p) for p in named if not p.is_file()]
+    assert not missing, f"the D12 override names modules that do not exist (moved? then drop the name): {missing}"
+    return files + named
+
+
 def test_the_ban_covers_core_as_a_glob() -> None:
     modules = _banned_modules()
     assert "viva_core.*" in modules and "viva_core" in modules, modules
@@ -84,13 +98,12 @@ def _pydantic_class_lines(path: Path) -> set[int]:
 def test_the_escape_hatch_is_used_only_on_pydantic_class_lines() -> None:
     misused = []
     count = 0
-    for root in (Path("viva_core"), DISPATCH_PACKAGE):
-        for path in sorted(root.rglob("*.py")):
-            allowed = _pydantic_class_lines(path)
-            for number, line in _explicit_any_ignores(path):
-                count += 1
-                if number not in allowed:
-                    misused.append(f"{path}:{number}: {line.strip()[:100]}")
+    for path in _banned_files():
+        allowed = _pydantic_class_lines(path)
+        for number, line in _explicit_any_ignores(path):
+            count += 1
+            if number not in allowed:
+                misused.append(f"{path}:{number}: {line.strip()[:100]}")
     assert not misused, (
         "`# type: ignore[explicit-any]` hides a real Any (it is for pydantic class lines only):\n  "
         + "\n  ".join(misused)
