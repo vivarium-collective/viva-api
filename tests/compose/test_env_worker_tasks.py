@@ -190,7 +190,7 @@ def test_batch_status_omits_result_payloads() -> None:
     Asserted on the MODEL rather than through HTTP because the guarantee is the
     schema: `result` must not be a field a caller can receive here at all.
     """
-    from viva_api.api.routers.env_worker import TaskResponse, TaskStatusResponse
+    from viva_api.compose.env_worker_schemas import TaskResponse, TaskStatusResponse
 
     assert "result" not in TaskStatusResponse.model_fields, "the batch endpoint must not ship result payloads"
     # ...while the singular endpoint still must, since that is where a caller
@@ -201,7 +201,8 @@ def test_batch_status_omits_result_payloads() -> None:
 def test_batch_status_says_whether_a_result_is_waiting() -> None:
     """Omitting the payload must not force a caller to guess. `has_result` is
     what makes one targeted GET obviously worthwhile."""
-    from viva_api.api.routers.env_worker import TaskStatusResponse, _to_status
+    from viva_api.api.routers.env_worker import _to_status
+    from viva_api.compose.env_worker_schemas import TaskStatusResponse
     from viva_api.compose.models import ComposeJobStatus, EnvWorkerTask
 
     def _task(result: object | None) -> EnvWorkerTask:
