@@ -31,9 +31,10 @@ import string
 from typing import TYPE_CHECKING, Protocol
 
 from viva_api.common.models import JobStatus
+from viva_api.common.site_environments import environment_image
 from viva_api.simulation.dispatch import _seams
 from viva_api.simulation.dispatch.image_paths import REPORT_PATH
-from viva_core.backends.batch import BatchJobClient, BatchJobDetail, ecr_image_uri, stage_out_env
+from viva_core.backends.batch import BatchJobClient, BatchJobDetail, stage_out_env
 
 if TYPE_CHECKING:
     # ``types-boto3`` is a dev dependency (annotations only): never imported at runtime.
@@ -129,14 +130,8 @@ class BatchLayer:
         return BatchJobClient(lambda: self.client())
 
     def image_uri(self, commit: str) -> str:
-        """The TRUE commit image for a run: <account>.dkr.ecr.<region>/v2ecoli:<commit>."""
-        settings = _seams.get_settings()
-        return ecr_image_uri(
-            account_id=settings.ecr_account_id,
-            region=settings.batch_region,
-            repository=settings.ray_ecr_repository,
-            tag=commit,
-        )
+        """The TRUE commit image for a run: this site's environment named ``commit`` (``site_environments``)."""
+        return environment_image(_seams.get_settings(), commit)
 
     def submit_image_uri(self, commit: str) -> str:
         """The Nextflow HEAD image for a commit: ``<repo>:<commit>-submit``.
@@ -147,9 +142,7 @@ class BatchLayer:
         head image was never built fails at the Batch pull, which is why the
         submitter names the tag explicitly rather than reusing ``_image_uri``.
         """
-        settings = _seams.get_settings()
-        registry = f"{settings.ecr_account_id}.dkr.ecr.{settings.batch_region}.amazonaws.com"
-        return f"{registry}/{settings.ray_ecr_repository}:{commit}-submit"
+        return environment_image(_seams.get_settings(), commit, variant="submit")
 
     def ensure_mnp_job_def(self, image: str, commit: str) -> str:
         """Return an MNP job definition (name:revision) whose image is the commit's image.
