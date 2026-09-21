@@ -88,7 +88,7 @@ async def test_a_composite_in_the_runtime_environment_runs_as_one_container_and_
         monkeypatch.setattr(svc._batch, name, lambda *a, _n=name, **k: pytest.fail(f"{_n} was called"))
     monkeypatch.setattr(svc, "_resolve_commit", AsyncMock(side_effect=AssertionError("no simulator is resolved")))
 
-    with patch("viva_api.dependencies.get_file_service", return_value=AsyncMock()):
+    with patch.object(svc, "_files", AsyncMock()):
         job_id = await svc.submit_simulation_job(
             _simulation(_request(tmp_path, environment="runtime")), experiment_id="exp-1"
         )
@@ -120,7 +120,7 @@ async def test_without_an_environment_a_compose_run_is_the_multi_node_job_it_alw
     monkeypatch.setattr(svc._batch, "submit_mnp", submit_mnp)
     monkeypatch.setattr(svc._batch, "submit_container", lambda **kw: pytest.fail("container path taken"))
 
-    with patch("viva_api.dependencies.get_file_service", return_value=AsyncMock()):
+    with patch.object(svc, "_files", AsyncMock()):
         assert await svc.submit_simulation_job(_simulation(_request(tmp_path)), experiment_id="exp-1") == "mnp-job-id"
     assert submitted["num_nodes"] == 4
     assert "PBG_CORE_BUILDER=v2ecoli.core:build_core" in str(submitted["ray_job_cmd"])

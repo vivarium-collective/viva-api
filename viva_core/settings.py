@@ -68,6 +68,25 @@ class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, n
     environment_registry: str = ""
     environment_repository: str = ""
 
+    # What compose and the env workers read (P3d-2). Moved here from the application's settings so
+    # those packages can stop importing them from it; the application's Settings INHERITS each one,
+    # so the environment variable names and the defaults are unchanged. Two defaults name an
+    # application's image and so are neutral here and overridden there.
+    k8s_job_namespace: str = ""
+    ecr_account_id: str = ""
+    batch_region: str = "us-gov-west-1"  # where the site's registry and its Batch queues are
+    ray_num_nodes: int = 3
+    env_worker_module_image: str = ""
+    env_worker_workspace_path: str = ""  # the application supplies its own default
+    env_worker_memory_request: str = "512Mi"
+    env_worker_memory_limit: str = "8Gi"
+    ray_ecr_repository: str = ""  # the application supplies its own default
+    compose_image_base_path: str = ""
+    compose_sim_base_path: str = ""
+    compose_ray_image_tag: str = ""
+    compose_pbg_core_builder: str = ""
+    compose_nats_worker_event_subject: str = "compose.worker.events"
+
 
 _provider: Callable[[], CoreSettings] | None = None
 

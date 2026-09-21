@@ -4,10 +4,11 @@ import asyncio
 import contextlib
 import logging
 from asyncio import Queue
+from collections.abc import Callable
 from typing import Any
 
 from viva_api.common.hpc.slurm_service import SlurmService
-from viva_api.common.models import JobBackend, SSHTarget
+from viva_api.common.models import JobBackend
 from viva_api.compose.database_service import ComposeDatabaseService
 from viva_api.compose.models import (
     ComposeHpcRun,
@@ -15,8 +16,9 @@ from viva_api.compose.models import (
     ComposeWorkerEvent,
     ComposeWorkerEventMessagePayload,
 )
-from viva_api.config import ComputeBackend, get_settings
-from viva_api.dependencies import get_ssh_session_service
+from viva_api.config import ComputeBackend
+from viva_core.infra.ssh.ssh_service import SSHSessionService
+from viva_core.settings import get_core_settings as get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +35,16 @@ class ComposeJobMonitor:
         nats_client: Any | None,
         database_service: ComposeDatabaseService,
         sim_registry: "dict[ComputeBackend, Any] | None" = None,
+        slurm_ssh: Callable[[], SSHSessionService] | None = None,
     ) -> None:
         self.nats_client = nats_client
         self.database_service = database_service
         # Per-backend compose services so non-SLURM (Ray/Batch) running jobs can be
         # polled via their own get_job_status (describe_jobs) instead of squeue.
         self.sim_registry = sim_registry or {}
+        # The SSH sessions SLURM is polled over, HANDED IN as a provider (P3d-3): the session service
+        # is the application's to build, and a site without SLURM never has one.
+        self._slurm_ssh = slurm_ssh
         self.internal_listeners = {}
         self._stop_event = asyncio.Event()
         # correlation_id -> hpcrun_id, HITS only (see get_hpcrun_by_correlation_id)
@@ -148,7 +154,9 @@ class ComposeJobMonitor:
             return
 
         slurm_service = SlurmService()
-        async with get_ssh_session_service(SSHTarget.SLURM).session() as ssh:
+        if self._slurm_ssh is None:
+            raise RuntimeError("No SLURM SSH session provider was handed to the compose job monitor.")
+        async with self._slurm_ssh().session() as ssh:
             slurm_jobs_squeue = await slurm_service.get_job_status_squeue(ssh, job_ids)
             slurm_jobs_sacct = await slurm_service.get_job_status_scontrol(ssh, job_ids)
 

@@ -29,7 +29,8 @@ from viva_api.common.storage.file_paths import S3FilePath
 from viva_api.compose.database_service import ComposeDatabaseService
 from viva_api.compose.models import ComposeHpcRun, ComposeJobStatus, ComposeSimulation, ComposeSimulatorVersion
 from viva_api.compose.simulation_service import ComposeSimulationService
-from viva_api.config import get_settings
+from viva_core.settings import get_core_settings as get_settings
+from viva_core.storage.file_service import FileService
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,30 @@ class AfterSubmit(Protocol):
     ) -> object: ...
 
 
+class StageInputs(Protocol):
+    """A hook: ``(stage_s3, stage_dir)`` to sync into the job before the composite runs, or
+    ``(None, None)``. ``commit`` is the resolved simulator commit, or ``None`` on the site-pinned image.
+
+    Staging is the container contract's (``stage_s3`` -> ``stage_dir``); WHAT to stage is the
+    application's. SMS stages its simulator's ParCa cache (``viva_api.simulation.compose_staging``).
+    """
+
+    def __call__(self, commit: str | None = None) -> tuple[str | None, str | None]: ...
+
+
+class EnvironmentKeyOf(Protocol):
+    """A hook: the environment key (the image tag) of the APPLICATION's simulator ``simulator_id``.
+
+    ``ComposeSimulationRequest.simulator_id`` names a record in the application's own registry, which
+    compose does not hold. SMS looks it up in its ``simulator`` table
+    (``viva_api.simulation.compose_simulators``); a core with no application registers nothing, and a
+    request that names a ``simulator_id`` is then refused rather than run on some other image.
+    Raises ``ValueError`` for an id that names nothing.
+    """
+
+    async def __call__(self, simulator_id: int) -> str: ...
+
+
 class ComposeBatch(Protocol):
     """What compose asks of whatever runs its Batch jobs: one multi-node job for the run,
     one container job for the analysis that follows it, and what became of a job.
@@ -132,13 +157,27 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
     backend = JobBackend.RAY
     requires_container_build = False  # prebuilt workspace image; no per-run singularity build
 
-    def __init__(self, batch: ComposeBatch, *, after_submit: AfterSubmit | None = None) -> None:
+    def __init__(
+        self,
+        batch: ComposeBatch,
+        *,
+        after_submit: AfterSubmit | None = None,
+        stage_inputs: StageInputs | None = None,
+        files: FileService | None = None,
+        environment_key_of: EnvironmentKeyOf | None = None,
+    ) -> None:
         # The Batch/job-def/submit plumbing, HANDED IN. Until P2.1 PR 6 this built a whole
         # ``SimulationServiceRay()`` -- an E. coli simulation service, with its scheduler-facing
         # surface and its two other backends -- to call five Batch methods on it.
         self._batch = batch
         # What the application wants to follow a run with (SMS: its science analysis). None: nothing.
         self._after_submit = after_submit
+        self._stage_inputs = stage_inputs
+        # Where the document and the runner are staged for the job, and the application's simulator
+        # registry -- both HANDED IN (P3d-3). They were looked up in ``viva_api.dependencies`` at the
+        # moment of use, which is the application's module; compose cannot move while it imports it.
+        self._files = files
+        self._environment_key_of = environment_key_of
 
     def _image_uri(self, commit: str | None = None) -> str:
         # A resolved per-commit build (item 98: ComposeSimulationRequest.simulator_id)
@@ -185,30 +224,6 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
             f" {COMPOSE_DOC_PATH} -o {COMPOSE_OUT_DIR} -n {steps}"
         )
 
-    def _parca_staging(self, commit: str | None = None) -> tuple[str | None, str | None]:
-        """(stage_s3, stage_dir) for the commit-keyed ParCa cache, or (None, None).
-
-        The ensemble path stages this cache by passing these same two args to
-        ``_submit_mnp`` (``simulation_service_ray.py``, sim submit) — the entrypoint
-        turns them into RAY_STAGE_S3/RAY_STAGE_DIR and syncs S3 → local on every node
-        before the job command runs. The compose driver-swap replaced the command but
-        must keep the staging, or a composite whose ``cache_dir`` expects a populated
-        ParCa bundle (v2ecoli's ``baseline``) starts against an empty directory.
-
-        Keyed by ``commit`` when a per-run build was resolved (item 98: a resolved
-        ``simulator_id`` implies a real, distinct commit — staging the deploy-wide
-        tag's cache instead would silently serve the wrong commit's data). Otherwise
-        keyed by the deploy-wide image tag, since that IS the workspace commit in the
-        static-image case. Disabled either way when no cache dir is configured.
-        """
-        settings = get_settings()
-        if not settings.compose_parca_cache_dir:
-            return None, None
-        return (
-            data_layout.RayLayout.parca_cache_uri(commit or settings.compose_ray_image_tag),
-            settings.compose_parca_cache_dir,
-        )
-
     async def _resolve_commit(self, simulator_id: int | None) -> str | None:
         """Resolve a per-run ``simulator_id`` to its git commit, or None when unset.
 
@@ -219,23 +234,15 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         """
         if simulator_id is None:
             return None
-        from viva_api.dependencies import get_database_service
-
-        database_service = get_database_service()
-        if database_service is None:
-            raise RuntimeError("Database service not initialized; cannot resolve simulator_id.")
-        simulator = await database_service.get_simulator(simulator_id=simulator_id)
-        if simulator is None:
-            raise ValueError(f"Simulator {simulator_id} not found")
-        return simulator.environment_key
+        if self._environment_key_of is None:
+            raise RuntimeError("No simulator registry was handed to compose; cannot resolve simulator_id.")
+        return await self._environment_key_of(simulator_id)
 
     @override
     async def submit_simulation_job(
         self, simulation: ComposeSimulation, experiment_id: str, override_command: str | None = None
     ) -> str:
-        from viva_api.dependencies import get_file_service
-
-        file_service = get_file_service()
+        file_service = self._files
         if file_service is None:
             raise RuntimeError("FileService not initialized; cannot stage compose document to S3.")
         doc_path = simulation.sim_request.request_file_path
@@ -271,7 +278,9 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         # resolved commit (or, absent one, the deploy-wide image tag) as that key so
         # resubmits against the same image reuse the revision.
         job_def = self._batch.ensure_mnp_job_def(image, commit or get_settings().compose_ray_image_tag)
-        stage_s3, stage_dir = self._parca_staging(commit)
+        # What the APPLICATION wants staged into the job before the composite runs (SMS: the
+        # simulator's ParCa cache). Compose knows nothing of it; with no hook, nothing is staged.
+        stage_s3, stage_dir = self._stage_inputs(commit) if self._stage_inputs is not None else (None, None)
         # Per-request override (item 102) -- None preserves today's exact
         # behavior (the deploy-wide default). See ComposeSimulationRequest's
         # own num_nodes field docstring for why this is safe to read directly

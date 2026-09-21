@@ -351,7 +351,10 @@ its code is read — that is how 2.3c and 2.3d-3 turned out different from their
 | 3a ✅ | **`create_core_app()` and a test that boots it**: `viva_core/container.py` (`CoreContainer`), `viva_core/api/` (one router under `/viva/v1`; `create_core_app()`), the boot test (core alone, the application unimportable), and the SMS app **including** that router with its own container (`viva_api/core_wiring.py`). First route: `POST /viva/v1/environments/resolve` — the one service core has | the plan's own order: nothing moves into a package nothing boots |
 | 3b ✅ | **env-worker: the 22 models out of the router**, in place → `viva_api/compose/env_worker_schemas.py` (1,170 → 978 lines). **The "service logic" half of this row did not exist**: with the models gone the file is 30 routes and 16 helpers, none over 36 lines of code, and the helpers are HTTP mapping — turning the worker's four ways of saying no into status codes — which is a router's job. The service logic was already in `compose/env_worker_service.py`, `env_worker_relay.py` and the task runner. What still ties the router to SMS is its **two setters, `get_settings` and `viva_api.api.auth`** — 3d's and 3e's | a router that holds models cannot be moved: everything that wants a model has to import the HTTP layer |
 | 3c ✅ | **compose's two forbidden imports are gone, and `compose-is-domain-free` is ENFORCED**: the science analysis SMS chains onto a compose run moved out of `compose/simulation_service_ray.py` into `viva_api/simulation/compose_analysis.py` (`ComposeAnalysisChainer`), handed to compose as a **hook** (`AfterSubmit`) by the composition root. **The contract is narrower than the row's title**: compose still imports the application's *wiring* — `viva_api.config` (6 modules), `viva_api.dependencies` (4 lookups), `common/site_environments`, `common/storage/data_layout` — which is 3d's and 3e's work, listed in the log | the precondition for moving it, checkable on its own |
-| 3d | **compose and env-worker move into `viva_core`**; their routes are served by core's router; `/compose/v1` and `/env-worker/v1` stay as aliases | the move, once both are movable |
+| 3d-1 ✅ | **compose's ParCa staging is a hook** (`StageInputs`): the last *domain* knowledge inside compose (`_parca_staging`, and the `compose_parca_cache_dir` setting it reads) moves to `viva_api/simulation/compose_staging.py`; the composition root hands it in. A compose service with no hook stages nothing | a setting named after ParCa cannot become a core setting (the vocabulary guard), so this goes before the settings move |
+| 3d-2 ✅ | **the 14 settings compose and env-worker read are `CoreSettings` fields** (same names, same environment variables — SMS's `Settings` inherits them), and the four compose modules on the Batch / K8s path read them through core's accessor. Two of the 14 carry an **application default** (`env_worker_workspace_path`, `ray_ecr_repository`): core declares them empty and SMS redefines only the default, under a named allow-list in the settings guard. Proof: `Settings.model_fields` identical before and after, all 146 (name, annotation, default). **Not moved:** `slurm_log_base_path` (an import cycle — `viva_core.storage.file_paths` imports `viva_core.settings`), so `compose/hpc_utils.py` still reads the application's settings; and the SLURM compose service, which takes SMS's `Settings` whole (see the log) | settings first: nothing can move while it imports `viva_api.config` |
+| 3d-3 ✅ | **compose's four `viva_api.dependencies` lookups arrive as constructor arguments**: the file service (`files=`), SMS's simulator registry (a third hook, `EnvironmentKeyOf`, filled by `viva_api/simulation/compose_simulators.py`), and the SLURM SSH sessions, twice (`slurm_ssh=`, a provider asked at the moment of use — a site without SLURM never has them). A parsed guard: nothing under `viva_api/compose/` imports `viva_api.dependencies`, lazily or not | services second |
+| 3d-4 | **compose and env-worker move into `viva_core`**; their routes are served by core's router; `/compose/v1` and `/env-worker/v1` stay as aliases | the move, once both are movable |
 | 3e | **containers replace the setters** for what moved (`dependencies.py` shrinks by exactly that); the lifespan no longer requires the SMS scheduler | the wiring follows the code |
 | 3f | **settings split finished; two OpenAPI documents** (the SMS one still the union). **Checkpoint E** | what unblocks the generated core client (D8) |
 
@@ -752,7 +755,7 @@ split; each has an owner-less issue or a named moment.
 | P2.1 | carve `simulation_service_ray.py` (5,019 → **628** lines; PR 11 took 960; PR 10 took 377; PR 9 took 648; PR 8 took 548; PR 7 took 252; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `BatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `dispatch/analysis_spec.py` — PR 3 (#726) · ParCa split → `dispatch/parca_spec.py` + `ParcaService` — PR 4 (#727) · `BatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a (#731) · #730 fixed (#732) · the D12 ban — PR 6b (#733) · strategy: mbp-tracked — PR 7 (#734) · strategy: Nextflow — PR 8 (#735) · strategy: multi-node composite — PR 9 (#738) · strategy: ensemble — PR 10 (#740) · strategy: chain — PR 11 · the package `Any`-free — PR 12 · `simulation/ray/` renamed `simulation/dispatch/`. **All five mechanisms are strategies**, and the 2026-09-20 sequence is complete; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.151 carries the whole carve: every strategy (PRs 7–11), 6a/6b, and the #730 fix | **2026-09-21** (checkpoints C1, B2, C2, C3, C) | — | **done — the carve is deployed.** **Dev is 0.9.151 (checkpoint C, 2026-09-21, tag `v0.9.151`):** all five dispatch mechanisms run as strategy objects on a deployment. Merged after C and **not deployed** (no behaviour in them to deploy for; they ride checkpoint D): PR 12 (#744, annotations only) and the `dispatch/` rename (#745, names only). The service's nine scheduler delegates and its progress / cancel / staging methods stay until **P6**. **Next: P2.3**, the environment model and its *select* half |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image. 2.3a the model + `RegistryEnvironmentResolver` (`viva_core/environments/`, no caller changed) — #748 · 2.3b the four derivations ask it (`common/site_environments.py`) — #749 · 2.3c the core runtime image + core's container entrypoint (`Dockerfile-core-runtime`, `viva_core/runtime/`) — #750 · 2.3d-1 a task may name an environment (`TaskRunRequest.environment`) — #751 · 2.3d-2 Batch pulls the image; dev names it — #752 · 2.3d-3 a compose run may name an environment (one container) | | | | **done and deployed** — dev is 0.9.152 (checkpoint D, 2026-09-21, tag `v0.9.152`): the four image derivations ask one resolver, `CORE_RUNTIME_IMAGE` is live, a task and a compose run may name `environment="runtime"`. Measured on dev: `compose` 21.6 s in the runtime image against 495.9 s on the science image; a cold-fleet `task` starts in 106 s against 221 s. Prod: repeat the one-job trial pull from its VPC before it names the image |
-| P3 | settings, DI, app factory. 3a `create_core_app()` boots alone; SMS includes core's router under `/viva/v1` | | | | **in progress** — 3a, 3b, 3c done (not deployed); next 3d (compose and env-worker move into `viva_core`), which starts with the wiring ties 3c listed |
+| P3 | settings, DI, app factory. 3a `create_core_app()` boots alone; SMS includes core's router under `/viva/v1` | | | | **in progress** — 3a, 3b, 3c done (not deployed); 3d-1 done (compose's ParCa staging is a hook); 3d-2 done (the 14 settings compose and env-worker read are `CoreSettings` fields); 3d-3 done (compose is handed its services; it imports nothing of `viva_api.dependencies`); next 3d-4 (the move — what still ties the package to `viva_api` is listed in the 3d-3 log entry) |
 | P4a | | | | | not started (checkpoint F) |
 | P4b | | | | | not started (checkpoint F) |
 | P5 | | | | | not started (checkpoint G) |
@@ -769,6 +772,72 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-21** — **P3d-3: compose is handed its services — and one of the four was not a service but a third hook.**
+  The row said "four lookups (database, file service, SSH session)". Reading them: the *database*
+  lookup is `_resolve_commit`, which turns `ComposeSimulationRequest.simulator_id` into an image key by
+  reading **SMS's `simulator` table** — the application's registry, not compose's. Handing compose a
+  database service would have moved SMS's table into compose's vocabulary. So it is a hook, like the
+  two before it: compose declares **`EnvironmentKeyOf`** ("the environment key of the application's
+  simulator *n*"), `viva_api/simulation/compose_simulators.py::simulator_environment_key` answers it
+  (the same five statements, moved), and a compose service with **no** registry refuses a
+  `simulator_id` by name rather than running on the site-pinned image. The other three are plain
+  arguments: `files=` (the file service exists before the compose subsystem is built, so the instance
+  is handed over), and `slurm_ssh=` on both the job monitor and the SLURM compose service — a
+  **provider**, asked at the moment of use, because on a site without SLURM the session service never
+  exists and both objects are still built. Behaviour on every path is what it was; the errors name
+  what was not handed in.
+  **Guard:** `tests/compose/test_compose_is_handed_its_services.py` parses every module under
+  `viva_api/compose/` and fails on any import of `viva_api.dependencies`, lazy or not. Run against
+  the parent commit it finds exactly the four.
+  **What still ties the package to `viva_api`, for 3d-4** (counted, 19 imports): `common.models`
+  (`JobBackend`, `JobStatus`, `SSHTarget` — 5), `config` (`ComputeBackend` ×2, the SLURM service's
+  `Settings`, `hpc_utils` — 4), `common.site_environments` (2), `common.hpc.*` (5) and
+  `common.storage.file_paths` (2) — the last two groups are already shims over `viva_core` and only
+  need re-pointing — and `common.storage.data_layout` (1), which is not in core and names the
+  application's S3 layout. The report-only broken-edge count is unchanged at 6: none of the four
+  lookups was one of those edges.
+  **Proof:** `make check` clean twice; suite 2201 passed (6 new).
+- **2026-09-21** — **P3d-2: fourteen settings move to core; two keep an application default; one cannot move yet.**
+  The 13 settings compose and env-worker read on the Batch / K8s path, plus `batch_region` (mypy found
+  it: `RegistrySettings`, the Protocol `site_resolver` takes, names it, and a `CoreSettings` handed to
+  `environment_image` did not have it), are now declared on `CoreSettings`. `Settings` inherits them, so
+  every environment variable and every reader of `get_settings()` is unchanged; the four compose modules
+  (`simulation_service_ray`, `env_worker_service`, `job_monitor`, `database_service`) read through
+  `get_core_settings`, which returns the application's object through the provider registered in P1b.
+  **Two fields are generic with an application-shaped default.** `env_worker_workspace_path`
+  (`/app/v2ecoli`) and `ray_ecr_repository` (`v2ecoli`) name one application's repository — the
+  vocabulary guard refuses them as core defaults, rightly. Core declares both as `""` and SMS redefines
+  the default only. The settings guard used to forbid any redefinition; it now allows exactly the names
+  in `APPLICATION_SUPPLIES_THE_DEFAULT`, and only when core's default is empty and the annotation is
+  the same — so a redefinition cannot change a type or silently shadow a real core default.
+  **One does not move: `slurm_log_base_path`.** Its type is `HPCFilePath`, from
+  `viva_core.storage.file_paths`, which imports `viva_core.settings` — declaring it there is an import
+  cycle. It stays in SMS, so `compose/hpc_utils.py` keeps reading `viva_api.config`; breaking the cycle
+  (the path type stops reading settings at import) is its own cut, listed for 3d-4.
+  **Found while counting, not changed:** the *SLURM* compose service (`compose/simulation_service.py`)
+  was not in the 14. It takes SMS's `Settings` whole, reads `slurm_partition` / `slurm_qos` /
+  `slurm_node_list` and two `compose_*` paths, and carries a method named after one model
+  (`_write_v2ecoli_script`). It runs only on the unsupported RKE target. Whether it moves to core with
+  the rest of the package, or stays in SMS as that site's compose backend, is decided in 3d-4 — not by
+  moving its settings now. `ComputeBackend` (imported by `compose/models.py` and `job_monitor.py` from
+  `viva_api.config`) is the other remaining tie, also 3d-4's.
+  **Proof:** a snapshot of `Settings.model_fields` — name, annotation, default, for all 146 — taken before
+  and after the change is identical. `make check` clean twice; the suite passes.
+- **2026-09-21** — **P3d-1: compose's ParCa staging is the second hook; and 3d is four steps, not one.** Jim: "get
+  back on the plan". 3c listed what still ties compose to SMS; measuring it said in what order it can
+  go. Compose and env-worker read **15 settings, none of them a `CoreSettings` field**, and one of the
+  fifteen — `compose_parca_cache_dir` — **cannot become one**: core's vocabulary guard refuses a
+  construct named after ParCa, and rightly, because what it configures (`_parca_staging`: "stage this
+  simulator's ParCa cache into the job") is SMS's knowledge inside a composite runner. So before the
+  settings move, that goes the way the chained analysis went in 3c: compose declares **`StageInputs`**
+  — "`(stage_s3, stage_dir)` to sync in before the composite runs, or nothing" — and
+  `viva_api/simulation/compose_staging.py::compose_parca_staging` fills it from the composition root.
+  Staging itself is the container contract's and stays generic; *what* to stage is the application's.
+  **Proof:** the method's 3 statements are the function's 3, AST-identical; the three staging tests
+  exercise the function where it now lives; the submit test builds the service with the hook, as the
+  composition root does; new: a compose service with **no** hook stages nothing even on a site whose
+  settings name a cache directory. 3d is rewritten as 3d-1 … 3d-4 in the sequence: hook, settings,
+  services, then the move.
 - **2026-09-21** — **Two sites, one registry: a build adopts an existing image, and the tags become write-once.** Jim
   asked what happens when the test site and the prod site — each with its own VPC and RDS — push the
   same image name and tag, and whether the site should go into the name. **Checked before answering:**

@@ -6,12 +6,13 @@ import random
 import string
 import tempfile
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
 from textwrap import dedent
 from typing import override
 
 from viva_api.common.hpc.slurm_service import SlurmService
-from viva_api.common.models import JobBackend, SSHTarget
+from viva_api.common.models import JobBackend
 from viva_api.common.storage.file_paths import HPCFilePath
 from viva_api.compose.database_service import ComposeDatabaseService
 from viva_api.compose.hpc_utils import (
@@ -31,7 +32,7 @@ from viva_api.compose.models import (
     ComposeSimulatorVersion,
 )
 from viva_api.config import Settings, get_settings
-from viva_api.dependencies import get_ssh_session_service
+from viva_core.infra.ssh.ssh_service import SSHSessionService
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +66,17 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
     env: Settings
     backend = JobBackend.SLURM
 
-    def __init__(self, env: Settings | None = None) -> None:
+    def __init__(
+        self, env: Settings | None = None, *, slurm_ssh: Callable[[], SSHSessionService] | None = None
+    ) -> None:
         self.env = env or get_settings()
+        # The SSH sessions jobs are submitted over, HANDED IN as a provider (P3d-3).
+        self._slurm_ssh = slurm_ssh
+
+    def _ssh_sessions(self) -> SSHSessionService:
+        if self._slurm_ssh is None:
+            raise RuntimeError("No SLURM SSH session provider was handed to the SLURM compose service.")
+        return self._slurm_ssh()
 
     def _build_run_command(
         self,
@@ -188,7 +198,7 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
                     v2ecoli_script_file = Path(tmpdir) / "v2ecoli_run.py"
                     v2ecoli_script_file.write_text(script_content_py)
 
-            async with get_ssh_session_service(SSHTarget.SLURM).session() as ssh:
+            async with self._ssh_sessions().session() as ssh:
                 await ssh.run_command(f"mkdir -p {experiment_path}")
                 # Upload the simulation input file (OMEX/PBG/SBML)
                 remote_input = HPCFilePath(remote_path=get_compose_sim_input_path(experiment_id=slurm_job_name))
@@ -247,7 +257,7 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
                 """)
             local_submit_file.write_text(script_content)
 
-            async with get_ssh_session_service(SSHTarget.SLURM).session() as ssh:
+            async with self._ssh_sessions().session() as ssh:
                 slurm_service = SlurmService()
                 remote_def = HPCFilePath(remote_path=singularity_def_file)
                 await ssh.scp_upload(local_file=local_singularity_file, remote_path=remote_def)
