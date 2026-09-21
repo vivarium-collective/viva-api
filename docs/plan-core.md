@@ -804,6 +804,19 @@ split; each has an owner-less issue or a named moment.
   workbench uses — start a worker, call it, stop it, on an image the new resolver named — is what
   smoke's `worker` check does, and it passed; the workbench UI itself was not driven, and `vwb smoke` is
   a local check of the other repository that a viva-api deploy does not change.
+  **Then exercised, at Jim's suggestion ("there is a workbench service cli which could be used"):** the
+  workbench's own code, from a laptop, through dev's relay. `vwb sync CovertLabEcoli/sms-ecoli@d67b0a7`
+  materialized simulator 213's exact workspace; with `VIVARIUM_WORKBENCH_ENV_WORKER_PROXY_BASE` pointing
+  at the tunnel, `vwb smoke --workspace` selected its `ProxyWorkerLauncher`, and viva-api 0.9.152
+  created `env-worker-d67b0a7-w-…` on the image the ONE resolver named, held its socket and forwarded
+  the call: **`env-worker ok — ping -> ['ok', 'uptime_s']`**, confirmed in the API log (relay start,
+  call 200, stop). `workspace` ok too. **`server` FAILED, and it is not viva-api's:** the workbench's
+  local `serve` answered `/health`, then `GET /` — the first page render of a real whole-cell workspace
+  over a cold relayed worker — exceeded smoke's 10 s (the cold start `CLAUDE.md` Pitfall 6 measured at
+  126 s). 2 of 3. Two things a hosted worker needs that a laptop sync does not give: the workspace
+  must carry a `.viv-build.json` build stamp (written by hand into the scratch copy), and the timed-out
+  check left one relayed worker running (stopped with `atlantis worker stop`). `vwb sync` also
+  registers the workspace in `~/.pbg/workspaces.json`; that entry was removed afterwards.
   **Not idle:** P3a, P3b and P3c (#756–#758) and the unset-account refusal (#759) were written while D
   built, rolled and ran — none of them is in 0.9.152.
 - **2026-09-21** — **An unset ECR account is refused by name.** Jim, after asking what that meant: "okay … make a
