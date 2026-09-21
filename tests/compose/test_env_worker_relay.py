@@ -152,6 +152,18 @@ def test_an_id_mismatch_is_a_desync_and_is_never_papered_over(listener: relay.Di
     conn.close()
 
 
+def test_a_frame_that_is_json_but_not_an_object_is_a_malformed_frame() -> None:
+    """A JSON-RPC message is an object. A list parses, and used to reach ``call`` and fail there as an
+    ``AttributeError`` -- typed honestly (P3d-4b) it is the same fault as a frame that does not parse."""
+    ours, theirs = socket.socketpair()
+    conn = relay.WorkerConnection(job_name="j", sock=ours)
+    theirs.sendall(struct.pack(">I", 2) + b"[]")
+    with pytest.raises(relay.WorkerUnavailable, match="malformed frame"):
+        conn.call("anything")
+    conn.close()
+    theirs.close()
+
+
 def test_a_closed_worker_reports_unavailable_not_a_hang(listener: relay.DialBackListener) -> None:
     w = _FakeWorker(listener.port, listener.token)
     w.start()
@@ -180,7 +192,7 @@ def test_concurrent_calls_are_serialized_per_worker(listener: relay.DialBackList
     conn = relay.WorkerConnection(job_name="j", sock=listener.accept(timeout=10))
     results: list[str] = []
     threads = [
-        threading.Thread(target=lambda t=t: results.append(conn.call("slow", {"tag": t}))) for t in ("a", "b", "c")
+        threading.Thread(target=lambda t=t: results.append(str(conn.call("slow", {"tag": t})))) for t in ("a", "b", "c")
     ]
     for t in threads:
         t.start()

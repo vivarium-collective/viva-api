@@ -44,7 +44,7 @@ import struct
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import anyio.to_thread
 
@@ -91,7 +91,7 @@ class WorkerUnavailable(RelayError):
 class WorkerCallError(RelayError):
     """The worker answered with a JSON-RPC error. Carries its code and data."""
 
-    def __init__(self, message: str, *, code: Any = None, data: Any = None) -> None:
+    def __init__(self, message: str, *, code: object = None, data: object = None) -> None:
         super().__init__(message)
         self.code = code
         self.data = data
@@ -198,7 +198,7 @@ class WorkerConnection:
     lock: threading.Lock = field(default_factory=threading.Lock)
     _id: int = 0
 
-    def call(self, method: str, params: dict[str, Any] | None = None, *, timeout: float = 300.0) -> Any:
+    def call(self, method: str, params: dict[str, object] | None = None, *, timeout: float = 300.0) -> object:
         """Send one JSON-RPC request; return its ``result`` or raise."""
         with self.lock:
             self._id += 1
@@ -213,18 +213,19 @@ class WorkerConnection:
                 # of unknown alignment and every later reply would be suspect.
                 raise WorkerUnavailable(f"protocol desync: got id {resp.get('id')}, wanted {rid}")
             if "error" in resp:
-                e = resp["error"] or {}
-                raise WorkerCallError(e.get("message", "worker error"), code=e.get("code"), data=e.get("data"))
+                raw = resp["error"]
+                e: dict[str, object] = raw if isinstance(raw, dict) else {}
+                raise WorkerCallError(str(e.get("message", "worker error")), code=e.get("code"), data=e.get("data"))
             return resp.get("result")
 
-    def _send(self, obj: dict[str, Any]) -> None:
+    def _send(self, obj: dict[str, object]) -> None:
         body = json.dumps(obj).encode("utf-8")
         try:
             self.sock.sendall(struct.pack(">I", len(body)) + body)
         except OSError as e:
             raise WorkerUnavailable(f"send failed: {e}") from e
 
-    def _recv(self) -> dict[str, Any] | None:
+    def _recv(self) -> dict[str, object] | None:
         hdr = _recv_exact(self.sock, 4)
         if hdr is None:
             return None
@@ -235,9 +236,13 @@ class WorkerConnection:
         if body is None:
             return None
         try:
-            decoded: dict[str, Any] = json.loads(body.decode("utf-8"))
+            decoded: object = json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as e:
             raise WorkerUnavailable(f"malformed frame: {e}") from e
+        if not isinstance(decoded, dict):
+            # A JSON-RPC message is an object. Anything else used to fail later, as an
+            # AttributeError inside ``call``; it is the same fault as a frame that does not parse.
+            raise WorkerUnavailable(f"malformed frame: a JSON {type(decoded).__name__}, not an object")
         return decoded
 
     def close(self) -> None:
