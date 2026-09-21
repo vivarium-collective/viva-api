@@ -18,6 +18,9 @@ decision log); the machinery under them does not change:
 * ``REWIRED`` / ``REWIRED_BODIES`` -- a method that stays on the class as a delegate (something outside
   still asks the service): the delegate differs by design, and the body it left behind must be found,
   unchanged, where the table says.
+* ``EXTRACTED_TAILS`` -- a mechanism that was never a method but the END of one (the router's fall-through
+  path): the tail must be the new method's body, the new method's preamble must be statements of the
+  old head, and what stays must be the old head plus one hand-over ``return``.
 * ``NEW`` -- what composing the strategy added to the class, with the reason.
 
 A method that differs, disappears or appears WITHOUT being named fails the script. Comparison is
@@ -40,42 +43,42 @@ from pathlib import Path
 ROOT = "viva_api/simulation/"
 SERVICE = (ROOT + "simulation_service_ray.py", "SimulationServiceRay")
 
-# ---- P2.1 PR 9: the multi-node composite dispatch mechanism becomes ``MultiNodeCompositeStrategy``.
+# ---- P2.1 PR 10: the router's inline ensemble path becomes ``EnsembleStrategy``.
 
-MULTI_NODE = ROOT + "ray/multi_node.py"
-STRATEGY = "MultiNodeCompositeStrategy"
+ENSEMBLE = ROOT + "ray/ensemble.py"
 
 #: old method -> (file, new function name). A ``@staticmethod`` had no ``self`` to drop.
 BECAME_FUNCTIONS: dict[str, tuple[str, str]] = {
-    "_multi_node_composite_command": (MULTI_NODE, "multi_node_composite_command"),
-    "_stage_seed_override_caches": (MULTI_NODE, "stage_seed_override_caches"),
-    "_multi_node_analysis_command": (MULTI_NODE, "multi_node_analysis_command"),
+    "_sim_command": (ENSEMBLE, "sim_command"),
 }
-#: how the strategy spells what its methods used to find on ``self`` -> how they spelled it
+#: how the strategy spells what the old code found on ``self`` -> how it spelled it
 _IN_STRATEGY = {
     "self._batch.": "self.batch.",
     "self._stage_runner(": "self.stage_runner(",
     "parca_spec.cache_s3_uri(": "self.cache_s3_uri(",
-    **{f"{new}(": f"self.{old}(" for old, (_, new) in BECAME_FUNCTIONS.items()},
+    "sim_command(": "self._sim_command(",
 }
 #: old method -> (file, class, new method name, {new spelling: old spelling})
-BECAME_STRATEGY_METHODS: dict[str, tuple[str, str, str, dict[str, str]]] = {
-    "_mnp_node_vcpus": (MULTI_NODE, STRATEGY, "_mnp_node_vcpus", _IN_STRATEGY),
-    "_submit_multi_node_composite": (MULTI_NODE, STRATEGY, "submit", _IN_STRATEGY),
+BECAME_STRATEGY_METHODS: dict[str, tuple[str, str, str, dict[str, str]]] = {}
+RESPELLED_IN_SERVICE: dict[str, str] = {}
+REWIRED: dict[str, str] = {}
+REWIRED_BODIES: dict[str, tuple[str, str, str, dict[str, str]]] = {}
+#: This mechanism was not a method. It was the TAIL of the router: every statement from the one that
+#: assigns ``first_assigned`` to the end. Checked three ways -- the tail is the new method's body after
+#: its docstring and a preamble; every preamble statement is a statement of the router's head,
+#: verbatim (the locals the tail read from there); and the router is its old head plus ONE return.
+EXTRACTED_TAILS: dict[str, dict[str, object]] = {
+    "submit_ecoli_simulation_job": {
+        "first_assigned": "parca_dataset",
+        "to": (ENSEMBLE, "EnsembleStrategy", "submit"),
+        "preamble": 3,
+        "respellings": _IN_STRATEGY,
+        "hand_over": (
+            "return await self._ensemble().submit(ecoli_simulation, database_service, correlation_id=correlation_id)"
+        ),
+    },
 }
-#: how a method that STAYED now spells a call to something that moved -> how it spelled it
-RESPELLED_IN_SERVICE = {
-    "return await self._multi_node().submit(": "return await self._submit_multi_node_composite(",
-}
-#: on the service, differing by design
-REWIRED = {
-    "submit_multi_node_analysis": "the body is the strategy's ``submit_analysis``; a delegate stays for the scheduler",
-}
-#: the body a REWIRED method left behind -> where it must be found unchanged
-REWIRED_BODIES: dict[str, tuple[str, str, str, dict[str, str]]] = {
-    "submit_multi_node_analysis": (MULTI_NODE, STRATEGY, "submit_analysis", _IN_STRATEGY),
-}
-NEW = {"_multi_node": "builds MultiNodeCompositeStrategy(self.batch, stage_runner=...)"}
+NEW = {"_ensemble": "builds EnsembleStrategy(self.batch, stage_runner=...)"}
 
 
 def functions_of(source: str | None, class_name: str | None) -> dict[str, str]:
@@ -175,28 +178,90 @@ def check_moved(before: dict[str, str], read: Callable[[str], str | None]) -> li
     return problems
 
 
+def _function_node(source: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    node = ast.parse(textwrap.dedent(source)).body[0]
+    if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+        raise SystemExit("not a function")
+    return node
+
+
+def _statements_source(source: str, statements: list[ast.stmt]) -> str:
+    """The source lines spanned by ``statements`` -- with the comment lines directly above the first."""
+    lines = textwrap.dedent(source).split("\n")
+    first = statements[0].lineno - 1
+    while first > 0 and lines[first - 1].strip().startswith("#"):
+        first -= 1
+    return "\n".join(lines[first : statements[-1].end_lineno])
+
+
+def check_extracted_tails(
+    before: dict[str, str], after: dict[str, str], read: Callable[[str], str | None]
+) -> list[str]:
+    problems: list[str] = []
+    for old, spec in EXTRACTED_TAILS.items():
+        path, class_name, new = spec["to"]  # type: ignore[misc]
+        methods = functions_of(read(str(path)), str(class_name))
+        if str(new) not in methods or old not in before or old not in after:
+            problems.append(f"{old}: tail -> {class_name}.{new}: not there")
+            continue
+        was = _function_node(before[old])
+        k = next(
+            i
+            for i, s in enumerate(was.body)
+            if isinstance(s, ast.Assign) and getattr(s.targets[0], "id", "") == spec["first_assigned"]
+        )
+        head, tail = was.body[:k], was.body[k:]
+        undone = undo(methods[str(new)], spec["respellings"])  # type: ignore[arg-type]
+        now = _function_node(undone)
+        skip = 1 + int(spec["preamble"])  # type: ignore[call-overload]  # docstring, then the preamble
+        preamble, body = now.body[1:skip], now.body[skip:]
+        if [ast.dump(s) for s in tail] != [ast.dump(s) for s in body]:
+            problems.append(f"{old}: the tail is not {class_name}.{new}'s body (beyond the named respellings)")
+        if comments_of(_statements_source(before[old], tail)) != comments_of(_statements_source(undone, body)):
+            problems.append(f"{old}: the tail's comment lines differ")
+        head_dumps = {ast.dump(s) for s in head}
+        strangers = [ast.unparse(s) for s in preamble if ast.dump(s) not in head_dumps]
+        if strangers:
+            problems.append(f"{class_name}.{new}: preamble statements that are not the router's own: {strangers}")
+        kept = _function_node(after[old])
+        expected = [ast.dump(s) for s in head]
+        got = [ast.dump(s) for s in kept.body]
+        if got[:-1] != expected or ast.unparse(kept.body[-1]) != ast.unparse(
+            _function_node("async def f():\n    " + str(spec["hand_over"])).body[0]
+        ):
+            problems.append(f"{old}: what stayed is not its old head plus the one hand-over return")
+        if comments_of(_statements_source(before[old], head)) != comments_of(
+            _statements_source(after[old], kept.body[:-1])
+        ):
+            problems.append(f"{old}: the head's comment lines differ")
+    return problems
+
+
 def main() -> int:
     before = functions_of(read_origin_main(SERVICE[0]), SERVICE[1])
     after = functions_of(read_working_tree(SERVICE[0]), SERVICE[1])
     moved = set(BECAME_FUNCTIONS) | set(BECAME_STRATEGY_METHODS)
+    split = set(EXTRACTED_TAILS)
     if not moved & set(before):
         print("origin/main already has this cut: nothing to undo, comparing as is")
         return compare_as_is(before, after)
 
-    not_as_named = check_moved(before, read_working_tree)
+    not_as_named = check_moved(before, read_working_tree) + check_extracted_tails(before, after, read_working_tree)
     respelled = []
     for name, source in after.items():
         undone = undo(source, RESPELLED_IN_SERVICE)
         if undone != source:
             respelled.append(name)
             after[name] = undone
-    differing = sorted(n for n in before if n in after and n not in REWIRED and not same_code(before[n], after[n]))
+    differing = sorted(
+        n for n in before if n in after and n not in REWIRED and n not in split and not same_code(before[n], after[n])
+    )
     lost = sorted(set(before) - set(after) - moved)
     added = sorted(set(after) - set(before) - set(NEW))
 
     print(f"methods: origin/main {len(before)}, working tree {len(after)}")
     print(f"became functions: {sorted(BECAME_FUNCTIONS)}")
-    print(f"became strategy methods: {sorted(BECAME_STRATEGY_METHODS)}")
+    print(f"became strategy methods: {sorted(BECAME_STRATEGY_METHODS)}; tails extracted from: {sorted(split)}")
     print(f"moved, but not as named: {not_as_named}")
     print(f"stayed, respelled: {sorted(respelled)}; rewired: {sorted(REWIRED)}; new: {sorted(NEW)}")
     print(f"differing: {differing}")

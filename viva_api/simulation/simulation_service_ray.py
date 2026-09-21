@@ -58,24 +58,18 @@ from viva_api.simulation.github_repo import (
     fetch_repo_discovery,
 )
 from viva_api.simulation.models import (
-    CompositeEngine,
     HpcRun,
     JobType,
     ParcaDataset,
     RepoDiscovery,
     Simulation,
     SimulatorVersion,
-    VecoliSource,
 )
 from viva_api.simulation.ray import _seams, parca_spec
 from viva_api.simulation.ray.analysis_spec import analysis_memory_class, analysis_modules_for
 from viva_api.simulation.ray.batch_layer import RayBatchLayer, _rand_suffix
 from viva_api.simulation.ray.build import RayImageBuilder
-from viva_api.simulation.ray.config_interpretation import (
-    _batch_domain_overrides,
-    _is_upstream_vecoli,
-    injected_processes_from_config,
-)
+from viva_api.simulation.ray.ensemble import EnsembleStrategy
 from viva_api.simulation.ray.image_paths import (
     ANALYSIS_OUT_DIR,
     PARCA_CACHE_DIR,
@@ -86,8 +80,7 @@ from viva_api.simulation.ray.mbp_tracked import MbpTrackedStrategy
 from viva_api.simulation.ray.multi_node import MultiNodeCompositeStrategy
 from viva_api.simulation.ray.nextflow import NextflowStrategy
 from viva_api.simulation.ray.parca import RayParcaService
-from viva_api.simulation.ray.run_records import record_run_with_companions
-from viva_api.simulation.ray.runner_env import PBG_RUNNER_ENV
+from viva_api.simulation.ray.runner_env import PBG_RUNNER_ENV, V2ECOLI_BATCH_BASELINE_COMPOSITE_ID
 from viva_api.simulation.ray.tasks import RayTaskService
 from viva_api.simulation.simulation_service import SimulationService
 from viva_core.backends.batch import (
@@ -108,44 +101,6 @@ logger = logging.getLogger(__name__)
 # the multi-generation batch path below dispatches through the identical mechanism instead
 # of a v2ecoli-specific CLI script — see backlog items 26/27.
 _RUNNER_SRC = (_res.files("viva_api.compose") / "run_pbg.py").read_text()
-
-# Registered composite id (process_bigraph.composite_spec) for the multi-generation
-# batch orchestrator, and the workspace core-builder that resolves its registered
-# types (e.g. "inplace_dict"). Both are inherent facts about what THIS endpoint
-# dispatches — this file already hardcodes v2ecoli-specific paths (V2ECOLI_DIR,
-# PARCA_CACHE_DIR below); what item 27 removes is the bespoke EXECUTION MECHANISM (a
-# CLI script), not this identity.
-#
-# The id is `f"{fn.__module__}.{name}"` (process_bigraph.composite_spec's own
-# registration scheme, mirrored by pbg_superpowers.composite_generator). Two real
-# pilot dispatches (2026-08-06) failed chasing wrong values for this constant before
-# it was verified directly against the DEPLOYED sms-ecoli image (commit e38f742,
-# `git show`/`git grep` against that exact commit — never the local v2ecoli
-# checkout, a separate, structurally-diverged repo that is NOT a mirror of what's
-# actually in this simulator image). At that commit the real module was
-# v2ecoli/composites/batch_baseline.py (decorated function `batch_baseline`,
-# name="batch_baseline") — this constant was correctly set to
-# "v2ecoli.composites.batch_baseline.batch_baseline" and worked through build 62
-# (commit 8d50ff0, item 1's real 1000x10 campaign).
-#
-# UPDATED 2026-08-16 (backlog item 55): sms-ecoli PR #56 (the sync that also
-# carried item 52's wall-time fix) finally synced a v2ecoli upstream refactor that
-# had been sitting unsynced since 2026-07-25 (v2ecoli #373, "Unify composites into
-# baseline: knockouts + media + batch (n_seeds)") — it deleted
-# composites/batch_baseline.py and folded its batch/lineage behavior into
-# composites/ecoli_baseline.py's `baseline()` function (n_seeds/n_generations > 1
-# switches it into what used to be the standalone batch_baseline composite).
-# v2ecoli/composites/__init__.py deliberately registers NO legacy-id alias for the
-# old name ("a stale `baseline` id resolving silently would only hide a missed
-# reference") — so the old id now fails LOUDLY (confirmed via a real dispatch,
-# sim 152, 2026-08-16: "no composite registered as
-# 'v2ecoli.composites.batch_baseline.batch_baseline'"), exactly as its authors
-# intended, rather than silently drifting. Re-verified the SAME way the 2026-08-06
-# incident above did — `git show`/`git grep` directly against the real deployed
-# commit (sms-ecoli c44b69a, build 63), never the separately-diverged local v2ecoli
-# checkout. `baseline()`'s real signature (checked directly) is a strict superset
-# of the old `batch_baseline` params EXCEPT one rename: `base_seed` -> `seed`.
-V2ECOLI_BATCH_BASELINE_COMPOSITE_ID = "v2ecoli.composites.ecoli_baseline.ecoli_baseline"
 
 # The SubmitJob pacer, its 50-TPS rationale and the DescribeJobs chunk size moved to
 # ``viva_core.backends.batch`` with the rest of the Batch engine (docs/plan-core.md P2.1,
@@ -238,127 +193,6 @@ class SimulationServiceRay(SimulationService):
         finally:
             Path(runner_local).unlink(missing_ok=True)
         return data_layout.s3_uri(runner_key)
-
-    def _sim_command(
-        self,
-        n_seeds: int,
-        n_steps: int,
-        chunk: int,
-        *,
-        composite: CompositeEngine | None = None,
-        condition: str | None = None,
-        max_generations: int | None = None,
-        vecoli_source: VecoliSource | None = None,
-        n_generations: int = 1,
-        experiment_id: str | None = None,
-        runner_s3_uri: str | None = None,
-        injected_processes: dict[str, Any] | None = None,
-        variants: dict[str, Any] | None = None,
-        config_overrides: dict[str, Any] | None = None,
-        features: list[Any] | None = None,
-        exchange_fluxes: dict[str, Any] | None = None,
-        exchange_flux_basis: str | None = None,
-    ) -> str:
-        # When ``composite`` is set, run the two-engine comparison driver — both
-        # engines (v2ecoli port + vEcoli imported via build_composite_native)
-        # as bigraph composites on Ray, emitting only the compact XArray view →
-        # zarr/S3. Otherwise: single-generation phase0 by default, or the real
-        # multi-generation LineageProcess/batch_baseline_runner pipeline when
-        # the caller actually requested more than one generation.
-        #
-        # Engine selection is decoupled from generation count: ``max_generations``
-        # defaults to 1 (the phase0 single-gen baseline), so picking an engine
-        # never implies a multi-generation comparison-ensemble run by itself —
-        # callers opt into more generations explicitly.
-        if composite:
-            # vecoli_source selects HOW the genuine vEcoli side runs (only meaningful
-            # for --composite vecoli): "upstream" (default, ~50 pbg steps) or
-            # "vivarium-process" (vEcoli as ONE pbg node with vivarium-core's Engine
-            # inside — faithful by construction). Both stage the SAME upstream ParCa
-            # cache (is_upstream routing is unchanged), so only the driver flag differs.
-            src = f" --vecoli-source {vecoli_source}" if (_is_upstream_vecoli(composite) and vecoli_source) else ""
-            return (
-                f"cd {V2ECOLI_DIR} && python scripts/run_comparison_ensemble.py"
-                f" --composite {composite} --condition {condition or 'basal'}"
-                f" --n-seeds {n_seeds} --max-generations {int(max_generations or 1)}"
-                f" --chunk {chunk} --out-root {SIM_OUT_DIR} --mode ray{src}"
-            )
-        if int(n_generations) > 1:
-            # Real multi-generation lineage (cell division across generations) --
-            # scripts/run_phase0_xarray_ensemble.py below silently ignores this
-            # entirely and only ever runs one generation per seed.
-            #
-            # Dispatched as a registered process-bigraph composite (sms-ecoli's
-            # v2ecoli/composites/ecoli_baseline.py's `baseline()` — n_seeds/
-            # n_generations > 1 switches it into the batch/lineage shape that used
-            # to be the standalone batch_baseline composite before it was folded in
-            # here, backlog item 55) run through the SAME generic run_pbg.py every
-            # compose-on-Batch job already uses — not a v2ecoli-specific CLI script.
-            # See backlog items 26/27: this is the one execution mechanism both the
-            # ensemble endpoint and the generic compose endpoint dispatch through;
-            # only the composite id + overrides differ per caller.
-            if not experiment_id:
-                raise RuntimeError("experiment_id is required for multi-generation batch dispatch")
-            if not runner_s3_uri:
-                raise RuntimeError(
-                    "runner_s3_uri is required for multi-generation batch dispatch "
-                    "(the generic run_pbg.py runner must be staged to S3 first)"
-                )
-            overrides: dict[str, Any] = {
-                "n_seeds": int(n_seeds),
-                "n_generations": int(n_generations),
-                "cache_dir": PARCA_CACHE_DIR,
-                "out_dir": SIM_OUT_DIR,
-                "experiment_id": experiment_id,
-                # The analysis DAG node (see _analysis_command) runs the same
-                # analysis_runner.run_analyses() over the LANDED S3 sweep once this
-                # job has succeeded -- skip the composite's own inline flush here so
-                # the analyses run exactly once, over the whole sweep.
-                "analyses": "none",
-                "parallel": "ray",
-            }
-            # Thread the submitted config's DOMAIN fields into the batch composite's
-            # own overrides so the native ``ecoli_baseline.baseline()`` batch run
-            # actually carries the metabolism-redux/violacein swap (the CD2 native
-            # seam). Without these keys the composite runs a plain basal baseline
-            # even though the config requested a swap -- the composite never sees it.
-            #
-            # These are exactly ``ecoli_baseline.baseline()``'s own batch-mode kwargs
-            # (v2ecoli #640 threaded injected_processes/features/exchange_fluxes/
-            # exchange_flux_basis through ``_build_batch_document``; config_overrides
-            # and variants already existed). Each is added ONLY when non-empty, so a
-            # config with no injection/variant intent produces the exact overrides
-            # dict this path built before -- the byte-for-byte-unchanged regression
-            # property (mirrors ``injected_processes_from_config``'s own contract and
-            # the 0.9.79 chain-dispatch passthrough).
-            #
-            # ``injected_processes`` is the mapped shape ``baseline()`` expects
-            # ({swap_processes, add_processes, exclude_processes, fork_repo}), built
-            # by ``injected_processes_from_config`` from the legacy config's
-            # ``swap_processes`` -- the SAME mapping ``_seed_generation_command`` and
-            # the chain-dispatch/JobScheduler path already use.
-            overrides.update(
-                _batch_domain_overrides(
-                    injected_processes=injected_processes,
-                    variants=variants,
-                    config_overrides=config_overrides,
-                    features=features,
-                    exchange_fluxes=exchange_fluxes,
-                    exchange_flux_basis=exchange_flux_basis,
-                )
-            )
-            env = PBG_RUNNER_ENV
-            return (
-                f"cd {V2ECOLI_DIR}"
-                f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
-                f" && {env} python /tmp/run_pbg.py"
-                f" --composite-id {V2ECOLI_BATCH_BASELINE_COMPOSITE_ID}"
-                f" --overrides {shlex.quote(json.dumps(overrides))} -n 1"
-            )
-        return (
-            f"cd {V2ECOLI_DIR} && python scripts/run_phase0_xarray_ensemble.py"
-            f" --n-seeds {n_seeds} --n-steps {n_steps} --chunk {chunk} --parallel ray"
-        )
 
     def _seed_generation_command(
         self,
@@ -812,6 +646,11 @@ class SimulationServiceRay(SimulationService):
         asks the SERVICE for it (that ends in P6, with the scheduler's split)."""
         return await self._nextflow().reap_cancelled_campaign(head_job_name)
 
+    def _ensemble(self) -> EnsembleStrategy:
+        """The ensemble dispatch mechanism (ParCa MNP job, then the simulation MNP job), as a strategy
+        handed this service's Batch layer and a late-bound ``stage_runner``. Built per call."""
+        return EnsembleStrategy(self.batch, stage_runner=lambda experiment_id: self.stage_runner(experiment_id))
+
     def _multi_node(self) -> MultiNodeCompositeStrategy:
         """The multi-node composite dispatch mechanism, as a strategy handed this service's Batch layer
         and a late-bound ``stage_runner``. Built per call; it holds no state of its own."""
@@ -966,223 +805,7 @@ class SimulationServiceRay(SimulationService):
                 ecoli_simulation, database_service, correlation_id=correlation_id
             )
 
-        parca_dataset = await database_service.get_parca_dataset(parca_dataset_id=ecoli_simulation.parca_dataset_id)
-        if parca_dataset is None:
-            raise ValueError(f"ParcaDataset with ID {ecoli_simulation.parca_dataset_id} not found.")
-        simulator = await database_service.get_simulator(simulator_id=ecoli_simulation.simulator_id)
-        if simulator is None:
-            raise ValueError(f"Simulator {ecoli_simulation.simulator_id} not found")
-
-        settings = _seams.get_settings()
-        commit = simulator.environment_key
-        experiment_id = ecoli_simulation.config.experiment_id
-
-        # Run the TRUE commit image: derive a per-commit MNP job-def revision pointing at
-        # v2ecoli:<commit> (both ParCa and the sim run the same image).
-        job_def = self.batch.ensure_mnp_job_def(self.batch.image_uri(commit), commit)
-
-        # SimulationConfig is a vEcoli passthrough (extra="allow"); the comparison
-        # knobs are validated at the API boundary (Literal Query params) and ride
-        # in as extra keys, so they're read here via getattr (present only when the
-        # caller set them). ``vecoli_source`` is already constrained by the
-        # endpoint's VecoliSource type; ``composite`` was already read above.
-        n_seeds = ecoli_simulation.num_seeds or getattr(config, "n_init_sims", None) or 1
-        n_steps = getattr(config, "ray_n_steps", None) or settings.ray_n_steps
-        chunk = getattr(config, "ray_chunk", None) or settings.ray_chunk
-        condition = getattr(config, "condition", None)
-        max_generations = getattr(config, "max_generations", None)
-        vecoli_source = getattr(config, "vecoli_source", None)
-
-        # Engine-specific ParCa source: the pristine upstream wrapper (--composite
-        # vecoli) stages an UPSTREAM-built simData (separate cache + build cmd);
-        # every other engine stages the v2ecoli cache. Both ParCa and the sim use
-        # the matching pair so the staged simData is consistent across all nodes.
-        is_upstream = _is_upstream_vecoli(composite)
-        # Backlog item 105: same generic cache_variant passthrough already proven
-        # for the chain-dispatch/multi-node-composite paths -- irrelevant to the
-        # upstream-vEcoli engine (its own config_path-driven mechanism is separate).
-        # This is the whole fix for the comparison-ensemble path's own real gap: the
-        # driver's `--cache-dir` default already resolves to PARCA_CACHE_DIR (the
-        # exact path staged below), so redirecting the STAGED cache via `variant`
-        # is sufficient -- no command-line change needed, confirmed the two paths
-        # are byte-identical (`REPO_ROOT/out/cache` == `/app/v2ecoli/out/cache`).
-        cache_variant = None if is_upstream else (getattr(config, "cache_variant", None) or None)
-        cache_s3 = (
-            parca_spec.upstream_cache_s3_uri(commit)
-            if is_upstream
-            else self.cache_s3_uri(commit, variant=cache_variant)
-        )
-        # Backlog item 93: same generic new_genes passthrough as
-        # submit_chain_dispatch_job -- irrelevant to the upstream-vEcoli
-        # engine (its own config_path-driven mechanism, item 87, is separate).
-        new_genes = None if is_upstream else getattr(config.parca_options, "new_genes", None)
-        # Backlog item 104: same generic bundle_overrides passthrough, same
-        # upstream-vEcoli exemption as new_genes above.
-        bundle_overrides = None if is_upstream else getattr(config.parca_options, "bundle_overrides", None)
-        # Same generic rnaseq_source passthrough (item 106/#166 chassis-provenance
-        # thread) -- a bundle_overrides manifest can itself require this to have
-        # any effect at all; same upstream-vEcoli exemption as the two above.
-        rnaseq_source = None if is_upstream else getattr(config.parca_options, "rnaseq_source", None)
-        # Same generic require_clean_chain passthrough (item 106/#166, v2ecoli#735) --
-        # opt-in only (default False emits nothing, see _stage_out_env's own
-        # docstring): most existing callers don't pass v2ecoli's own `sources=` yet.
-        require_clean_chain = (
-            False if is_upstream else bool(getattr(config.parca_options, "require_clean_chain", False))
-        )
-        # Same generic bundle_manifest_path/build_combined_bundle_manifest/
-        # include_violacein_bundle/deterministic_hash_seed passthrough (item
-        # 451/#166, Run 4 founder-chassis rebuild) -- same upstream-vEcoli
-        # exemption as new_genes/bundle_overrides/rnaseq_source above.
-        bundle_manifest_path = None if is_upstream else getattr(config.parca_options, "bundle_manifest_path", None)
-        build_combined_bundle_manifest = (
-            False if is_upstream else bool(getattr(config.parca_options, "build_combined_bundle_manifest", False))
-        )
-        include_violacein_bundle = (
-            False if is_upstream else bool(getattr(config.parca_options, "include_violacein_bundle", False))
-        )
-        deterministic_hash_seed = (
-            False if is_upstream else bool(getattr(config.parca_options, "deterministic_hash_seed", False))
-        )
-        parca_command = (
-            parca_spec.upstream_parca_command()
-            if is_upstream
-            else parca_spec.parca_command(
-                new_genes=new_genes,
-                bundle_overrides=bundle_overrides,
-                rnaseq_source=rnaseq_source,
-                bundle_manifest_path=bundle_manifest_path,
-                build_combined_bundle_manifest=build_combined_bundle_manifest,
-                include_violacein_bundle=include_violacein_bundle,
-                deterministic_hash_seed=deterministic_hash_seed,
-            )
-        )
-
-        # Only the composite-driven comparison-ensemble path can still reach here
-        # with n_generations > 1 (the non-composite canonical shape is routed to
-        # chain-dispatch above, before this line); its own _sim_command branch
-        # never reads runner_s3_uri, but staging it costs nothing and this stays
-        # unconditional on generations alone, matching pre-existing behavior.
-        runner_s3_uri = await self.stage_runner(experiment_id) if n_generations > 1 else None
-
-        # Cost-allocation tags (propagate to ECS tasks → payer-account Cost
-        # Explorer attributes spend per run/engine/condition). Values must be
-        # tag-safe strings.
-        base_tags = {
-            "Project": "v2ecoli-comparison",
-            "ExperimentId": str(experiment_id)[:255],
-            "Engine": str(composite or "v2ecoli"),
-            "Condition": str(condition or "basal"),
-            "Commit": str(commit)[:12],
-            "Team": getattr(settings, "cost_team_tag", None) or "covertlab",
-        }
-
-        # 1. ParCa job (1 node) → cache to S3.
-        #
-        # The events identity (D4a) is merged UNDER the request's own task_env on
-        # BOTH submits, per phase. Omitting it here was a live gap: the HpcRun row
-        # got a trace_id (the API derives it from correlation_id) while the Batch
-        # job carried no PBG_* at all, so the run recorded an identity no task was
-        # ever told about and emitted nothing. Caught by running a 1-gen/1-seed
-        # verification campaign and reading the submitted job's environment.
-        request_env = resolve_task_env(config)
-
-        def _events_env(phase: str) -> dict[str, str]:
-            return with_events_env(
-                request_env,
-                correlation_id=correlation_id,
-                experiment_id=str(experiment_id),
-                sim_id=ecoli_simulation.database_id,
-                backend="mnp",
-                tags={"phase": phase},
-                settings=settings,
-            )
-
-        parca_job_id = self.batch.submit_mnp(
-            job_name=f"ray-parca-{commit}-{_rand_suffix()}",
-            job_definition=job_def,
-            num_nodes=1,
-            ray_job_cmd=parca_command,
-            out_s3=cache_s3,
-            out_dir=PARCA_CACHE_DIR,
-            tags={**base_tags, "Phase": "parca"},
-            task_env=_events_env("parca"),
-        )
-
-        # 2. Simulation ensemble (N-node Ray cluster), gated on ParCa, staging the
-        # cache. Always MNP now: the ONE shape that used to need Array jobs here
-        # (canonical batch_baseline, composite is None + multi-generation) is
-        # routed to submit_chain_dispatch_job before this method does ANY of the
-        # setup above (see the routing check at the top) -- every request that
-        # still reaches this point either sets composite (the comparison
-        # ensemble, which genuinely fans out via Ray actors) or requests a
-        # single generation (the phase0 ensemble).
-        sim_job_id = self.batch.submit_mnp(
-            job_name=f"ray-sim-{experiment_id}-{_rand_suffix()}"[:128],
-            job_definition=job_def,
-            num_nodes=settings.ray_num_nodes,
-            ray_job_cmd=self._sim_command(
-                int(n_seeds),
-                int(n_steps),
-                int(chunk),
-                composite=composite,
-                condition=condition,
-                max_generations=max_generations,
-                vecoli_source=vecoli_source,
-                n_generations=n_generations,
-                experiment_id=str(experiment_id),
-                runner_s3_uri=runner_s3_uri,
-                # CD2 native seam: thread the submitted config's domain fields so the
-                # --composite-id batch run carries the metabolism-redux/violacein swap.
-                # injected_processes maps the legacy config's swap_processes ->
-                # ecoli_baseline.baseline()'s injected_processes kwarg (same helper the
-                # chain-dispatch/JobScheduler path uses); the rest are ecoli_baseline
-                # batch-mode kwargs read straight off the config (extra="allow"), all
-                # no-ops when the config sets none of them.
-                injected_processes=injected_processes_from_config(config),
-                variants=getattr(config, "variants", None),
-                config_overrides=getattr(config, "config_overrides", None),
-                features=getattr(config, "features", None),
-                exchange_fluxes=getattr(config, "exchange_fluxes", None),
-                exchange_flux_basis=getattr(config, "exchange_flux_basis", None),
-            ),
-            out_s3=data_layout.RayLayout.results_uri(experiment_id),
-            out_dir=SIM_OUT_DIR,
-            stage_s3=cache_s3,
-            stage_dir=PARCA_CACHE_DIR,
-            depends_on=[parca_job_id],
-            tags={**base_tags, "Phase": "sim"},
-            task_env=_events_env("sim"),
-            # Wrong-strain guard (sms-ecoli#210 / #215): tell the entrypoint which
-            # strain this run staged so it rejects a cache built for a different one.
-            # off/None (wild-type) emits nothing, so this is inert for non-strain runs.
-            expect_new_genes=new_genes,
-            expect_bundle_overrides=bundle_overrides,
-            require_clean_chain=require_clean_chain,
-        )
-        logger.info(
-            "Ray simulation %s: parca job %s -> sim job %s (%d nodes)",
-            experiment_id,
-            parca_job_id,
-            sim_job_id,
-            settings.ray_num_nodes,
-        )
-
-        # No inline analysis submission: the ONE shape that used to need it here
-        # (canonical batch_baseline) is entirely handled by chain-dispatch's own
-        # poller-triggered submit_campaign_analysis now (see
-        # JobScheduler.update_chain_campaigns / _advance_chain_campaign). The
-        # comparison-ensemble and phase0 paths that still reach this point write
-        # no cd1_*/ptools_*-ready sweep and never got inline analysis either --
-        # unaffected by this rework.
-        job_id = JobId.ray(sim_job_id)
-        await record_run_with_companions(
-            database_service,
-            job_id=job_id,
-            simulation_id=ecoli_simulation.database_id,
-            correlation_id=correlation_id,
-            companion_job_ids=[parca_job_id],
-        )
-        return job_id
+        return await self._ensemble().submit(ecoli_simulation, database_service, correlation_id=correlation_id)
 
     def chain_base_tags(self, *, simulation: Simulation, commit: str) -> dict[str, str]:
         """Cost-allocation tag base shared by every per-seed chain job + the

@@ -38,6 +38,8 @@ NOT_YET_BANNED: set[str] = {
     "viva_api.simulation.ray.nextflow",
     # PR 9: moved with its `dict[str, Any]` dispatch block, params and analysis config.
     "viva_api.simulation.ray.multi_node",
+    # PR 10: moved with the `dict[str, Any]` overrides and params it built in the router.
+    "viva_api.simulation.ray.ensemble",
 }
 
 

@@ -36,6 +36,8 @@ Dispatch mechanisms are STRATEGY objects, each handed the submitter it needs and
   ``run_mbp_tracked.py``, behind a ParCa job unless a staged variant cache is named.
 * :mod:`.nextflow` -- ``NextflowStrategy(batch, k8s, stage_runner=)``: a Nextflow head as a K8s Job that
   submits its own Batch tasks; and the reap of a cancelled campaign's tasks.
+* :mod:`.ensemble` -- ``EnsembleStrategy(batch, stage_runner=)``: ParCa as a one-node MNP job, then the
+  simulation ensemble as an N-node MNP job. It was the router's fall-through tail, not a method.
 * :mod:`.multi_node` -- ``MultiNodeCompositeStrategy(batch, stage_runner=)``: one composite on Ray actors
   across the nodes of one MNP job, and the analysis that follows it. The one place Ray is literally
   what runs.

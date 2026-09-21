@@ -137,7 +137,7 @@ def test_the_known_dispatch_paths_are_all_still_covered() -> None:
         "mbp_tracked.submit",  # MbpTrackedStrategy (P2.1 PR 7)
         "multi_node.submit",  # MultiNodeCompositeStrategy (P2.1 PR 9)
         "submit_chain_dispatch_job",
-        "submit_ecoli_simulation_job",
+        "ensemble.submit",  # EnsembleStrategy: was the router's own tail (P2.1 PR 10)
         "_submit_analysis_job",
     }
     missing = expected - with_identity
