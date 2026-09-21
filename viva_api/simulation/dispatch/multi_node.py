@@ -17,7 +17,7 @@ shape ``MbpTrackedStrategy`` set. This IS a Ray mechanism: the job is a Ray head
 
 Three of the six methods never touched ``self`` and are functions here; the other three are the
 strategy's, verbatim but for how they spell what used to be on ``self``
-(``scripts/prove_ray_carve_is_move_only.py``).
+(proven by ``scripts/prove_ray_carve_is_move_only.py``, kept in the tree up to ``v0.9.151``).
 
 SMS code, and it stays SMS code.
 """
