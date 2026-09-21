@@ -106,3 +106,63 @@ def test_the_service_repeats_only_the_two_batch_questions_the_scheduler_asks_it(
 
     both = public(simulation_service_ray.SimulationServiceRay) & public(RayBatchLayer)
     assert both == {"get_batch_job_statuses", "get_batch_job_details"}, both
+
+
+#: Everything public on ``SimulationServiceRay`` that is not ``SimulationService``'s interface, by why it is
+#: still there. After P2.1 PR 11 the class is its interface, five strategy builders, and THIS.
+COMPOSED_SERVICES = {"parca", "tasks"}
+#: one-call delegates: something outside (the scheduler, a handler, the capability probe, an integration
+#: test) still asks the SERVICE. Each goes when the scheduler is split (``docs/plan-core.md`` P6).
+DELEGATES_UNTIL_P6 = {
+    "cache_s3_uri",
+    "chain_base_tags",
+    "get_batch_job_details",
+    "get_batch_job_statuses",
+    "reap_cancelled_campaign",
+    "submit_campaign_analysis",
+    "submit_chain_dispatch_job",
+    "submit_chain_lineage_batch",
+    "submit_multi_node_analysis",
+}
+#: real code that is progress, cancel or shared staging rather than dispatch: it joins the strategies
+#: (or the scheduler's split halves) in P6, as the 2026-09-20 audit decided.
+PROGRESS_CANCEL_AND_STAGING_UNTIL_P6 = {
+    "stage_runner",
+    "get_chain_campaign_result",
+    "cancel_chain_campaign",
+    "cancel_companion_jobs",
+}
+
+
+def test_the_services_public_surface_beyond_its_interface_is_named_and_may_only_shrink() -> None:
+    """The carve ended with a class that is its interface plus a list. The list is debt with a
+    due date; this pins it, so that re-growing the facade -- one convenient method at a time, which is
+    how the class reached 5,019 lines -- has to be done on purpose, here, in a diff someone reads."""
+    import inspect
+
+    from viva_api.simulation.simulation_service import SimulationService
+
+    service = simulation_service_ray.SimulationServiceRay
+    interface = {name for name, _ in inspect.getmembers(SimulationService) if not name.startswith("_")}
+    public = {name for name in vars(service) if not name.startswith("_")}
+    beyond = public - interface
+    expected = COMPOSED_SERVICES | DELEGATES_UNTIL_P6 | PROGRESS_CANCEL_AND_STAGING_UNTIL_P6
+    assert beyond - expected == set(), f"new public surface on the service: {sorted(beyond - expected)}"
+    assert expected - beyond == set(), (
+        f"gone from the service -- delete it from the list too: {sorted(expected - beyond)}"
+    )
+
+
+def test_no_dispatch_mechanism_is_left_on_the_service() -> None:
+    """Five mechanisms, five strategy objects. What the service keeps of each is a builder."""
+    service = simulation_service_ray.SimulationServiceRay
+    builders = {
+        name for name in vars(service) if name in {"_chain", "_ensemble", "_mbp_tracked", "_multi_node", "_nextflow"}
+    }
+    assert builders == {"_chain", "_ensemble", "_mbp_tracked", "_multi_node", "_nextflow"}
+    leftovers = sorted(
+        name
+        for name in vars(service)
+        if name.startswith(("_submit_", "_seed_", "_sim_command", "_render_", "_nf_", "_mnp_", "_analysis_command"))
+    )
+    assert not leftovers, f"mechanism code is back on the service: {leftovers}"

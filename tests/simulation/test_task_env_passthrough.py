@@ -105,7 +105,7 @@ def test_chain_generation_forwards_task_env() -> None:
         patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
         patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
     ):
-        service.submit_chain_generation(
+        service._chain().submit_chain_generation(
             seed=0,
             generation_index=0,
             experiment_id="exp-1",

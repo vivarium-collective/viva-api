@@ -40,6 +40,8 @@ NOT_YET_BANNED: set[str] = {
     "viva_api.simulation.ray.multi_node",
     # PR 10: moved with the `dict[str, Any]` overrides and params it built in the router.
     "viva_api.simulation.ray.ensemble",
+    # PR 11: moved with its `dict[str, Any]` params, overrides and analysis config.
+    "viva_api.simulation.ray.chain",
 }
 
 
