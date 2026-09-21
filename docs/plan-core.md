@@ -474,7 +474,7 @@ repo and PyPI distribution, with the core CLI.
   `repo-recipe` in P5, which is what removes the duplication; `scripts/qualification_test.sh`
   stays its check, and `atlantis smoke` does not cover it. (Decided 2026-09-20. Before the
   audit the plan did not mention it at all.)
-- **Production.** Prod is on **0.9.78**; dev is at 0.9.149. A catch-up is *not part of this
+- **Production.** Prod is on **0.9.78**; dev is at 0.9.150. A catch-up is *not part of this
   work* (Jim, 2026-09-20): the plan only records the gap and what closing it needs — an RDS
   snapshot, `db_reconcile --analyze` against prod, the migration Job across every revision in
   between (section 7a, risk 3), then smoke Tier 0 + 1 and Tier 2 including the cancel checks.
@@ -575,7 +575,7 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 | C1 ✅ 0.9.148, 2026-09-20 | P2.1 cuts 1–3 + the #709 fix (#710) | the first **dispatch** checkpoint, taken early: the Batch engine now lives in core and every submit goes through it; cancel now stops a run's ParCa job | Tier 0 + 1 + 2, including `sim-cancel` and `chain-cancel`, which must flip FAIL → PASS; markers `/app/viva_core/backends/batch.py` and `cancel_companion_jobs` |
 | B2 ✅ 2026-09-20 (migration Job from 0.9.149; API still 0.9.148) | the write-once marker (D11): migration `f4c8a2e6d0b3` adds `simulator.temporary / label / image_tag` | a **database** change, so on its own before C2 (one kind per deploy). `main` also carries undeployed dispatch changes that #722 sits on top of, so B2 and C2 cannot be two images; they are **one image (0.9.149) and two deploys**: B2 runs only the migration Job and leaves the API on 0.9.148, which the additive migration allows; C2 rolls the API | `--analyze`, then the migration Job; Tier 0 + Tier 1 against the **old** API on the new schema (`database` still says "at head `e7b3c9a1d5f2`": `/health` reads the revision **at startup** and the pod was not restarted, so between B2 and C2 that check is stale, not evidence); `force` → 409 is checked at C2, when the code that refuses it is running; on dev only, mark simulator 214 (the unmarked smoke artifact of 2026-09-20) temporary by hand |
 | C2 ✅ 0.9.149, 2026-09-20 | cuts 4–5, build + tasks as services (#712–#714), PR 2's smoke checks, and #722's code (write-once, the marker) | the image build and the task path were rewired and are merged but undeployed | Tier 0 + 1 + 2, `sim-mbp`, and the opt-in **`build`** check: a real image build of a **marked-temporary** simulator, which Tier 2 then runs on |
-| C3 | PRs 3–8 (analysis spec, ParCa split, the composed Batch layer, `compose` on it, the mbp-tracked and Nextflow strategies), 6a, and the **#730 fix — the one behaviour change in the set** | every submit now goes through a composed object; two mechanisms are strategies; a multi-node composite starts receiving `RAY_SHARDS_DEFAULT` | Tier 0 + 1 + 2; `compose`, `sim-mbp`, `sim-nextflow`, `nextflow-cancel` especially; Tier 0 `capabilities` still lists `container-jobs` (PR 5); the three #730 checks in the deferred list |
+| C3 ✅ 0.9.150, 2026-09-21 | PRs 3–8 (analysis spec, ParCa split, the composed Batch layer, `compose` on it, the mbp-tracked and Nextflow strategies), 6a, and the **#730 fix — the one behaviour change in the set** | every submit now goes through a composed object; two mechanisms are strategies; a multi-node composite starts receiving `RAY_SHARDS_DEFAULT` | Tier 0 + 1 + 2; `compose`, `sim-mbp`, `sim-nextflow`, `nextflow-cancel` especially; Tier 0 `capabilities` still lists `container-jobs` (PR 5); the three #730 checks in the deferred list |
 | C | PRs 9–11 (composite, ensemble, chain strategies); the end of P2.1 | the last three mechanisms, chain among them | Tier 0 + 1 + 2, **plus a real 2 x 2 chain campaign** and `chain-cancel`: chain bills real money and fakes share their author's blind spots |
 | D | P2.3 | one resolver replaces four image derivations; the core runtime image | workbench through the relay; `vwb smoke`; `atlantis worker`, `task`, `compose` on the new image |
 | E | P3 | settings split, new wiring and lifespan, app factory | alone; diff redacted effective settings and the OpenAPI spec old pod vs new |
@@ -688,7 +688,9 @@ split; each has an owner-less issue or a named moment.
 | The dataset walk re-lists every simulation forever (~$5–6 / month / site); walking terminal simulations once a day would cut it ~10x | decision log, 2026-09-19 | P4a, when the walker moves to core |
 | Draft #670 conflicts with P1's move of `gcs_aio.py`; a resolution was offered | #670 | when its author picks it up |
 | RDS snapshot `pre-0-9-147-checkpoint-b-20260919t1955z` | dev | delete once 0.9.148 has soaked |
-| **#730**, the *deployed* half: the fix is merged-pending and proven by unit tests; what only a deployment can show is its effect | dev, at the next dispatch deploy (C3, or earlier if #730 is deployed on its own) | for the smoke `sim-composite` run: (1) the job's `RAY_JOB_CMD` contains `RAY_SHARDS_DEFAULT=32` (16 vCPU × 2 nodes; **before**, measured on C2's run `65fd6e7d…`: absent); (2) the API log has no `Could not determine per-node vCPUs` (**before**: one per dispatch); (3) `sim-composite` still passes. The smoke run is 1 seed, so it cannot show a throughput change; a many-seed A/B is a separate, billable measurement and is not planned |
+| ~~**#730**, the *deployed* half~~ **done at C3** (2026-09-21): the smoke composite job `6b34a40f…` carries `RAY_SHARDS_DEFAULT=32` in its `RAY_JOB_CMD` (16 vCPU × 2 nodes; at C2: absent); the API log has 0 `Could not determine per-node vCPUs` warnings since the roll (at C2: one per dispatch); `sim-composite` completed | dev | a many-seed A/B of throughput would be a separate, billable measurement; not planned |
+| The package `viva_api/simulation/ray/` and the class `SimulationServiceRay` are named after one orchestration framework, but Ray runs inside only two of the five mechanisms (ensemble, multi-node composite). Nextflow orchestrates itself (executor awsbatch / slurm / local) and uses no Ray; mbp-tracked and chain are plain container jobs. What they share is the Batch backend and the SMS domain (Jim, 2026-09-21: "maybe the parent concept should have a different name … just note this and carry on") | viva-api | a pure-rename PR (package + classes) **after** the strategies land, near PR 12 — never during: every proof compares against `origin/main` by path and name. Persisted names (`ComputeBackend.RAY`, `JobBackend.RAY`, the `ray_*` settings, queue names) are deployed config and a separate decision |
+| `GET /api/v1/simulations/{id}/status` answers **500**, with a traceback in the log, for an id that does not exist (seen at C3, from a diagnostic probe) | viva-api | 404; pre-existing, not from this work |
 | RDS snapshot `pre-0-9-149-checkpoint-b2-20260920t1433z` | dev | C2 passed 2026-09-20; delete once it has soaked |
 | ~~Smoke `sim-chain` downloads the whole chain output~~ **done** (2026-09-21): it lists the run's output in S3 instead — the prefixes come from what the run's own finished Batch jobs declare (`*_OUT_S3`), since the API says nothing about where a run wrote. Checked against C2's real chain run: 53 objects and 2 seed summaries, the same as the download, in 5 s instead of ~30 min. Falls back to the download without AWS access | `app/smoke.py` | an API that LISTS a run's outputs (names and sizes) would let any client do this, and is worth having for users who should not have to download GBs to see what is there — not planned |
 | Temporary simulators 214 and 215 and the images `tmp-d01dc07-b64227[-submit]` on dev / in the shared ECR | dev | the purge for temporary simulators (not built yet); until then they stay, marked |
@@ -708,7 +710,7 @@ split; each has an owner-less issue or a named moment.
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — #696; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — #698; all merged 2026-09-19 |
 | D11 | write-once simulators + the marked-temporary exception: migration `f4c8a2e6d0b3`, `environment_key`, `force` guarded (409), the marker in all three clients, smoke `build` on a temporary simulator — #722 | — | — (checkpoint **B2**, a database deploy, before C2) | — | open |
-| P2.1 | carve `simulation_service_ray.py` (5,019 → 1,965 lines so far; PR 9 took 648; PR 8 took 548; PR 7 took 252; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `ray/analysis_spec.py` — PR 3 (#726) · ParCa split → `ray/parca_spec.py` + `RayParcaService` — PR 4 (#727) · `RayBatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a (#731) · #730 fixed (#732) · the D12 ban — PR 6b (#733) · strategy: mbp-tracked — PR 7 (#734) · strategy: Nextflow — PR 8 (#735) · strategy: multi-node composite — PR 9. Remaining: PRs 10–11 (ensemble, chain), checkpoint C, PR 12 of the 2026-09-20 sequence; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.149 carries cuts 1–5, #710, #714, #722 | **2026-09-20** (checkpoints C1, B2, C2) | — | **in progress.** Deployed to dev: everything through #722. Merged after C2 (→ C3): PR 3 (a pure move), PR 4 (the three cache jobs rewired), PR 5 (every Batch call respelled through `service.batch`). PR 6 (compose no longer builds a simulation service). PR 6a (annotations only; no runtime change). PR 6b (the D12 ban; annotations, three unused `**kwargs` removed). PR 7 and PR 8 (two strategies). **Next: checkpoint C3** (deploy), then PR 9 (strategy: multi-node composite) |
+| P2.1 | carve `simulation_service_ray.py` (5,019 → 1,965 lines so far; PR 9 took 648; PR 8 took 548; PR 7 took 252; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `ray/analysis_spec.py` — PR 3 (#726) · ParCa split → `ray/parca_spec.py` + `RayParcaService` — PR 4 (#727) · `RayBatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a (#731) · #730 fixed (#732) · the D12 ban — PR 6b (#733) · strategy: mbp-tracked — PR 7 (#734) · strategy: Nextflow — PR 8 (#735) · strategy: multi-node composite — PR 9. Remaining: PRs 10–11 (ensemble, chain), checkpoint C, PR 12 of the 2026-09-20 sequence; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.150 carries everything through PR 8 (#735), 6a/6b, and the #730 fix | **2026-09-21** (checkpoints C1, B2, C2, C3) | — | **in progress.** **Deployed to dev as 0.9.150 (checkpoint C3, 2026-09-21):** everything through PR 8 (#735), typed clients (6a), the D12 ban (6b) and the #730 fix. Merged after C3 (→ checkpoint C): PR 9 (strategy: multi-node composite). Next: PR 10 (ensemble), PR 11 (chain), checkpoint C, PR 12 |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image | | | | not started (checkpoint D) |
 | P3 | | | | | not started (checkpoint E) |
@@ -723,6 +725,42 @@ split; each has an owner-less issue or a named moment.
 
 ## Decision log
 
+- **2026-09-21** — **Checkpoint C3 passed on dev (0.9.150, #736, tag `v0.9.150`).** Jim: "merge #735,
+  then bump and deploy C3". Image from `3ecb7b25`; `kubectl diff` of the app overlay was one line
+  (the api image); only the api pod rolled. No migration (the `-db-migration` tag was bumped to stay
+  equal; the Job was not run). Markers on the newest pod: `ray/nextflow.py` and `ray/mbp_tracked.py`
+  present, the fixed `jobDefinitions=[job_definition]` call present and the old one gone, the
+  capability probe reading `service.batch`. **The dev-only stubs are not in the image** —
+  `types_boto3_batch` and the Kubernetes stubs unimportable, the typed modules importing without
+  them — which is the live form of 6a's guard.
+  Tier 0: 7/7, with **`container-jobs` still advertised** (the `hasattr` probe PR 5 would have
+  silenced) and all 100 routes served. Tier 1: `task`, `task-fail`, `task-repo`, `worker`, and
+  `compose` — now through a Batch layer it is handed rather than a simulation service it builds.
+  Tier 2, on the newest authoritative simulator (213): `sim-default`, `sim-composite`,
+  `sim-nextflow`, `sim-mbp` completed; `sim-cancel`, `chain-cancel`, `nextflow-cancel` cancelled;
+  `sim-chain` 2/2 seeds (`chain-progress` terminal, 52 objects and 2 per-seed summaries listed in S3).
+  Verdicts read from the API and AWS per run; the smoke client's own tally line was not waited for —
+  it was still downloading the chain's output with the pre-#737 code, which is the ceremony #737
+  removes. **The two mechanisms that are now strategy objects ran on a deployment.**
+  **#730, after:** `RAY_SHARDS_DEFAULT=32` in the composite job's command, no vCPU warning in the
+  log, the run completed (deferred list has the before/after).
+  **On the hour:** Jim asked whether an hour of smoke per deploy had to be dead time. Measured: the
+  chain finished server-side 44 minutes into Tier 2; the *client* then spent the rest downloading
+  its 3.6 GB through the tunnel. Three changes: PR 9 was written, proven and opened while Tier 2
+  ran (`main` is not dev — only deploying N+1 waits for N's verdict); `sim-chain` now lists the
+  run's output in S3 instead of downloading it (#737: 53 objects and 2 summaries in 5 s, the same
+  answer the 30-minute download gave at C2), and was used to read this run's chain verdict the
+  moment the server finished (52 objects, 2 summaries, 5.7 s); and only deploys wait on smoke at
+  all — the carve has one left.
+  One traceback in the pod's log is mine: a status probe of a simulation id that does not exist,
+  which the API answers with a 500 (deferred list).
+  **A mistake of mine, no loss:** to run that lister from its branch I used `git stash` +
+  `checkout` + `stash pop` in a worktree that was clean. `stash` saved nothing, so `pop` applied
+  the top of the repository's **shared** stash list — another session's work, 16 files. It
+  conflicted, which is the only reason the entry was kept rather than dropped. Verified the stash
+  intact and the main checkout's untracked originals present *before* resetting my own worktree;
+  54 entries before and after. The rule is now: never `git stash` here — a throwaway worktree, or
+  `git show branch:path`.
 - **2026-09-21** — **PR 9: `MultiNodeCompositeStrategy` — the third strategy, written while C3's Tier 2
   ran** (Jim asked whether an hour per deploy had to be dead time; it does not — `main` is not dev,
   and only *deploying* N+1 has to wait for N's verdict). Six methods, 615 lines: three never
