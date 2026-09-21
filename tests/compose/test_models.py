@@ -150,3 +150,14 @@ class TestPBAllowList:
     def test_creation(self) -> None:
         al = PBAllowList(allow_list=["pypi::cobra", "conda::readdy"])
         assert len(al.allow_list) == 2
+
+
+def test_from_pb_outline_refuses_an_entry_that_is_not_an_object() -> None:
+    """Typed honestly (P3d-4b-2): an entry that is not a mapping used to fail inside ``**entry``."""
+    with pytest.raises(TypeError, match="'processes' entries must be objects"):
+        PackageOutline.from_pb_outline({"processes": ["not-an-object"]}, name="p", package_type=PackageType.PYPI)
+
+
+def test_from_pb_outline_ignores_a_section_that_is_not_a_list() -> None:
+    pkg = PackageOutline.from_pb_outline({"processes": None, "steps": {}}, name="p", package_type=PackageType.PYPI)
+    assert pkg.compute == []

@@ -109,3 +109,14 @@ def test_no_domain_terms_in_core_constructs(source: Path) -> None:
         if term in text.lower()
     ]
     assert not offenders, "domain term(s) in a viva_core construct:\n  " + "\n  ".join(sorted(set(offenders)))
+
+
+def test_the_compose_allow_list_default_is_the_applications() -> None:
+    """The packages a compose document may install name one application's science stack; core seeds
+    nothing (P3d-4b-2)."""
+    import viva_core.compose.models as models
+
+    assert not hasattr(models, "DEFAULT_COMPOSE_ALLOW_LIST")
+    from viva_api.simulation.compose_allow_list import DEFAULT_COMPOSE_ALLOW_LIST
+
+    assert DEFAULT_COMPOSE_ALLOW_LIST and all(isinstance(entry, str) for entry in DEFAULT_COMPOSE_ALLOW_LIST)

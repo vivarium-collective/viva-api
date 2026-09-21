@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.152
+  version: 0.9.153
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -4984,7 +4984,11 @@ components:
       - batch
       - ray
       title: ComputeBackend
-      description: Compute backend for simulation workloads.
+      description: 'The DEFAULT dispatch mechanism of a deployment (``COMPUTE_BACKEND``),
+        and the per-request choice a
+
+        compose run may make. Coarser than :class:`JobBackend`: it names a way of
+        running, not a job''s home.'
     ConfigDocument:
       properties:
         config:
