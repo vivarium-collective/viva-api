@@ -1158,3 +1158,99 @@ def test_the_registry_inspector_reads_a_tags_push_time_and_none_when_absent() ->
     inspect = smoke.AwsImagePushedAt("v2ecoli", client=Client())
     assert inspect("abc") == datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
     assert inspect("gone") is None
+
+
+# ------------------------------------------------------------------ a chain's output is counted where it is written
+
+
+class _RunJobsBatch:
+    """Two finished chain links and the analysis job of one run, plus a job of another run."""
+
+    JOBS = {
+        "s0": ("chain-seed0-lineage-TOKEN-a", "s3://bucket/out/TOKEN/seed_00/"),
+        "s1": ("chain-seed1-lineage-TOKEN-b", "s3://bucket/out/TOKEN/seed_01/"),
+        "an": ("ray-analysis-TOKEN-c", "s3://bucket/out/TOKEN/"),
+        "xx": ("chain-seed0-lineage-OTHER-d", "s3://bucket/out/OTHER/seed_00/"),
+        # the run's ParCa job: one of its jobs, but it writes the commit-keyed CACHE, not the run's output
+        "pc": ("ray-parca-TOKEN-abc1234", "s3://bucket/parca-cache/abc1234/"),
+    }
+
+    def describe_job_queues(self, **kw: Any) -> dict[str, Any]:
+        return {"jobQueues": [] if kw.get("maxResults") == 1 else [{"jobQueueName": "q"}]}
+
+    def list_jobs(self, **kw: Any) -> dict[str, Any]:
+        if kw["jobStatus"] != "SUCCEEDED":
+            return {"jobSummaryList": []}
+        return {"jobSummaryList": [{"jobId": i, "jobName": name} for i, (name, _) in self.JOBS.items()]}
+
+    def describe_jobs(self, **kw: Any) -> dict[str, Any]:
+        def job(i: str) -> dict[str, Any]:
+            name, out = self.JOBS[i]
+            env = [{"name": "CONTAINER_OUT_DIR", "value": "/out"}, {"name": "CONTAINER_OUT_S3", "value": out}]
+            return {"jobId": i, "jobName": name, "container": {"command": ["run"], "environment": env}}
+
+        return {"jobs": [job(i) for i in kw["jobs"]]}
+
+
+class _PagedS3:
+    def __init__(self, keys: list[str]) -> None:
+        self.keys, self.calls = keys, []  # type: ignore[var-annotated]
+
+    def list_objects_v2(self, **kw: Any) -> dict[str, Any]:
+        self.calls.append(kw)
+        under = [k for k in self.keys if k.startswith(kw["Prefix"])]
+        if "ContinuationToken" not in kw:  # two pages, to prove the paging is followed
+            return {"Contents": [{"Key": k} for k in under[:2]], "IsTruncated": True, "NextContinuationToken": "t"}
+        return {"Contents": [{"Key": k} for k in under[2:]], "IsTruncated": False}
+
+
+CHAIN_KEYS = [
+    "parca-cache/abc1234/simData.cPickle",
+    "out/TOKEN/seed_00/summary.json",
+    "out/TOKEN/seed_00/history/1200.pq",
+    "out/TOKEN/seed_01/summary.json",
+    "out/TOKEN/seed_01/history/1200.pq",
+    "out/TOKEN/analyses/report.html",
+    "out/OTHER/seed_00/summary.json",
+]
+
+
+def test_a_runs_outputs_are_found_from_what_its_own_jobs_declare() -> None:
+    s3 = _PagedS3(CHAIN_KEYS)
+    lister = smoke.AwsRunOutputLister(smoke.AwsBatchJobLister(client=_RunJobsBatch()), s3_client=s3)
+
+    # outermost prefix only: the analysis job's root already contains each seed's prefix
+    assert lister.prefixes("TOKEN") == ["s3://bucket/out/TOKEN/"]
+    uris = lister("TOKEN")
+    assert len(uris) == 5 and not any("OTHER" in u for u in uris)
+    assert [kw.get("ContinuationToken") for kw in s3.calls] == [None, "t"]
+
+
+def test_without_an_analysis_job_each_seeds_own_prefix_is_listed() -> None:
+    class SeedsOnly(_RunJobsBatch):
+        JOBS = {k: v for k, v in _RunJobsBatch.JOBS.items() if k != "an"}
+
+    lister = smoke.AwsRunOutputLister(smoke.AwsBatchJobLister(client=SeedsOnly()), s3_client=_PagedS3(CHAIN_KEYS))
+    assert lister.prefixes("TOKEN") == ["s3://bucket/out/TOKEN/seed_00/", "s3://bucket/out/TOKEN/seed_01/"]
+    assert len(lister("TOKEN")) == 4
+
+
+def test_listed_outputs_make_the_same_assertion_as_downloaded_ones() -> None:
+    evidence: dict[str, Any] = {"experiment_id": "TOKEN"}
+    uris = [f"s3://bucket/{k}" for k in CHAIN_KEYS if "TOKEN" in k]
+    opts = smoke.SmokeOptions(list_run_outputs=lambda token: uris)
+    assert smoke._require_listed_outputs(opts, 7, evidence, expect_summaries=2) == 5
+    assert (evidence["output_files"], evidence["seed_summaries"], evidence["outputs_via"]) == (5, 2, "s3-listing")
+
+    one_seed = [u for u in uris if "seed_01" not in u]
+    with pytest.raises(smoke.CheckFailed, match="S3 holds 1 per-seed summary.json"):
+        smoke._require_listed_outputs(smoke.SmokeOptions(list_run_outputs=lambda token: one_seed), 7, dict(evidence), 2)
+
+
+def test_no_lister_or_nothing_listed_means_download_never_a_pass_on_nothing() -> None:
+    """``None`` tells the caller to download. An EMPTY listing must not read as "0 files, fine":
+    it may only mean the jobs were not found (aged out, another account)."""
+    evidence: dict[str, Any] = {"experiment_id": "TOKEN"}
+    assert smoke._require_listed_outputs(smoke.SmokeOptions(), 7, evidence, 2) is None
+    assert smoke._require_listed_outputs(smoke.SmokeOptions(list_run_outputs=lambda token: []), 7, evidence, 2) is None
+    assert "outputs_via" not in evidence
