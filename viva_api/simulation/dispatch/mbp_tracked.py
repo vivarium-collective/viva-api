@@ -7,7 +7,7 @@ PR 7 of the 2026-09-20 sequence), and so the one that sets the shape:
 
 * ``MbpTrackedStrategy(batch)`` is HANDED what it submits through -- a ``ContainerSubmitter`` --
   and nothing else. It does not know the simulation service exists. Today that object is the
-  service's ``RayBatchLayer``; the point is that the strategy never finds out.
+  service's ``BatchLayer``; the point is that the strategy never finds out.
 * ``submit`` is the body of ``SimulationServiceRay._submit_mbp_tracked_dispatch``, verbatim but for
   how four things are spelled now that there is no ``self`` to find them on (the cache URI and
   the command are functions, the Batch layer is ``self._batch``, the run record is a function).
@@ -33,11 +33,11 @@ from viva_api.common.models import JobId
 from viva_api.common.storage import data_layout
 from viva_api.common.storage.file_paths import S3FilePath
 from viva_api.simulation.database_service import DatabaseService
+from viva_api.simulation.dispatch import _seams, parca_spec
+from viva_api.simulation.dispatch.batch_layer import ContainerSubmitter, _rand_suffix
+from viva_api.simulation.dispatch.image_paths import PARCA_CACHE_DIR, SIM_OUT_DIR, V2ECOLI_DIR
+from viva_api.simulation.dispatch.run_records import record_run_with_companions
 from viva_api.simulation.models import Simulation
-from viva_api.simulation.ray import _seams, parca_spec
-from viva_api.simulation.ray.batch_layer import ContainerSubmitter, _rand_suffix
-from viva_api.simulation.ray.image_paths import PARCA_CACHE_DIR, SIM_OUT_DIR, V2ECOLI_DIR
-from viva_api.simulation.ray.run_records import record_run_with_companions
 from viva_core.events.events_env import with_events_env
 
 

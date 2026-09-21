@@ -30,7 +30,7 @@ def _mnp_submit(task_env: dict[str, str] | None) -> Any:
     batch = MagicMock()
     batch.submit_job.return_value = {"jobId": "mnp-1"}
     service = SimulationServiceRay()
-    with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+    with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
         service.batch.submit_mnp(
             job_name="ray-sim-x",
             job_definition="smscdk-ray-mnp-abc1234:1",
@@ -67,7 +67,7 @@ def test_mnp_task_env_reaches_the_single_all_node_override() -> None:
 def _container_submit(task_env: dict[str, str] | None) -> Any:
     batch = _fake_container_batch(["c-1"])
     service = SimulationServiceRay()
-    with patch("viva_api.simulation.ray._seams.get_settings", _container_settings):
+    with patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings):
         service.batch.submit_container(
             job_name="chain-seed0-gen0-x",
             job_definition="smscdk-ray-container-abc1234:1",
@@ -101,9 +101,9 @@ def test_chain_generation_forwards_task_env() -> None:
     mock_batch = _fake_container_batch(["s0g0"])
     service = SimulationServiceRay()
     with (
-        patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+        patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
         patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-        patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+        patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
     ):
         service._chain().submit_chain_generation(
             seed=0,
@@ -121,7 +121,7 @@ def test_chain_generation_forwards_task_env() -> None:
 
 def _nf_params(task_env: dict[str, str] | None) -> dict[str, Any]:
     service = SimulationServiceRay()
-    with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+    with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
         return service._nextflow()._awsbatch_nf_params("abc1234", "exp-nf", task_env=task_env)
 
 

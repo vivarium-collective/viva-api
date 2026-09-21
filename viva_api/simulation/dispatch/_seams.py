@@ -1,6 +1,6 @@
 """The two names every Ray-service module reaches the outside world through.
 
-    from viva_api.simulation.ray import _seams
+    from viva_api.simulation.dispatch import _seams
     _seams.get_settings().batch_region
     _seams.boto3.client("batch", ...)
 

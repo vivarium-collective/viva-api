@@ -1,7 +1,7 @@
 """ParCa and the caches a simulation stages from: WHERE they live in S3 and the COMMANDS
 that build them.
 
-Split out of ``ray/parca.py`` (``docs/plan-core.md`` P2.1, PR 4 of the 2026-09-20 sequence).
+Split out of ``dispatch/parca.py`` (``docs/plan-core.md`` P2.1, PR 4 of the 2026-09-20 sequence).
 These six were methods of ``RayParcaMixin`` that never touched ``self``: each body below is
 what it was there, dedented, with the ``self`` parameter dropped and the leading underscore
 gone (``_parca_command`` -> ``parca_command``, ``_build_new_gene_cache_command`` ->
@@ -13,7 +13,7 @@ This is the half of "ParCa" that is a domain SPECIFICATION: every dispatch mecha
 NOT submitted one way -- it is a container job in the mbp-tracked and chain mechanisms and
 an MNP job in the ensemble and multi-node composite mechanisms -- so its submission stays
 with each mechanism. The half that IS one way, the three cache jobs, is
-``RayParcaService`` in ``ray/parca.py``.
+``ParcaService`` in ``dispatch/parca.py``.
 
 SMS code, and it stays SMS code: the parameter calculator, new-gene and variant caches are
 domain knowledge. Call these as ``parca_spec.cache_s3_uri(...)`` -- through the module, not
@@ -25,8 +25,8 @@ import logging
 import shlex
 
 from viva_api.common.storage import data_layout
-from viva_api.simulation.ray import _seams
-from viva_api.simulation.ray.image_paths import (
+from viva_api.simulation.dispatch import _seams
+from viva_api.simulation.dispatch.image_paths import (
     NEW_GENE_INDUCED_CACHE_DIR,
     PARCA_CACHE_DIR,
     PARCA_SIMDATA_DIR,

@@ -1,7 +1,7 @@
 """Building a simulator image: a Docker-out-of-Docker build on AWS Batch, run as a LOCAL
 task that submits the Batch job and polls it to completion.
 
-``RayImageBuilder`` is a SERVICE, not a mixin of ``SimulationServiceRay`` (it was one for a
+``ImageBuilder`` is a SERVICE, not a mixin of ``SimulationServiceRay`` (it was one for a
 single PR, P2.1 cut 4; ``docs/plan-core.md`` decision log, 2026-09-20). A build needs one
 collaborator -- the ``LocalTaskService`` that owns the task -- and nothing else of the
 service: not the Batch layer, not ParCa, not dispatch. Inheriting all of that to reach one
@@ -23,13 +23,13 @@ from viva_api.common.hpc.local_task_service import LocalTaskService
 from viva_api.common.models import JobId
 from viva_api.common.simulator_defaults import RepoUrl
 from viva_api.simulation import batch_build
+from viva_api.simulation.dispatch import _seams
 from viva_api.simulation.models import SimulatorVersion
-from viva_api.simulation.ray import _seams
 
 logger = logging.getLogger(__name__)
 
 
-class RayImageBuilder:
+class ImageBuilder:
     def __init__(self, local_task_service: LocalTaskService) -> None:
         self._local = local_task_service
 

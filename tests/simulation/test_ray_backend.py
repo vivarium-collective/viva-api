@@ -16,14 +16,13 @@ from botocore.validate import validate_parameters
 from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.config import ComputeBackend
-from viva_api.simulation.models import AnalysisOptions, HpcRun, JobType
-from viva_api.simulation.ray import chain, parca_spec
-from viva_api.simulation.ray.analysis_spec import analysis_modules_for
-from viva_api.simulation.ray.config_interpretation import (
+from viva_api.simulation.dispatch import chain, parca_spec
+from viva_api.simulation.dispatch.analysis_spec import analysis_modules_for
+from viva_api.simulation.dispatch.config_interpretation import (
     injected_processes_from_config,
     strain_from_config,
 )
-from viva_api.simulation.ray.image_paths import (
+from viva_api.simulation.dispatch.image_paths import (
     NEW_GENE_INDUCED_CACHE_DIR,
     PARCA_CACHE_DIR,
     PARCA_SIMDATA_DIR,
@@ -31,6 +30,7 @@ from viva_api.simulation.ray.image_paths import (
     V2ECOLI_DIR,
     VARIANT_CACHE_DIR,
 )
+from viva_api.simulation.models import AnalysisOptions, HpcRun, JobType
 from viva_api.simulation.simulation_service_ray import (
     SimulationServiceRay,
 )
@@ -268,10 +268,10 @@ class TestSimulationServiceRaySubmit:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             # data_layout builds the S3 URIs (results/cache) and reads config.get_settings directly.
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             job_id = await service.submit_ecoli_simulation_job(
                 ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-1"
@@ -368,9 +368,9 @@ class TestSimulationServiceRaySubmit:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             job_id = await service.submit_ecoli_simulation_job(
                 ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-real-entry"
@@ -439,9 +439,9 @@ class TestSimulationServiceRaySubmit:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             job_id = await service.submit_ecoli_simulation_job(
                 ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-single-real"
@@ -499,9 +499,9 @@ class TestSimulationServiceRaySubmit:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch.object(chain.ChainStrategy, "submit_chain_dispatch_job", _held_submit_chain_dispatch_job),
         ):
             # The property under test, stated directly: the entrypoint returns
@@ -601,9 +601,9 @@ class TestSimulationServiceRaySubmit:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             job_id = await service.submit_ecoli_simulation_job(
@@ -646,9 +646,9 @@ class TestSimulationServiceRaySubmit:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
             patch.object(parca_spec, "cache_s3_uri", wraps=parca_spec.cache_s3_uri) as mock_cache_s3_uri,
         ):
@@ -676,9 +676,9 @@ class TestSimulationServiceRaySubmit:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
             patch.object(parca_spec, "cache_s3_uri", wraps=parca_spec.cache_s3_uri) as mock_cache_s3_uri,
         ):
@@ -711,9 +711,9 @@ class TestSimulationServiceRaySubmit:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
             patch.object(parca_spec, "cache_s3_uri", wraps=parca_spec.cache_s3_uri) as mock_cache_s3_uri,
         ):
@@ -745,7 +745,7 @@ class TestNewGeneCacheSourceVariant:
             return "ngc-1"
 
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
             patch.object(service.batch, "submit_container", side_effect=fake_submit_container),
             patch.object(service.batch, "ensure_container_job_def", return_value="job-def:1"),
@@ -775,7 +775,7 @@ class TestNewGeneCacheSourceVariant:
             return "ngc-2"
 
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
             patch.object(service.batch, "submit_container", side_effect=fake_submit_container),
             patch.object(service.batch, "ensure_container_job_def", return_value="job-def:1"),
@@ -829,7 +829,7 @@ class TestSubmitMnpStandaloneQueueRouting:
         mock_batch = MagicMock()
         mock_batch.submit_job.return_value = {"jobId": "job-1"}
         service = SimulationServiceRay()
-        with patch("viva_api.simulation.ray._seams.get_settings", return_value=settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", return_value=settings):
             service.batch.submit_mnp(
                 job_name="standalone-test",
                 job_definition="smscdk-ray-mnp",
@@ -850,7 +850,7 @@ class TestSubmitMnpStandaloneQueueRouting:
         mock_batch = MagicMock()
         mock_batch.submit_job.return_value = {"jobId": "job-1"}
         service = SimulationServiceRay()
-        with patch("viva_api.simulation.ray._seams.get_settings", return_value=settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", return_value=settings):
             service.batch.submit_mnp(
                 job_name="standalone-test",
                 job_definition="smscdk-ray-mnp",
@@ -871,7 +871,7 @@ class TestSubmitMnpStandaloneQueueRouting:
         mock_batch = MagicMock()
         mock_batch.submit_job.return_value = {"jobId": "job-1"}
         service = SimulationServiceRay()
-        with patch("viva_api.simulation.ray._seams.get_settings", return_value=settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", return_value=settings):
             service.batch.submit_mnp(
                 job_name="multinode-test",
                 job_definition="smscdk-ray-mnp",
@@ -897,7 +897,7 @@ class TestSubmitMnpAllowsSlowStorage:
         mock_batch = MagicMock()
         mock_batch.submit_job.return_value = {"jobId": "job-1"}
         service = SimulationServiceRay()
-        with patch("viva_api.simulation.ray._seams.get_settings", return_value=settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", return_value=settings):
             service.batch.submit_mnp(
                 job_name="shm-test",
                 job_definition="smscdk-ray-mnp",
@@ -978,9 +978,9 @@ class TestAnalysisDagNode:
         mock_batch = _fake_batch(["parca-123", "sim-456"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             await service.submit_ecoli_simulation_job(
                 ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-phase0"
@@ -995,18 +995,18 @@ class TestParcaCommandNewGenes:
     produce a ParCa command that actually carries the --new-genes flag."""
 
     def test_new_genes_flows_into_the_parca_command(self) -> None:
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command(new_genes="violacein")
         assert f"--new-genes {shlex.quote('violacein')}" in cmd
 
     @pytest.mark.parametrize("new_genes", [None, "off"])
     def test_new_genes_off_or_absent_omits_the_flag(self, new_genes: str | None) -> None:
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command(new_genes=new_genes)
         assert "--new-genes" not in cmd
 
     def test_new_genes_with_a_space_is_shell_quoted(self) -> None:
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command(new_genes="two genes")
         assert f"--new-genes {shlex.quote('two genes')}" in cmd
 
@@ -1022,8 +1022,8 @@ class TestBatchExitCode:
         }
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             info = await service.get_job_status(JobId.ray("sim-1"))
         assert info is not None
@@ -1034,8 +1034,8 @@ class TestBatchExitCode:
         mock_batch.describe_jobs.return_value = {"jobs": [{"jobId": "sim-2", "status": "RUNNING"}]}
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             info = await service.get_job_status(JobId.ray("sim-2"))
         assert info is not None
@@ -1049,8 +1049,8 @@ class TestSimulationServiceRayStatusCancel:
         mock_batch.describe_jobs.return_value = {"jobs": [{"jobId": "sim-456", "status": "RUNNING", "startedAt": 111}]}
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             info = await service.get_job_status(JobId.ray("sim-456"))
         assert info is not None
@@ -1062,8 +1062,8 @@ class TestSimulationServiceRayStatusCancel:
         mock_batch.describe_jobs.return_value = {"jobs": []}
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             assert await service.get_job_status(JobId.ray("missing")) is None
 
@@ -1079,8 +1079,8 @@ class TestSimulationServiceRayStatusCancel:
         mock_batch = MagicMock()
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             await service.cancel_job(JobId.ray("sim-456"))
         mock_batch.terminate_job.assert_called_once()
@@ -1115,8 +1115,8 @@ class TestCancelChainCampaign:
         service = SimulationServiceRay()
         campaign = self._campaign(["s0g1", "s1g0", "s2g2"])
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             await service.cancel_chain_campaign(campaign)
 
@@ -1132,8 +1132,8 @@ class TestCancelChainCampaign:
         service = SimulationServiceRay()
         campaign = self._campaign([None, "s1g0", None])
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             await service.cancel_chain_campaign(campaign)
 
@@ -1145,8 +1145,8 @@ class TestCancelChainCampaign:
         service = SimulationServiceRay()
         campaign = self._campaign([None, None])
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             await service.cancel_chain_campaign(campaign)
         mock_batch.terminate_job.assert_not_called()
@@ -1165,8 +1165,8 @@ class TestGetChainCampaignResult:
         mock_batch = MagicMock()
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             result = service.get_chain_campaign_result([])
         assert result.terminal is True
@@ -1184,8 +1184,8 @@ class TestGetChainCampaignResult:
         }
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             result = service.get_chain_campaign_result(["seed0-final", "seed1-final"])
         assert result.terminal is False
@@ -1202,8 +1202,8 @@ class TestGetChainCampaignResult:
         }
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             result = service.get_chain_campaign_result(["seed0-final", "seed1-final"])
         assert result.terminal is True
@@ -1225,8 +1225,8 @@ class TestGetChainCampaignResult:
         }
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             result = service.get_chain_campaign_result(["seed0-final", "seed1-final", "seed2-final"])
         assert result.terminal is True
@@ -1240,8 +1240,8 @@ class TestGetChainCampaignResult:
         }
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             result = service.get_chain_campaign_result([f"seed{i}-final" for i in range(3)])
         assert result.terminal is True
@@ -1256,8 +1256,8 @@ class TestGetChainCampaignResult:
         mock_batch.describe_jobs.return_value = {"jobs": [{"jobId": "seed0-final", "status": "SUCCEEDED"}]}
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             result = service.get_chain_campaign_result(["seed0-final", "seed1-final-not-visible-yet"])
         assert result.terminal is False
@@ -1277,8 +1277,8 @@ class TestGetChainCampaignResult:
         mock_batch.describe_jobs.side_effect = _describe_jobs
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             result = service.get_chain_campaign_result(job_ids)
         assert result.terminal is True
@@ -1302,7 +1302,7 @@ class TestSimulationServiceRayBuild:
 
     def test_build_command_clones_v2ecoli_and_runs_its_recipe(self) -> None:
         service = SimulationServiceRay()
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = service._image_builder().build_command(_v2ecoli_simulator())
         assert cmd[0] == "sh" and cmd[1] == "-c"
         script = cmd[2]
@@ -1317,7 +1317,7 @@ class TestSimulationServiceRayBuild:
         a command byte-for-byte unaffected -- the recipe line must have NOTHING after
         -R us-gov-west-1, and the PAT must still be unset right after the outer clone."""
         service = SimulationServiceRay()
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             script = service._image_builder().build_command(_v2ecoli_simulator())[2]
         assert " -g" not in script
         assert script.count("unset GH_PAT") == 1
@@ -1327,7 +1327,7 @@ class TestSimulationServiceRayBuild:
 
     def test_build_command_include_new_gene_data_passes_g_and_keeps_pat_exported(self) -> None:
         service = SimulationServiceRay()
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             script = service._image_builder().build_command(_v2ecoli_simulator(), include_new_gene_data=True)[2]
         assert "docker/build-and-push-ecr.sh -i abc1234 -r v2ecoli -R us-gov-west-1 -g" in script
         # GH_PAT must still be exported (not unset) by the time the recipe runs, or -g's own
@@ -1340,7 +1340,7 @@ class TestSimulationServiceRayBuild:
         flag, no inline spec heredoc, PAT still unset exactly as before this param
         existed."""
         service = SimulationServiceRay()
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             script = service._image_builder().build_command(_v2ecoli_simulator())[2]
         assert " -s " not in script
         assert "vecoli-private-fork.yaml" not in script
@@ -1352,14 +1352,14 @@ class TestSimulationServiceRayBuild:
         not deep inside a generated shell script."""
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             pytest.raises(ValueError, match="vecoli_private_commit"),
         ):
             service._image_builder().build_command(_v2ecoli_simulator(), stage_private_fork=True)
 
     def test_build_command_stage_private_fork_passes_s_and_keeps_pat_exported(self) -> None:
         service = SimulationServiceRay()
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             script = service._image_builder().build_command(
                 _v2ecoli_simulator(), stage_private_fork=True, vecoli_private_commit="deadbee"
             )[2]
@@ -1383,7 +1383,7 @@ def test_runner_env_carries_both_output_guards() -> None:
     """The CD2 baseline/lineage dispatch env pairs the presence guard
     (PBG_REQUIRE_OUTPUT) with the effect guard (PBG_MIN_GLOBAL_TIME, #395 / #375 §3e),
     and the floor is above the one-tick collapse (global_time ~= 1.0)."""
-    from viva_api.simulation.ray.runner_env import PBG_MIN_GLOBAL_TIME, PBG_RUNNER_ENV
+    from viva_api.simulation.dispatch.runner_env import PBG_MIN_GLOBAL_TIME, PBG_RUNNER_ENV
 
     assert "PBG_REQUIRE_OUTPUT=1" in PBG_RUNNER_ENV
     assert f"PBG_MIN_GLOBAL_TIME={PBG_MIN_GLOBAL_TIME}" in PBG_RUNNER_ENV
@@ -1721,7 +1721,7 @@ class TestIsUpstreamVecoli:
     """The single routing predicate shared by submit_ecoli_simulation_job and _sim_command."""
 
     def test_only_vecoli_is_upstream(self) -> None:
-        from viva_api.simulation.ray.config_interpretation import _is_upstream_vecoli
+        from viva_api.simulation.dispatch.config_interpretation import _is_upstream_vecoli
 
         assert _is_upstream_vecoli("vecoli") is True
         assert _is_upstream_vecoli("v2ecoli") is False
@@ -1776,7 +1776,7 @@ class TestParcaCommand:
         other option here which is opt-in-only. See
         test_sidecar_copy_is_present_and_non_fatal below for that addition's own
         dedicated coverage."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command()
         assert "--new-genes" not in cmd
         assert "--bundle-overrides" not in cmd
@@ -1797,7 +1797,7 @@ class TestParcaCommand:
         unconditional (present with or without any other option) and non-fatal
         (`|| true`) -- a pre-#735 v2ecoli image never writes this file, so every
         dispatch must keep working unchanged until it does."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command(new_genes="violacein_MG1655_M5")
         assert f"cp {PARCA_SIMDATA_DIR}/parca_state.provenance.json" in cmd
         assert "|| true" in cmd
@@ -1810,7 +1810,7 @@ class TestParcaCommand:
         synced PARCA_CACHE_DIR -- build_new_gene_cache.py needs exactly this
         file, and PARCA_SIMDATA_DIR (where it's first produced) is never
         synced anywhere and is discarded with the job's container."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command()
         assert f"cp {PARCA_SIMDATA_DIR}/parca_state.pkl.gz {PARCA_CACHE_DIR}/parca_state.pkl.gz" in cmd
         # comes after the hydration step, not before -- gzip must exist first
@@ -1819,17 +1819,17 @@ class TestParcaCommand:
     def test_off_new_genes_is_byte_identical_to_unset(self) -> None:
         """ "off" is v2ecoli-parca's own --new-genes default -- passing it explicitly
         must not append a redundant flag."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             assert parca_spec.parca_command(new_genes="off") == parca_spec.parca_command()
 
     def test_bundle_overrides_appends_the_flag(self) -> None:
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command(bundle_overrides="models/parca/composed_overlay.tsv")
         assert "--bundle-overrides models/parca/composed_overlay.tsv" in cmd
         assert "--new-genes" not in cmd
 
     def test_new_genes_and_bundle_overrides_both_append(self) -> None:
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command(
                 new_genes="violacein_MG1655_M5", bundle_overrides="models/parca/composed_overlay.tsv"
             )
@@ -1841,7 +1841,7 @@ class TestParcaCommand:
         scenario rung5_lam075) stacks TWO --bundle-overrides flags in one
         v2ecoli-parca invocation -- a single-string field could only ever carry
         one of the two layers, silently dropping the other."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command(
                 new_genes="violacein_gfp",
                 bundle_overrides=[
@@ -1860,13 +1860,13 @@ class TestParcaCommand:
         assert cmd.count("--bundle-overrides") == 2
 
     def test_bundle_overrides_empty_list_is_byte_identical_to_none(self) -> None:
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             assert parca_spec.parca_command(bundle_overrides=[]) == parca_spec.parca_command()
 
     def test_bundle_overrides_single_element_list_matches_bare_string(self) -> None:
         """A 1-element list and the equivalent bare string must build the exact
         same command -- the list form is additive, not a parallel code path."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             as_list = parca_spec.parca_command(bundle_overrides=["models/parca/composed_overlay.tsv"])
             as_str = parca_spec.parca_command(bundle_overrides="models/parca/composed_overlay.tsv")
         assert as_list == as_str
@@ -1874,7 +1874,7 @@ class TestParcaCommand:
     def test_omitted_rnaseq_source_is_byte_identical_to_before(self) -> None:
         """None must build byte-for-byte the same command as before this param
         existed -- same contract as new_genes/bundle_overrides above."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             assert parca_spec.parca_command(rnaseq_source=None) == parca_spec.parca_command()
 
     def test_rnaseq_source_appends_the_flag(self) -> None:
@@ -1882,14 +1882,14 @@ class TestParcaCommand:
         effect (rung5-lambda-075/overrides.tsv's own header: "READ BY NOTHING
         without that flag... the scenario silently becomes its own control") --
         confirmed real gap, item 106/#166 chassis-provenance thread."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command(rnaseq_source="experimental")
         assert "--rnaseq-source experimental" in cmd
         assert "--new-genes" not in cmd
         assert "--bundle-overrides" not in cmd
 
     def test_new_genes_bundle_overrides_and_rnaseq_source_all_append(self) -> None:
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command(
                 new_genes="violacein_gfp",
                 bundle_overrides="workspace/studies/cd2-pnnl-01-bundle-scenarios/bundles/rung5-lambda-075/overrides.tsv",
@@ -1905,17 +1905,17 @@ class TestParcaCommand:
         """Item 451/#166: Run 4's own founder-chassis recipe needs
         --bundle-manifest-path -- a base-manifest-replacing flag, distinct from
         --bundle-overrides (which layers on top)."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command(bundle_manifest_path="out/combined_violacein.tsv")
         assert "--bundle-manifest-path out/combined_violacein.tsv" in cmd
         assert "--bundle-overrides" not in cmd
 
     def test_omitted_bundle_manifest_path_is_byte_identical_to_before(self) -> None:
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             assert parca_spec.parca_command(bundle_manifest_path=None) == parca_spec.parca_command()
 
     def test_build_combined_bundle_manifest_generates_and_points_at_default_output(self) -> None:
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command(build_combined_bundle_manifest=True)
         assert "python scripts/build_combined_bundle_manifest.py && " in cmd
         assert cmd.index("build_combined_bundle_manifest.py") < cmd.index("v2ecoli-parca")
@@ -1923,19 +1923,19 @@ class TestParcaCommand:
         assert "--include-violacein" not in cmd
 
     def test_include_violacein_bundle_passes_the_generator_flag(self) -> None:
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command(build_combined_bundle_manifest=True, include_violacein_bundle=True)
         assert "build_combined_bundle_manifest.py --include-violacein && " in cmd
 
     def test_include_violacein_bundle_alone_is_a_no_op(self) -> None:
         """include_violacein_bundle only matters when build_combined_bundle_manifest is also set."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command(include_violacein_bundle=True)
             assert cmd == parca_spec.parca_command()
 
     def test_bundle_manifest_path_and_build_combined_bundle_manifest_are_mutually_exclusive(self) -> None:
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             pytest.raises(ValueError, match="mutually exclusive"),
         ):
             parca_spec.parca_command(
@@ -1945,12 +1945,12 @@ class TestParcaCommand:
     def test_deterministic_hash_seed_prepends_pythonhashseed(self) -> None:
         """Item 451/#166: Run 4's own founder-chassis recipe explicitly requires
         PYTHONHASHSEED=0 for a deterministically re-derivable chassis."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command(deterministic_hash_seed=True)
         assert "PYTHONHASHSEED=0 v2ecoli-parca" in cmd
 
     def test_omitted_deterministic_hash_seed_is_byte_identical_to_before(self) -> None:
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             assert parca_spec.parca_command(deterministic_hash_seed=False) == parca_spec.parca_command()
 
     def test_run4_founder_chassis_recipe_end_to_end(self) -> None:
@@ -1958,7 +1958,7 @@ class TestParcaCommand:
         module docstring: build_combined_bundle_manifest(--include-violacein) +
         PYTHONHASHSEED=0 + --new-genes violacein_MG1655_M5 +
         --bundle-manifest-path out/combined_bundle_manifest.tsv."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command(
                 new_genes="violacein_MG1655_M5",
                 build_combined_bundle_manifest=True,
@@ -1986,7 +1986,7 @@ class TestParcaCommand:
         the real --new-genes/--bundle-overrides flags one command earlier in
         this same chain). Restamping strain identity a second time at this step
         is not just unsupported now, it would be redundant even if it were."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = parca_spec.parca_command(
                 new_genes="violacein_MG1655_M5", bundle_overrides="models/parca/composed_overlay.tsv"
             )
@@ -2057,7 +2057,7 @@ class TestBuildNewGeneCacheCommand:
         """The --state path this command reads must be exactly the path
         _parca_command's own new cp step writes to -- the two are a matched
         pair across two separate job submissions with no other hand-off."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             parca_cmd = parca_spec.parca_command()
         cache_cmd = parca_spec.new_gene_cache_command(expression=1.0, translation_efficiency=1.0)
         written_path = f"{PARCA_CACHE_DIR}/parca_state.pkl.gz"
@@ -2076,9 +2076,9 @@ class TestSubmitNewGeneCacheJob:
         mock_batch = _fake_container_batch(["new-gene-cache-999"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             job_id = await service.parca.submit_new_gene_cache_job(
                 commit="abc1234",
@@ -2130,7 +2130,7 @@ class TestBuildVariantCacheCommand:
         """Same matched-pair contract as new-gene-cache's own equivalent test --
         the --state path this command reads must be exactly the path
         _parca_command's own new cp step writes to."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             parca_cmd = parca_spec.parca_command()
         cache_cmd = parca_spec.variant_cache_command(perturbations={"EG10073": 1.0})
         written_path = f"{PARCA_CACHE_DIR}/parca_state.pkl.gz"
@@ -2148,9 +2148,9 @@ class TestSubmitVariantCacheJob:
         mock_batch = _fake_container_batch(["variant-cache-999"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             job_id = await service.parca.submit_variant_cache_job(
                 commit="abc1234",
@@ -2184,7 +2184,7 @@ class TestRaySubmitImage:
         not perturb any existing caller. The unflagged script must be a strict PREFIX of the
         flagged one -- not merely 'similar'."""
         service = SimulationServiceRay()
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             default = service._image_builder().build_command(_v2ecoli_simulator())[2]
             flagged = service._image_builder().build_command(_v2ecoli_simulator(), include_submit_image=True)[2]
         assert "Dockerfile-submit" not in default
@@ -2193,7 +2193,7 @@ class TestRaySubmitImage:
 
     def test_submit_image_adds_java_and_a_pinned_nextflow(self) -> None:
         service = SimulationServiceRay()
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             script = service._image_builder().build_command(_v2ecoli_simulator(), include_submit_image=True)[2]
         assert "default-jre-headless" in script
         # Pinned, not floating: an unpinned `nextflow` download would silently change the
@@ -2204,7 +2204,7 @@ class TestRaySubmitImage:
         """The head must be built FROM the same commit's task image, or the workflow it
         launches is not the code the simulator record names."""
         service = SimulationServiceRay()
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             script = service._image_builder().build_command(_v2ecoli_simulator(), include_submit_image=True)[2]
         assert "BASE_URI=$ECR_REGISTRY/v2ecoli:abc1234" in script
         assert 'docker push "$ECR_REGISTRY/v2ecoli:abc1234-submit"' in script
@@ -2214,7 +2214,7 @@ class TestRaySubmitImage:
         throughout, which resolves on cwd alone -- the same root cause as viva-api#359 and the
         reason the awsbatch profile must also export PYTHONPATH."""
         service = SimulationServiceRay()
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             script = service._image_builder().build_command(_v2ecoli_simulator(), include_submit_image=True)[2]
         assert "WORKDIR /app/v2ecoli" in script
 
@@ -2222,7 +2222,7 @@ class TestRaySubmitImage:
     async def test_run_build_threads_the_flag(self) -> None:
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch(
                 "viva_api.simulation.batch_build.submit_batch_build",
                 new=AsyncMock(return_value="build-job-1"),
@@ -2243,7 +2243,7 @@ class TestSimulationServiceRayBuildSubmit:
     async def test_run_build_submits_to_amd64_queue_and_polls(self) -> None:
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch(
                 "viva_api.simulation.batch_build.submit_batch_build",
                 new=AsyncMock(return_value="build-job-1"),
@@ -2263,7 +2263,7 @@ class TestSimulationServiceRayBuildSubmit:
     async def test_submit_build_returns_local_job(self) -> None:
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch(
                 "viva_api.simulation.batch_build.submit_batch_build",
                 new=AsyncMock(return_value="bj"),
@@ -2288,7 +2288,7 @@ class TestSimulationServiceRayBuildSubmit:
         db.set_hpcrun_external_job_ids = AsyncMock()
         db.update_hpcrun_status = AsyncMock()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch(
                 "viva_api.simulation.batch_build.submit_batch_build",
                 new=AsyncMock(return_value="build-job-1"),
@@ -2318,8 +2318,8 @@ class TestEnsureMnpJobDef:
         }
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             jd = service.batch.ensure_mnp_job_def(image, "abc1234")
         assert jd == "smscdk-ray-mnp-abc1234:5"
@@ -2338,8 +2338,8 @@ class TestEnsureContainerJobDef:
         }
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             jd = service.batch.ensure_container_job_def(image, "abc1234")
         assert jd == "smscdk-ray-container-abc1234:5"
@@ -2350,8 +2350,8 @@ class TestEnsureContainerJobDef:
         mock_batch = _fake_container_batch([])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             jd = service.batch.ensure_container_job_def(image, "def5678")
         assert jd == "smscdk-ray-container-def5678:1"
@@ -2366,7 +2366,7 @@ class TestEnsureContainerJobDef:
         own precedent in this file)."""
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             pytest.raises(RuntimeError, match="ray_container_job_definition"),
         ):
             service.batch.ensure_container_job_def("some-image", "abc1234")
@@ -2381,7 +2381,7 @@ class TestSubmitContainer:
         mock_batch = MagicMock()
         mock_batch.submit_job.return_value = {"jobId": "job-1"}
         service = SimulationServiceRay()
-        with patch("viva_api.simulation.ray._seams.get_settings", _container_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings):
             job_id = service.batch.submit_container(
                 job_name="container-test",
                 job_definition="smscdk-ray-container-abc:1",
@@ -2406,7 +2406,7 @@ class TestSubmitContainer:
         mock_batch = MagicMock()
         mock_batch.submit_job.return_value = {"jobId": "job-1"}
         service = SimulationServiceRay()
-        with patch("viva_api.simulation.ray._seams.get_settings", _container_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings):
             service.batch.submit_container(
                 job_name="container-test",
                 job_definition="jd:1",
@@ -2425,7 +2425,7 @@ class TestSubmitContainer:
         mock_batch = MagicMock()
         mock_batch.submit_job.return_value = {"jobId": "job-1"}
         service = SimulationServiceRay()
-        with patch("viva_api.simulation.ray._seams.get_settings", _container_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings):
             service.batch.submit_container(
                 job_name="container-test",
                 job_definition="jd:1",
@@ -2443,7 +2443,7 @@ class TestSubmitContainer:
     def test_raises_clearly_when_queue_setting_unset(self) -> None:
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             pytest.raises(RuntimeError, match="ray_container_queue"),
         ):
             service.batch.submit_container(
@@ -2454,7 +2454,7 @@ class TestSubmitContainer:
         mock_batch = MagicMock()
         mock_batch.submit_job.return_value = {"jobId": "job-2"}
         service = SimulationServiceRay()
-        with patch("viva_api.simulation.ray._seams.get_settings", _container_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings):
             service.batch.submit_container(
                 job_name="container-test",
                 job_definition="jd:1",
@@ -2491,9 +2491,9 @@ class TestSubmitParcaJob:
         mock_batch = _fake_container_batch(["parca-999"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             job_id = await service.submit_parca_job(parca_dataset)
         assert job_id == JobId.ray("parca-999")

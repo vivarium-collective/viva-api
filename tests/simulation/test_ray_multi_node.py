@@ -1,4 +1,4 @@
-"""The multi-node composite dispatch mechanism (``viva_api/simulation/ray/multi_node.py``): its submit,
+"""The multi-node composite dispatch mechanism (``viva_api/simulation/dispatch/multi_node.py``): its submit,
 its founder-cache staging, its vCPU lookup, and the analysis that follows it.
 
 Moved out of ``test_ray_backend.py`` with the code (``docs/plan-core.md`` P2.1, PR 9); the tests are
@@ -21,9 +21,9 @@ from tests.simulation.test_ray_backend import (
     validate_batch_parameters,
 )
 from viva_api.common.models import JobId
+from viva_api.simulation.dispatch import multi_node, parca_spec
+from viva_api.simulation.dispatch.image_paths import PARCA_CACHE_DIR, V2ECOLI_DIR
 from viva_api.simulation.models import AnalysisOptions, JobType
-from viva_api.simulation.ray import multi_node, parca_spec
-from viva_api.simulation.ray.image_paths import PARCA_CACHE_DIR, V2ECOLI_DIR
 from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
 if TYPE_CHECKING:
@@ -121,9 +121,9 @@ class TestSubmitMultiNodeComposite:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             job_id = await service.submit_ecoli_simulation_job(
@@ -163,9 +163,9 @@ class TestSubmitMultiNodeComposite:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             job_id = await service.submit_ecoli_simulation_job(
@@ -233,9 +233,9 @@ class TestSubmitMultiNodeComposite:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             await service.submit_ecoli_simulation_job(
@@ -276,9 +276,9 @@ class TestSubmitMultiNodeComposite:
         fake_file_service.upload_file = AsyncMock()
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             await service.submit_ecoli_simulation_job(
@@ -320,9 +320,9 @@ class TestSubmitMultiNodeComposite:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             await service.submit_ecoli_simulation_job(
@@ -356,9 +356,9 @@ class TestSubmitMultiNodeComposite:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             await service.submit_ecoli_simulation_job(
@@ -396,9 +396,9 @@ class TestSubmitMultiNodeComposite:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             await service.submit_ecoli_simulation_job(
@@ -432,9 +432,9 @@ class TestSubmitMultiNodeComposite:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             await service.submit_ecoli_simulation_job(
@@ -473,9 +473,9 @@ class TestSubmitMultiNodeComposite:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             await service.submit_ecoli_simulation_job(
@@ -507,9 +507,9 @@ class TestSubmitMultiNodeComposite:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             await service.submit_ecoli_simulation_job(
@@ -555,9 +555,9 @@ class TestSubmitMultiNodeComposite:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
             patch.object(parca_spec, "cache_s3_uri", wraps=parca_spec.cache_s3_uri) as mock_cache_s3_uri,
         ):
@@ -603,9 +603,9 @@ class TestSubmitMultiNodeComposite:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
             pytest.raises(ValueError, match="cd2-run1-k4-candidate-v1-lambda050"),
         ):
@@ -645,9 +645,9 @@ class TestSubmitMultiNodeComposite:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             job_id = await service.submit_ecoli_simulation_job(
@@ -680,9 +680,9 @@ class TestSubmitMultiNodeComposite:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
             patch.object(parca_spec, "cache_s3_uri", wraps=parca_spec.cache_s3_uri) as mock_cache_s3_uri,
         ):
@@ -723,9 +723,9 @@ class TestSubmitMultiNodeComposite:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             await service.submit_ecoli_simulation_job(
@@ -754,9 +754,9 @@ class TestSubmitMultiNodeComposite:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             await service.submit_ecoli_simulation_job(
@@ -773,7 +773,7 @@ class TestSubmitMultiNodeComposite:
         so it needs the same PYTHONPATH fix, not just chain-dispatch's own two
         call sites (see TestSimulationServiceRayBuild/TestSeedGenerationCommand's
         sibling assertions)."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = multi_node.multi_node_composite_command(
                 composite_id="some_workspace.composites.some_multi_node_composite",
                 params={"n_cells": 6},
@@ -796,7 +796,7 @@ class TestSubmitMultiNodeComposite:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
             pytest.raises(ValueError, match="composite_id"),
         ):
@@ -808,8 +808,8 @@ class TestSubmitMultiNodeComposite:
         mock_batch = _fake_multi_node_batch(["unused"], per_node_vcpus=16)
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
         ):
             vcpus = service._multi_node()._mnp_node_vcpus("smscdk-ray-mnp-abc123:1")
         assert vcpus == 16
@@ -823,8 +823,8 @@ class TestSubmitMultiNodeComposite:
         mock_batch = _fake_multi_node_batch(["unused"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
         ):
             assert service._multi_node()._mnp_node_vcpus("totally-different-job-def:1") is None
 
@@ -849,8 +849,8 @@ class TestSubmitMultiNodeComposite:
         ]
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch.object(multi_node.MultiNodeCompositeStrategy, "_VCPU_LOOKUP_BACKOFF_SECONDS", 0.0),
         ):
             vcpus = service._multi_node()._mnp_node_vcpus("smscdk-ray-mnp-somecommit:1")
@@ -865,8 +865,8 @@ class TestSubmitMultiNodeComposite:
         mock_batch.describe_job_definitions.return_value = {"jobDefinitions": []}
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch.object(multi_node.MultiNodeCompositeStrategy, "_VCPU_LOOKUP_BACKOFF_SECONDS", 0.0),
         ):
             assert service._multi_node()._mnp_node_vcpus("smscdk-ray-mnp-neverexists:1") is None
@@ -894,9 +894,9 @@ class TestSubmitMultiNodeComposite:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             job_id = await service.submit_ecoli_simulation_job(
@@ -966,9 +966,9 @@ class TestSeedOverrideCacheStaging:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", side_effect=_boto3_client),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", side_effect=_boto3_client),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             job_id = await service.submit_ecoli_simulation_job(
@@ -1022,9 +1022,9 @@ class TestSeedOverrideCacheStaging:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             job_id = await service.submit_ecoli_simulation_job(
@@ -1069,9 +1069,9 @@ class TestSeedOverrideCacheStaging:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", side_effect=_boto3_client),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", side_effect=_boto3_client),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             await service.submit_ecoli_simulation_job(
@@ -1123,9 +1123,9 @@ class TestSeedOverrideCacheStaging:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", side_effect=_boto3_client),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", side_effect=_boto3_client),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
             pytest.raises(ValueError, match="cd2-run1-k4-candidate-v1-lambda050"),
         ):
@@ -1147,7 +1147,7 @@ class TestMultiNodeAnalysisCommand:
     def test_omits_seed_flags_entirely_when_n_seeds_not_given(self) -> None:
         """Byte-for-byte unchanged from before this item's fix -- colony's own
         real shape (item 88) never has n_seeds in the same sense."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = multi_node.multi_node_analysis_command(
                 experiment_id="exp1",
                 composite_id="v2ecoli.composites.ecoli_colony.ecoli_colony",
@@ -1164,7 +1164,7 @@ class TestMultiNodeAnalysisCommand:
         would turn "applicable" into the 12-char string '"applicable"'
         (quotes included), which the receiving script's own
         `.strip().lower() == "applicable"` check would silently miss."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = multi_node.multi_node_analysis_command(
                 experiment_id="exp1",
                 composite_id="v2ecoli.composites.lineage_ray_batch",
@@ -1181,7 +1181,7 @@ class TestMultiNodeAnalysisCommand:
 
     def test_explicit_module_mapping_rides_as_real_json(self) -> None:
         modules: dict[str, dict[str, Any]] = {"multiseed": {"doubling_time_distribution": {}}}
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = multi_node.multi_node_analysis_command(
                 experiment_id="exp1",
                 composite_id="v2ecoli.composites.lineage_ray_batch",
@@ -1197,7 +1197,7 @@ class TestMultiNodeAnalysisCommand:
         """viva-api#448's own new sim_data_uri param, unset, must not change
         this command at all -- every caller before #448 relied on this exact
         cd-then-python shape."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = multi_node.multi_node_analysis_command(
                 experiment_id="exp1",
                 composite_id="v2ecoli.composites.ecoli_colony.ecoli_colony",
@@ -1213,7 +1213,7 @@ class TestMultiNodeAnalysisCommand:
         only way analysis_runner.resolve_sim_data can find a candidate
         strain's real cache instead of falling through to the image's own
         stock knowledge-base build."""
-        with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        with patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings):
             cmd = multi_node.multi_node_analysis_command(
                 experiment_id="exp1",
                 composite_id="v2ecoli.composites.lineage_ray_batch",
@@ -1263,7 +1263,7 @@ class TestSubmitMultiNodeAnalysisExtraction:
             return "mnp-analysis-job-1"
 
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch.object(service.batch, "submit_container", side_effect=fake_submit_container),
             patch.object(service.batch, "ensure_container_job_def", return_value="job-def:1"),
             patch.object(service.batch, "image_uri", return_value="ghcr.io/example/image:abc"),
@@ -1308,7 +1308,7 @@ class TestSubmitMultiNodeAnalysisExtraction:
             return "mnp-analysis-job-2"
 
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch.object(service.batch, "submit_container", side_effect=fake_submit_container),
             patch.object(service.batch, "ensure_container_job_def", return_value="job-def:1"),
             patch.object(service.batch, "image_uri", return_value="ghcr.io/example/image:abc"),
@@ -1357,7 +1357,7 @@ class TestSubmitMultiNodeAnalysisExtraction:
             return "mnp-analysis-job-3"
 
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
             patch.object(service.batch, "submit_container", side_effect=fake_submit_container),
             patch.object(service.batch, "ensure_container_job_def", return_value="job-def:1"),
@@ -1398,7 +1398,7 @@ class TestSubmitMultiNodeAnalysisExtraction:
             return "mnp-analysis-job-4"
 
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
             patch.object(service.batch, "submit_container", side_effect=fake_submit_container),
             patch.object(service.batch, "ensure_container_job_def", return_value="job-def:1"),

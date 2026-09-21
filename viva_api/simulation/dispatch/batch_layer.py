@@ -1,6 +1,6 @@
 """The Ray service's Batch layer: how THIS application reaches the engine in ``viva_core``.
 
-``RayBatchLayer`` is a composed object -- ``SimulationServiceRay.batch`` -- and no longer a base
+``BatchLayer`` is a composed object -- ``SimulationServiceRay.batch`` -- and no longer a base
 class (``docs/plan-core.md`` P2.1, PR 5 of the 2026-09-20 sequence; it was the service's base
 from cut 3 until then). It inherits nothing and holds no state: every method reads settings
 through ``_seams`` when it runs. One instance lives on the service for the service's
@@ -12,7 +12,7 @@ queue, append this application's entries to the env, then hand over to
 two backends (``LocalTaskService``, ``K8sJobService``) -- they are the service's own
 constructor arguments, and become constructor arguments of the strategies that need them.
 
-Consumers do not take a ``RayBatchLayer``. They take the narrowest of the Protocols below
+Consumers do not take a ``BatchLayer``. They take the narrowest of the Protocols below
 that covers what they call, so a consumer's needs are written down where it is defined:
 
 * ``ContainerSubmitter`` -- one container job in an image: the ParCa cache jobs, tasks,
@@ -31,8 +31,8 @@ import string
 from typing import TYPE_CHECKING, Protocol
 
 from viva_api.common.models import JobStatus
-from viva_api.simulation.ray import _seams
-from viva_api.simulation.ray.image_paths import REPORT_PATH
+from viva_api.simulation.dispatch import _seams
+from viva_api.simulation.dispatch.image_paths import REPORT_PATH
 from viva_core.backends.batch import BatchJobClient, BatchJobDetail, ecr_image_uri, stage_out_env
 
 if TYPE_CHECKING:
@@ -111,7 +111,7 @@ class MnpSubmitter(Protocol):
     ) -> str: ...
 
 
-class RayBatchLayer:
+class BatchLayer:
     """Implements ``ContainerSubmitter`` and ``MnpSubmitter``, plus what the service's own
     status, cancel and log paths need of Batch (``engine``, ``client``, ``resolve_log_group``)."""
 

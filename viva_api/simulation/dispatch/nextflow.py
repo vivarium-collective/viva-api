@@ -42,10 +42,10 @@ from viva_api.common.models import JobId
 from viva_api.common.storage import data_layout
 from viva_api.common.storage.file_paths import S3FilePath
 from viva_api.simulation.database_service import DatabaseService
+from viva_api.simulation.dispatch import _seams
+from viva_api.simulation.dispatch.batch_layer import _rand_suffix
+from viva_api.simulation.dispatch.image_paths import V2ECOLI_CORE_BUILDER, V2ECOLI_DIR
 from viva_api.simulation.models import Simulation
-from viva_api.simulation.ray import _seams
-from viva_api.simulation.ray.batch_layer import _rand_suffix
-from viva_api.simulation.ray.image_paths import V2ECOLI_CORE_BUILDER, V2ECOLI_DIR
 from viva_core.backends.batch import BatchJobClient
 from viva_core.events.events_env import with_events_env
 

@@ -42,12 +42,12 @@ from viva_api.common.hpc.local_task_service import LocalTaskService
 from viva_api.common.models import JobId
 from viva_api.common.storage import data_layout
 from viva_api.simulation.database_service import DatabaseService
+from viva_api.simulation.dispatch import _seams, parca_spec
+from viva_api.simulation.dispatch.analysis_spec import analysis_memory_class, analysis_modules_for
+from viva_api.simulation.dispatch.batch_layer import ContainerSubmitter, _rand_suffix
+from viva_api.simulation.dispatch.image_paths import ANALYSIS_OUT_DIR, PARCA_CACHE_DIR, SIM_OUT_DIR, V2ECOLI_DIR
+from viva_api.simulation.dispatch.runner_env import PBG_RUNNER_ENV, V2ECOLI_BATCH_BASELINE_COMPOSITE_ID
 from viva_api.simulation.models import JobType, Simulation
-from viva_api.simulation.ray import _seams, parca_spec
-from viva_api.simulation.ray.analysis_spec import analysis_memory_class, analysis_modules_for
-from viva_api.simulation.ray.batch_layer import ContainerSubmitter, _rand_suffix
-from viva_api.simulation.ray.image_paths import ANALYSIS_OUT_DIR, PARCA_CACHE_DIR, SIM_OUT_DIR, V2ECOLI_DIR
-from viva_api.simulation.ray.runner_env import PBG_RUNNER_ENV, V2ECOLI_BATCH_BASELINE_COMPOSITE_ID
 from viva_core.backends.batch import SUBMIT_JOB_MAX_ATTEMPTS, SubmitJobPacer
 from viva_core.events.events_env import with_events_env
 

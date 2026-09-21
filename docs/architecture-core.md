@@ -94,7 +94,7 @@ takes vEcoli-specific build parameters (`stage_private_fork`, `vecoli_private_co
 ### `/api/v1/tasks` — generic mechanism, SMS implementation (4)
 
 `POST /tasks`, `POST /tasks/upload`, `GET /tasks/{id}/status`, `GET /tasks/{id}/logs`.
-Implemented by `RayTaskService` (`simulation/ray/tasks.py`, a composed service since #714),
+Implemented by `TaskService` (`simulation/dispatch/tasks.py`, a composed service since #714),
 reached as `simulation_service.tasks`; the router still type-checks for
 `SimulationServiceRay`. **There is no image or repo parameter**: the image is always
 `<ecr>/{ray_ecr_repository = "v2ecoli"}:<commit>`, paths sit under `/app/v2ecoli`, the
@@ -112,7 +112,7 @@ Where it reaches into SMS:
 
 - `simulator_id` resolves against the SMS `simulator` table.
 - `ComposeSimulationServiceRay` is **handed** a Batch layer (its own `ComposeBatch` Protocol;
-  `dependencies.py` provides SMS's `RayBatchLayer`). Until P2.1 PR 6 it instantiated a whole
+  `dependencies.py` provides SMS's `BatchLayer`). Until P2.1 PR 6 it instantiated a whole
   `SimulationServiceRay` to call five Batch methods and one status lookup on it.
 - It stages a ParCa cache (`RayLayout.parca_cache_uri`) and imports `V2ECOLI_DIR`,
   `ANALYSIS_OUT_DIR`.
@@ -170,7 +170,7 @@ is now `viva_core/backends/batch.py` — `BatchJobClient` (`ensure_mnp_job_defin
 `SubmitJobPacer`, `BatchJobDetail`, `stage_out_env`, `ecr_image_uri`. It takes **no
 settings**: every queue and base job definition is an argument and the boto3 client comes
 from a factory. SMS's half of the seam — read settings through `_seams`, choose the queue, add this
-application's env entries — is `RayBatchLayer` (`simulation/ray/batch_layer.py`):
+application's env entries — is `BatchLayer` (`simulation/dispatch/batch_layer.py`):
 `image_uri`, `submit_image_uri`, `ensure_container_job_def`, `ensure_mnp_job_def`,
 `submit_container`, `submit_mnp`, `resolve_log_group`, `get_batch_job_statuses` / `_details`,
 `engine()`, `client()`. A base class from cut 3 until P2.1 PR 5; now **composed**: one
@@ -180,25 +180,25 @@ The service keeps `get_job_status` / `cancel_job` (its own interface) and two de
 `get_batch_job_statuses` / `_details`, because the scheduler still asks the service (until P6).
 
 **What `SimulationServiceRay` is as of 2026-09-20** (`SimulationServiceRay(SimulationService)` —
-it inherits nothing from `simulation/ray/`; the file is **628** lines, from 5,019 — its interface, five strategy builders, two composed services, and a named, test-pinned list of delegates the scheduler still needs):
+it inherits nothing from `simulation/dispatch/`; the file is **628** lines, from 5,019 — its interface, five strategy builders, two composed services, and a named, test-pinned list of delegates the scheduler still needs):
 
 | Piece | Where | Shape |
 |---|---|---|
-| config interpretation | `ray/config_interpretation.py` | pure functions |
-| in-image paths | `ray/image_paths.py` | constants, no imports |
-| analysis specification (which modules, which memory class) | `ray/analysis_spec.py` | pure functions; shared with the Nextflow handler and `scripts/cd2_nextflow_dispatches.py` |
-| SMS's half of the Batch seam | `ray/batch_layer.py` (`RayBatchLayer`; Protocols `ContainerSubmitter`, `MnpSubmitter`) | composed object, `service.batch` |
-| where ParCa caches live, and the commands that build them | `ray/parca_spec.py` | pure functions (one reads two ParCa settings through `_seams`); every mechanism calls them |
-| the three ParCa cache jobs | `ray/parca.py` (`RayParcaService`, takes a `ContainerSubmitter`) | composed service, reached as `service.parca` |
-| image build | `ray/build.py` (`RayImageBuilder`) | composed service |
-| tasks | `ray/tasks.py` (`RayTaskService`, `TaskBatch` Protocol) | composed service |
-| recording a dispatch's own run row | `ray/run_records.py` | a function (it never used `self`); shared by the mechanisms that submit a job ahead of the one they return |
-| dispatch mechanism: **mbp-tracked** | `ray/mbp_tracked.py` (`MbpTrackedStrategy(batch)`, `mbp_tracked_command`) | **strategy object**, handed a `ContainerSubmitter` and nothing else — the first of five |
-| dispatch mechanism: **Nextflow** | `ray/nextflow.py` (`NextflowStrategy(batch, k8s, stage_runner=)`, `NextflowBatch` Protocol, five functions, the resource defaults) | **strategy object**; handed two image names + the engine, the K8s backend, and a runner stager. Owns `reap_cancelled_campaign`; the service keeps a delegate for the scheduler |
-| dispatch mechanism: **multi-node composite** | `ray/multi_node.py` (`MultiNodeCompositeStrategy(batch, stage_runner=)`, `MultiNodeBatch` Protocol, three functions) | **strategy object**; owns its analysis submitter, its founder-cache staging and the vCPU lookup that sizes `RAY_SHARDS_DEFAULT`; the service keeps `submit_multi_node_analysis` as a delegate for the scheduler |
-| dispatch mechanism: **ensemble** (ParCa MNP job, then the simulation MNP job; the single-generation run and the two-engine comparison) | `ray/ensemble.py` (`EnsembleStrategy(batch, stage_runner=)`, `sim_command`) | **strategy object**, handed an `MnpSubmitter` and a runner stager. It was the router's fall-through tail, not a method |
-| dispatch mechanism: **chain** (ParCa, then one container job per seed per lineage, chained by `dependsOn`; and the campaign's analysis) | `ray/chain.py` (`ChainStrategy(batch, local)`, four functions) | **strategy object**, handed a `ContainerSubmitter` and the in-process task service that runs its submission loop in the background. Not a Ray mechanism |
-| the runner environment (`PBG_RUNNER_ENV`) and the baseline composite id | `ray/runner_env.py` | leaf constants, shared by three mechanisms |
+| config interpretation | `dispatch/config_interpretation.py` | pure functions |
+| in-image paths | `dispatch/image_paths.py` | constants, no imports |
+| analysis specification (which modules, which memory class) | `dispatch/analysis_spec.py` | pure functions; shared with the Nextflow handler and `scripts/cd2_nextflow_dispatches.py` |
+| SMS's half of the Batch seam | `dispatch/batch_layer.py` (`BatchLayer`; Protocols `ContainerSubmitter`, `MnpSubmitter`) | composed object, `service.batch` |
+| where ParCa caches live, and the commands that build them | `dispatch/parca_spec.py` | pure functions (one reads two ParCa settings through `_seams`); every mechanism calls them |
+| the three ParCa cache jobs | `dispatch/parca.py` (`ParcaService`, takes a `ContainerSubmitter`) | composed service, reached as `service.parca` |
+| image build | `dispatch/build.py` (`ImageBuilder`) | composed service |
+| tasks | `dispatch/tasks.py` (`TaskService`, `TaskBatch` Protocol) | composed service |
+| recording a dispatch's own run row | `dispatch/run_records.py` | a function (it never used `self`); shared by the mechanisms that submit a job ahead of the one they return |
+| dispatch mechanism: **mbp-tracked** | `dispatch/mbp_tracked.py` (`MbpTrackedStrategy(batch)`, `mbp_tracked_command`) | **strategy object**, handed a `ContainerSubmitter` and nothing else — the first of five |
+| dispatch mechanism: **Nextflow** | `dispatch/nextflow.py` (`NextflowStrategy(batch, k8s, stage_runner=)`, `NextflowBatch` Protocol, five functions, the resource defaults) | **strategy object**; handed two image names + the engine, the K8s backend, and a runner stager. Owns `reap_cancelled_campaign`; the service keeps a delegate for the scheduler |
+| dispatch mechanism: **multi-node composite** | `dispatch/multi_node.py` (`MultiNodeCompositeStrategy(batch, stage_runner=)`, `MultiNodeBatch` Protocol, three functions) | **strategy object**; owns its analysis submitter, its founder-cache staging and the vCPU lookup that sizes `RAY_SHARDS_DEFAULT`; the service keeps `submit_multi_node_analysis` as a delegate for the scheduler |
+| dispatch mechanism: **ensemble** (ParCa MNP job, then the simulation MNP job; the single-generation run and the two-engine comparison) | `dispatch/ensemble.py` (`EnsembleStrategy(batch, stage_runner=)`, `sim_command`) | **strategy object**, handed an `MnpSubmitter` and a runner stager. It was the router's fall-through tail, not a method |
+| dispatch mechanism: **chain** (ParCa, then one container job per seed per lineage, chained by `dependsOn`; and the campaign's analysis) | `dispatch/chain.py` (`ChainStrategy(batch, local)`, four functions) | **strategy object**, handed a `ContainerSubmitter` and the in-process task service that runs its submission loop in the background. Not a Ray mechanism |
+| the runner environment (`PBG_RUNNER_ENV`) and the baseline composite id | `dispatch/runner_env.py` | leaf constants, shared by three mechanisms |
 | what is left on the class | `simulation_service_ray.py` | `SimulationService`'s interface (9 methods), the router, five strategy builders, `parca` / `tasks`, nine one-call delegates for the scheduler (until P6), and four pieces of progress / cancel / staging (`get_chain_campaign_result`, `cancel_chain_campaign`, `cancel_companion_jobs`, `stage_runner`) |
 
 **Five dispatch mechanisms, none of which calls another** (measured 2026-09-20). The router
@@ -512,7 +512,7 @@ map stay SMS guardrails.
 
 | Where | Environment identity | Select | Build | What is missing |
 |---|---|---|---|---|
-| SMS `upload_simulator` (`common/handlers/simulators.py`) | repo + branch + commit; no unique constraint | exact match | the repo's **own** build script, as a Batch DooD job (`ray/build.py`; `simulation_service_k8s.py`) | nothing is derived. It is the only one that **retries a FAILED build** |
+| SMS `upload_simulator` (`common/handlers/simulators.py`) | repo + branch + commit; no unique constraint | exact match | the repo's **own** build script, as a Batch DooD job (`dispatch/build.py`; `simulation_service_k8s.py`) | nothing is derived. It is the only one that **retries a FAILED build** |
 | `viva_api/compose` on SLURM (`compose/handlers.py`, `container_def.py`) | md5 of a **synthesized** Apptainer definition: python-slim + process-bigraph + `extra_pip_deps` + the embedded `run_pbg.py` | by hash (`compose_simulator.singularity_def_hash`, unique) | SLURM `singularity build`; the run waits in process, ~30 min at most | the dependencies are the caller's `extra_pip_deps`, **never read from the document**; a FAILED build suppresses every rebuild (#717); editing `run_pbg.py` changes every hash |
 | `compose-api` + `pbest` (sibling repos) | md5 of the generated definition | by hash, then pull a published image, else build | a `pbest` Jinja recipe (uv + micromamba; Docker → Apptainer via spython) | `pbest.dependency_resolution.determine_dependencies` parses `python:pypi<pkg[ver]>@module.path` addresses against an allow-list, **then returns empty lists, and nothing calls it**. The live path installs the whole biosimulations registry every time: a 1.3 GB uber-container |
 | `viva_api/compose` on Ray / Batch (`compose/simulation_service_ray.py`) | one site-wide pinned tag, or an SMS `simulator_id` | none | none | `extra_pip_deps` are allow-list-checked, hashed into a row and **never installed** (#716) |
@@ -651,7 +651,7 @@ Status: `planned` → `in progress` → `done (PR, version)`. Phases refer to `p
 | 2 | Generic modules | under `viva_api/common`, `api/` | `viva_core/{infra,storage,backends,events,api}` + aliasing shim | P1 | in progress — P1a: `models`, `infra/messaging`, `events/events_env`, `backends/{job_service,k8s_job_service,models,nextflow_weblog}` moved; old paths are self-replacing stubs. P1b: `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved |
 | 3 | Batch engine | private methods of `SimulationServiceRay` | `viva_core/backends/batch.py` (`BatchJobClient`, composed) | P2.1 | in progress — cut 2: the engine exists in core, settings-free, with its own tests (`tests/core/test_batch_backend.py`); `SimulationServiceRay` delegates through `_batch_jobs()`; `compose` still reaches it via the service's private methods (→ P2.3); not yet behind the `JobBackend` Protocol |
 | 4 | Backends | three unrelated shapes in `viva_core/backends/` (`batch.py`, `k8s_job_service.py`, `slurm_service.py`) sharing only `JobStatus` / `JobId` | `JobBackend` adapters: batch, k8s, slurm, local | P5 (was P2.3) | planned — **deferred with a trigger**: a core Protocol with one implementation would quietly be Batch-shaped, so it waits for its second consumer (`compose` on the core seam) and is not final before a second backend implements it |
-| 5 | Image resolution | `<ecr>/v2ecoli:<commit>`, derived **four separate times** from the same two settings (`ray/batch_layer.py`, `compose/simulation_service_ray.py`, `compose/env_worker_service.py`, `simulation_service_k8s.py`) | one `EnvironmentResolver`; the *select* half of D10 (§2.3) | P2.3 | planned |
+| 5 | Image resolution | `<ecr>/v2ecoli:<commit>`, derived **four separate times** from the same two settings (`dispatch/batch_layer.py`, `compose/simulation_service_ray.py`, `compose/env_worker_service.py`, `simulation_service_k8s.py`) | one `EnvironmentResolver`; the *select* half of D10 (§2.3) | P2.3 | planned |
 | 6 | Settings | one flat `Settings` | `CoreSettings` + `SmsSettings`, same env names | P1b / P3 | in progress — P1b: `viva_core.settings.CoreSettings` holds the storage + path-prefix fields; `Settings` inherits them; the application registers a provider so core reads its object. P3 moves the rest |
 | 7 | Wiring | module globals, router setters, one `init_standalone` | `CoreContainer` + `SmsContainer`, `create_core_app()` | P3 | planned |
 | 8 | OpenAPI | one spec | core spec + SMS spec (SMS = union until P8) | P3 / P8 | planned |
@@ -671,6 +671,6 @@ Status: `planned` → `in progress` → `done (PR, version)`. Phases refer to `p
 | 22 | Auth and tenancy | seam only | enforced, quotas, allow-lists | P10 | planned |
 | 23 | Core CLI | none; generated client is test-only | standalone CLI on the generated core client | P8 | planned |
 | 24 | Runtime image | every task / composite / env worker runs in `<ecr>/v2ecoli:<commit>` (5.74 GB) | a small core runtime image, the default `EnvironmentRef`; Tier 1 smoke and `tests/core/` run on it | P2.3 (first piece) | planned |
-| 25 | SMS Ray service | one file of 5,019 lines; one class holding eleven concerns and **five** dispatch mechanisms (four named, plus the router's inline ensemble path), none of which calls another | `simulation/ray/`: a facade + a ~20-line router; **one strategy object per mechanism** (ensemble, chain, multi-node composite, mbp-tracked, Nextflow), each owning command builders + submit and handed a composed Batch seam; pure modules for config interpretation, the analysis spec, ParCa commands / URIs; composed services for build, tasks, the ParCa cache jobs. A strategy's progress and cancel halves join it in P6 | P2.0 → P2.1 (P2.2 absorbed) | **done for dispatch** (P2.1 PRs 1–11, 2026-09-21): 5,019 → 628 lines; five strategy objects; the router is 12 statements. **Still to come in P6:** each strategy's progress and cancel halves, and the nine delegates the scheduler keeps on the service until then |
+| 25 | SMS Ray service | one file of 5,019 lines; one class holding eleven concerns and **five** dispatch mechanisms (four named, plus the router's inline ensemble path), none of which calls another | `simulation/dispatch/`: a facade + a ~20-line router; **one strategy object per mechanism** (ensemble, chain, multi-node composite, mbp-tracked, Nextflow), each owning command builders + submit and handed a composed Batch seam; pure modules for config interpretation, the analysis spec, ParCa commands / URIs; composed services for build, tasks, the ParCa cache jobs. A strategy's progress and cancel halves join it in P6 | P2.0 → P2.1 (P2.2 absorbed) | **done for dispatch** (P2.1 PRs 1–11, 2026-09-21): 5,019 → 628 lines; five strategy objects; the router is 12 statements. **Still to come in P6:** each strategy's progress and cancel halves, and the nine delegates the scheduler keeps on the service until then |
 | 26 | Specifying a composite | two models on two endpoints: a client-supplied **document** on `/compose/v1`, a `composite_id` already in the image on `/api/v1/simulations` `extra_params`; environment = SMS `simulator_id` or a site-wide pinned image | one request on `/viva/v1/composites`: an `EnvironmentRef` + exactly one of `document` / `composite{id, params}`; execution is a field, not an endpoint | P5 | planned |
 | 27 | `SimulationServiceK8s` (upstream vEcoli: Nextflow head as a K8s Job) | 624 lines; the **default backend on both Stanford sites**; its own image-build commands (duplicating the Ray builder's) and both standalone-analysis entry points; shares `batch_build.py` | unchanged by the carve; shares the pure `analysis_spec` module; its build becomes a `repo-recipe` | P5 | **out of scope until P5**, by decision (2026-09-20); `scripts/qualification_test.sh` stays its check |
