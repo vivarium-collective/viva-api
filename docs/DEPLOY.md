@@ -116,7 +116,13 @@ how `POST /compose/v1/simulation/run` appeared broken through the tunnel while
 working perfectly in-cluster (2026-08-28).
 
 Routed to the **api** target group: `/openapi.json`, `/home`, `/docs`, `/ws`,
-`/api`, `/core`, `/health`, `/version`, **`/compose`**, **`/env-worker`**.
+`/api`, `/core`, `/health`, `/version`, **`/compose`**, **`/env-worker`**, **`/viva`**.
+
+> **`/viva`** (viva-core's router, `/viva/v1`) was added on 2026-09-21 — after the fact: viva-api 0.9.153
+> served it from the pod while the ALB handed every request to PTools' 404 page. The rule is sms-cdk#56,
+> **deployed on `smsvpctest`; prod needs it before prod serves `/viva/v1`.** `atlantis smoke` Tier 0
+> **`core`** calls `/viva/v1/health` through the gateway and FAILS on an HTML answer, because `routes`
+> compares two OpenAPI documents and cannot see a gateway. **A new top-level path prefix always needs a rule.**
 
 > The `/env-worker` rule became load-bearing on 2026-08-29: the env-worker
 > **relay** (a laptop's only route to a cluster worker) rides it. Its symptom
