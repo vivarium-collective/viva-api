@@ -1,12 +1,51 @@
 """The environment every ``run_pbg.py`` invocation on the CD2 baseline / lineage paths runs under.
 
-A leaf: two constants and the reasons for them. It sat at module level in
+A leaf: three constants and the reasons for them (the registered composite the baseline paths
+run, and the environment they run it under). It sat at module level in
 ``simulation_service_ray.py``; the ensemble, chain and multi-node composite mechanisms all build
 their commands from it, and a mechanism that has become a strategy object cannot import the service
 (``docs/plan-core.md`` P2.1, PR 9). Moved verbatim, comments included.
 """
 
 from viva_api.simulation.ray.image_paths import SIM_OUT_DIR, V2ECOLI_CORE_BUILDER, V2ECOLI_DIR
+
+# Registered composite id (process_bigraph.composite_spec) for the multi-generation
+# batch orchestrator, and the workspace core-builder that resolves its registered
+# types (e.g. "inplace_dict"). Both are inherent facts about what THIS endpoint
+# dispatches — this file already hardcodes v2ecoli-specific paths (V2ECOLI_DIR,
+# PARCA_CACHE_DIR below); what item 27 removes is the bespoke EXECUTION MECHANISM (a
+# CLI script), not this identity.
+#
+# The id is `f"{fn.__module__}.{name}"` (process_bigraph.composite_spec's own
+# registration scheme, mirrored by pbg_superpowers.composite_generator). Two real
+# pilot dispatches (2026-08-06) failed chasing wrong values for this constant before
+# it was verified directly against the DEPLOYED sms-ecoli image (commit e38f742,
+# `git show`/`git grep` against that exact commit — never the local v2ecoli
+# checkout, a separate, structurally-diverged repo that is NOT a mirror of what's
+# actually in this simulator image). At that commit the real module was
+# v2ecoli/composites/batch_baseline.py (decorated function `batch_baseline`,
+# name="batch_baseline") — this constant was correctly set to
+# "v2ecoli.composites.batch_baseline.batch_baseline" and worked through build 62
+# (commit 8d50ff0, item 1's real 1000x10 campaign).
+#
+# UPDATED 2026-08-16 (backlog item 55): sms-ecoli PR #56 (the sync that also
+# carried item 52's wall-time fix) finally synced a v2ecoli upstream refactor that
+# had been sitting unsynced since 2026-07-25 (v2ecoli #373, "Unify composites into
+# baseline: knockouts + media + batch (n_seeds)") — it deleted
+# composites/batch_baseline.py and folded its batch/lineage behavior into
+# composites/ecoli_baseline.py's `baseline()` function (n_seeds/n_generations > 1
+# switches it into what used to be the standalone batch_baseline composite).
+# v2ecoli/composites/__init__.py deliberately registers NO legacy-id alias for the
+# old name ("a stale `baseline` id resolving silently would only hide a missed
+# reference") — so the old id now fails LOUDLY (confirmed via a real dispatch,
+# sim 152, 2026-08-16: "no composite registered as
+# 'v2ecoli.composites.batch_baseline.batch_baseline'"), exactly as its authors
+# intended, rather than silently drifting. Re-verified the SAME way the 2026-08-06
+# incident above did — `git show`/`git grep` directly against the real deployed
+# commit (sms-ecoli c44b69a, build 63), never the separately-diverged local v2ecoli
+# checkout. `baseline()`'s real signature (checked directly) is a strict superset
+# of the old `batch_baseline` params EXCEPT one rename: `base_seed` -> `seed`.
+V2ECOLI_BATCH_BASELINE_COMPOSITE_ID = "v2ecoli.composites.ecoli_baseline.ecoli_baseline"
 
 # ecoli_baseline.baseline()'s injection branch (taken whenever injected_processes
 # is passed) does `from scripts._compare.inject import (...)` -- a bare absolute

@@ -416,3 +416,82 @@ async def test_the_services_multi_node_strategy_is_handed_the_services_own_layer
 
     assert [name.split("-")[1] for name in submitted] == ["parca", "mnp"], submitted
     staged.assert_awaited_once_with("exp-1")  # late-bound: the swap on the SERVICE is what the strategy got
+
+
+class OnlyAnMnpSubmitter:
+    """The whole of ``MnpSubmitter``: all the ensemble mechanism is handed of the Batch layer."""
+
+    def __init__(self) -> None:
+        self.mnp: list[dict[str, Any]] = []
+
+    def image_uri(self, commit: str) -> str:
+        return f"registry/image:{commit}"
+
+    def ensure_mnp_job_def(self, image: str, commit: str) -> str:
+        return f"mnp-{commit}:1"
+
+    def submit_mnp(self, **kwargs: Any) -> str:
+        self.mnp.append(kwargs)
+        return f"mnp-job-{len(self.mnp)}"
+
+
+def _ensemble_run() -> tuple[Any, Any]:
+    options = SimpleNamespace(new_genes=None, bundle_overrides=None, rnaseq_source=None, bundle_manifest_path=None)
+    config = SimpleNamespace(experiment_id="exp-1", task_env=None, generations=1, composite=None, parca_options=options)
+    run = SimpleNamespace(simulator_id=1, parca_dataset_id=3, database_id=42, num_seeds=2, config=config)
+    database = MagicMock()
+    database.get_simulator = AsyncMock(return_value=SimpleNamespace(environment_key="tmp-abc1234-0a1b2c"))
+    database.get_parca_dataset = AsyncMock(return_value=SimpleNamespace(database_id=3))
+    database.insert_hpcrun = AsyncMock()
+    return run, database
+
+
+@pytest.mark.asyncio
+async def test_the_ensemble_strategy_runs_on_an_mnp_submitter_and_a_runner_stager_alone() -> None:
+    """It used to be the last 217 lines of the router, with the whole service in reach. Run on an
+    object that can ONLY submit MNP jobs, it has to be reaching for nothing else."""
+    from viva_api.simulation.ray.ensemble import EnsembleStrategy
+
+    async def stage_runner(experiment_id: str) -> str:
+        return f"s3://bucket/{experiment_id}/run_pbg.py"
+
+    batch = OnlyAnMnpSubmitter()
+    run, database = _ensemble_run()
+    with (
+        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+    ):
+        strategy = EnsembleStrategy(batch, stage_runner=stage_runner)
+        job_id = await strategy.submit(cast("Simulation", run), database, correlation_id="corr")
+
+    parca, ensemble = batch.mnp
+    assert job_id == JobId.ray("mnp-job-2")
+    assert parca["num_nodes"] == 1 and parca["job_name"].startswith("ray-parca-tmp-abc1234-0a1b2c-")  # D11
+    assert ensemble["depends_on"] == ["mnp-job-1"] and ensemble["stage_s3"] == parca["out_s3"]
+    assert database.insert_hpcrun.await_args.kwargs["external_job_ids"] == ["mnp-job-1"]  # #709: cancel can stop ParCa
+
+
+@pytest.mark.asyncio
+async def test_the_router_hands_the_fall_through_to_the_services_own_ensemble_strategy() -> None:
+    from viva_api.simulation.simulation_service_ray import SimulationServiceRay
+
+    service, submitted = SimulationServiceRay(), []
+    run, database = _ensemble_run()
+
+    def submit_mnp(**kwargs: Any) -> str:
+        submitted.append(kwargs["job_name"])
+        return f"job-{len(submitted)}"
+
+    with (
+        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+        patch.object(service.batch, "ensure_mnp_job_def", return_value="mnp:1"),
+        patch.object(service.batch, "submit_mnp", side_effect=submit_mnp),
+        patch.object(service, "stage_runner", new=AsyncMock(return_value="s3://bucket/run_pbg.py")),
+    ):
+        # no dispatch block, one generation: nothing else claims it
+        for block in ("nextflow_dispatch", "mbp_dispatch", "multi_node_dispatch"):
+            setattr(run.config, block, None)
+        await service.submit_ecoli_simulation_job(cast("Simulation", run), database, "corr")
+
+    assert [name.split("-")[1] for name in submitted] == ["parca", "sim"], submitted

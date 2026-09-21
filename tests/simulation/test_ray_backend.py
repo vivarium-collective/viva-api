@@ -23,6 +23,7 @@ from viva_api.simulation.ray.config_interpretation import (
     injected_processes_from_config,
     strain_from_config,
 )
+from viva_api.simulation.ray.ensemble import sim_command
 from viva_api.simulation.ray.image_paths import (
     NEW_GENE_INDUCED_CACHE_DIR,
     PARCA_CACHE_DIR,
@@ -650,7 +651,7 @@ class TestSimulationServiceRaySubmit:
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
             patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
-            patch.object(service, "cache_s3_uri", wraps=service.cache_s3_uri) as mock_cache_s3_uri,
+            patch.object(parca_spec, "cache_s3_uri", wraps=parca_spec.cache_s3_uri) as mock_cache_s3_uri,
         ):
             await service.submit_ecoli_simulation_job(
                 ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-comparison-variant"
@@ -680,7 +681,7 @@ class TestSimulationServiceRaySubmit:
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
             patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
-            patch.object(service, "cache_s3_uri", wraps=service.cache_s3_uri) as mock_cache_s3_uri,
+            patch.object(parca_spec, "cache_s3_uri", wraps=parca_spec.cache_s3_uri) as mock_cache_s3_uri,
         ):
             await service.submit_ecoli_simulation_job(
                 ecoli_simulation=simulation,
@@ -715,7 +716,7 @@ class TestSimulationServiceRaySubmit:
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
             patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
-            patch.object(service, "cache_s3_uri", wraps=service.cache_s3_uri) as mock_cache_s3_uri,
+            patch.object(parca_spec, "cache_s3_uri", wraps=parca_spec.cache_s3_uri) as mock_cache_s3_uri,
         ):
             await service.submit_ecoli_simulation_job(
                 ecoli_simulation=simulation,
@@ -1485,25 +1486,22 @@ class TestSimulationServiceRayBuild:
 
     def test_sim_command_composite_defaults_to_single_generation(self) -> None:
         """Selecting an engine must NOT imply the 16-gen comparison default."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._sim_command(n_seeds=1, n_steps=10, chunk=4, composite="v2ecoli")
+            cmd = sim_command(n_seeds=1, n_steps=10, chunk=4, composite="v2ecoli")
         assert "run_comparison_ensemble.py" in cmd
         assert "--max-generations 1" in cmd
         assert "--max-generations 16" not in cmd
 
     def test_sim_command_composite_honors_explicit_generations(self) -> None:
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._sim_command(n_seeds=1, n_steps=10, chunk=4, composite="v2ecoli", max_generations=5)
+            cmd = sim_command(n_seeds=1, n_steps=10, chunk=4, composite="v2ecoli", max_generations=5)
         assert "--max-generations 5" in cmd
 
     def test_sim_command_defaults_to_single_generation_phase0(self) -> None:
         """No composite, no generations requested: unchanged, verified-working
         single-generation dispatch -- must not regress by default."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._sim_command(n_seeds=2, n_steps=600, chunk=60)
+            cmd = sim_command(n_seeds=2, n_steps=600, chunk=60)
         assert "run_phase0_xarray_ensemble.py" in cmd
         assert "run_batch_baseline_ray.py" not in cmd
 
@@ -1513,9 +1511,8 @@ class TestSimulationServiceRayBuild:
         process-bigraph composite through the generic run_pbg.py runner -- not a
         v2ecoli-specific CLI script (backlog items 26/27), and not the
         single-generation script that silently ignores generation count."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._sim_command(
+            cmd = sim_command(
                 n_seeds=2,
                 n_steps=600,
                 chunk=60,
@@ -1564,7 +1561,6 @@ class TestSimulationServiceRayBuild:
         --composite-id batch overrides as ecoli_baseline.baseline()'s own
         injected_processes kwarg, or the composite runs plain basal despite the
         requested metabolism-redux/violacein swap (depends on v2ecoli #640)."""
-        service = SimulationServiceRay()
         injected = {
             "swap_processes": {"ecoli-metabolism": "ecoli-metabolism-redux"},
             "add_processes": [],
@@ -1572,7 +1568,7 @@ class TestSimulationServiceRayBuild:
             "fork_repo": "",
         }
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._sim_command(
+            cmd = sim_command(
                 n_seeds=2,
                 n_steps=600,
                 chunk=60,
@@ -1591,9 +1587,8 @@ class TestSimulationServiceRayBuild:
         """variants/config_overrides/features/exchange_fluxes(+basis) are the
         remaining ecoli_baseline batch-mode kwargs -- each must reach --overrides
         when the config carries it."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._sim_command(
+            cmd = sim_command(
                 n_seeds=1,
                 n_steps=600,
                 chunk=60,
@@ -1617,9 +1612,8 @@ class TestSimulationServiceRayBuild:
         """Regression guard: a config with no swap/variant intent produces the
         exact overrides dict this path built before threading was added -- no
         stray domain keys leak in."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._sim_command(
+            cmd = sim_command(
                 n_seeds=2,
                 n_steps=600,
                 chunk=60,
@@ -1641,9 +1635,8 @@ class TestSimulationServiceRayBuild:
     def test_sim_command_batch_flux_basis_omitted_without_flux_map(self) -> None:
         """exchange_flux_basis only matters alongside a flux map -- it is omitted
         when no exchange_fluxes are supplied (composite defaults it to '')."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._sim_command(
+            cmd = sim_command(
                 n_seeds=1,
                 n_steps=600,
                 chunk=60,
@@ -1659,32 +1652,25 @@ class TestSimulationServiceRayBuild:
     def test_sim_command_multi_generation_requires_experiment_id_and_runner_uri(self) -> None:
         """No silent placeholder default -- both must be supplied explicitly or the
         dispatch fails loudly instead of running against the wrong experiment_id."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
             with pytest.raises(RuntimeError, match="experiment_id"):
-                service._sim_command(n_seeds=2, n_steps=600, chunk=60, n_generations=3, runner_s3_uri="s3://x/y.py")
+                sim_command(n_seeds=2, n_steps=600, chunk=60, n_generations=3, runner_s3_uri="s3://x/y.py")
             with pytest.raises(RuntimeError, match="runner_s3_uri"):
-                service._sim_command(n_seeds=2, n_steps=600, chunk=60, n_generations=3, experiment_id="exp-1")
+                sim_command(n_seeds=2, n_steps=600, chunk=60, n_generations=3, experiment_id="exp-1")
 
     def test_sim_command_composite_takes_precedence_over_n_generations(self) -> None:
         """The comparison driver's own --max-generations flag is a separate knob
         from plain n_generations -- composite selection wins regardless."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            cmd = service._sim_command(n_seeds=1, n_steps=10, chunk=4, composite="v2ecoli", n_generations=3)
+            cmd = sim_command(n_seeds=1, n_steps=10, chunk=4, composite="v2ecoli", n_generations=3)
         assert "run_comparison_ensemble.py" in cmd
         assert "run_batch_baseline_ray.py" not in cmd
 
     def test_sim_command_vecoli_source_only_appended_for_upstream_vecoli(self) -> None:
         """--vecoli-source is meaningful only for --composite vecoli."""
-        service = SimulationServiceRay()
         with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
-            vecoli = service._sim_command(
-                n_seeds=1, n_steps=10, chunk=4, composite="vecoli", vecoli_source="vivarium-process"
-            )
-            v2ecoli = service._sim_command(
-                n_seeds=1, n_steps=10, chunk=4, composite="v2ecoli", vecoli_source="vivarium-process"
-            )
+            vecoli = sim_command(n_seeds=1, n_steps=10, chunk=4, composite="vecoli", vecoli_source="vivarium-process")
+            v2ecoli = sim_command(n_seeds=1, n_steps=10, chunk=4, composite="v2ecoli", vecoli_source="vivarium-process")
         assert "--vecoli-source vivarium-process" in vecoli
         # v2ecoli engine ignores vecoli_source (guarded by _is_upstream_vecoli)
         assert "--vecoli-source" not in v2ecoli
