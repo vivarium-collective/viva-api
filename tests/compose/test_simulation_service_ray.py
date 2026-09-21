@@ -18,6 +18,7 @@ from viva_api.compose.models import (
 )
 from viva_api.compose.simulation_service_ray import ComposeSimulationServiceRay
 from viva_api.simulation import compose_staging as staging_mod
+from viva_api.simulation.compose_simulators import simulator_environment_key
 from viva_api.simulation.compose_staging import compose_parca_staging
 from viva_api.simulation.dispatch.batch_layer import BatchLayer
 from viva_api.simulation.models import SimulatorVersion
@@ -174,7 +175,12 @@ async def test_resolve_commit_returns_none_when_simulator_id_unset() -> None:
     """None preserves today's exact behavior (the deploy-wide static image) and must
     not touch the database service at all."""
     with patch("viva_api.dependencies.get_database_service") as get_db:
-        assert await ComposeSimulationServiceRay(batch=BatchLayer())._resolve_commit(None) is None
+        assert (
+            await ComposeSimulationServiceRay(
+                batch=BatchLayer(), environment_key_of=simulator_environment_key
+            )._resolve_commit(None)
+            is None
+        )
         get_db.assert_not_called()
 
 
@@ -184,7 +190,9 @@ async def test_resolve_commit_resolves_the_git_commit_hash() -> None:
     fake_db = AsyncMock()
     fake_db.get_simulator = AsyncMock(return_value=fake_simulator)
     with patch("viva_api.dependencies.get_database_service", return_value=fake_db):
-        commit = await ComposeSimulationServiceRay(batch=BatchLayer())._resolve_commit(42)
+        commit = await ComposeSimulationServiceRay(
+            batch=BatchLayer(), environment_key_of=simulator_environment_key
+        )._resolve_commit(42)
     assert commit == "9e2040093e"
     fake_db.get_simulator.assert_awaited_once_with(simulator_id=42)
 
@@ -199,7 +207,9 @@ async def test_resolve_commit_raises_when_simulator_not_found() -> None:
         patch("viva_api.dependencies.get_database_service", return_value=fake_db),
         pytest.raises(ValueError, match="Simulator 42 not found"),
     ):
-        await ComposeSimulationServiceRay(batch=BatchLayer())._resolve_commit(42)
+        await ComposeSimulationServiceRay(
+            batch=BatchLayer(), environment_key_of=simulator_environment_key
+        )._resolve_commit(42)
 
 
 @pytest.mark.asyncio
@@ -208,7 +218,9 @@ async def test_resolve_commit_raises_when_database_service_not_initialized() -> 
         patch("viva_api.dependencies.get_database_service", return_value=None),
         pytest.raises(RuntimeError, match="Database service not initialized"),
     ):
-        await ComposeSimulationServiceRay(batch=BatchLayer())._resolve_commit(42)
+        await ComposeSimulationServiceRay(
+            batch=BatchLayer(), environment_key_of=simulator_environment_key
+        )._resolve_commit(42)
 
 
 @pytest.mark.asyncio
@@ -254,7 +266,7 @@ async def test_submit_simulation_job_uses_the_unified_ray_num_nodes_setting(
     fake_file_service = AsyncMock()
     fake_file_service.upload_file = AsyncMock()
 
-    with patch("viva_api.dependencies.get_file_service", return_value=fake_file_service):
+    with patch.object(svc, "_files", fake_file_service):
         await svc.submit_simulation_job(simulation, experiment_id="exp-1")
 
     assert captured["num_nodes"] == 24
@@ -292,7 +304,9 @@ async def test_submit_simulation_job_with_simulator_id_uses_the_resolved_per_com
         ),
     )
 
-    svc = ComposeSimulationServiceRay(batch=BatchLayer(), stage_inputs=compose_parca_staging)
+    svc = ComposeSimulationServiceRay(
+        batch=BatchLayer(), stage_inputs=compose_parca_staging, environment_key_of=simulator_environment_key
+    )
 
     captured_job_def_args: dict[str, str] = {}
 
@@ -320,7 +334,7 @@ async def test_submit_simulation_job_with_simulator_id_uses_the_resolved_per_com
     fake_db.get_simulator = AsyncMock(return_value=fake_simulator)
 
     with (
-        patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+        patch.object(svc, "_files", fake_file_service),
         patch("viva_api.dependencies.get_database_service", return_value=fake_db),
     ):
         await svc.submit_simulation_job(simulation, experiment_id="exp-1")
@@ -377,7 +391,7 @@ async def test_submit_simulation_job_with_explicit_num_nodes_overrides_the_deplo
     fake_file_service = AsyncMock()
     fake_file_service.upload_file = AsyncMock()
 
-    with patch("viva_api.dependencies.get_file_service", return_value=fake_file_service):
+    with patch.object(svc, "_files", fake_file_service):
         await svc.submit_simulation_job(simulation, experiment_id="exp-1")
 
     assert captured["num_nodes"] == 16
@@ -421,7 +435,7 @@ async def test_submit_simulation_job_omits_num_nodes_by_default(
     fake_file_service = AsyncMock()
     fake_file_service.upload_file = AsyncMock()
 
-    with patch("viva_api.dependencies.get_file_service", return_value=fake_file_service):
+    with patch.object(svc, "_files", fake_file_service):
         await svc.submit_simulation_job(simulation, experiment_id="exp-1")
 
     assert captured["num_nodes"] == 4
@@ -505,6 +519,6 @@ async def test_a_compose_service_with_no_staging_hook_stages_nothing(
         return "batch-job-id"
 
     monkeypatch.setattr(svc._batch, "submit_mnp", _capture_submit_mnp)
-    with patch("viva_api.dependencies.get_file_service", return_value=AsyncMock()):
+    with patch.object(svc, "_files", AsyncMock()):
         await svc.submit_simulation_job(simulation, experiment_id="exp-1")
     assert (captured["stage_s3"], captured["stage_dir"]) == (None, None)

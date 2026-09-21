@@ -28,6 +28,7 @@ from viva_api.compose.models import (
 from viva_api.compose.simulation_service_ray import ComposeSimulationServiceRay
 from viva_api.simulation import compose_analysis as chainer_mod
 from viva_api.simulation.compose_analysis import ComposeAnalysisChainer
+from viva_api.simulation.compose_simulators import simulator_environment_key
 from viva_api.simulation.dispatch.batch_layer import BatchLayer
 from viva_api.simulation.tables_orm import AnalysisStatusDB
 
@@ -78,7 +79,9 @@ async def test_submit_simulation_job_chains_analysis_when_analysis_options_prese
 
     simulation = _simulation(tmp_path, analysis_options=_ANALYSIS_OPTIONS)
     layer = BatchLayer()
-    svc = ComposeSimulationServiceRay(batch=layer, after_submit=ComposeAnalysisChainer(layer))
+    svc = ComposeSimulationServiceRay(
+        batch=layer, after_submit=ComposeAnalysisChainer(layer), environment_key_of=simulator_environment_key
+    )
 
     monkeypatch.setattr(svc._batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
     monkeypatch.setattr(svc._batch, "submit_mnp", lambda **kwargs: "compose-sim-job-1")
@@ -107,7 +110,7 @@ async def test_submit_simulation_job_chains_analysis_when_analysis_options_prese
     fake_db.record_analysis = AsyncMock()
 
     with (
-        patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+        patch.object(svc, "_files", fake_file_service),
         patch("viva_api.dependencies.get_database_service", return_value=fake_db),
     ):
         await svc.submit_simulation_job(simulation, experiment_id="exp-1")
@@ -155,7 +158,9 @@ async def test_submit_simulation_job_submits_no_analysis_when_analysis_options_a
 
     simulation = _simulation(tmp_path, analysis_options=None)
     layer = BatchLayer()
-    svc = ComposeSimulationServiceRay(batch=layer, after_submit=ComposeAnalysisChainer(layer))
+    svc = ComposeSimulationServiceRay(
+        batch=layer, after_submit=ComposeAnalysisChainer(layer), environment_key_of=simulator_environment_key
+    )
 
     monkeypatch.setattr(svc._batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
     monkeypatch.setattr(svc._batch, "submit_mnp", lambda **kwargs: "compose-sim-job-1")
@@ -172,7 +177,7 @@ async def test_submit_simulation_job_submits_no_analysis_when_analysis_options_a
     fake_db.record_analysis = AsyncMock()
 
     with (
-        patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
+        patch.object(svc, "_files", fake_file_service),
         patch("viva_api.dependencies.get_database_service", return_value=fake_db),
     ):
         await svc.submit_simulation_job(simulation, experiment_id="exp-2")
@@ -196,7 +201,7 @@ async def test_a_compose_service_with_no_hook_submits_the_run_and_chains_nothing
     for name in ("ensure_container_job_def", "submit_container"):
         monkeypatch.setattr(svc._batch, name, lambda *a, _n=name, **k: pytest.fail(f"{_n} was called"))
 
-    with patch("viva_api.dependencies.get_file_service", return_value=AsyncMock()):
+    with patch.object(svc, "_files", AsyncMock()):
         job_id = await svc.submit_simulation_job(
             _simulation(tmp_path, analysis_options=_ANALYSIS_OPTIONS), experiment_id="exp-1"
         )

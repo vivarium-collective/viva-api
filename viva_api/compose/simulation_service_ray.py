@@ -30,6 +30,7 @@ from viva_api.compose.database_service import ComposeDatabaseService
 from viva_api.compose.models import ComposeHpcRun, ComposeJobStatus, ComposeSimulation, ComposeSimulatorVersion
 from viva_api.compose.simulation_service import ComposeSimulationService
 from viva_core.settings import get_core_settings as get_settings
+from viva_core.storage.file_service import FileService
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,19 @@ class StageInputs(Protocol):
     def __call__(self, commit: str | None = None) -> tuple[str | None, str | None]: ...
 
 
+class EnvironmentKeyOf(Protocol):
+    """A hook: the environment key (the image tag) of the APPLICATION's simulator ``simulator_id``.
+
+    ``ComposeSimulationRequest.simulator_id`` names a record in the application's own registry, which
+    compose does not hold. SMS looks it up in its ``simulator`` table
+    (``viva_api.simulation.compose_simulators``); a core with no application registers nothing, and a
+    request that names a ``simulator_id`` is then refused rather than run on some other image.
+    Raises ``ValueError`` for an id that names nothing.
+    """
+
+    async def __call__(self, simulator_id: int) -> str: ...
+
+
 class ComposeBatch(Protocol):
     """What compose asks of whatever runs its Batch jobs: one multi-node job for the run,
     one container job for the analysis that follows it, and what became of a job.
@@ -149,6 +163,8 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         *,
         after_submit: AfterSubmit | None = None,
         stage_inputs: StageInputs | None = None,
+        files: FileService | None = None,
+        environment_key_of: EnvironmentKeyOf | None = None,
     ) -> None:
         # The Batch/job-def/submit plumbing, HANDED IN. Until P2.1 PR 6 this built a whole
         # ``SimulationServiceRay()`` -- an E. coli simulation service, with its scheduler-facing
@@ -157,6 +173,11 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         # What the application wants to follow a run with (SMS: its science analysis). None: nothing.
         self._after_submit = after_submit
         self._stage_inputs = stage_inputs
+        # Where the document and the runner are staged for the job, and the application's simulator
+        # registry -- both HANDED IN (P3d-3). They were looked up in ``viva_api.dependencies`` at the
+        # moment of use, which is the application's module; compose cannot move while it imports it.
+        self._files = files
+        self._environment_key_of = environment_key_of
 
     def _image_uri(self, commit: str | None = None) -> str:
         # A resolved per-commit build (item 98: ComposeSimulationRequest.simulator_id)
@@ -213,23 +234,15 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         """
         if simulator_id is None:
             return None
-        from viva_api.dependencies import get_database_service
-
-        database_service = get_database_service()
-        if database_service is None:
-            raise RuntimeError("Database service not initialized; cannot resolve simulator_id.")
-        simulator = await database_service.get_simulator(simulator_id=simulator_id)
-        if simulator is None:
-            raise ValueError(f"Simulator {simulator_id} not found")
-        return simulator.environment_key
+        if self._environment_key_of is None:
+            raise RuntimeError("No simulator registry was handed to compose; cannot resolve simulator_id.")
+        return await self._environment_key_of(simulator_id)
 
     @override
     async def submit_simulation_job(
         self, simulation: ComposeSimulation, experiment_id: str, override_command: str | None = None
     ) -> str:
-        from viva_api.dependencies import get_file_service
-
-        file_service = get_file_service()
+        file_service = self._files
         if file_service is None:
             raise RuntimeError("FileService not initialized; cannot stage compose document to S3.")
         doc_path = simulation.sim_request.request_file_path
