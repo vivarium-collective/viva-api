@@ -214,7 +214,7 @@ if it changes structure, moves the item from target to current in `architecture-
 and flips its delta row — in the same PR. A change of plan is a dated decision-log entry,
 not a silent rewrite. Core carries no domain terms (ecoli, parca, …) in its identifiers and
 never imports `viva_api` or `app`.
-Core also carries no `Any` (D12): `viva_core.*` -- and `viva_api.simulation.ray.*`, since
+Core also carries no `Any` (D12): `viva_core.*` -- and `viva_api.simulation.dispatch.*`, since
 sequence PR 12 -- is type-checked with `disallow_any_explicit` and `disallow_any_unimported` on
 top of `strict`. Both are globs, so a module that moves into core, or a new module of the ray
 package, arrives `Any`-free -- JSON is a `JsonValue` alias or a `TypedDict`, an untyped client is

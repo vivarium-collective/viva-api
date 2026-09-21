@@ -38,13 +38,13 @@ from viva_api.common.models import JobId
 from viva_api.common.storage import data_layout
 from viva_api.common.storage.file_paths import S3FilePath
 from viva_api.simulation.database_service import DatabaseService
+from viva_api.simulation.dispatch import _seams, parca_spec
+from viva_api.simulation.dispatch.analysis_spec import analysis_memory_class, analysis_modules_for
+from viva_api.simulation.dispatch.batch_layer import ContainerSubmitter, MnpSubmitter, _rand_suffix
+from viva_api.simulation.dispatch.config_interpretation import _thread_injected_processes_into_params
+from viva_api.simulation.dispatch.image_paths import ANALYSIS_OUT_DIR, PARCA_CACHE_DIR, SIM_OUT_DIR, V2ECOLI_DIR
+from viva_api.simulation.dispatch.runner_env import PBG_RUNNER_ENV
 from viva_api.simulation.models import JobType, Simulation
-from viva_api.simulation.ray import _seams, parca_spec
-from viva_api.simulation.ray.analysis_spec import analysis_memory_class, analysis_modules_for
-from viva_api.simulation.ray.batch_layer import ContainerSubmitter, MnpSubmitter, _rand_suffix
-from viva_api.simulation.ray.config_interpretation import _thread_injected_processes_into_params
-from viva_api.simulation.ray.image_paths import ANALYSIS_OUT_DIR, PARCA_CACHE_DIR, SIM_OUT_DIR, V2ECOLI_DIR
-from viva_api.simulation.ray.runner_env import PBG_RUNNER_ENV
 from viva_api.simulation.tables_orm import AnalysisStatusDB
 from viva_core.events.events_env import with_events_env
 

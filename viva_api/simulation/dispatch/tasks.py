@@ -1,7 +1,7 @@
 """Tasks: run one script in the simulator image as a standalone Batch container job
 (viva-api#631), follow its status, read its logs.
 
-``RayTaskService`` is a SERVICE, not a mixin of ``SimulationServiceRay`` (it was one for two
+``TaskService`` is a SERVICE, not a mixin of ``SimulationServiceRay`` (it was one for two
 PRs, P2.1 cut 3; ``docs/plan-core.md`` decision log, 2026-09-20). It is handed what it
 needs -- a ``TaskDispatch`` -- instead of inheriting a class to find it.
 
@@ -25,10 +25,10 @@ from typing import TYPE_CHECKING, Protocol
 
 from viva_api.common.models import JobStatus
 from viva_api.simulation.database_service import DatabaseService
+from viva_api.simulation.dispatch import _seams
+from viva_api.simulation.dispatch.batch_layer import ContainerSubmitter, _rand_suffix
+from viva_api.simulation.dispatch.image_paths import TASK_OUT_DIR, TASK_STAGE_DIR
 from viva_api.simulation.models import TaskDTO, TaskLogsDTO, TaskRunRequest
-from viva_api.simulation.ray import _seams
-from viva_api.simulation.ray.batch_layer import ContainerSubmitter, _rand_suffix
-from viva_api.simulation.ray.image_paths import TASK_OUT_DIR, TASK_STAGE_DIR
 from viva_api.simulation.tables_orm import TaskStatusDB
 
 if TYPE_CHECKING:
@@ -58,7 +58,7 @@ class TaskBatch(ContainerSubmitter, Protocol):
     def resolve_log_group(self, job_definition: str | None) -> str | None: ...
 
 
-class RayTaskService:
+class TaskService:
     def __init__(
         self,
         batch: TaskBatch,

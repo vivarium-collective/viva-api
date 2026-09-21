@@ -156,7 +156,7 @@ ignore_missing_imports = true
 
 # D12 (docs/plan-core.md): core carries no `Any`. `strict` does not forbid `Any`; these two flags
 # do. Both entries are GLOBS on purpose: a module that moves into core, or a new module of the
-# ray package, comes under the ban the day it arrives. (The ray package was listed by name while
+# ray package, comes under the ban the day it arrives. (The dispatch package was listed by name while
 # the dispatch strategies moved -- those PRs were proven by AST identity, which an annotation
 # change would have broken -- and became a glob in plan sequence PR 12.)
 # tests/core/test_no_any_in_core.py pins both globs.
@@ -164,8 +164,8 @@ ignore_missing_imports = true
 module = [
     "viva_core",
     "viva_core.*",
-    "viva_api.simulation.ray",
-    "viva_api.simulation.ray.*",
+    "viva_api.simulation.dispatch",
+    "viva_api.simulation.dispatch.*",
 ]
 disallow_any_explicit = true
 disallow_any_unimported = true

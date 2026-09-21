@@ -1397,13 +1397,13 @@
 #           0.9.148 -- core split, deploy checkpoint C1: the first DISPATCH checkpoint
 #            (docs/plan-core.md section 8). Taken early, with three of P2.1's ten cuts in,
 #            rather than waiting for all ten -- so a dispatch failure has three suspects.
-#            * P2.1 cut 1 (#705): config interpretation -> simulation/ray/config_interpretation.py
+#            * P2.1 cut 1 (#705): config interpretation -> simulation/dispatch/config_interpretation.py
 #              (byte-identical move).
 #            * P2.1 cut 2 (#706): the AWS Batch engine -> viva_core/backends/batch.py
 #              (BatchJobClient; takes no settings). SimulationServiceRay delegates. Proven by a
 #              2,178-case differential against the previous implementation: 0 differences.
-#            * P2.1 cut 3 (#707): tasks -> simulation/ray/tasks.py (RayTasksMixin) on a shared
-#              base, simulation/ray/batch_layer.py (RayBatchLayer). All 74 methods compared by
+#            * P2.1 cut 3 (#707): tasks -> simulation/dispatch/tasks.py (RayTasksMixin) on a shared
+#              base, simulation/dispatch/batch_layer.py (BatchLayer). All 74 methods compared by
 #              source: 0 differ.
 #            * #710 (fixes #709): a cancelled run stops EVERY Batch job it owns. Cancelling a
 #              default-path simulation used to leave its ParCa job running under a CANCELLED
@@ -1428,11 +1428,11 @@
 #              marked-TEMPORARY simulator: a new record with a label and its own image tag
 #              tmp-<commit>-<nonce>, shown as TEMPORARY in the API and in all three clients.
 #              Everything environment-shaped keys on SimulatorVersion.environment_key.
-#            * P2.1 cut 4 (#712) image build, cut 5 (#713) ParCa -> ray/parca.py,
+#            * P2.1 cut 4 (#712) image build, cut 5 (#713) ParCa -> dispatch/parca.py,
 #              #714 build + tasks as composed services. No behaviour change intended.
 #            Client side, nothing to deploy: smoke `sim-mbp` and `build` (#720, #722).
 #            MARKERS (C2): `environment_key` in /app/viva_api/simulation/models.py;
-#            /app/viva_api/simulation/ray/parca.py exists.
+#            /app/viva_api/simulation/dispatch/parca.py exists.
 #           0.9.150 -- core split, deploy checkpoint C3 (docs/plan-core.md section 8): dispatch.
 #            ONE behaviour change, the rest is rewiring proven equal to what it replaced:
 #            * #732 (viva-api#730) -- a multi-node composite's vCPU lookup passed Batch a keyword
@@ -1441,15 +1441,15 @@
 #              the job now receives RAY_SHARDS_DEFAULT = vCPUs x nodes (process-bigraph sizes its
 #              actor pool from it; until now, one head node's worth). Throughput, not results.
 #            Rewiring (P2.1 PRs 3-8): the analysis spec and the ParCa spec are modules of pure
-#            functions (#726, #727); the ParCa cache jobs are RayParcaService; the Batch layer is
-#            COMPOSED -- service.batch, the class inherits nothing from simulation/ray (#728);
+#            functions (#726, #727); the ParCa cache jobs are ParcaService; the Batch layer is
+#            COMPOSED -- service.batch, the class inherits nothing from simulation/dispatch (#728);
 #            compose is handed its Batch layer instead of building a simulation service (#729);
 #            two dispatch mechanisms are strategy objects: MbpTrackedStrategy (#734) and
 #            NextflowStrategy (#735).
 #            Types only, no runtime change: typed boto3 + Kubernetes stubs, dev dependencies
 #            that are NOT in this image (#731, #733); D12, no Any in viva_core (#733).
 #            No migration; the -db-migration overlay tag is bumped to stay equal, the Job is not run.
-#            MARKERS: /app/viva_api/simulation/ray/nextflow.py and mbp_tracked.py exist;
+#            MARKERS: /app/viva_api/simulation/dispatch/nextflow.py and mbp_tracked.py exist;
 #            `jobDefinitions=[job_definition]` in simulation_service_ray.py;
 #            `hasattr(getattr(service, "batch"` in /app/viva_api/common/capabilities.py.
 #           0.9.151 -- core split, deploy checkpoint C (docs/plan-core.md section 8): the carve is done.
@@ -1467,7 +1467,7 @@
 #            Client only, nothing to deploy: smoke `sim-chain` lists a run's output in S3 instead of
 #            downloading it (#737).
 #            No migration; the -db-migration overlay tag is bumped to stay equal, the Job is not run.
-#            MARKERS: /app/viva_api/simulation/ray/chain.py, ensemble.py and multi_node.py exist;
+#            MARKERS: /app/viva_api/simulation/dispatch/chain.py, ensemble.py and multi_node.py exist;
 #            `_submit_chain_dispatch_background` is GONE from simulation_service_ray.py;
 #            `def _chain(self)` is present there.
 __version__ = "0.9.151"

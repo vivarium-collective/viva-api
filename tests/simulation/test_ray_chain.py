@@ -1,4 +1,4 @@
-"""The chain dispatch mechanism (``viva_api/simulation/ray/chain.py``): its seed and analysis commands, the
+"""The chain dispatch mechanism (``viva_api/simulation/dispatch/chain.py``): its seed and analysis commands, the
 campaign submit and its background placeholder, the per-generation and per-lineage submits, and the
 campaign's analysis.
 
@@ -22,8 +22,8 @@ from tests.simulation.test_ray_backend import (
     _ray_settings,
 )
 from viva_api.common.models import JobId, JobStatus
+from viva_api.simulation.dispatch import chain
 from viva_api.simulation.models import AnalysisOptions, JobType
-from viva_api.simulation.ray import chain
 from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
 if TYPE_CHECKING:
@@ -62,7 +62,7 @@ class TestAnalysisCommand:
             "commit": "deadbeef",
         }
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
             return chain.analysis_command(**{**defaults, **kw})
@@ -152,7 +152,7 @@ class TestSeedGenerationCommand:
 
     def test_shape_generation_zero_has_no_carry_state(self) -> None:
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
             cmd = chain.seed_generation_command(
@@ -193,7 +193,7 @@ class TestSeedGenerationCommand:
 
     def test_later_generation_carries_the_prior_generations_state(self) -> None:
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
             cmd = chain.seed_generation_command(
@@ -220,7 +220,7 @@ class TestSeedGenerationCommand:
         fully-static command."""
         hostile = "exp'; touch /tmp/seed-gen-command-injection-canary; echo '$(echo pwned)"
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
             cmd = chain.seed_generation_command(
@@ -243,7 +243,7 @@ class TestSeedGenerationCommand:
         the 4th pilot fire found -- confirmed via direct S3 reads, not
         assumed)."""
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
             seed0_gen0 = self._overrides(
@@ -283,7 +283,7 @@ class TestSeedGenerationCommand:
         regardless of experiment_id length."""
         long_experiment_id = "sim1000-cd1-baseline-1000x10-" + "x" * 20
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
             cmd = chain.seed_generation_command(
@@ -300,7 +300,7 @@ class TestSeedGenerationCommand:
         single-generation phase0 path today) builds the exact same overrides
         dict as before these params existed -- no new keys leak in."""
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
             cmd = chain.seed_generation_command(
@@ -326,7 +326,7 @@ class TestSeedGenerationCommand:
         }
         variants = {"strain_design": {"perturbations": {"value": [{"EG11005": 0.0}]}}}
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
             cmd = chain.seed_generation_command(
@@ -346,7 +346,7 @@ class TestSeedGenerationCommand:
         caller before this item) still gets V2ECOLI_BATCH_BASELINE_COMPOSITE_ID
         -- no behavior change for existing callers."""
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
             cmd = chain.seed_generation_command(
@@ -363,7 +363,7 @@ class TestSeedGenerationCommand:
         reactor_bird_coupled, now that v2ecoli #648 gives it the same
         injected_processes/variants shape) replaces the default entirely."""
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
             cmd = chain.seed_generation_command(
@@ -381,7 +381,7 @@ class TestSeedGenerationCommand:
         exchange_fluxes (every caller before this fix) builds the exact same
         command as before -- pure additive passthrough, no behavior change."""
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
             cmd = chain.seed_generation_command(
@@ -402,7 +402,7 @@ class TestSeedGenerationCommand:
         silently produced no listeners__exchange_flux__* columns via this
         route -- the exact gap that blocked the K4 cell-only ensemble."""
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
             cmd = chain.seed_generation_command(
@@ -426,7 +426,7 @@ class TestSeedGenerationCommand:
         _multi_node_composite_command's own established convention (this
         file, ~line 440) nests it under `if exchange_fluxes:` too."""
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
             cmd = chain.seed_generation_command(
@@ -450,7 +450,7 @@ class TestSeedGenerationCommand:
         "generations". Unconditional, not caller-controlled -- there is no
         legitimate chain-dispatch generation that should NOT stop at division."""
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
             cmd = chain.seed_generation_command(
@@ -481,7 +481,7 @@ class TestSeedLineageCommand:
         checkpoint / stop_at_division keys — division is in-process, so the
         LineageProcess accumulates lineage_time_offset across generations."""
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
             cmd = chain.seed_lineage_command(
@@ -522,7 +522,7 @@ class TestSeedLineageCommand:
             "fork_repo": "",
         }
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         ):
             with_inj = self._overrides(
@@ -565,9 +565,9 @@ class TestChainDispatchPlaceholderBinding:
         mock_batch = _fake_container_batch(["parca-1"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             job_id = await service.submit_ecoli_simulation_job(
                 ecoli_simulation=simulation, database_service=database_service, correlation_id="corr-bind-ok"
@@ -596,7 +596,7 @@ class TestChainDispatchPlaceholderBinding:
         simulation = await database_service.insert_simulation(sim_request=experiment_request)
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch.object(
                 chain.ChainStrategy,
                 "submit_chain_dispatch_job",
@@ -634,7 +634,7 @@ class TestChainDispatchSubmission:
         simulation = await database_service.insert_simulation(sim_request=experiment_request)
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _ray_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
             pytest.raises(ValueError, match="requires generations > 1"),
         ):
@@ -652,9 +652,9 @@ class TestChainDispatchSubmission:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             job_id = await service.submit_chain_dispatch_job(
                 ecoli_simulation=simulation, database_service=database_service
@@ -691,9 +691,9 @@ class TestChainDispatchSubmission:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             await service.submit_chain_dispatch_job(ecoli_simulation=simulation, database_service=database_service)
 
@@ -720,9 +720,9 @@ class TestChainDispatchSubmission:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             await service.submit_chain_dispatch_job(ecoli_simulation=simulation, database_service=database_service)
 
@@ -747,9 +747,9 @@ class TestChainDispatchSubmission:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             await service.submit_chain_dispatch_job(ecoli_simulation=simulation, database_service=database_service)
 
@@ -769,9 +769,9 @@ class TestChainDispatchSubmission:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             await service.submit_chain_dispatch_job(ecoli_simulation=simulation, database_service=database_service)
 
@@ -801,9 +801,9 @@ class TestChainDispatchSubmission:
         mock_batch = _fake_container_batch(["parca-1"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             job_id = await service.submit_chain_dispatch_job(
                 ecoli_simulation=simulation, database_service=database_service
@@ -827,9 +827,9 @@ class TestSubmitChainGeneration:
         mock_batch = _fake_container_batch(["s2g1"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             job_id = service._chain().submit_chain_generation(
                 seed=2,
@@ -862,9 +862,9 @@ class TestSubmitChainGeneration:
         mock_batch = _fake_container_batch(["s2g1"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             service._chain().submit_chain_generation(
                 seed=2,
@@ -886,9 +886,9 @@ class TestSubmitChainGeneration:
         mock_batch = _fake_container_batch(["s2g1"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             service._chain().submit_chain_generation(
                 seed=2,
@@ -918,9 +918,9 @@ class TestSubmitChainGeneration:
         variants = {"strain_design": {"perturbations": {"value": [{"EG11005": 0.0}]}}}
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             service._chain().submit_chain_generation(
                 seed=0,
@@ -950,9 +950,9 @@ class TestSubmitChainGeneration:
         exchange_fluxes = {"violacein_exchange": "VIOLACEIN", "glucose_exchange": "GLC"}
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             service._chain().submit_chain_generation(
                 seed=0,
@@ -981,9 +981,9 @@ class TestSubmitChainGeneration:
         mock_batch = _fake_container_batch(["s0g0"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             service._chain().submit_chain_generation(
                 seed=0,
@@ -1014,9 +1014,9 @@ class TestSubmitChainGeneration:
         }
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_core.backends.batch.SubmitJobPacer.wait", new=AsyncMock()),
         ):
             submitted = await service._chain().submit_chain_generation_batch(
@@ -1046,9 +1046,9 @@ class TestSubmitChainGeneration:
         mock_batch = _fake_container_batch(["s0g0", "s1g0"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_core.backends.batch.SubmitJobPacer.wait", new=AsyncMock()),
         ):
             submitted = await service._chain().submit_chain_generation_batch(
@@ -1079,9 +1079,9 @@ class TestSubmitChainGeneration:
         exchange_fluxes = {"violacein_exchange": "VIOLACEIN"}
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_core.backends.batch.SubmitJobPacer.wait", new=AsyncMock()),
         ):
             submitted = await service._chain().submit_chain_generation_batch(
@@ -1133,9 +1133,9 @@ class TestSubmitChainGeneration:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_core.backends.batch.SubmitJobPacer.wait", new=AsyncMock()) as mock_pacer_wait,
         ):
             submitted = await service._chain().submit_chain_generation_batch(
@@ -1169,9 +1169,9 @@ class TestSubmitCampaignAnalysis:
         mock_batch = _fake_container_batch(["analysis-999"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             job_id = await service.submit_campaign_analysis(
                 simulation=simulation,
@@ -1212,9 +1212,9 @@ class TestSubmitCampaignAnalysis:
         mock_batch = _fake_container_batch(["analysis-999"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             await service.submit_campaign_analysis(
                 simulation=simulation,
@@ -1246,9 +1246,9 @@ class TestSubmitCampaignAnalysis:
         mock_batch = _fake_container_batch(["analysis-999"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             await service.submit_campaign_analysis(
                 simulation=simulation,
@@ -1282,9 +1282,9 @@ class TestSubmitCampaignAnalysis:
         mock_batch = _fake_container_batch(["analysis-789"])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             await service.submit_campaign_analysis(
                 simulation=simulation,
@@ -1315,9 +1315,9 @@ class TestSubmitCampaignAnalysis:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
         ):
             result = await service.submit_campaign_analysis(
                 simulation=simulation,

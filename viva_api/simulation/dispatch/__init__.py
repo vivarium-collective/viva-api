@@ -1,4 +1,11 @@
-"""The Ray / AWS Batch simulation service, being carved out of ``simulation_service_ray.py``.
+"""How a simulation is DISPATCHED: the five dispatch mechanisms and what they share, carved out of
+``simulation_service_ray.py``.
+
+The package was ``viva_api.simulation.ray`` until 2026-09-21. Ray runs inside only two of the five
+mechanisms (ensemble, multi-node composite); Nextflow orchestrates itself and mbp-tracked and chain
+are plain container jobs. What they share is the Batch backend and the SMS domain, so the package is
+named for what it holds. The service class, ``ComputeBackend.RAY``, ``JobId.ray`` and the ``ray_*``
+settings keep their names: they are persisted or deployed, and a separate decision.
 
 That module grew into one class of 5,019 lines holding eleven concerns and five dispatch
 mechanisms (``docs/plan-core.md`` P2). Its pieces land here, one concern per PR, each in the
@@ -14,7 +21,7 @@ is a composed service, a dispatch mechanism will be a strategy object. Nothing i
   the memory class that analysis needs.
 * :mod:`.parca_spec` -- pure functions: where ParCa caches live in S3 and the commands that
   build them. Every dispatch mechanism needs these two things from ParCa and nothing else.
-* :mod:`.batch_layer` -- ``RayBatchLayer``, the service's half of the Batch seam (settings,
+* :mod:`.batch_layer` -- ``BatchLayer``, the service's half of the Batch seam (settings,
   queue choice, this application's env entries) over ``viva_core.backends.batch``. Composed:
   one instance lives on the service as ``service.batch``. Consumers take the narrowest of its
   two Protocols, ``ContainerSubmitter`` and ``MnpSubmitter``, not the class.
@@ -22,11 +29,11 @@ is a composed service, a dispatch mechanism will be a strategy object. Nothing i
 Three concerns are composed SERVICES: each is a common capability that works one way
 whatever the dispatch mechanism, and each is handed the one collaborator it needs:
 
-* :mod:`.build` -- ``RayImageBuilder(local_task_service)``: build a simulator image.
-* :mod:`.tasks` -- ``RayTaskService(batch, latest_commit=, results_uri=)``: run a script in the
+* :mod:`.build` -- ``ImageBuilder(local_task_service)``: build a simulator image.
+* :mod:`.tasks` -- ``TaskService(batch, latest_commit=, results_uri=)``: run a script in the
   image, follow it, read its logs. ``TaskBatch`` (a ``ContainerSubmitter`` that can also say what
   became of a job) is the whole of what it asks of the Batch layer.
-* :mod:`.parca` -- ``RayParcaService(batch)``: the three ParCa cache jobs (a commit's cache,
+* :mod:`.parca` -- ``ParcaService(batch)``: the three ParCa cache jobs (a commit's cache,
   a new-gene cache, a variant cache). Submitting ParCa as part of a RUN is not here: it is a
   container job in two mechanisms and an MNP job in two others, so it stays with each.
 

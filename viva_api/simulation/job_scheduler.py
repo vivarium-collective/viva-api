@@ -17,6 +17,10 @@ from viva_api.config import ComputeBackend, compute_backend_for_repo, get_settin
 from viva_api.dependencies import get_ssh_session_service
 from viva_api.simulation import batch_build
 from viva_api.simulation.database_service import DatabaseService
+from viva_api.simulation.dispatch.config_interpretation import (
+    injected_processes_from_config,
+    strain_from_config,
+)
 from viva_api.simulation.event_ingest import DISPATCH_COMPONENT
 from viva_api.simulation.models import (
     ChainCampaignUpdate,
@@ -26,10 +30,6 @@ from viva_api.simulation.models import (
     SimulationEvent,
     WorkerEvent,
     WorkerEventMessagePayload,
-)
-from viva_api.simulation.ray.config_interpretation import (
-    injected_processes_from_config,
-    strain_from_config,
 )
 from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 

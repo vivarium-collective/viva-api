@@ -19,12 +19,12 @@ RUNTIME_PACKAGES = ("viva_core", "viva_api", "app")
 #: the modules annotated against the stubs (docs/plan-core.md P2.1, PR 6a)
 TYPED_MODULES = (
     "viva_core.backends.batch",
-    "viva_api.simulation.ray.batch_layer",
+    "viva_api.simulation.dispatch.batch_layer",
     "viva_api.simulation.batch_build",
     "viva_api.simulation.simulation_service_ray",
     "viva_api.simulation.simulation_service_k8s",
     # typed in PR 6b (D12)
-    "viva_api.simulation.ray.tasks",
+    "viva_api.simulation.dispatch.tasks",
     "viva_core.storage.file_service_qumulo_s3",
     "viva_core.backends.k8s_job_service",
 )

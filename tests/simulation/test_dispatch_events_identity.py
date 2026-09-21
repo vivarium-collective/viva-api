@@ -34,15 +34,15 @@ DISPATCH_MODULES = [
     # PBG_* at all: the module was simply not scanned. See the identity test below
     # for the other half of that miss.
     "viva_api/simulation/simulation_service_k8s.py",
-    # The Ray service is being carved into viva_api/simulation/ray/ (docs/plan-core.md P2.1),
+    # The Ray service is being carved into viva_api/simulation/dispatch/ (docs/plan-core.md P2.1),
     # and this guard has already missed a dispatch once because "the module was simply not
     # scanned". So the package is globbed, not listed: a dispatch method that moves into a
     # new file there is scanned without anyone remembering to add the file.
-    *sorted(str(path) for path in pathlib.Path("viva_api/simulation/ray").glob("*.py")),
+    *sorted(str(path) for path in pathlib.Path("viva_api/simulation/dispatch").glob("*.py")),
 ]
 
 #: Where the Ray service's dispatch methods may live: the service module and its package.
-RAY_SERVICE_MODULES = [m for m in DISPATCH_MODULES if "simulation_service_ray" in m or "/simulation/ray/" in m]
+RAY_SERVICE_MODULES = [m for m in DISPATCH_MODULES if "simulation_service_ray" in m or "/simulation/dispatch/" in m]
 
 # Methods that resolve a task env but deliberately do NOT carry an events identity.
 # Keep this empty if you can: an entry here is a dispatch whose events are invisible.
@@ -127,7 +127,7 @@ def test_the_known_dispatch_paths_are_all_still_covered() -> None:
     # is pinned as ``<module>.<name>``, because every strategy's entry point is called ``submit``
     # and five bare ``submit``s would pin nothing.
     with_identity = {
-        fn.name if "/simulation/ray/" not in module_path else f"{pathlib.Path(module_path).stem}.{fn.name}"
+        fn.name if "/simulation/dispatch/" not in module_path else f"{pathlib.Path(module_path).stem}.{fn.name}"
         for module_path in RAY_SERVICE_MODULES
         for fn in _functions(ast.parse(pathlib.Path(module_path).read_text()))
         if _calls_named(fn, "with_events_env")

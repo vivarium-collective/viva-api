@@ -1,8 +1,8 @@
 """D12 -- ``viva_core`` carries no ``Any`` (``docs/plan-core.md``).
 
 ``strict = true`` does not forbid ``Any``. Two mypy flags do, and they are on for ``viva_core.*``
-and for ``viva_api.simulation.ray.*`` -- both GLOBS: a module that moves into core, or a new module
-of the ray package, comes under the ban the day it arrives. (The ray package was listed by name
+and for ``viva_api.simulation.dispatch.*`` -- both GLOBS: a module that moves into core, or a new module
+of the dispatch package, comes under the ban the day it arrives. (The dispatch package was listed by name
 while the dispatch strategies moved; plan sequence PR 12 made it a glob.) mypy enforces the ban
 itself; this file guards the two ways the ban could quietly stop meaning anything:
 
@@ -25,7 +25,7 @@ from pathlib import Path
 
 IGNORE = re.compile(r"#\s*type:\s*ignore\[[^\]]*explicit-any[^\]]*\]")
 PYDANTIC_BASES = {"BaseModel", "BaseSettings"}
-RAY_PACKAGE = Path("viva_api/simulation/ray")
+DISPATCH_PACKAGE = Path("viva_api/simulation/dispatch")
 
 
 def _banned_modules() -> list[str]:
@@ -45,14 +45,14 @@ def test_the_ban_covers_core_as_a_glob() -> None:
     assert "viva_core.*" in modules and "viva_core" in modules, modules
 
 
-def test_the_ban_covers_the_ray_package_as_a_glob() -> None:
+def test_the_ban_covers_the_dispatch_package_as_a_glob() -> None:
     """A glob, so nothing has to remember to list a new module. A module named on its own beside
     the glob would be harmless to mypy and misleading to a reader, so there are none."""
     modules = _banned_modules()
-    assert "viva_api.simulation.ray.*" in modules and "viva_api.simulation.ray" in modules, modules
-    by_name = sorted(m for m in modules if m.startswith("viva_api.simulation.ray.") and not m.endswith(".*"))
+    assert "viva_api.simulation.dispatch.*" in modules and "viva_api.simulation.dispatch" in modules, modules
+    by_name = sorted(m for m in modules if m.startswith("viva_api.simulation.dispatch.") and not m.endswith(".*"))
     assert not by_name, f"listed by name beside the glob that already covers them: {by_name}"
-    assert any(RAY_PACKAGE.glob("*.py")), "found no modules: is this running from the repository root?"
+    assert any(DISPATCH_PACKAGE.glob("*.py")), "found no modules: is this running from the repository root?"
 
 
 def _explicit_any_ignores(path: Path) -> list[tuple[int, str]]:
@@ -84,7 +84,7 @@ def _pydantic_class_lines(path: Path) -> set[int]:
 def test_the_escape_hatch_is_used_only_on_pydantic_class_lines() -> None:
     misused = []
     count = 0
-    for root in (Path("viva_core"), RAY_PACKAGE):
+    for root in (Path("viva_core"), DISPATCH_PACKAGE):
         for path in sorted(root.rglob("*.py")):
             allowed = _pydantic_class_lines(path)
             for number, line in _explicit_any_ignores(path):

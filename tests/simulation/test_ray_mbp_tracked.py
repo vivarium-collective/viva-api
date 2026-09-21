@@ -1,4 +1,4 @@
-"""The mbp-tracked dispatch mechanism (``viva_api/simulation/ray/mbp_tracked.py``).
+"""The mbp-tracked dispatch mechanism (``viva_api/simulation/dispatch/mbp_tracked.py``).
 
 Moved out of ``test_ray_backend.py`` with the code (``docs/plan-core.md`` P2.1, PR 7): that file is
 5,900 lines because the class it tested held five mechanisms, and it comes apart the same way, one
@@ -18,7 +18,7 @@ from tests.simulation.test_ray_backend import (
     _fake_container_batch,
 )
 from viva_api.common.models import JobId
-from viva_api.simulation.ray.mbp_tracked import mbp_tracked_command
+from viva_api.simulation.dispatch.mbp_tracked import mbp_tracked_command
 from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
 if TYPE_CHECKING:
@@ -189,9 +189,9 @@ class TestSubmitMbpTrackedDispatch:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             job_id = await service.submit_ecoli_simulation_job(
@@ -220,8 +220,8 @@ class TestSubmitMbpTrackedDispatch:
         mock_batch = _fake_container_batch([])
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             pytest.raises(ValueError, match="mbp_dispatch.variant is required"),
         ):
             await service.submit_ecoli_simulation_job(
@@ -252,9 +252,9 @@ class TestSubmitMbpTrackedDispatch:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
             pytest.raises(ValueError, match="cd2-run1-k4-candidate-v1-lambda050"),
         ):
@@ -283,9 +283,9 @@ class TestSubmitMbpTrackedDispatch:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             job_id = await service.submit_ecoli_simulation_job(
@@ -322,9 +322,9 @@ class TestSubmitMbpTrackedDispatch:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             await service.submit_ecoli_simulation_job(
@@ -353,9 +353,9 @@ class TestSubmitMbpTrackedDispatch:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             await service.submit_ecoli_simulation_job(
@@ -401,9 +401,9 @@ class TestSubmitMbpTrackedDispatch:
 
         service = SimulationServiceRay()
         with (
-            patch("viva_api.simulation.ray._seams.get_settings", _container_settings),
+            patch("viva_api.simulation.dispatch._seams.get_settings", _container_settings),
             patch("viva_api.common.storage.data_layout.get_settings", _container_settings),
-            patch("viva_api.simulation.ray._seams.boto3.client", return_value=mock_batch),
+            patch("viva_api.simulation.dispatch._seams.boto3.client", return_value=mock_batch),
             patch("viva_api.dependencies.get_file_service", return_value=fake_file_service),
         ):
             job_id = await service.submit_ecoli_simulation_job(
