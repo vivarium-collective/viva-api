@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from viva_api.api.routers import env_worker as ew
+from viva_api.compose.env_worker_schemas import RelayCallRequest
 
 
 @pytest.fixture
@@ -320,13 +321,13 @@ def test_call_takes_method_params_and_timeout_in_its_BODY() -> None:
     helper, `method` and `timeout` became query parameters and only `params`
     remained in the body -- a breaking change to the escape hatch, invisible in
     every behavioural test."""
-    fields = set(ew.RelayCallRequest.model_fields)
+    fields = set(RelayCallRequest.model_fields)
     assert fields == {"method", "params", "timeout"}
 
     route = _call_route()
     body_params = [p for p in route.dependant.body_params]
     assert [p.name for p in body_params] == ["request"]
-    assert body_params[0].field_info.annotation is ew.RelayCallRequest
+    assert body_params[0].field_info.annotation is RelayCallRequest
     # job_name is the only thing that belongs in the path/query.
     assert {p.name for p in route.dependant.path_params} == {"job_name"}
     assert not route.dependant.query_params
