@@ -193,13 +193,13 @@ class Settings(CoreSettings):
     # Used when job_backend is "batch" (Stanford deployments)
 
     # K8s Job settings
-    k8s_job_namespace: str = ""  # Namespace for Nextflow head Jobs (e.g. "sms-api-stanford")
+    # k8s_job_namespace: inherited from CoreSettings (P3d-2)
 
     # AWS Batch settings (Nextflow submits tasks here)
     batch_task_arch: str = "amd64"  # Architecture for Batch task images: "amd64" or "arm64"
     batch_amd64_queue: str = ""  # AMD64 simulation task queue
     batch_arm64_queue: str = ""  # ARM64 simulation task queue (Graviton)
-    batch_region: str = "us-gov-west-1"  # AWS region for Batch
+    # batch_region: inherited from CoreSettings (P3d-2)
 
     # S3 settings for workflow data
     s3_work_bucket: str = ""  # S3 bucket for Nextflow work dir and outputs
@@ -244,7 +244,7 @@ class Settings(CoreSettings):
     datasets_reconcile_batch_interval_seconds: int = 60
 
     # ECR settings
-    ecr_account_id: str = ""  # AWS account ID for ECR registry (e.g. "476270107793")
+    # ecr_account_id: inherited from CoreSettings (P3d-2)
     ecr_repository: str = "vecoli"  # ECR repository name for vEcoli images
 
     # Docker image build settings (DooD via AWS Batch)
@@ -285,7 +285,7 @@ class Settings(CoreSettings):
     # same call -- the CDK's 24-node capacity scale-up only ever updated the compose
     # one, leaving the actually-used ensemble sim path stuck at 4; see backlog item 26).
     # Must be <= CDK rayBatch.numNodes.
-    ray_num_nodes: int = 3
+    # ray_num_nodes: inherited from CoreSettings (P3d-2)
     # -- env worker (vivarium-workbench#942 / REFACTOR-PLAN §2A.8) --
     # The workbench image an env-worker Job copies its worker module out of. The
     # module is DELIVERED, not installed: protocol §4 requires the workspace venv
@@ -300,11 +300,13 @@ class Settings(CoreSettings):
     # exits 2 on `--connect-to`. That surfaces as a failed Job whose logs say
     # "unrecognized arguments", which `GET /env-worker/v1/workers/{name}?include_logs=true`
     # will show — but it is worth knowing before pointing this at a stale tag.
-    env_worker_module_image: str = ""
+    # env_worker_module_image: inherited from CoreSettings (P3d-2)
     # Workspace root INSIDE the simulator image. This is the image's own checkout
     # — under §2A.8 that copy IS the execution environment, so the worker reads it
     # rather than mounting the PVC (which is ReadWriteOnce and single-node anyway).
-    env_worker_workspace_path: str = "/app/v2ecoli"
+    env_worker_workspace_path: str = (
+        "/app/v2ecoli"  # overrides CoreSettings: the default names this application's image
+    )
     # Memory the worker pod may use. Settings rather than constants because the
     # right ceiling is a property of the SITE's nodes, not of this code: dev runs
     # t3.xlarge (~14.4Gi allocatable, 11% requested), and a site on smaller nodes
@@ -316,8 +318,8 @@ class Settings(CoreSettings):
     # OOMKilled at 137 within ~60 s, with no logs, reported to the caller as
     # "worker closed the connection". The request stays small so scheduling is
     # unaffected; only the ceiling moves.
-    env_worker_memory_request: str = "512Mi"
-    env_worker_memory_limit: str = "8Gi"
+    # env_worker_memory_request: inherited from CoreSettings (P3d-2)
+    # env_worker_memory_limit: inherited from CoreSettings (P3d-2)
     # --- caller identity (viva_api/api/auth.py) ---
     # The request header this deployment takes caller identity from, e.g.
     # X-Auth-Request-Email (oauth2-proxy), X-Amzn-Oidc-Identity (ALB OIDC), or
@@ -369,7 +371,7 @@ class Settings(CoreSettings):
     # ENV_WORKER_WORKSPACE_PATH.
     identity_header: str = ""
 
-    ray_ecr_repository: str = "v2ecoli"  # ECR repo for the workload-owned Ray image (built by submit_build_image_job)
+    ray_ecr_repository: str = "v2ecoli"  # the Ray image repo (submit_build_image_job); overrides CoreSettings
     ray_parca_mode: str = "full"  # v2ecoli-parca --mode (fast for debug, full for production)
     ray_parca_cpus: int = 8  # v2ecoli-parca --cpus
     ray_n_steps: int = 600  # default sim steps per seed (run_phase0_xarray_ensemble --n-steps)
@@ -419,8 +421,8 @@ class Settings(CoreSettings):
     build_node_key_path: str = ""
 
     # --- Compose (process-bigraph) subsystem settings ---
-    compose_image_base_path: str = ""  # HPC path for compose singularity images
-    compose_sim_base_path: str = ""  # HPC path for compose simulation outputs
+    # compose_image_base_path: inherited from CoreSettings (P3d-2)
+    # compose_sim_base_path: inherited from CoreSettings (P3d-2)
     compose_cache_base_path: str = ""  # HPC path for compose ParCa cache (bind-mounted into containers)
     compose_containers_output_dir: str = "/output"  # Container-internal output dir
     # Ray/Batch compose runner image (prebuilt, carries process-bigraph + pbg-emitters).
@@ -433,7 +435,7 @@ class Settings(CoreSettings):
     # rather than a clear error at submit. Empty means "unset"; the compose Ray
     # service raises with the setting name instead of submitting a doomed job.
     # The tag is a workspace COMMIT, and it is also what keys the ParCa cache below.
-    compose_ray_image_tag: str = ""
+    # compose_ray_image_tag: inherited from CoreSettings (P3d-2)
     # Container dir the commit-keyed ParCa cache is staged into before the run, e.g.
     # "/app/v2ecoli/out/cache" (v2ecoli's baseline resolves a relative "out/cache"
     # against the image's WORKDIR). Empty disables staging — correct for any
@@ -445,9 +447,9 @@ class Settings(CoreSettings):
     # process-bigraph's base types plus the pbg-emitters links; a workspace that
     # registers its own types (v2ecoli's ECOLI_TYPES) needs its own builder or its
     # documents won't resolve. Empty = use the generic core.
-    compose_pbg_core_builder: str = ""
+    # compose_pbg_core_builder: inherited from CoreSettings (P3d-2)
     compose_nats_url: str = ""  # NATS server URL (optional)
-    compose_nats_worker_event_subject: str = "compose.worker.events"
+    # compose_nats_worker_event_subject: inherited from CoreSettings (P3d-2)
     compose_has_messaging: bool = False  # Enable NATS messaging
 
 

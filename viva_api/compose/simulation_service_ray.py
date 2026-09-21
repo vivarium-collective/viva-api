@@ -29,7 +29,7 @@ from viva_api.common.storage.file_paths import S3FilePath
 from viva_api.compose.database_service import ComposeDatabaseService
 from viva_api.compose.models import ComposeHpcRun, ComposeJobStatus, ComposeSimulation, ComposeSimulatorVersion
 from viva_api.compose.simulation_service import ComposeSimulationService
-from viva_api.config import get_settings
+from viva_core.settings import get_core_settings as get_settings
 
 logger = logging.getLogger(__name__)
 

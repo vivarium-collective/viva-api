@@ -32,7 +32,7 @@ from kubernetes import client as k8s_client
 from viva_api.common.hpc.job_service import JobStatusInfo
 from viva_api.common.hpc.k8s_job_service import K8sJobService
 from viva_api.common.site_environments import environment_image
-from viva_api.config import get_settings
+from viva_core.settings import get_core_settings as get_settings
 
 logger = logging.getLogger(__name__)
 

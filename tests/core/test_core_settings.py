@@ -65,9 +65,23 @@ def test_the_application_hands_core_its_own_settings_object() -> None:
     assert get_core_settings() is get_settings()
 
 
+#: Core fields whose DEFAULT the application supplies, and nothing else may. Each names the
+#: application's own image (its registry repository; the workspace root inside it), so the value
+#: cannot be written in core -- the vocabulary guard would refuse it, rightly -- and core's own
+#: default is EMPTY: there is no second value to disagree with, only an absent one to fill.
+APPLICATION_SUPPLIES_THE_DEFAULT = {"env_worker_workspace_path", "ray_ecr_repository"}
+
+
 def test_every_core_field_has_exactly_one_definition() -> None:
-    """The application inherits core's fields; redefining one forks its default."""
+    """The application inherits core's fields; redefining one forks its default. The only
+    redefinitions allowed are the named ones above, and only over an EMPTY core default."""
     from viva_api.config import Settings
 
-    redefined = sorted(set(CoreSettings.model_fields) & set(vars(Settings).get("__annotations__", {})))
-    assert not redefined, f"viva_api.config.Settings redefines core field(s): {redefined}"
+    redefined = set(CoreSettings.model_fields) & set(vars(Settings).get("__annotations__", {}))
+    forked = sorted(redefined - APPLICATION_SUPPLIES_THE_DEFAULT)
+    assert not forked, f"viva_api.config.Settings redefines core field(s): {forked}"
+    stale = sorted(APPLICATION_SUPPLIES_THE_DEFAULT - redefined)
+    assert not stale, f"named as application-supplied but no longer redefined: {stale}"
+    for name in sorted(APPLICATION_SUPPLIES_THE_DEFAULT):
+        assert CoreSettings.model_fields[name].default == "", f"core's default for {name} must be empty"
+        assert Settings.model_fields[name].annotation is CoreSettings.model_fields[name].annotation
