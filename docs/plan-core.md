@@ -274,7 +274,7 @@ P2.0a guard caught. So:
   | 7 ✅ | strategy: **mbp-tracked** → `ray/mbp_tracked.py` (`MbpTrackedStrategy(batch)`, `mbp_tracked_command`); the run-record helper → `ray/run_records.py` | smallest (225 lines); first use of the shape |
   | 8 ✅ | strategy: **Nextflow** → `ray/nextflow.py` (`NextflowStrategy(batch, k8s, stage_runner=)`; needs `k8s`; `reap_cancelled_campaign` travels with it); then **C3** | 464 lines (it was 548 with its module-level constants) |
   | 9 ✅ | strategy: **multi-node composite** → `ray/multi_node.py` (`MultiNodeCompositeStrategy(batch, stage_runner=)`, + its analysis submitter, its founder-cache staging, its vCPU lookup); `PBG_RUNNER_ENV` → the leaf `ray/runner_env.py` | 346 lines (it was 615 with its analysis, staging and lookup) |
-  | 10 | strategy: **ensemble**, extracted from the router (+ `_sim_command`) | the router shrinks to ~20 lines of precedence |
+  | 10 ✅ | strategy: **ensemble** → `ray/ensemble.py` (`EnsembleStrategy(batch, stage_runner=)`, `sim_command`), extracted from the router's tail | the router is now precedence and a hand-over: 12 statements (93 lines with the docstring and the comments that say why the order is what it is) |
   | 11 | strategy: **chain** (+ its analysis submitter; needs `local`); delete the facade shims and `scripts/prove_ray_carve_is_move_only.py`; **checkpoint C** | largest (848 lines) and it bills real money, so last |
   | 12 | **the ray package is `Any`-free (D12, second half)**: widen the override to `viva_api.simulation.ray.*` and type what the strategies brought with them | a type change, kept out of the five move PRs on purpose; after checkpoint C, so it is judged against a deployed, smoke-tested carve |
 - **P2.2 — absorbed into P2.1** (2026-09-20). There are no mixins to turn into strategies.
@@ -710,7 +710,7 @@ split; each has an owner-less issue or a named moment.
 | P1b | #691 `viva_core.settings` (`CoreSettings` + provider); `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved; `config` ⇄ `file_paths` cycle gone | 0.9.146 | **2026-09-19** (checkpoint A2) | — | merged 2026-09-19 (`c9fa2bd5`); proven by an S3 outputs download on the live pod |
 | P2.0 | (a) test guard vs real AWS — #693, merged 2026-09-19; (b) `_seams` + 298 patches retargeted — #696; (c) smoke Tier 2 + R | (b) touches the module, no behaviour change | — | — | (a) #693 and (b) #696 merged; (c) smoke Tier 2 + R — #698; all merged 2026-09-19 |
 | D11 | write-once simulators + the marked-temporary exception: migration `f4c8a2e6d0b3`, `environment_key`, `force` guarded (409), the marker in all three clients, smoke `build` on a temporary simulator — #722 | — | — (checkpoint **B2**, a database deploy, before C2) | — | open |
-| P2.1 | carve `simulation_service_ray.py` (5,019 → 1,965 lines so far; PR 9 took 648; PR 8 took 548; PR 7 took 252; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `ray/analysis_spec.py` — PR 3 (#726) · ParCa split → `ray/parca_spec.py` + `RayParcaService` — PR 4 (#727) · `RayBatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a (#731) · #730 fixed (#732) · the D12 ban — PR 6b (#733) · strategy: mbp-tracked — PR 7 (#734) · strategy: Nextflow — PR 8 (#735) · strategy: multi-node composite — PR 9. Remaining: PRs 10–11 (ensemble, chain), checkpoint C, PR 12 of the 2026-09-20 sequence; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.150 carries everything through PR 8 (#735), 6a/6b, and the #730 fix | **2026-09-21** (checkpoints C1, B2, C2, C3) | — | **in progress.** **Deployed to dev as 0.9.150 (checkpoint C3, 2026-09-21):** everything through PR 8 (#735), typed clients (6a), the D12 ban (6b) and the #730 fix. Merged after C3 (→ checkpoint C): PR 9 (strategy: multi-node composite). Next: PR 10 (ensemble), PR 11 (chain), checkpoint C, PR 12 |
+| P2.1 | carve `simulation_service_ray.py` (5,019 → 1,588 lines so far; PR 10 took 377; PR 9 took 648; PR 8 took 548; PR 7 took 252; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `RayBatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `ray/analysis_spec.py` — PR 3 (#726) · ParCa split → `ray/parca_spec.py` + `RayParcaService` — PR 4 (#727) · `RayBatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a (#731) · #730 fixed (#732) · the D12 ban — PR 6b (#733) · strategy: mbp-tracked — PR 7 (#734) · strategy: Nextflow — PR 8 (#735) · strategy: multi-node composite — PR 9 (#738) · strategy: ensemble — PR 10. Remaining: PR 11 (chain), checkpoint C, PR 12 of the 2026-09-20 sequence; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.150 carries everything through PR 8 (#735), 6a/6b, and the #730 fix | **2026-09-21** (checkpoints C1, B2, C2, C3) | — | **in progress.** **Deployed to dev as 0.9.150 (checkpoint C3, 2026-09-21):** everything through PR 8 (#735), typed clients (6a), the D12 ban (6b) and the #730 fix. Merged after C3 (→ checkpoint C): PR 9 (strategy: multi-node composite), PR 10 (strategy: ensemble). Next: PR 11 (chain), checkpoint C, PR 12 |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image | | | | not started (checkpoint D) |
 | P3 | | | | | not started (checkpoint E) |
@@ -724,6 +724,39 @@ split; each has an owner-less issue or a named moment.
 | P10 | | | | | not started (checkpoint —) |
 
 ## Decision log
+
+- **2026-09-21** — **PR 10: `EnsembleStrategy` — the mechanism that had no name.** It was not a method. It
+  was the last 36 statements (217 lines) of the router, reached by falling through every other
+  mechanism's check. Measured: from the code above it, it read three locals (`config`,
+  `composite`, `n_generations`) and the three parameters, and of `self` it used the Batch layer
+  (an `MnpSubmitter` and nothing else), `cache_s3_uri`, `stage_runner`, and `_sim_command` —
+  which never touched `self`, and is the function `sim_command`. `EnsembleStrategy.submit` is
+  those 36 statements verbatim but for respellings, after a three-statement preamble that derives
+  the three locals *by the router's own statements*. The router is its old head plus one
+  hand-over `return`. `V2ECOLI_BATCH_BASELINE_COMPOSITE_ID` (with its 40 lines of history)
+  joined the leaf `ray/runner_env.py`: chain's commands and `sim_command` both need it.
+  **The proof script grew a fourth kind of change, `EXTRACTED_TAILS`,** checked three ways: the
+  old tail is the new method's body after docstring and preamble (AST + comment lines); every
+  preamble statement is a statement of the old head; what stayed is the old head plus exactly the
+  named hand-over. It passed on its first run, so it was mutation-tested before being believed —
+  a changed preamble, a changed statement in the tail (`git_commit_hash` for `environment_key`:
+  D11), a hand-over that drops the correlation id, a changed chain condition in the head — four
+  out of four caught, each with its own message.
+  Differential against `origin/main`: 375 cases, 0 differences, 141 to completion, through the
+  router and strategy-direct-vs-old-router. Its first run said 24 differences, all in the one
+  case that is *not* the ensemble (the chain's background submit returns a local task id made
+  from `uuid4`); pinned, 0. Wiring mutations: the hand-over dropping the correlation id → 52;
+  a runner stager that stages elsewhere → 9; its own layer → the unit test.
+  **A test that went vacuous, and the pattern behind it:** three tests spy on
+  `service.cache_s3_uri`. Two failed as they should. The third asserts the spy was **not**
+  called (upstream vEcoli must ignore `cache_variant`) — and passed, because after the move
+  nothing calls the *service's* method at all. A negative assertion on a spy is only as good as
+  the spy's aim. Repointed at `parca_spec.cache_s3_uri` and mutation-checked: make the upstream
+  path call it → the test fails again.
+  **Tests did not move this time, and that is a debt, not a choice:** the ensemble's tests share
+  a 473-line class with chain's routing tests, and `sim_command`'s tests sit inside a class about
+  image builds. Splitting classes method by method is a different kind of edit from moving a
+  block; it is done with PR 11, when chain leaves and what remains of that class is the router.
 
 - **2026-09-21** — **Checkpoint C3 passed on dev (0.9.150, #736, tag `v0.9.150`).** Jim: "merge #735,
   then bump and deploy C3". Image from `3ecb7b25`; `kubectl diff` of the app overlay was one line
