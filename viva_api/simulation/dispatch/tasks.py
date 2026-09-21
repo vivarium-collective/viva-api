@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from viva_api.common.models import JobStatus
-from viva_api.common.site_environments import named_environment_image
+from viva_api.common.site_environments import job_definition_key, named_environment_image
 from viva_api.simulation.database_service import DatabaseService
 from viva_api.simulation.dispatch import _seams
 from viva_api.simulation.dispatch.batch_layer import ContainerSubmitter, _rand_suffix
@@ -61,12 +61,6 @@ class TaskBatch(ContainerSubmitter, Protocol):
 
 class TaskRequestRefused(ValueError):
     """The request cannot be run as asked -- the caller's to fix (a 400), not a server fault."""
-
-
-def _job_definition_suffix(image: str) -> str:
-    """A job-definition-safe key for an image that is not named by a commit: its repository and tag
-    (``viva-core-runtime-0-1-0``). Job definition names allow ``[A-Za-z0-9_-]``."""
-    return re.sub(r"[^A-Za-z0-9_-]+", "-", image.rsplit("/", 1)[-1]).strip("-")[:64]
 
 
 class TaskService:
@@ -148,7 +142,7 @@ class TaskService:
             # A registered environment (the core runtime image): nothing of a simulator is needed,
             # so none is looked up -- not even "the latest commit".
             image = named_environment_image(_seams.get_settings(), request.environment)
-            image_key = _job_definition_suffix(image)
+            image_key = job_definition_key(image)
         else:
             commit = request.commit or await self._latest_commit()
             image, image_key = self._batch.image_uri(commit), commit

@@ -175,8 +175,9 @@ class FakeService:
         return {}
 
     def compose_run_simulation(
-        self, file_path: Path, interval_time: float = 1.0, batch: bool = False
+        self, file_path: Path, interval_time: float = 1.0, batch: bool = False, environment: str | None = None
     ) -> dict[str, Any]:
+        self.compose_environment = environment
         self.compose_document = json.loads(Path(file_path).read_text(encoding="utf-8"))
         self.compose_interval = interval_time
         return {"simulation_database_id": 11, "simulator_database_id": 1}
@@ -339,7 +340,7 @@ def test_the_task_checks_can_run_in_a_registered_environment_and_then_need_no_si
     """``--task-environment runtime``: the uploaded-task checks run in the core runtime image. No commit
     is resolved -- a plumbing check should not need (or pull) a science image."""
     svc = FakeService()
-    result = _run("task", svc, task_environment="runtime")
+    result = _run("task", svc, environment="runtime")
     assert result.outcome is smoke.Outcome.PASS
     assert (svc.task_environment, svc.task_commit) == ("runtime", None)
     assert "in the 'runtime' environment" in result.detail
@@ -348,6 +349,15 @@ def test_the_task_checks_can_run_in_a_registered_environment_and_then_need_no_si
     default = FakeService()
     assert _run("task", default).outcome is smoke.Outcome.PASS
     assert (default.task_environment, default.task_commit) == (None, "new")  # unchanged without the option
+
+
+def test_the_compose_check_can_run_in_a_registered_environment_too() -> None:
+    svc = FakeService()
+    result = _run("compose", svc, environment="runtime")
+    assert result.outcome is smoke.Outcome.PASS
+    assert svc.compose_environment == "runtime" and "in the 'runtime' environment" in result.detail
+    default = FakeService()
+    assert _run("compose", default).outcome is smoke.Outcome.PASS and default.compose_environment is None
 
 
 def test_the_task_cli_refuses_an_environment_it_cannot_honour_before_calling_the_server(

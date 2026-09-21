@@ -239,6 +239,9 @@ class ComposeSimulationRequest(BaseModel):
     # regardless of this field). None preserves today's exact behavior: one static
     # deploy-wide image (COMPOSE_RAY_IMAGE_TAG). Only the Ray backend consumes it.
     simulator_id: int | None = None
+    # A REGISTERED environment by name ("runtime": the core runtime image) instead of a simulator's
+    # image. Only the Ray/Batch backend consumes it, and runs the composite as ONE container then.
+    environment: str | None = None
     # Which registered ComposeSimulationService to dispatch to (item 98). None
     # preserves today's exact behavior: the deployment's single default service.
     # Only values actually registered for compose (RAY/SLURM as of this field's
@@ -275,6 +278,11 @@ class ComposeDocumentSubmission(BaseModel):
     interval_time: float = 1.0
     batch_submission: bool = False
     simulator_id: int | None = None
+    #: Run in a REGISTERED environment instead of a simulator's image: ``"runtime"`` is the core
+    #: runtime image, for a composite that needs nothing beyond what process-bigraph ships. It then
+    #: runs as ONE container (no Ray cluster). Not with ``simulator_id`` / ``num_nodes`` /
+    #: ``analysis_options``, which are all a simulator's.
+    environment: str | None = None
     compute_backend: ComputeBackend | None = None
     extra_pip_deps: list[str] | None = None
     # Per-request AWS Batch MNP node count for the Ray backend (item 102). None

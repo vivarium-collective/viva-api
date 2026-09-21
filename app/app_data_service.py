@@ -1178,12 +1178,15 @@ class E2EDataService:
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
-    def compose_run_simulation(self, file_path: Path, interval_time: float = 1.0, batch: bool = False) -> dict:  # type: ignore[type-arg]
+    def compose_run_simulation(
+        self, file_path: Path, interval_time: float = 1.0, batch: bool = False, environment: str | None = None
+    ) -> dict:  # type: ignore[type-arg]
+        params: dict[str, str | float | bool] = {"interval_time": interval_time, "batch_submission": batch}
+        if environment:
+            params["environment"] = environment
         with open(file_path, "rb") as f:
             resp = self.client.post(
-                "/compose/v1/simulation/run",
-                files={"uploaded_file": (file_path.name, f)},
-                params={"interval_time": interval_time, "batch_submission": batch},
+                "/compose/v1/simulation/run", files={"uploaded_file": (file_path.name, f)}, params=params
             )
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]

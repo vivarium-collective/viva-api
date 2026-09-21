@@ -24,7 +24,7 @@ from typing import Any, Protocol, override
 
 from viva_api.common import analysis_dag
 from viva_api.common.models import JobBackend, JobStatus
-from viva_api.common.site_environments import environment_image
+from viva_api.common.site_environments import environment_image, job_definition_key, named_environment_image
 from viva_api.common.storage import data_layout
 from viva_api.common.storage.file_paths import S3FilePath
 from viva_api.compose.database_service import ComposeDatabaseService
@@ -126,7 +126,7 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
             )
         return environment_image(settings, settings.compose_ray_image_tag)
 
-    def _compose_command(self, doc_s3_uri: str, runner_s3_uri: str, steps: int) -> str:
+    def _compose_command(self, doc_s3_uri: str, runner_s3_uri: str, steps: int, *, workspace_core: bool = True) -> str:
         """Download the doc AND the runner from S3, run it → RAY_OUT_DIR.
 
         The runner is fetched from S3 (staged by ``submit_simulation_job``) rather
@@ -138,7 +138,9 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         """
         # Name the workspace's own core builder when the deploy configures one, so a
         # document referencing workspace-registered TYPES (not just addresses) resolves.
-        core_builder = get_settings().compose_pbg_core_builder
+        # ...but NOT in a registered environment: the builder is a module of the workspace's image,
+        # and the runtime image has no workspace. (The runner would warn and fall back; not asking is cleaner.)
+        core_builder = get_settings().compose_pbg_core_builder if workspace_core else None
         # PBG_REQUIRE_OUTPUT=1: a compose run that produced no emitted store is a
         # failure, not a success on the final_state.json fallback (audit §2.4 / P0-3).
         env = f"PBG_RESULTS_DIR={COMPOSE_OUT_DIR} PBG_REQUIRE_OUTPUT=1"
@@ -228,6 +230,10 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         runner_s3_uri = data_layout.s3_uri(runner_key)
 
         steps = int(simulation.sim_request.end_time_point)
+        if simulation.sim_request.environment is not None:
+            return self._submit_in_environment(
+                simulation.sim_request.environment, experiment_id, doc_s3_uri, runner_s3_uri, steps
+            )
         commit = await self._resolve_commit(simulation.sim_request.simulator_id)
         image = self._image_uri(commit)
         # `_ensure_mnp_job_def` keys the derived revision by a tag string — reuse the
@@ -274,6 +280,37 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
                     experiment_id,
                     batch_job_id,
                 )
+        return batch_job_id
+
+    def _submit_in_environment(
+        self, environment: str, experiment_id: str, doc_s3_uri: str, runner_s3_uri: str, steps: int
+    ) -> str:
+        """Run the composite in a REGISTERED environment (the core runtime image), as ONE container.
+
+        Not a smaller copy of the path above -- a different shape, for a different case. A composite
+        that needs only what process-bigraph ships needs no simulator: so no commit is resolved, no
+        ParCa cache is staged, no Ray cluster is formed, and no analysis is chained (that analysis is
+        the simulator's). What stays the same is everything a CLIENT sees: the same runner, the same
+        command, the same results prefix, so status and results are read exactly as for any compose
+        run. The router has already refused what cannot be combined with this, and a site that
+        registers no such environment.
+        """
+        image = named_environment_image(get_settings(), environment)
+        job_def = self._batch.ensure_container_job_def(image, job_definition_key(image))
+        batch_job_id = self._batch.submit_container(
+            job_name=f"compose-{experiment_id}"[:128],
+            job_definition=job_def,
+            job_cmd=self._compose_command(doc_s3_uri, runner_s3_uri, steps, workspace_core=False),
+            out_s3=data_layout.RayLayout.results_uri(experiment_id),
+            out_dir=COMPOSE_OUT_DIR,
+            tags={"Project": "compose", "ExperimentId": experiment_id[:255], "Environment": environment},
+        )
+        logger.info(
+            "Submitted compose container job %s (experiment=%s, environment=%s)",
+            batch_job_id,
+            experiment_id,
+            environment,
+        )
         return batch_job_id
 
     async def _submit_analysis_job(
