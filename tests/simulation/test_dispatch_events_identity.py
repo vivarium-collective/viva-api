@@ -136,9 +136,9 @@ def test_the_known_dispatch_paths_are_all_still_covered() -> None:
         "nextflow.submit",  # NextflowStrategy (P2.1 PR 8)
         "mbp_tracked.submit",  # MbpTrackedStrategy (P2.1 PR 7)
         "multi_node.submit",  # MultiNodeCompositeStrategy (P2.1 PR 9)
-        "submit_chain_dispatch_job",
+        "chain.submit_chain_dispatch_job",  # ChainStrategy (P2.1 PR 11)
         "ensemble.submit",  # EnsembleStrategy: was the router's own tail (P2.1 PR 10)
-        "_submit_analysis_job",
+        "chain._submit_analysis_job",
     }
     missing = expected - with_identity
     assert not missing, f"dispatch methods that lost their events identity: {sorted(missing)}"

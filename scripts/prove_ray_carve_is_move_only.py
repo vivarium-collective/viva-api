@@ -43,42 +43,56 @@ from pathlib import Path
 ROOT = "viva_api/simulation/"
 SERVICE = (ROOT + "simulation_service_ray.py", "SimulationServiceRay")
 
-# ---- P2.1 PR 10: the router's inline ensemble path becomes ``EnsembleStrategy``.
+# ---- P2.1 PR 11: the chain dispatch mechanism becomes ``ChainStrategy`` -- the last one.
 
-ENSEMBLE = ROOT + "ray/ensemble.py"
+CHAIN = ROOT + "ray/chain.py"
+STRATEGY = "ChainStrategy"
 
 #: old method -> (file, new function name). A ``@staticmethod`` had no ``self`` to drop.
 BECAME_FUNCTIONS: dict[str, tuple[str, str]] = {
-    "_sim_command": (ENSEMBLE, "sim_command"),
+    "_seed_generation_command": (CHAIN, "seed_generation_command"),
+    "_seed_lineage_command": (CHAIN, "seed_lineage_command"),
+    "_analysis_command": (CHAIN, "analysis_command"),
 }
-#: how the strategy spells what the old code found on ``self`` -> how it spelled it
+#: a method that became a function AND stays on the class as a delegate (the scheduler calls it)
+REWIRED_FUNCTION_BODIES: dict[str, tuple[str, str]] = {
+    "chain_base_tags": (CHAIN, "chain_base_tags"),
+}
+#: how the strategy spells what its methods used to find on ``self`` -> how they spelled it
 _IN_STRATEGY = {
     "self._batch.": "self.batch.",
-    "self._stage_runner(": "self.stage_runner(",
     "parca_spec.cache_s3_uri(": "self.cache_s3_uri(",
-    "sim_command(": "self._sim_command(",
+    "self.submit(": "self._submit_chain_dispatch_background(",
+    **{f"{new}(": f"self.{old}(" for old, (_, new) in {**BECAME_FUNCTIONS, **REWIRED_FUNCTION_BODIES}.items()},
 }
 #: old method -> (file, class, new method name, {new spelling: old spelling})
-BECAME_STRATEGY_METHODS: dict[str, tuple[str, str, str, dict[str, str]]] = {}
-RESPELLED_IN_SERVICE: dict[str, str] = {}
-REWIRED: dict[str, str] = {}
-REWIRED_BODIES: dict[str, tuple[str, str, str, dict[str, str]]] = {}
-#: This mechanism was not a method. It was the TAIL of the router: every statement from the one that
-#: assigns ``first_assigned`` to the end. Checked three ways -- the tail is the new method's body after
-#: its docstring and a preamble; every preamble statement is a statement of the router's head,
-#: verbatim (the locals the tail read from there); and the router is its old head plus ONE return.
-EXTRACTED_TAILS: dict[str, dict[str, object]] = {
-    "submit_ecoli_simulation_job": {
-        "first_assigned": "parca_dataset",
-        "to": (ENSEMBLE, "EnsembleStrategy", "submit"),
-        "preamble": 3,
-        "respellings": _IN_STRATEGY,
-        "hand_over": (
-            "return await self._ensemble().submit(ecoli_simulation, database_service, correlation_id=correlation_id)"
-        ),
-    },
+BECAME_STRATEGY_METHODS: dict[str, tuple[str, str, str, dict[str, str]]] = {
+    "submit_chain_generation": (CHAIN, STRATEGY, "submit_chain_generation", _IN_STRATEGY),
+    "submit_chain_generation_batch": (CHAIN, STRATEGY, "submit_chain_generation_batch", _IN_STRATEGY),
+    "submit_chain_lineage": (CHAIN, STRATEGY, "submit_chain_lineage", _IN_STRATEGY),
+    "_submit_chain_dispatch_background": (CHAIN, STRATEGY, "submit", _IN_STRATEGY),
+    "_submit_analysis_job": (CHAIN, STRATEGY, "_submit_analysis_job", _IN_STRATEGY),
 }
-NEW = {"_ensemble": "builds EnsembleStrategy(self.batch, stage_runner=...)"}
+#: how a method that STAYED now spells a call to something that moved -> how it spelled it
+RESPELLED_IN_SERVICE = {
+    "return await self._chain().submit(": "return await self._submit_chain_dispatch_background(",
+}
+#: on the service, differing by design: each is now a one-call delegate, because the scheduler, the
+#: capability probe or a direct caller still asks the SERVICE for it (until P6)
+REWIRED = {
+    "submit_chain_dispatch_job": "delegate: the capability probe and the integration tests reach it",
+    "submit_chain_lineage_batch": "delegate: the scheduler submits the next lineage batch through it",
+    "submit_campaign_analysis": "delegate: the scheduler submits the campaign's analysis through it",
+    "chain_base_tags": "delegate: the scheduler tags the lineage batch with it",
+}
+#: the body a REWIRED method left behind -> where it must be found unchanged
+REWIRED_BODIES: dict[str, tuple[str, str, str, dict[str, str]]] = {
+    "submit_chain_dispatch_job": (CHAIN, STRATEGY, "submit_chain_dispatch_job", _IN_STRATEGY),
+    "submit_chain_lineage_batch": (CHAIN, STRATEGY, "submit_chain_lineage_batch", _IN_STRATEGY),
+    "submit_campaign_analysis": (CHAIN, STRATEGY, "submit_campaign_analysis", _IN_STRATEGY),
+}
+EXTRACTED_TAILS: dict[str, dict[str, object]] = {}
+NEW = {"_chain": "builds ChainStrategy(self.batch, self._local)"}
 
 
 def functions_of(source: str | None, class_name: str | None) -> dict[str, str]:
@@ -158,7 +172,7 @@ def compare_as_is(before: dict[str, str], after: dict[str, str]) -> int:
 
 def check_moved(before: dict[str, str], read: Callable[[str], str | None]) -> list[str]:
     problems: list[str] = []
-    for old, (path, new) in BECAME_FUNCTIONS.items():
+    for old, (path, new) in {**BECAME_FUNCTIONS, **REWIRED_FUNCTION_BODIES}.items():
         functions = functions_of(read(path), None)
         if new not in functions:
             problems.append(f"{old} -> {path}::{new}: not there")

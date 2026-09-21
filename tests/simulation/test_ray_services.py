@@ -495,3 +495,46 @@ async def test_the_router_hands_the_fall_through_to_the_services_own_ensemble_st
         await service.submit_ecoli_simulation_job(cast("Simulation", run), database, "corr")
 
     assert [name.split("-")[1] for name in submitted] == ["parca", "sim"], submitted
+
+
+class RecordingLocal:
+    """The in-process task service, as far as the chain strategy is concerned."""
+
+    def __init__(self) -> None:
+        self.submitted: list[str] = []
+
+    def submit(self, coroutine: Any, name: str) -> JobId:
+        self.submitted.append(name)
+        coroutine.close()  # never run: this test is about WHO is handed the work, not the work
+        return JobId.local("local-1")
+
+    async def bind_hpcrun(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_the_chain_strategy_hands_its_campaign_to_the_local_service_it_was_given() -> None:
+    from viva_api.simulation.ray.chain import ChainStrategy
+
+    local, database = RecordingLocal(), MagicMock()
+    database.insert_hpcrun = AsyncMock(return_value=SimpleNamespace(database_id=7))
+    run = SimpleNamespace(
+        simulator_id=1, parca_dataset_id=3, database_id=42, config=SimpleNamespace(experiment_id="exp-1")
+    )
+    strategy = ChainStrategy(OnlyASubmitter(), cast("Any", local))
+
+    job_id = await strategy.submit(cast("Simulation", run), database, correlation_id="corr")
+
+    assert job_id == JobId.local("local-1") and len(local.submitted) == 1  # returned at once; nothing submitted inline
+
+
+@pytest.mark.asyncio
+async def test_the_services_chain_strategy_is_handed_the_services_own_layer_and_local_service() -> None:
+    from viva_api.simulation.simulation_service_ray import SimulationServiceRay
+
+    local: Any = RecordingLocal()  # stands in for LocalTaskService
+    service = SimulationServiceRay(local_task_service=local)
+    strategy = service._chain()
+    assert strategy._batch is service.batch and strategy._local is local
+    for other in (service._ensemble(), service._multi_node(), service._mbp_tracked(), service._nextflow()):
+        assert other._batch is service.batch  # one layer, five mechanisms
