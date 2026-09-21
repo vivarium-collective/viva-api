@@ -17,6 +17,8 @@ from viva_api.compose.models import (
     SimulationFileType,
 )
 from viva_api.compose.simulation_service_ray import ComposeSimulationServiceRay
+from viva_api.simulation import compose_staging as staging_mod
+from viva_api.simulation.compose_staging import compose_parca_staging
 from viva_api.simulation.dispatch.batch_layer import BatchLayer
 from viva_api.simulation.models import SimulatorVersion
 
@@ -109,8 +111,8 @@ def test_image_uri_with_commit_delegates_to_the_shared_ensemble_primitive(monkey
 
 def test_parca_staging_disabled_when_no_cache_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     """Generic default: a composite that needs no prebuilt cache stages nothing."""
-    monkeypatch.setattr(mod, "get_settings", lambda: _settings(compose_parca_cache_dir=""))
-    assert ComposeSimulationServiceRay(batch=BatchLayer())._parca_staging() == (None, None)
+    monkeypatch.setattr(staging_mod, "get_settings", lambda: _settings(compose_parca_cache_dir=""))
+    assert compose_parca_staging() == (None, None)
 
 
 def test_parca_staging_is_keyed_by_the_image_tag_commit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -119,11 +121,11 @@ def test_parca_staging_is_keyed_by_the_image_tag_commit(monkeypatch: pytest.Monk
     started against an empty directory. The cache is commit-addressed and the image
     tag IS the commit."""
     monkeypatch.setattr(
-        mod,
+        staging_mod,
         "get_settings",
         lambda: _settings(compose_ray_image_tag="a08e20bd", compose_parca_cache_dir="/app/v2ecoli/out/cache"),
     )
-    stage_s3, stage_dir = ComposeSimulationServiceRay(batch=BatchLayer())._parca_staging()
+    stage_s3, stage_dir = compose_parca_staging()
     assert stage_dir == "/app/v2ecoli/out/cache"
     assert stage_s3 is not None
     assert stage_s3.endswith("ray-parca-cache/a08e20bd/")
@@ -136,13 +138,11 @@ def test_parca_staging_with_commit_keys_by_the_resolved_commit_not_the_deploy_ta
     staging the deploy-wide tag's cache instead would silently serve the WRONG
     commit's ParCa data. Regression target: this must key off `commit`, not the tag."""
     monkeypatch.setattr(
-        mod,
+        staging_mod,
         "get_settings",
         lambda: _settings(compose_ray_image_tag="deploy-wide-tag", compose_parca_cache_dir="/app/v2ecoli/out/cache"),
     )
-    stage_s3, stage_dir = ComposeSimulationServiceRay(batch=BatchLayer())._parca_staging(
-        commit="resolved-per-run-commit"
-    )
+    stage_s3, stage_dir = compose_parca_staging(commit="resolved-per-run-commit")
     assert stage_dir == "/app/v2ecoli/out/cache"
     assert stage_s3 is not None
     assert stage_s3.endswith("ray-parca-cache/resolved-per-run-commit/")
@@ -268,15 +268,11 @@ async def test_submit_simulation_job_with_simulator_id_uses_the_resolved_per_com
     build's OWN commit -- image, job-def revision key, AND ParCa cache staging -- not
     the deploy-wide static tag, and without touching ComposeSimulatorVersion (a
     different, container-def-based identity tracked regardless of this field)."""
-    monkeypatch.setattr(
-        mod,
-        "get_settings",
-        lambda: _settings(
-            compose_ray_image_tag="deploy-wide-tag",
-            compose_parca_cache_dir="/app/v2ecoli/out/cache",
-            ray_num_nodes=4,
-        ),
+    configured = _settings(
+        compose_ray_image_tag="deploy-wide-tag", compose_parca_cache_dir="/app/v2ecoli/out/cache", ray_num_nodes=4
     )
+    monkeypatch.setattr(mod, "get_settings", lambda: configured)
+    monkeypatch.setattr(staging_mod, "get_settings", lambda: configured)  # the staging hook is SMS's, and reads its own
 
     doc_path = tmp_path / "input.pbg"
     doc_path.write_text("{}")
@@ -296,7 +292,7 @@ async def test_submit_simulation_job_with_simulator_id_uses_the_resolved_per_com
         ),
     )
 
-    svc = ComposeSimulationServiceRay(batch=BatchLayer())
+    svc = ComposeSimulationServiceRay(batch=BatchLayer(), stage_inputs=compose_parca_staging)
 
     captured_job_def_args: dict[str, str] = {}
 
@@ -474,3 +470,41 @@ def test_compose_is_handed_its_batch_layer_and_imports_no_simulation_service() -
     offenders = sorted(m for m in imported if m.endswith(("simulation_service_ray", "ray.batch_layer")))
     assert not offenders, f"compose imports SMS's Batch plumbing again: {offenders}"
     assert "batch" in inspect.signature(ComposeSimulationServiceRay.__init__).parameters
+
+
+@pytest.mark.asyncio
+async def test_a_compose_service_with_no_staging_hook_stages_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """WHAT to stage into a run is the application's (``docs/plan-core.md`` P3d-1): SMS hands compose
+    its ParCa cache as a hook. A compose service nobody handed one to -- a core with no application --
+    stages nothing, even on a site whose settings name a cache directory."""
+    configured = _settings(compose_parca_cache_dir="/app/v2ecoli/out/cache", ray_num_nodes=4)
+    monkeypatch.setattr(mod, "get_settings", lambda: configured)
+    monkeypatch.setattr(staging_mod, "get_settings", lambda: configured)
+    doc_path = tmp_path / "input.pbg"
+    doc_path.write_text("{}")
+    simulation = ComposeSimulation(
+        database_id=1,
+        sim_request=ComposeSimulationRequest(
+            request_file_path=doc_path, simulation_file_type=SimulationFileType.PBG, is_batch=False
+        ),
+        simulator_version=ComposeSimulatorVersion(
+            database_id=1,
+            singularity_def=ContainerizationFileRepr(representation="Bootstrap: docker\n"),
+            singularity_def_hash="x",
+            packages=None,
+        ),
+    )
+    svc = ComposeSimulationServiceRay(batch=BatchLayer())
+    monkeypatch.setattr(svc._batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
+    captured: dict[str, object] = {}
+
+    def _capture_submit_mnp(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return "batch-job-id"
+
+    monkeypatch.setattr(svc._batch, "submit_mnp", _capture_submit_mnp)
+    with patch("viva_api.dependencies.get_file_service", return_value=AsyncMock()):
+        await svc.submit_simulation_job(simulation, experiment_id="exp-1")
+    assert (captured["stage_s3"], captured["stage_dir"]) == (None, None)

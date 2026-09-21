@@ -503,16 +503,20 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         if settings.ray_mnp_queue:
             from viva_api.compose.simulation_service_ray import ComposeSimulationServiceRay
             from viva_api.simulation.compose_analysis import ComposeAnalysisChainer
+            from viva_api.simulation.compose_staging import compose_parca_staging
             from viva_api.simulation.dispatch.batch_layer import BatchLayer
 
             # Compose names what it needs of Batch (``ComposeBatch``) and imports no SMS code to
             # get it; this is the composition root, so this is where it is handed SMS's layer.
             # The layer holds no state, so compose has its own rather than the Ray service's.
-            # The science analysis SMS chains onto a compose run is SMS's, handed to compose as a hook
-            # (docs/plan-core.md P3c): compose itself imports nothing of the application.
+            # What SMS chains onto a compose run (its science analysis) and stages into one (its
+            # ParCa cache) are SMS's, handed to compose as hooks (docs/plan-core.md P3c, P3d-1):
+            # compose itself imports nothing of the application's domain.
             compose_batch = BatchLayer()
             compose_registry[ComputeBackend.RAY] = ComposeSimulationServiceRay(
-                batch=compose_batch, after_submit=ComposeAnalysisChainer(compose_batch)
+                batch=compose_batch,
+                after_submit=ComposeAnalysisChainer(compose_batch),
+                stage_inputs=compose_parca_staging,
             )
             logger.info("✓ Compose backend registered: ray (AWS Batch MNP)")
         if default_backend == ComputeBackend.SLURM:
