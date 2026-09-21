@@ -11,7 +11,8 @@ PR 7 of the 2026-09-20 sequence), and so the one that sets the shape:
 * ``submit`` is the body of ``SimulationServiceRay._submit_mbp_tracked_dispatch``, verbatim but for
   how four things are spelled now that there is no ``self`` to find them on (the cache URI and
   the command are functions, the Batch layer is ``self._batch``, the run record is a function).
-  ``scripts/prove_ray_carve_is_move_only.py`` checks exactly that, and nothing else differs.
+  ``scripts/prove_ray_carve_is_move_only.py`` (kept in the tree up to ``v0.9.151``) checked exactly that,
+  and nothing else differed.
 * ``mbp_tracked_command`` was a method that never touched ``self``: a function, as in
   ``parca_spec``.
 

@@ -625,7 +625,9 @@ gating latency compared to the baseline.
 - **Classify by domain role before choosing a shape** (P2's role table). Twice a shape was
   picked from how the code was arranged — a build mixin, an analysis service — and twice the
   question "what *is* this?" gave a different answer.
-- **Pure move → byte-identical proof.** `scripts/prove_ray_carve_is_move_only.py` compares
+- **Pure move → byte-identical proof.** `scripts/prove_ray_carve_is_move_only.py` (deleted at
+  checkpoint C, when the carve it proved was deployed; `git show v0.9.151:scripts/prove_ray_carve_is_move_only.py`
+  brings it back) compared
   every method of the hierarchy by source with `origin/main` and exits 1 on a differing,
   lost, added or doubly-defined method. For a strategy PR the body moves verbatim with
   `self.` rewritten to the dispatcher, and the script compares **after that substitution**,
@@ -696,7 +698,6 @@ split; each has an owner-less issue or a named moment.
 | Temporary simulators 214 and 215 and the images `tmp-d01dc07-b64227[-submit]` on dev / in the shared ECR | dev | the purge for temporary simulators (not built yet); until then they stay, marked |
 | `/health` reports the database revision **as read at startup**, so smoke's `database` check cannot see a migration applied under a running pod (seen at B2) | viva-api | read it per request, or label it `db_revision_at_startup` |
 | `CLAUDE.md` still says backend selection is by `deployment_namespace` and that tests use SQLite | `CLAUDE.md` | any docs PR |
-| `scripts/prove_ray_carve_is_move_only.py` | — | delete in PR 11 |
 | `job_scheduler.py` (1,370 lines), `handlers/simulations.py` (2,463), `routers/env_worker.py` (1,170), `dependencies.py` (691) have no detailed plan yet | P3, P6 | before those phases start |
 
 ## Status ledger

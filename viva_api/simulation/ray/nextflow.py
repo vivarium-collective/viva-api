@@ -18,9 +18,10 @@ shape ``MbpTrackedStrategy`` set, with the two things this mechanism needs that 
 
 Five of the ten methods never touched ``self`` and are functions here. The other five are the
 strategy's methods, verbatim but for how they spell what used to be on ``self``
-(``scripts/prove_ray_carve_is_move_only.py``). ``reap_cancelled_campaign`` travels with the
-mechanism because it IS the mechanism's -- it undoes what ``submit`` started; the scheduler still
-reaches it through a one-line delegate on the service until P6.
+(proven by ``scripts/prove_ray_carve_is_move_only.py``, kept in the tree up to ``v0.9.151``).
+``reap_cancelled_campaign`` travels with the mechanism because it IS the mechanism's -- it undoes
+what ``submit`` started; the scheduler still reaches it through a one-line delegate on the service
+until P6.
 
 SMS code, and it stays SMS code.
 """
