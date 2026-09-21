@@ -40,44 +40,42 @@ from pathlib import Path
 ROOT = "viva_api/simulation/"
 SERVICE = (ROOT + "simulation_service_ray.py", "SimulationServiceRay")
 
-# ---- P2.1 PR 8: the Nextflow dispatch mechanism becomes ``NextflowStrategy``.
+# ---- P2.1 PR 9: the multi-node composite dispatch mechanism becomes ``MultiNodeCompositeStrategy``.
 
-NEXTFLOW = ROOT + "ray/nextflow.py"
+MULTI_NODE = ROOT + "ray/multi_node.py"
+STRATEGY = "MultiNodeCompositeStrategy"
 
 #: old method -> (file, new function name). A ``@staticmethod`` had no ``self`` to drop.
 BECAME_FUNCTIONS: dict[str, tuple[str, str]] = {
-    "stage_render_nf": (NEXTFLOW, "stage_render_nf"),
-    "_nf_session_s3_uri": (NEXTFLOW, "nf_session_s3_uri"),
-    "_nf_generator_params": (NEXTFLOW, "nf_generator_params"),
-    "_render_nf_command": (NEXTFLOW, "render_nf_command"),
-    "_nf_head_job_name": (NEXTFLOW, "nf_head_job_name"),
+    "_multi_node_composite_command": (MULTI_NODE, "multi_node_composite_command"),
+    "_stage_seed_override_caches": (MULTI_NODE, "stage_seed_override_caches"),
+    "_multi_node_analysis_command": (MULTI_NODE, "multi_node_analysis_command"),
 }
 #: how the strategy spells what its methods used to find on ``self`` -> how they spelled it
 _IN_STRATEGY = {
     "self._batch.": "self.batch.",
     "self._stage_runner(": "self.stage_runner(",
+    "parca_spec.cache_s3_uri(": "self.cache_s3_uri(",
     **{f"{new}(": f"self.{old}(" for old, (_, new) in BECAME_FUNCTIONS.items()},
 }
 #: old method -> (file, class, new method name, {new spelling: old spelling})
 BECAME_STRATEGY_METHODS: dict[str, tuple[str, str, str, dict[str, str]]] = {
-    "_awsbatch_nf_params": (NEXTFLOW, "NextflowStrategy", "_awsbatch_nf_params", _IN_STRATEGY),
-    "_nf_head_job": (NEXTFLOW, "NextflowStrategy", "_nf_head_job", _IN_STRATEGY),
-    "_submit_nextflow_dispatch": (NEXTFLOW, "NextflowStrategy", "submit", _IN_STRATEGY),
-    "_terminate_campaign_tasks": (NEXTFLOW, "NextflowStrategy", "_terminate_campaign_tasks", _IN_STRATEGY),
+    "_mnp_node_vcpus": (MULTI_NODE, STRATEGY, "_mnp_node_vcpus", _IN_STRATEGY),
+    "_submit_multi_node_composite": (MULTI_NODE, STRATEGY, "submit", _IN_STRATEGY),
 }
 #: how a method that STAYED now spells a call to something that moved -> how it spelled it
 RESPELLED_IN_SERVICE = {
-    "return await self._nextflow().submit(": "return await self._submit_nextflow_dispatch(",
+    "return await self._multi_node().submit(": "return await self._submit_multi_node_composite(",
 }
 #: on the service, differing by design
 REWIRED = {
-    "reap_cancelled_campaign": "the body is NextflowStrategy's now; the service keeps a delegate for the scheduler",
+    "submit_multi_node_analysis": "the body is the strategy's ``submit_analysis``; a delegate stays for the scheduler",
 }
 #: the body a REWIRED method left behind -> where it must be found unchanged
 REWIRED_BODIES: dict[str, tuple[str, str, str, dict[str, str]]] = {
-    "reap_cancelled_campaign": (NEXTFLOW, "NextflowStrategy", "reap_cancelled_campaign", _IN_STRATEGY),
+    "submit_multi_node_analysis": (MULTI_NODE, STRATEGY, "submit_analysis", _IN_STRATEGY),
 }
-NEW = {"_nextflow": "builds NextflowStrategy(self.batch, self._k8s, stage_runner=...)"}
+NEW = {"_multi_node": "builds MultiNodeCompositeStrategy(self.batch, stage_runner=...)"}
 
 
 def functions_of(source: str | None, class_name: str | None) -> dict[str, str]:

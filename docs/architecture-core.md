@@ -180,7 +180,7 @@ The service keeps `get_job_status` / `cancel_job` (its own interface) and two de
 `get_batch_job_statuses` / `_details`, because the scheduler still asks the service (until P6).
 
 **What `SimulationServiceRay` is as of 2026-09-20** (`SimulationServiceRay(SimulationService)` —
-it inherits nothing from `simulation/ray/`; the file is 2,613 lines, from 5,019):
+it inherits nothing from `simulation/ray/`; the file is 1,965 lines, from 5,019):
 
 | Piece | Where | Shape |
 |---|---|---|
@@ -195,7 +195,9 @@ it inherits nothing from `simulation/ray/`; the file is 2,613 lines, from 5,019)
 | recording a dispatch's own run row | `ray/run_records.py` | a function (it never used `self`); shared by the mechanisms that submit a job ahead of the one they return |
 | dispatch mechanism: **mbp-tracked** | `ray/mbp_tracked.py` (`MbpTrackedStrategy(batch)`, `mbp_tracked_command`) | **strategy object**, handed a `ContainerSubmitter` and nothing else — the first of five |
 | dispatch mechanism: **Nextflow** | `ray/nextflow.py` (`NextflowStrategy(batch, k8s, stage_runner=)`, `NextflowBatch` Protocol, five functions, the resource defaults) | **strategy object**; handed two image names + the engine, the K8s backend, and a runner stager. Owns `reap_cancelled_campaign`; the service keeps a delegate for the scheduler |
-| the two analysis **submitters** (chain's, the multi-node composite's), `_stage_seed_override_caches` (the multi-node composite's), **three** dispatch mechanisms (ensemble, chain, multi-node composite), the router, the facade | still in the class | each submitter moves with its mechanism; see below |
+| dispatch mechanism: **multi-node composite** | `ray/multi_node.py` (`MultiNodeCompositeStrategy(batch, stage_runner=)`, `MultiNodeBatch` Protocol, three functions) | **strategy object**; owns its analysis submitter, its founder-cache staging and the vCPU lookup that sizes `RAY_SHARDS_DEFAULT`; the service keeps `submit_multi_node_analysis` as a delegate for the scheduler |
+| the runner environment (`PBG_RUNNER_ENV`) | `ray/runner_env.py` | leaf constants, shared by three mechanisms |
+| the chain's analysis **submitter**, **two** dispatch mechanisms (ensemble, chain), the router, the facade | still in the class | each submitter moves with its mechanism; see below |
 
 **Five dispatch mechanisms, none of which calls another** (measured 2026-09-20). The router
 `submit_ecoli_simulation_job` is 308 lines, of which ~20 are routing and **216 are a fifth,

@@ -16,7 +16,7 @@ import pytest
 
 from tests.simulation.test_ray_backend import _ray_settings, _v2ecoli_simulator
 from viva_api.common.storage import data_layout
-from viva_api.simulation.ray import nextflow
+from viva_api.simulation.ray import multi_node, nextflow
 from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
 
@@ -57,7 +57,7 @@ async def test_nextflow_dispatch_is_chosen_before_multi_node() -> None:
     )
     with (
         patch.object(nextflow.NextflowStrategy, "submit", new=AsyncMock(return_value="nf")) as nf,
-        patch.object(service, "_submit_multi_node_composite", new=AsyncMock(return_value="mnp")) as mnp,
+        patch.object(multi_node.MultiNodeCompositeStrategy, "submit", new=AsyncMock(return_value="mnp")) as mnp,
     ):
         await service.submit_ecoli_simulation_job(sim, _db(), correlation_id="c")
     assert nf.await_count == 1
@@ -71,7 +71,7 @@ async def test_absent_axis_leaves_every_other_route_untouched() -> None:
     sim = _sim(multi_node_dispatch={"composite_id": "x"})
     with (
         patch.object(nextflow.NextflowStrategy, "submit", new=AsyncMock()) as nf,
-        patch.object(service, "_submit_multi_node_composite", new=AsyncMock(return_value="mnp")) as mnp,
+        patch.object(multi_node.MultiNodeCompositeStrategy, "submit", new=AsyncMock(return_value="mnp")) as mnp,
     ):
         await service.submit_ecoli_simulation_job(sim, _db(), correlation_id="c")
     assert nf.await_count == 0

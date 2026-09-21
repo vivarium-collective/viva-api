@@ -36,6 +36,10 @@ Dispatch mechanisms are STRATEGY objects, each handed the submitter it needs and
   ``run_mbp_tracked.py``, behind a ParCa job unless a staged variant cache is named.
 * :mod:`.nextflow` -- ``NextflowStrategy(batch, k8s, stage_runner=)``: a Nextflow head as a K8s Job that
   submits its own Batch tasks; and the reap of a cancelled campaign's tasks.
+* :mod:`.multi_node` -- ``MultiNodeCompositeStrategy(batch, stage_runner=)``: one composite on Ray actors
+  across the nodes of one MNP job, and the analysis that follows it. The one place Ray is literally
+  what runs.
+* :mod:`.runner_env` -- leaf constants: the environment every ``run_pbg.py`` invocation runs under.
 * :mod:`.run_records` -- ``record_run_with_companions``: a function the mechanisms share, to write
   down the jobs they submit ahead of the one they return.
 
