@@ -30,5 +30,12 @@ whatever the dispatch mechanism, and each is handed the one collaborator it need
   a new-gene cache, a variant cache). Submitting ParCa as part of a RUN is not here: it is a
   container job in two mechanisms and an MNP job in two others, so it stays with each.
 
+Dispatch mechanisms are STRATEGY objects, each handed the submitter it needs and nothing else:
+
+* :mod:`.mbp_tracked` -- ``MbpTrackedStrategy(batch)``: one container job running the image's own
+  ``run_mbp_tracked.py``, behind a ParCa job unless a staged variant cache is named.
+* :mod:`.run_records` -- ``record_run_with_companions``: a function the mechanisms share, to write
+  down the jobs they submit ahead of the one they return.
+
 ``SimulationServiceRay`` inherits nothing from this package: it composes all of it.
 """

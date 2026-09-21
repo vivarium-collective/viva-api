@@ -31,7 +31,10 @@ RAY_PACKAGE = Path("viva_api/simulation/ray")
 #: (plan sequence PRs 7-11) arrive with the ``Any`` they have today, because those PRs are proven
 #: by AST identity and an annotation change is an AST change. PR 12 empties this set and turns the
 #: by-name list into ``viva_api.simulation.ray.*``. Adding a name here is a decision; say why.
-NOT_YET_BANNED: set[str] = set()
+NOT_YET_BANNED: set[str] = {
+    # PR 7: moved with the `dict[str, Any]` dispatch block and command parameters it had in the service.
+    "viva_api.simulation.ray.mbp_tracked",
+}
 
 
 def _banned_modules() -> list[str]:
