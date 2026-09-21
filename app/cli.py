@@ -2614,6 +2614,11 @@ def compose_run(
     file: Path = Argument(help="Path to OMEX, PBG, or SBML file."),
     interval_time: float = Option(default=1.0, help="Simulation interval/duration."),
     batch: bool = Option(default=False, help="Use batch submission mode."),
+    environment: str | None = Option(
+        default=None,
+        help="Run in a registered environment instead of a simulator's image: 'runtime' is the core runtime "
+        "image, for a composite that needs only what process-bigraph ships. It runs as one container.",
+    ),
     poll: bool = Option(default=False, help="Poll until job completes."),
     base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
 ) -> None:
@@ -2629,7 +2634,9 @@ def compose_run(
         raise typer.Exit(1)
 
     with console.status("[memphis.spinner]Submitting compose simulation..."):
-        result = data_service.compose_run_simulation(file_path=file, interval_time=interval_time, batch=batch)
+        result = data_service.compose_run_simulation(
+            file_path=file, interval_time=interval_time, batch=batch, environment=environment
+        )
     sim_id = result["simulation_database_id"]
     sim_ver_id = result["simulator_database_id"]
     console.print(f"[memphis.label]Simulation ID:[/] {sim_id}")
@@ -3061,10 +3068,11 @@ def smoke_run(
     only: list[str] = Option(default=[], help="Run only these checks (repeatable); overrides --tier."),
     skip: list[str] = Option(default=[], help="Skip these checks (repeatable)."),
     commit: str | None = Option(default=None, help="Image commit for the task and worker checks."),
-    task_environment: str | None = Option(
+    environment: str | None = Option(
         default=None,
-        help="Run the uploaded-task checks (task, task-fail) in a registered environment instead of a "
-        "simulator's image: 'runtime' is the core runtime image. task-repo always needs a simulator's image.",
+        help="Run the plumbing checks that need no simulator (task, task-fail, compose) in a registered "
+        "environment instead of a simulator's image: 'runtime' is the core runtime image. "
+        "task-repo, worker and every tier-2 check always need a simulator's image.",
     ),
     simulation_id: int | None = Option(default=None, help="A completed simulation WITH output: enables `analysis`."),
     biomodel: str | None = Option(default=None, help="A BioModels id: enables `biomodels`."),
@@ -3160,7 +3168,7 @@ def smoke_run(
         active_batch_jobs=batch_jobs,
         active_batch_jobs_unavailable=batch_unavailable,
         commit=commit,
-        task_environment=task_environment,
+        environment=environment,
         simulation_id=simulation_id,
         biomodel_id=biomodel,
         simulator_id=simulator_id,

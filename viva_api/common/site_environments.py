@@ -11,6 +11,7 @@ The settings are HANDED IN rather than read: each caller already holds them, thr
 a test that patches that seam must be what this sees.
 """
 
+import re
 from typing import Protocol
 
 from viva_core.environments import DerivedSpec, ExplicitSpec, RegistryEnvironmentResolver, ecr_registry
@@ -74,3 +75,10 @@ def named_environment_image(settings: RegistrySettings, name: str) -> str:
     if name not in NAMED_ENVIRONMENTS:
         raise ValueError(f"unknown environment {name!r}; known: {sorted(NAMED_ENVIRONMENTS)}")
     return site_resolver(settings).resolve(DerivedSpec()).image
+
+
+def job_definition_key(image: str) -> str:
+    """A job-definition-safe key for an image that is NOT named by a commit: its repository and tag
+    (``viva-core-runtime-0-1-0``). Batch derives one job definition per image, named ``<base>-<key>``;
+    job definition names allow ``[A-Za-z0-9_-]``."""
+    return re.sub(r"[^A-Za-z0-9_-]+", "-", image.rsplit("/", 1)[-1]).strip("-")[:64]

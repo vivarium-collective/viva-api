@@ -107,9 +107,9 @@ class SmokeOptions:
     something it was not given SKIPs with a reason rather than guessing."""
 
     commit: str | None = None
-    #: Run the uploaded-task checks in a registered environment (``runtime``) instead of a
-    #: simulator's image. ``None``: as before, the commit's image.
-    task_environment: str | None = None
+    #: Run the plumbing checks that need no simulator (task, task-fail, compose) in a registered
+    #: environment (``runtime``) instead of a simulator's image. ``None``: as before.
+    environment: str | None = None
     simulation_id: int | None = None
     biomodel_id: str | None = None
     simulator_id: int | None = None
@@ -198,7 +198,7 @@ class SmokeService(Protocol):
     def worker_task(self, task_id: int) -> dict[str, Any]: ...
     def worker_stop(self, job_name: str) -> dict[str, Any]: ...
     def compose_run_simulation(
-        self, file_path: Path, interval_time: float = ..., batch: bool = ...
+        self, file_path: Path, interval_time: float = ..., batch: bool = ..., environment: str | None = ...
     ) -> dict[str, Any]: ...
     def compose_get_simulation_status(self, simulation_id: int) -> dict[str, Any]: ...
     def compose_get_simulation_results(self, simulation_id: int, dest: Path) -> Path: ...
@@ -562,8 +562,8 @@ def check_events(svc: SmokeService, _: SmokeOptions) -> tuple[str, dict[str, Any
 def _task_image(svc: SmokeService, opts: SmokeOptions) -> tuple[str | None, str]:
     """Where an uploaded-task check runs: a registered environment when one was asked for (no commit
     is resolved then -- it needs nothing of a simulator), else the commit's image, as before."""
-    if opts.task_environment:
-        return None, f"in the {opts.task_environment!r} environment"
+    if opts.environment:
+        return None, f"in the {opts.environment!r} environment"
     commit = _resolve_commit(svc, opts)
     return commit, f"on {commit}"
 
@@ -589,13 +589,13 @@ def check_task(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, An
             memory_class="standard",
             commit=commit,
             name=f"atlantis-{nonce}",
-            environment=opts.task_environment,
+            environment=opts.environment,
         )
     task_id = int(task.database_id)
     evidence: dict[str, Any] = {
         "task_id": task_id,
         "commit": commit,
-        "environment": opts.task_environment,
+        "environment": opts.environment,
         "nonce": nonce,
     }
     _poll(opts, lambda: _status_text(svc.get_task_status(task_id).status), f"task {task_id}")
@@ -624,13 +624,13 @@ def check_task_fail(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[st
             memory_class="standard",
             commit=commit,
             name=f"atlantis-{nonce}",
-            environment=opts.task_environment,
+            environment=opts.environment,
         )
     task_id = int(task.database_id)
     evidence: dict[str, Any] = {
         "task_id": task_id,
         "commit": commit,
-        "environment": opts.task_environment,
+        "environment": opts.environment,
         "nonce": nonce,
     }
     ended = _poll(
@@ -773,9 +773,11 @@ def check_compose(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str,
     with tempfile.TemporaryDirectory() as tmp:
         document = Path(tmp) / "atlantis_smoke.pbg"
         document.write_text(json.dumps(smoke_composite_document()), encoding="utf-8")
-        submitted = svc.compose_run_simulation(document, interval_time=float(SMOKE_COMPOSITE_STEPS))
+        submitted = svc.compose_run_simulation(
+            document, interval_time=float(SMOKE_COMPOSITE_STEPS), environment=opts.environment
+        )
     simulation_id = int(submitted["simulation_database_id"])
-    evidence: dict[str, Any] = {"compose_simulation_id": simulation_id}
+    evidence: dict[str, Any] = {"compose_simulation_id": simulation_id, "environment": opts.environment}
     _poll(
         opts,
         lambda: _status_text(svc.compose_get_simulation_status(simulation_id).get("status")),
@@ -789,7 +791,8 @@ def check_compose(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str,
         raise CheckFailed(f"compose {simulation_id} COMPLETED but no `level` in its results {names}")
     if abs(level - SMOKE_COMPOSITE_EXPECTED) > 1e-6:
         raise CheckFailed(f"compose {simulation_id}: level {level}, expected {SMOKE_COMPOSITE_EXPECTED:.5f}")
-    return f"compose {simulation_id}: level {level:.5f} = 1.1^{SMOKE_COMPOSITE_STEPS}", evidence
+    where = f" in the {opts.environment!r} environment" if opts.environment else ""
+    return f"compose {simulation_id}{where}: level {level:.5f} = 1.1^{SMOKE_COMPOSITE_STEPS}", evidence
 
 
 def check_analysis(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:

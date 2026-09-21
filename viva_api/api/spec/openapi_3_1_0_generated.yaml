@@ -2037,7 +2037,7 @@ paths:
                   git_branch: master
                   temporary: false
                   database_id: 25
-                  created_at: '2026-09-21T08:44:40.882489'
+                  created_at: '2026-09-21T09:21:32.150323'
                 parca_config:
                   outdir: .
                   operons: true
@@ -2670,6 +2670,20 @@ paths:
           - type: integer
           - type: 'null'
           title: Simulator Id
+      - name: environment
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Run in a registered environment instead of a simulator''s
+            image: ''runtime'' is the core runtime image, for a composite that needs
+            only what process-bigraph ships. Not with simulator_id.'
+          title: Environment
+        description: 'Run in a registered environment instead of a simulator''s image:
+          ''runtime'' is the core runtime image, for a composite that needs only what
+          process-bigraph ships. Not with simulator_id.'
       - name: compute_backend
         in: query
         required: false
@@ -4679,6 +4693,11 @@ components:
           - type: integer
           - type: 'null'
           title: Simulator Id
+        environment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Environment
         compute_backend:
           anyOf:
           - $ref: '#/components/schemas/ComputeBackend'
@@ -6300,7 +6319,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-09-21 08:44:40.797440'
+          default: '2026-09-21 09:21:32.070988'
         job_id:
           anyOf:
           - type: string

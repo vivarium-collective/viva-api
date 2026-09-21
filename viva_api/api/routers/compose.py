@@ -10,6 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Query, Uplo
 from jinja2 import Template
 from starlette.responses import FileResponse, StreamingResponse
 
+from viva_api.common.site_environments import NAMED_ENVIRONMENTS, named_environment_image
 from viva_api.compose.database_service import ComposeDatabaseService
 from viva_api.compose.handlers import (
     get_compose_simulator_versions,
@@ -36,7 +37,8 @@ from viva_api.compose.models import (
     SimulationFileType,
 )
 from viva_api.compose.simulation_service import ComposeSimulationService
-from viva_api.config import ComputeBackend
+from viva_api.config import ComputeBackend, get_settings
+from viva_core.environments import EnvironmentNotResolvable
 
 logger = logging.getLogger(__name__)
 
@@ -161,11 +163,39 @@ def _from_document(document: dict[str, object], batch_submission: bool = False) 
     )
 
 
+def _check_environment(simulation_request: ComposeSimulationRequest) -> None:
+    """A request that names a registered environment is checked HERE, before anything is dispatched:
+    the submission itself runs in a background task, where a refusal would reach nobody."""
+    name = simulation_request.environment
+    if name is None:
+        return
+    if name not in NAMED_ENVIRONMENTS:
+        raise HTTPException(422, f"unknown environment {name!r}; known: {sorted(NAMED_ENVIRONMENTS)}")
+    theirs = {
+        "simulator_id": simulation_request.simulator_id,
+        "num_nodes": simulation_request.num_nodes,
+        "analysis_options": simulation_request.analysis_options,
+    }
+    given = sorted(k for k, v in theirs.items() if v)
+    if given:
+        raise HTTPException(
+            422,
+            f"`environment` runs the composite in a registered environment, as one container; {', '.join(given)} "
+            "belong to a simulator's image -- give one or the other",
+        )
+    try:
+        named_environment_image(get_settings(), name)
+    except EnvironmentNotResolvable as e:
+        # The request is fine; THIS deployment registers no such environment (CORE_RUNTIME_IMAGE unset).
+        raise HTTPException(501, f"environment {name!r} is not available here: {e}") from e
+
+
 async def _dispatch_submission(
     simulation_request: ComposeSimulationRequest,
     background_tasks: BackgroundTasks,
     extra_pip_deps: list[str] | None,
 ) -> ComposeSimulationExperiment:
+    _check_environment(simulation_request)
     db = _require_db()
     allow_list = await db.get_allow_list_db().list_allow_list() or DEFAULT_COMPOSE_ALLOW_LIST
     return await run_compose_simulation(
@@ -197,6 +227,11 @@ async def submit_simulation(
     interval_time: float = 1.0,
     batch_submission: bool = False,
     simulator_id: int | None = None,
+    environment: str | None = Query(
+        default=None,
+        description="Run in a registered environment instead of a simulator's image: 'runtime' is the core "
+        "runtime image, for a composite that needs only what process-bigraph ships. Not with simulator_id.",
+    ),
     compute_backend: ComputeBackend | None = None,
     extra_pip_deps: list[str] | None = Query(default=None),
     analysis_options: str | None = Form(default=None),
@@ -206,6 +241,7 @@ async def submit_simulation(
     simulation_request = await _parse_upload(uploaded_file, batch_submission)
     simulation_request.end_time_point = interval_time
     simulation_request.simulator_id = simulator_id
+    simulation_request.environment = environment
     simulation_request.compute_backend = compute_backend
     simulation_request.analysis_options = _parse_analysis_options(analysis_options)
     return await _dispatch_submission(simulation_request, background_tasks, extra_pip_deps)
@@ -231,6 +267,7 @@ async def submit_simulation_document(
     simulation_request = _from_document(body.document, body.batch_submission)
     simulation_request.end_time_point = body.interval_time
     simulation_request.simulator_id = body.simulator_id
+    simulation_request.environment = body.environment
     simulation_request.compute_backend = body.compute_backend
     simulation_request.num_nodes = body.num_nodes
     simulation_request.analysis_options = body.analysis_options

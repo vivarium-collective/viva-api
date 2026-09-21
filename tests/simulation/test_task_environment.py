@@ -14,7 +14,8 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from tests.simulation.test_ray_backend import _container_settings, _fake_container_batch
-from viva_api.simulation.dispatch.tasks import TaskRequestRefused, _job_definition_suffix
+from viva_api.common.site_environments import job_definition_key
+from viva_api.simulation.dispatch.tasks import TaskRequestRefused
 from viva_api.simulation.models import TaskRunRequest
 from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 from viva_core.environments import EnvironmentNotResolvable
@@ -100,11 +101,9 @@ def test_a_repo_path_script_cannot_run_in_an_environment_that_has_no_repo() -> N
 
 
 def test_the_job_definition_key_of_an_image_is_safe_and_says_which_image() -> None:
-    assert _job_definition_suffix(RUNTIME) == "viva-core-runtime-0-1-0"
-    assert (
-        _job_definition_suffix("123.dkr.ecr.us-gov-west-1.amazonaws.com/core/runtime:1.2.3_rc1") == "runtime-1-2-3_rc1"
-    )
-    assert len(_job_definition_suffix("r/" + "x" * 200)) <= 64
+    assert job_definition_key(RUNTIME) == "viva-core-runtime-0-1-0"
+    assert job_definition_key("123.dkr.ecr.us-gov-west-1.amazonaws.com/core/runtime:1.2.3_rc1") == "runtime-1-2-3_rc1"
+    assert len(job_definition_key("r/" + "x" * 200)) <= 64
 
 
 # ------------------------------------------------------------------ the routes

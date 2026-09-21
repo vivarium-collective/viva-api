@@ -272,6 +272,8 @@ make e2e BASE_URL=<url>    # = make smoke TIER=1 (task, env worker, composite). 
                            #   plus sim-cancel / chain-cancel / nextflow-cancel, which verify on AWS Batch itself and so need
                            #   your AWS credentials (read-only); without them they SKIP;
                            #   SMOKE_ARGS='--require-aws' stops at startup (exit 2) instead -- use it for a deploy checkpoint;
+                           #   SMOKE_ARGS='--environment runtime' runs task / task-fail / compose in the core runtime image
+                           #   (no simulator resolved, a 370 MB pull instead of 5.74 GB); the site must set CORE_RUNTIME_IMAGE;
                            #   `build` is opt-in: SMOKE_ARGS='--build' builds a marked-TEMPORARY simulator (own record,
                            #   own tag tmp-<commit>-<nonce>) and checks ECR for the push (~15 min); tier 2 then runs on it;
                            # TIER=3 adds the restart check (needs SMOKE_ARGS='--restart-command "scripts/smoke_restart_k8s.sh <ns> <port>"')
