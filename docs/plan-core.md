@@ -354,7 +354,8 @@ its code is read — that is how 2.3c and 2.3d-3 turned out different from their
 | 3d-1 ✅ | **compose's ParCa staging is a hook** (`StageInputs`): the last *domain* knowledge inside compose (`_parca_staging`, and the `compose_parca_cache_dir` setting it reads) moves to `viva_api/simulation/compose_staging.py`; the composition root hands it in. A compose service with no hook stages nothing | a setting named after ParCa cannot become a core setting (the vocabulary guard), so this goes before the settings move |
 | 3d-2 ✅ | **the 14 settings compose and env-worker read are `CoreSettings` fields** (same names, same environment variables — SMS's `Settings` inherits them), and the four compose modules on the Batch / K8s path read them through core's accessor. Two of the 14 carry an **application default** (`env_worker_workspace_path`, `ray_ecr_repository`): core declares them empty and SMS redefines only the default, under a named allow-list in the settings guard. Proof: `Settings.model_fields` identical before and after, all 146 (name, annotation, default). **Not moved:** `slurm_log_base_path` (an import cycle — `viva_core.storage.file_paths` imports `viva_core.settings`), so `compose/hpc_utils.py` still reads the application's settings; and the SLURM compose service, which takes SMS's `Settings` whole (see the log) | settings first: nothing can move while it imports `viva_api.config` |
 | 3d-3 ✅ | **compose's four `viva_api.dependencies` lookups arrive as constructor arguments**: the file service (`files=`), SMS's simulator registry (a third hook, `EnvironmentKeyOf`, filled by `viva_api/simulation/compose_simulators.py`), and the SLURM SSH sessions, twice (`slurm_ssh=`, a provider asked at the moment of use — a site without SLURM never has them). A parsed guard: nothing under `viva_api/compose/` imports `viva_api.dependencies`, lazily or not | services second |
-| 3d-4 | **compose and env-worker move into `viva_core`**; their routes are served by core's router; `/compose/v1` and `/env-worker/v1` stay as aliases | the move, once both are movable |
+| 3d-4 | **compose and env-worker move into `viva_core`**; their routes are served by core's router; `/compose/v1` and `/env-worker/v1` stay as aliases. In the order core's gates allow — the per-module measurement and the steps 3d-4a … 3d-4d are in #767 | the move, once each module is movable |
+| 3d-4b-1 ✅ | **the `Any`-free pass** over the compose modules with no domain terms — `database_service`, `job_monitor`, `env_worker_relay`, plus `tables_orm` and `env_worker_schemas` (none of their own) — and **the D12 ban is ON for all five, by name**, until the move puts them under core's glob. `render_nf` waits: it loads `run_pbg`, and goes with it | D12 is a glob: a module arrives `Any`-free or not at all |
 | 3e | **containers replace the setters** for what moved (`dependencies.py` shrinks by exactly that); the lifespan no longer requires the SMS scheduler | the wiring follows the code |
 | 3f | **settings split finished; two OpenAPI documents** (the SMS one still the union). **Checkpoint E** | what unblocks the generated core client (D8) |
 
@@ -772,6 +773,33 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-21** — **P3d-4b-1: five compose modules are `Any`-free, and the ban says so — what each `Any` was hiding.**
+  The move into core is refused by mypy for any module that says `Any` (D12), so the pass comes first
+  and the ban is switched on **by name** for the five (`pyproject.toml`), exactly as the dispatch
+  modules were named in PR 6b before PR 12 made them a glob. The escape-hatch guard now reads the
+  override, so a module banned by name is scanned too, and a name that no longer exists fails the
+  guard ("moved? then drop the name").
+  Three of the `Any`s were hiding something:
+  **(1) the job monitor's `sim_registry: dict[ComputeBackend, Any]`.** A first attempt typed it as the
+  one method the monitor calls; mypy then refused `api/routers/compose.py:94`, which reads the same
+  registry to honour a per-request `compute_backend` and needs the whole service. The monitor is, in
+  fact, where the registry of compose services lives. It is typed as that, and said in a comment;
+  giving the registry its own home is 3e's (containers replace the setters).
+  **(2) `list_all_computes(...) -> Any`.** It returns processes, steps, or both, by argument — and its
+  two callers annotate the narrower list. Three overloads on the abstract method and on its one
+  implementation say what the `match` already did.
+  **(3) the relay's frames.** `_recv` declared `dict[str, Any]` for whatever `json.loads` returned. A
+  frame that is valid JSON but not an object (a list) reached `call` and failed there as an
+  `AttributeError`; it now raises `WorkerUnavailable("malformed frame: …")`, the same fault as a frame
+  that does not parse. **The one behaviour change in this PR**, and it has a test. A JSON-RPC `error`
+  that is not an object is treated as an empty one, as `or {}` already did for `null`.
+  The NATS client (`Any | None`, with a comment naming the class) is two small Protocols —
+  `WorkerEventBus`, `WorkerEventMessage` — so core will not import `nats` to type a client no
+  deployment passes today. `env_worker_schemas` had no `Any` of its own; its 22 class lines carry the
+  guarded pydantic ignore, as core's schemas do.
+  **Not in this pass:** `render_nf` (8) loads `run_pbg` and goes with it (3d-4c); `models` (12) and
+  `run_pbg` (32) name the application as well; BioModels (19) is `contrib/sysbio`'s question (3d-4d).
+  **Proof:** `make check` clean twice; suite 2203 passed.
 - **2026-09-21** — **P3d-3: compose is handed its services — and one of the four was not a service but a third hook.**
   The row said "four lookups (database, file service, SSH session)". Reading them: the *database*
   lookup is `_resolve_commit`, which turns `ComposeSimulationRequest.simulator_id` into an image key by

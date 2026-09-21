@@ -4,7 +4,7 @@ import datetime
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, override
+from typing import Literal, overload, override
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -14,6 +14,7 @@ from viva_api.common.hpc.models import SlurmJob
 from viva_api.common.models import JobBackend
 from viva_api.compose.container_def import ContainerizationFileRepr
 from viva_api.compose.models import (
+    BiGraphCompute,
     BiGraphComputeType,
     BiGraphProcess,
     BiGraphStep,
@@ -105,7 +106,7 @@ class SimulatorDatabaseService(ABC):
         experiment_id: str,
         simulator_version: ComposeSimulatorVersion,
         document: str | None = None,
-        analysis_options: dict[str, Any] | None = None,
+        analysis_options: dict[str, object] | None = None,
     ) -> ComposeSimulation:
         pass
 
@@ -198,7 +199,7 @@ class SimulatorORMExecutor(SimulatorDatabaseService):
         experiment_id: str,
         simulator_version: ComposeSimulatorVersion,
         document: str | None = None,
-        analysis_options: dict[str, Any] | None = None,
+        analysis_options: dict[str, object] | None = None,
     ) -> ComposeSimulation:
         async with self.async_session_maker() as session, session.begin():
             orm = ORMComposeSimulation(
@@ -494,8 +495,16 @@ class PackageDatabaseService(ABC):
     async def insert_package(self, package_outline: PackageOutline) -> RegisteredPackage:
         pass
 
+    @overload
+    async def list_all_computes(self, compute_type: Literal[BiGraphComputeType.PROCESS]) -> list[BiGraphProcess]: ...
+    @overload
+    async def list_all_computes(self, compute_type: Literal[BiGraphComputeType.STEP]) -> list[BiGraphStep]: ...
+    @overload
+    async def list_all_computes(self, compute_type: None = None) -> list[BiGraphCompute]: ...
     @abstractmethod
-    async def list_all_computes(self, compute_type: BiGraphComputeType | None = None) -> Any:
+    async def list_all_computes(
+        self, compute_type: BiGraphComputeType | None = None
+    ) -> list[BiGraphProcess] | list[BiGraphStep] | list[BiGraphCompute]:
         pass
 
 
@@ -535,8 +544,16 @@ class PackageORMExecutor(PackageDatabaseService):
 
             return orm_pkg.to_bigraph_package(processes, steps)
 
+    @overload
+    async def list_all_computes(self, compute_type: Literal[BiGraphComputeType.PROCESS]) -> list[BiGraphProcess]: ...
+    @overload
+    async def list_all_computes(self, compute_type: Literal[BiGraphComputeType.STEP]) -> list[BiGraphStep]: ...
+    @overload
+    async def list_all_computes(self, compute_type: None = None) -> list[BiGraphCompute]: ...
     @override
-    async def list_all_computes(self, compute_type: BiGraphComputeType | None = None) -> Any:
+    async def list_all_computes(
+        self, compute_type: BiGraphComputeType | None = None
+    ) -> list[BiGraphProcess] | list[BiGraphStep] | list[BiGraphCompute]:
         async with self.async_session_maker() as session:
             stmt = select(ORMComposeBiGraphCompute)
             if compute_type is not None:

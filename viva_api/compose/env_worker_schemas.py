@@ -9,7 +9,7 @@ move into core with it. The section comments that explain the ENDPOINTS stayed w
 from pydantic import BaseModel, Field
 
 
-class EnvWorkerStartRequest(BaseModel):
+class EnvWorkerStartRequest(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Where to dial back, and which environment to run.
 
     ``commit`` selects the environment: it is the tag of the prebuilt simulator
@@ -29,20 +29,20 @@ class EnvWorkerStartRequest(BaseModel):
     session_key: str | None = Field(None, description="Owning session; makes the Job name unique per session")
 
 
-class EnvWorkerStartResponse(BaseModel):
+class EnvWorkerStartResponse(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     job_name: str
     image: str
     namespace: str
 
 
-class EnvWorkerStatusResponse(BaseModel):
+class EnvWorkerStatusResponse(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     job_name: str
     status: str | None = None
     exists: bool = True
     logs: str | None = None
 
 
-class RelayStartRequest(BaseModel):
+class RelayStartRequest(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Start a worker that dials back to *viva-api* rather than to the caller."""
 
     commit: str = Field(..., description="Simulator commit; the prebuilt image tag to run")
@@ -53,24 +53,24 @@ class RelayStartRequest(BaseModel):
     )
 
 
-class RelayStartResponse(BaseModel):
+class RelayStartResponse(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     job_name: str
     image: str
     namespace: str
     connected: bool
 
 
-class RelayCallRequest(BaseModel):
+class RelayCallRequest(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     method: str = Field(..., description="Worker method name (JSON-RPC)")
     params: dict[str, object] | None = Field(None, description="Method params")
     timeout: float = Field(300.0, gt=0, le=3600, description="Seconds to wait for this call's reply")
 
 
-class RelayCallResponse(BaseModel):
+class RelayCallResponse(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     result: object | None = None
 
 
-class _WorkerBody(BaseModel):
+class _WorkerBody(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Passthrough base: declared fields are validated, unknown ones forwarded."""
 
     model_config = {"extra": "allow"}
@@ -92,14 +92,14 @@ class _WorkerBody(BaseModel):
         return self.model_dump(exclude_none=True, by_alias=True)
 
 
-class CompositeRef(_WorkerBody):
+class CompositeRef(_WorkerBody):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """A composite named by a registered generator, optionally with overrides."""
 
     ref: str = Field(..., min_length=1, description="Registered @composite_generator name")
     overrides: dict[str, object] | None = Field(None, description="Generator parameter overrides")
 
 
-class InnerCompositeRef(_WorkerBody):
+class InnerCompositeRef(_WorkerBody):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """`hops` is a LIST OF NODE PATHS, each itself a list of key segments -- which
     is why this is a POST and not the GET the plan first assumed."""
 
@@ -107,16 +107,16 @@ class InnerCompositeRef(_WorkerBody):
     hops: list[list[str]] = Field(..., min_length=1, description="One node path per drill level")
 
 
-class ConfigDocument(_WorkerBody):
+class ConfigDocument(_WorkerBody):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     config: dict[str, object] = Field(..., description="vEcoli-style config to translate")
 
 
-class StateDocument(_WorkerBody):
+class StateDocument(_WorkerBody):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     document: dict[str, object] = Field(..., description="An already-resolved composite state")
     ref: str | None = Field(None, description="Generator whose core_extensions resolve bare addresses")
 
 
-class CompositeSelector(_WorkerBody):
+class CompositeSelector(_WorkerBody):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """A composite given EITHER by `ref` OR inline as `{state, schema}`.
 
     Both forms are real and the worker accepts either; sending neither is the
@@ -134,16 +134,16 @@ class CompositeSelector(_WorkerBody):
             raise ValueError("provide either 'ref' (a registered generator) or an inline 'state' (with 'schema')")
 
 
-class ReadoutCheck(CompositeSelector):
+class ReadoutCheck(CompositeSelector):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     spec: dict[str, object] = Field(..., description="The study spec whose readouts are checked")
 
 
-class ProcessAddress(_WorkerBody):
+class ProcessAddress(_WorkerBody):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     address: str = Field(..., min_length=1, description="Registry address of a Process or Step")
     config: dict[str, object] | None = None
 
 
-class ProcessRun(ProcessAddress):
+class ProcessRun(ProcessAddress):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """One `update()` -- a probe, not a job. `env_worker._run_process` is
     deliberately NOT job-class: it builds one class, fills its ports and runs a
     single step, which is the Composite Explorer's "try this process" button."""
@@ -152,11 +152,11 @@ class ProcessRun(ProcessAddress):
     interval: float | None = None
 
 
-class VizDoc(_WorkerBody):
+class VizDoc(_WorkerBody):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     viz_doc: dict[str, object] = Field(..., description="A visualization composite document")
 
 
-class VizPreview(_WorkerBody):
+class VizPreview(_WorkerBody):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     address: str = Field(..., min_length=1, description="Visualization class address")
     config: dict[str, object] | None = None
     source: str | None = Field(None, description="demo | streaming | investigation")
@@ -164,7 +164,7 @@ class VizPreview(_WorkerBody):
     investigation_inputs_store: dict[str, object] | None = None
 
 
-class ViewerLaunch(_WorkerBody):
+class ViewerLaunch(_WorkerBody):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """`analysis_viewers` carries two operations behind an `action` flag. They are
     split into two routes here: listing is a read, launching invokes a
     contributor's callable. One endpoint with a mode string would hide that."""
@@ -175,13 +175,13 @@ class ViewerLaunch(_WorkerBody):
     ctx: dict[str, object] | None = None
 
 
-class TaskSubmitRequest(BaseModel):
+class TaskSubmitRequest(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     job_name: str = Field(..., description="Relayed worker Job to run this on")
     method: str = Field(..., description="Worker method (JSON-RPC)")
     params: dict[str, object] | None = Field(None, description="Method params")
 
 
-class TaskResponse(BaseModel):
+class TaskResponse(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     task_id: int
     job_name: str
     method: str
@@ -194,7 +194,7 @@ class TaskResponse(BaseModel):
     ended_at: str | None = None
 
 
-class TaskStatusResponse(BaseModel):
+class TaskStatusResponse(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """A task WITHOUT its result — the shape the batch endpoint returns.
 
     Measured on dev before this existed: five tasks came back as **1.19 MB**,
