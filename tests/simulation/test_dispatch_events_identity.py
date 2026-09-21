@@ -135,7 +135,7 @@ def test_the_known_dispatch_paths_are_all_still_covered() -> None:
     expected = {
         "nextflow.submit",  # NextflowStrategy (P2.1 PR 8)
         "mbp_tracked.submit",  # MbpTrackedStrategy (P2.1 PR 7)
-        "_submit_multi_node_composite",
+        "multi_node.submit",  # MultiNodeCompositeStrategy (P2.1 PR 9)
         "submit_chain_dispatch_job",
         "submit_ecoli_simulation_job",
         "_submit_analysis_job",
