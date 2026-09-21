@@ -1470,7 +1470,35 @@
 #            MARKERS: /app/viva_api/simulation/dispatch/chain.py, ensemble.py and multi_node.py exist;
 #            `_submit_chain_dispatch_background` is GONE from simulation_service_ray.py;
 #            `def _chain(self)` is present there.
-__version__ = "0.9.151"
+#           0.9.152 -- core split, deploy checkpoint D (docs/plan-core.md section 8): P2.3, the
+#            environment model and its SELECT half, plus what merged after checkpoint C.
+#            NEW BEHAVIOUR (opt-in; nothing changes for a request that does not ask):
+#              #751 a TASK may name a registered environment: `environment="runtime"` runs an
+#                   UPLOADED script in the core runtime image (no simulator resolved). 422 unknown
+#                   name / both `environment` and `commit`; 400 a repo-path script; 501 no image.
+#              #754 a COMPOSE run may too: the composite runs as ONE container in the runtime image
+#                   (no commit, no ParCa staging, no Ray cluster, no chained analysis); refused in
+#                   the router BEFORE dispatch (422 / 501).
+#              #752 dev names the image: CORE_RUNTIME_IMAGE=ghcr.io/vivarium-collective/
+#                   viva-core-runtime:0.1.0 (api.env). It takes effect with THIS roll.
+#            REWIRING, proven equal to what it replaced:
+#              #749 the four hand-rolled image derivations (Batch layer, compose, env worker, the
+#                   K8s analysis Job) ask ONE resolver (common/site_environments.py). Differential
+#                   432 cases; the one declared difference is an EMPTY repository setting (refused).
+#              #748 viva_core/environments (the model + RegistryEnvironmentResolver); #750 the core
+#                   runtime image, core's own container entrypoint and its first contract test.
+#            NAMES AND TYPES ONLY: #744 the dispatch package is Any-free (D12); #745 the package
+#            viva_api/simulation/ray is viva_api/simulation/dispatch, and RayBatchLayer /
+#            RayParcaService / RayTaskService / RayImageBuilder lost the prefix. LOGGER NAMES of
+#            those modules change accordingly (viva_api.simulation.dispatch.<module>).
+#            Client only, nothing to deploy: smoke `--require-aws`, startup notices, tier-2 verdicts
+#            as they land (#747); `--environment runtime` for task / task-fail / compose.
+#            No migration; the -db-migration overlay tag is bumped to stay equal, the Job is not run.
+#            MARKERS: /app/viva_api/common/site_environments.py and /app/viva_core/environments/
+#            exist; /app/viva_api/simulation/dispatch/ exists and /app/viva_api/simulation/ray/ does
+#            NOT; `_submit_in_environment` is in /app/viva_api/compose/simulation_service_ray.py;
+#            the pod's environment carries CORE_RUNTIME_IMAGE.
+__version__ = "0.9.152"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in
