@@ -606,6 +606,7 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 | C3 ✅ 0.9.150, 2026-09-21 | PRs 3–8 (analysis spec, ParCa split, the composed Batch layer, `compose` on it, the mbp-tracked and Nextflow strategies), 6a, and the **#730 fix — the one behaviour change in the set** | every submit now goes through a composed object; two mechanisms are strategies; a multi-node composite starts receiving `RAY_SHARDS_DEFAULT` | Tier 0 + 1 + 2; `compose`, `sim-mbp`, `sim-nextflow`, `nextflow-cancel` especially; Tier 0 `capabilities` still lists `container-jobs` (PR 5); the three #730 checks in the deferred list |
 | C ✅ 0.9.151, 2026-09-21 | PRs 9–11 (composite, ensemble, chain strategies); the end of P2.1 | the last three mechanisms, chain among them | Tier 0 + 1 + 2, **plus a real 2 x 2 chain campaign** and `chain-cancel`: chain bills real money and fakes share their author's blind spots |
 | D ✅ 0.9.152, 2026-09-21 | P2.3 | one resolver replaces four image derivations; the core runtime image | workbench through the relay; `vwb smoke`; `atlantis worker`, `task`, `compose` on the new image |
+| D2 ✅ 0.9.153, 2026-09-21 | #761 (a build adopts an existing image), P3a–c, #759 | **the build script is the one that runs against write-once tags** (sms-cdk#55 made the repository `IMMUTABLE` before this); core's router is served under `/viva/v1` | Tier 0 + 1 + 2 **with `--build`**: the temporary-simulator build is the check that matters — it is the adopt script against the immutable repository |
 | E | P3 | settings split, new wiring and lifespan, app factory | alone; diff redacted effective settings and the OpenAPI spec old pod vs new |
 | F | P4a, then P4b | additive migration with dual-write | SQL check that both column sets agree; `atlantis dataset` |
 | G | P5 | durable compose dispatch | kill the pod mid-dispatch; the row must be reconciled, not stranded |
@@ -708,6 +709,7 @@ split; each has an owner-less issue or a named moment.
 
 | Item | Where | When |
 |---|---|---|
+| `GET /api/v1/simulations/{id}/status` answers **500** for an id that does not exist ("Simulation with id 1402 not found"), and logs an ERROR with a traceback — found at D2 by asking for one; the only ERROR in the pod's log for the whole smoke | `api/routers/sms.py:376` area | a 404, with the others of its kind; an issue, not part of the split |
 | An image build had never been exercised by any smoke tier, and the build path was rewired in cut 4 and #714 (merged, undeployed) | **done**: the opt-in `build` check (#720) | run it at checkpoint C2 |
 | `mbp_dispatch` had no smoke check | **done**: `sim-mbp` (#720) | baseline before the mbp-tracked strategy (PR 7) |
 | compose on Ray / Batch accepts `extra_pip_deps` and never installs them | #716 | refuse now, or honour in P5 |
@@ -755,7 +757,7 @@ split; each has an owner-less issue or a named moment.
 | P2.1 | carve `simulation_service_ray.py` (5,019 → **628** lines; PR 11 took 960; PR 10 took 377; PR 9 took 648; PR 8 took 548; PR 7 took 252; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `BatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `dispatch/analysis_spec.py` — PR 3 (#726) · ParCa split → `dispatch/parca_spec.py` + `ParcaService` — PR 4 (#727) · `BatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a (#731) · #730 fixed (#732) · the D12 ban — PR 6b (#733) · strategy: mbp-tracked — PR 7 (#734) · strategy: Nextflow — PR 8 (#735) · strategy: multi-node composite — PR 9 (#738) · strategy: ensemble — PR 10 (#740) · strategy: chain — PR 11 · the package `Any`-free — PR 12 · `simulation/ray/` renamed `simulation/dispatch/`. **All five mechanisms are strategies**, and the 2026-09-20 sequence is complete; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.151 carries the whole carve: every strategy (PRs 7–11), 6a/6b, and the #730 fix | **2026-09-21** (checkpoints C1, B2, C2, C3, C) | — | **done — the carve is deployed.** **Dev is 0.9.151 (checkpoint C, 2026-09-21, tag `v0.9.151`):** all five dispatch mechanisms run as strategy objects on a deployment. Merged after C and **not deployed** (no behaviour in them to deploy for; they ride checkpoint D): PR 12 (#744, annotations only) and the `dispatch/` rename (#745, names only). The service's nine scheduler delegates and its progress / cancel / staging methods stay until **P6**. **Next: P2.3**, the environment model and its *select* half |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image. 2.3a the model + `RegistryEnvironmentResolver` (`viva_core/environments/`, no caller changed) — #748 · 2.3b the four derivations ask it (`common/site_environments.py`) — #749 · 2.3c the core runtime image + core's container entrypoint (`Dockerfile-core-runtime`, `viva_core/runtime/`) — #750 · 2.3d-1 a task may name an environment (`TaskRunRequest.environment`) — #751 · 2.3d-2 Batch pulls the image; dev names it — #752 · 2.3d-3 a compose run may name an environment (one container) | | | | **done and deployed** — dev is 0.9.152 (checkpoint D, 2026-09-21, tag `v0.9.152`): the four image derivations ask one resolver, `CORE_RUNTIME_IMAGE` is live, a task and a compose run may name `environment="runtime"`. Measured on dev: `compose` 21.6 s in the runtime image against 495.9 s on the science image; a cold-fleet `task` starts in 106 s against 221 s. Prod: repeat the one-job trial pull from its VPC before it names the image |
-| P3 | settings, DI, app factory. 3a `create_core_app()` boots alone; SMS includes core's router under `/viva/v1` | | | | **in progress** — 3a, 3b, 3c done (not deployed); 3d-1 done (compose's ParCa staging is a hook); 3d-2 done (the 14 settings compose and env-worker read are `CoreSettings` fields); 3d-3 done (compose is handed its services; it imports nothing of `viva_api.dependencies`); next 3d-4 (the move — what still ties the package to `viva_api` is listed in the 3d-3 log entry) |
+| P3 | settings, DI, app factory. 3a `create_core_app()` boots alone; SMS includes core's router under `/viva/v1` | | | | **in progress** — 3a, 3b, 3c done and **deployed at D2 (0.9.153)**; 3d-1 … 3d-3 merged, not deployed; 3d-1 done (compose's ParCa staging is a hook); 3d-2 done (the 14 settings compose and env-worker read are `CoreSettings` fields); 3d-3 done (compose is handed its services; it imports nothing of `viva_api.dependencies`); next 3d-4 (the move — what still ties the package to `viva_api` is listed in the 3d-3 log entry) |
 | P4a | | | | | not started (checkpoint F) |
 | P4b | | | | | not started (checkpoint F) |
 | P5 | | | | | not started (checkpoint G) |
@@ -772,6 +774,36 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-21** — **Checkpoint D2 passed on dev (0.9.153, #762, tag `v0.9.153`): the build adopts, the tags are write-once, and core answers at `/viva/v1`.**
+  Jim: "merge viva-api#761, and then get back on the plan. if we need a deploy now then do it". It was
+  needed: sms-cdk#55 had already made `v2ecoli` `IMMUTABLE`, so until #761 was on a site a retry of a
+  half-failed build could not work there. Image from `50f3fd8c`; only the api pod rolled; no migration.
+  Markers on the newest pod (`api-5c54b8f7db-flxcb`): `image_exists` in `dispatch/build.py`;
+  `viva_core/api/app.py`, `simulation/compose_analysis.py` and `compose/env_worker_schemas.py`
+  present; `_RegistryNotConfigured` in the site resolver.
+  **Smoke, `--tier 2 --build --require-aws`: 21 passed, 0 failed, 2 skipped** (`analysis` and
+  `biomodels`, which need an argument). Tier 0 7/7. Tier 1: `task`, `task-fail`, `task-repo`, `worker`,
+  `compose` (516 s on the science image), and **`build`: temporary simulator 216, 689 s, tags
+  `tmp-d1aeba3-536591` and `tmp-d1aeba3-536591-submit` pushed 19:18:33Z and 19:18:48Z** — the generated
+  script (which asks ECR first; a temporary simulator's tag is new, so there was nothing to adopt)
+  built and pushed both into a repository that `describe-repositories` reports `IMMUTABLE`. Tier 2 ran **on that temporary simulator**: `sim-mbp`
+  998 s, `sim-default` 1,624 s, `sim-nextflow` 2,088 s, `sim-composite` 2,330 s, `sim-chain` 2,583 s
+  (2/2 seeds over 2 generations, 52 files in S3), and the three cancels asserted on AWS Batch (20 s,
+  41 s, 340 s). A second run in the runtime image (`--environment runtime`): 3 passed, `compose` in
+  31 s. **What the smoke did not prove** is the *adopt* branch itself — a build of a key whose image
+  already exists — because a temporary simulator always has a new tag. That branch is proved by
+  `tests/simulation/test_build_adopts_an_existing_image.py`, which runs the generated script against
+  a fake registry; live, it will first run when a site registers a simulator the other already built.
+  **Found by the deploy, fixed the same day: `/viva/v1` was served by the pod and answered by PTools.**
+  The ALB routes by path prefix and had no rule for `/viva`, so every core request fell through to
+  PTools' HTML 404 — and smoke's `routes` check passed, because it compares two OpenAPI documents and
+  cannot see a gateway. sms-cdk#56 added the rule (one additive `ListenerRule`, deployed to
+  `smsvpctest` in 21 s; prod's stack is not deployed), and #764 added a Tier 0 **`core`** check that
+  calls `/viva/v1/health` through the front door and fails on an HTML answer; it passes on dev.
+  **The API log since the roll:** one ERROR with a traceback, and it was mine — asking for the status
+  of simulation 1402, which does not exist, answers 500 rather than 404. On the deferred list.
+  **Merged during the smoke, not deployed:** P3d-1, 3d-2, 3d-3 (#763, #765, #766) and #764. None is
+  meant to change behaviour; they ride the next checkpoint.
 - **2026-09-21** — **P3d-3: compose is handed its services — and one of the four was not a service but a third hook.**
   The row said "four lookups (database, file service, SSH session)". Reading them: the *database*
   lookup is `_resolve_commit`, which turns `ComposeSimulationRequest.simulator_id` into an image key by
@@ -877,7 +909,7 @@ split; each has an owner-less issue or a named moment.
   then an attempt to move it to a different image — was refused with `ImageTagAlreadyExistsException …
   cannot be overwritten because the tag is immutable`. The probe tag and its manifest were removed
   again (276 images before and after; the temporary simulator's two images untouched). **The window
-  this opens, until #761 is deployed:** on dev (0.9.152) and prod (0.9.78) a build that pushes an
+  this opens, until #761 is deployed:** on ~~dev (0.9.152)~~ (dev has #761 since D2, 0.9.153) and prod (0.9.78) a build that pushes an
   existing tag now *fails at the push* instead of overwriting — which is the protection, said loudly —
   and a half-failed build cannot be retried.
 - **2026-09-21** — **Checkpoint D passed on dev (0.9.152, #755, tag `v0.9.152`): P2.3 is deployed, and the runtime image was measured.**
