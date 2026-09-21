@@ -238,7 +238,10 @@ delivered simulations point back to, and dev and prod share one ECR registry. Th
 refuses `?force=true` on a built simulator (409). The one exception is a **marked-temporary**
 simulator (`temporary=true` + a `label`): a new record with its own image tag
 `tmp-<commit>-<nonce>`, shown as TEMPORARY in every client and never picked by default. To
-exercise the build path, make one of those (`atlantis smoke run --only build --build`). Key
+exercise the build path, make one of those (`atlantis smoke run --only build --build`). The
+sites share ONE registry and each has its own database, so a build **adopts** an image that already
+exists (`dispatch/build.py`: it asks ECR first) and the repository's tags are write-once
+(`IMMUTABLE`, sms-cdk) -- never put the site in a tag: prod must be able to run the exact image dev tested. Key
 anything environment-shaped on `SimulatorVersion.environment_key`, never on
 `git_commit_hash` — that one is only for git.
 

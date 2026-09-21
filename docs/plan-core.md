@@ -731,7 +731,7 @@ split; each has an owner-less issue or a named moment.
 | The core runtime image serves **container-shape** jobs only. The multi-node Ray entrypoint (`ray-batch-entrypoint.sh`, 330 lines) exists only in the science repositories and has model-specific steps inside it (`V2E_BUILD_UPSTREAM_PARCA`) | `viva_core/runtime/` | a core copy with those steps behind a hook. **Less urgent since 2.3d-3**: a composite that needs only the built-ins runs there as one container; the Ray shape matters when a curated environment wants a cluster |
 | ~~Where Batch pulls the runtime image from~~ **decided and proven** (2026-09-21): ghcr, anonymously — Jim made `viva-core-runtime` public, and a trial job on `smsvpctest-ray-standalone` pulled `:0.1.0` from inside the VPC and ran. No ECR mirror | deployment | **prod is a separate VPC**: repeat the one-job trial there before prod names the image. If ghcr is ever unreachable from a Batch VPC, the fallback is still an ECR mirror |
 | `process-bigraph` (at `55b70676`) imports `requests` without declaring it; the science image has it by accident. Pinned explicitly in `viva_core/runtime/requirements.txt` | upstream | an upstream issue / one-line PR to process-bigraph's dependencies |
-| **Two sites, one registry, one tag per commit — and nothing makes that tag write-once.** Dev and prod have their own RDS (their own `simulator` records) and share ECR `v2ecoli`, whose tags are **MUTABLE** (checked 2026-09-21); no build path asks whether `v2ecoli:<commit>` already exists. If prod is asked for a commit dev already built, it has no record, builds again, and **overwrites the tag** with a different image (the recipes are not reproducible) — while dev's record, and every simulation delivered from it, still says `v2ecoli:<commit>`. D11's write-once is enforced per database, not across sites (Jim's question, 2026-09-21) | the shared ECR repository; `dispatch/build.py`; P5's `core.environment` | **not** the site in the tag: that gives up promoting to prod the exact image dev tested. Instead make the shared name truly write-once and *select before build*: (1) ECR tag immutability on (a second push then fails loudly); (2) the build step **adopts** an existing `v2ecoli:<commit>` — record, no build — and (3) records the **image digest** on the simulator record, so two sites' records provably name one image. That is D10's select-or-build applied across sites, and the two identities (spec hash, digest) are what P5's table is for. Needs Jim's go: (1) is a change to shared AWS infrastructure |
+| **Two sites, one registry, one tag per commit** — *in progress (2026-09-21)*. Dev and prod have their own RDS and share ECR `v2ecoli`, whose tags were `MUTABLE`; a second site building a commit the first already built **replaced** its image. **It had happened seven times** (seven untagged 5.7 GB originals, 2026-08-09 … 09-08; no lifecycle policy, so all are still there). **Done in code:** the build step **adopts** an existing `<key>` / `<key>-submit` instead of rebuilding (viva-api); `IMMUTABLE` tags + `ecr:DescribeImages` for the build role (sms-cdk#55). **Not done:** `cdk deploy` (Jim's go — the repository is shared, so it switches on for prod too); the **image digest on the simulator record** (needs a column: P5's `core.environment`); the upstream `vecoli` repository (per-arch intermediate tags; `SimulationServiceK8s` is out of scope until P5); re-tagging the seven originals so they cannot be lost | the shared ECR repository; `dispatch/build.py`; sms-cdk `BuildBatchStack` | deploy order: viva-api (adopt) on dev → sms-cdk from dev's stack → watch one build → prod's stack later (a no-op for the repository) |
 | ~~With `ECR_ACCOUNT_ID` unset, every image reference is the malformed `.dkr.ecr.<region>.amazonaws.com/<repo>:<key>`~~ **done** (2026-09-21, Jim's call): an explicit spec is **refused by name** (`EnvironmentResolverNotConfigured`: "ecr_account_id is unset (ECR_ACCOUNT_ID) …"; 501 through core's route), before a job definition is registered or a job submitted. What needs no registry — core's health route, the runtime image — is unaffected. The suite now runs as a configured site (`tests/conftest.py`) | `viva_api/common/site_environments.py` | — |
 | The dispatch blocks `mbp_dispatch` and `multi_node_dispatch` are **declared** (`TypedDict`s, PR 12) but not **validated** at the API boundary beyond `task_env`; `nextflow_dispatch` is checked for two rules only. A wrongly-typed value reaches the container command line | `common/dispatch_validation.py`, `handlers/simulations.py` | a behaviour change (requests that work today could be refused), so its own PR; the `TypedDict`s are the spec to validate against |
 | `CLAUDE.md` still says backend selection is by `deployment_namespace` and that tests use SQLite | `CLAUDE.md` | any docs PR |
@@ -768,6 +768,36 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-21** — **Two sites, one registry: a build adopts an existing image, and the tags become write-once.** Jim
+  asked what happens when the test site and the prod site — each with its own VPC and RDS — push the
+  same image name and tag, and whether the site should go into the name. **Checked before answering:**
+  the shared `v2ecoli` repository's tags were `MUTABLE`, no build path asked whether a tag existed, and
+  the repository held **seven untagged whole images (5.7–5.8 GB, 2026-08-09 … 2026-09-08)** — each an
+  original whose tag a later push took. So it was not hypothetical: seven simulator records point at
+  a tag that now names a different image than the one they built. No lifecycle policy exists, so the
+  seven originals are still there, by digest. D11's write-once had been enforced per *database*.
+  **Not the site in the tag.** That isolates the sites and gives up the most valuable thing a shared
+  registry offers: promoting to prod the *exact image dev tested*. Instead the shared name becomes
+  truly write-once and a site **selects before it builds** — D10, applied across sites:
+  (1) **sms-cdk#55** — an `AwsCustomResource` sets `IMMUTABLE` on the repository (a custom resource
+  because the repository is created by the first build, not by the stack; idempotent; **no
+  `onDelete`**, so deleting a stack never makes provenance overwritable again) and the build role gains
+  `ecr:DescribeImages`. `cdk diff` on dev: additive only, no compute environment touched.
+  (2) **viva-api** — the generated build script asks ECR first and **adopts** `<key>` and
+  `<key>-submit` independently: a commit another site built succeeds *on the same image* (one short
+  Batch job, no clone, no build, no push); a build that failed half way is **finished, not restarted**
+  (without this, write-once tags would strand it for ever: its first image can no longer be pushed);
+  any answer other than "not found" is reported and treated as absent, so a permissions gap cannot
+  turn every build into a silent no-op; a temporary simulator asks about its own tag only. The API
+  needs no ECR permission of its own: the build job is the adopter, and it prints the digest it adopted.
+  **Tested by running the script**, under `sh`, against fake `aws` / `docker` / `git`: fresh build,
+  adoption, half-failed retry, access denied, temporary tag — mutation-checked.
+  **Deliberately not done here:** the digest on the simulator *record* (a column and a migration —
+  P5's `core.environment`, which has both identities); the upstream `vecoli` repository;
+  `cdk deploy`, which is Jim's — **the repository is shared, so immutability switches on for prod
+  (0.9.78) at the same moment**: from then a prod build that pushes an existing tag is refused rather
+  than overwriting, which is the protection, and a prod retry of a half-failed build stays failed
+  until prod runs this change.
 - **2026-09-21** — **Checkpoint D passed on dev (0.9.152, #755, tag `v0.9.152`): P2.3 is deployed, and the runtime image was measured.**
   Jim: "merge #753 and #754, then bump and deploy D". Image from `100f7996`, built after its test gate.
   `kubectl diff`, rendered from a worktree pinned at the merge commit (the stale-checkout trap of
