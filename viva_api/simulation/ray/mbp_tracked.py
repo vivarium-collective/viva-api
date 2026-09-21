@@ -26,7 +26,7 @@ SMS code, and it stays SMS code.
 
 import shlex
 from pathlib import Path
-from typing import Any
+from typing import TypedDict
 
 from viva_api.common.dispatch_validation import resolve_task_env
 from viva_api.common.models import JobId
@@ -139,6 +139,35 @@ def mbp_tracked_command(
     )
 
 
+class MbpDispatch(TypedDict, total=False):
+    """The ``mbp_dispatch`` block of a simulation config: what a client may say about an
+    mbp-tracked run. Every key is optional to the type; ``submit`` refuses a block without
+    ``variant``.
+
+    This DECLARES the contract; nothing enforces it yet. The block arrives as JSON through the
+    config's passthrough fields and only ``task_env`` is validated at the API boundary, so a
+    wrongly-typed value reaches the command line as it always has.
+    """
+
+    variant: str
+    cache_variant: str | None
+    task_env: dict[str, str]
+    max_generations: int | None
+    duration_sec: int | None
+    chunk: int | None
+    emitter: str | None
+    single_daughters: bool
+    carbon_exhaustion_arrest: bool
+    seed: int | None
+    cells_per_agent: float | None
+    initial_glucose_mM: float | None
+    initial_ammonium_mM: float | None
+    injected_processes: str | None
+    reactor_config: str | None
+    aeration_schedule: str | None
+    aeration_trigger: str | None
+
+
 class MbpTrackedStrategy:
     def __init__(self, batch: ContainerSubmitter) -> None:
         # Held, not copied: looked up on ``batch`` when a job is submitted, so a test that swaps
@@ -149,7 +178,7 @@ class MbpTrackedStrategy:
         self,
         ecoli_simulation: Simulation,
         database_service: DatabaseService,
-        mbp_dispatch: dict[str, Any],
+        mbp_dispatch: MbpDispatch,
         *,
         correlation_id: str | None = None,
     ) -> JobId:

@@ -1,14 +1,14 @@
 """D12 -- ``viva_core`` carries no ``Any`` (``docs/plan-core.md``).
 
 ``strict = true`` does not forbid ``Any``. Two mypy flags do, and they are on for ``viva_core.*``
-(a glob: a module that moves into core later comes under the ban the day it moves) and for the
-modules of ``viva_api.simulation.ray`` by name. mypy enforces the ban itself; this file guards the
-three ways the ban could quietly stop meaning anything:
+and for ``viva_api.simulation.ray.*`` -- both GLOBS: a module that moves into core, or a new module
+of the ray package, comes under the ban the day it arrives. (The ray package was listed by name
+while the dispatch strategies moved; plan sequence PR 12 made it a glob.) mypy enforces the ban
+itself; this file guards the two ways the ban could quietly stop meaning anything:
 
-* the override disappears from ``pyproject.toml``, or stops covering a package;
+* the override disappears from ``pyproject.toml``, or stops covering a package as a glob;
 * the one escape hatch -- ``# type: ignore[explicit-any]`` -- is used for something other than the
-  one thing it exists for;
-* a new module appears in the ray package and is simply never listed.
+  one thing it exists for.
 
 The escape hatch, and why it exists: under ``disallow_any_explicit`` mypy reports EVERY subclass of
 pydantic's ``BaseModel`` / ``BaseSettings`` on its ``class`` line, because pydantic's own
@@ -26,23 +26,6 @@ from pathlib import Path
 IGNORE = re.compile(r"#\s*type:\s*ignore\[[^\]]*explicit-any[^\]]*\]")
 PYDANTIC_BASES = {"BaseModel", "BaseSettings"}
 RAY_PACKAGE = Path("viva_api/simulation/ray")
-
-#: Modules of the ray package that are deliberately NOT under the ban yet. The dispatch strategies
-#: (plan sequence PRs 7-11) arrive with the ``Any`` they have today, because those PRs are proven
-#: by AST identity and an annotation change is an AST change. PR 12 empties this set and turns the
-#: by-name list into ``viva_api.simulation.ray.*``. Adding a name here is a decision; say why.
-NOT_YET_BANNED: set[str] = {
-    # PR 7: moved with the `dict[str, Any]` dispatch block and command parameters it had in the service.
-    "viva_api.simulation.ray.mbp_tracked",
-    # PR 8: moved with its `dict[str, Any]` dispatch block, resources map and rendered params.
-    "viva_api.simulation.ray.nextflow",
-    # PR 9: moved with its `dict[str, Any]` dispatch block, params and analysis config.
-    "viva_api.simulation.ray.multi_node",
-    # PR 10: moved with the `dict[str, Any]` overrides and params it built in the router.
-    "viva_api.simulation.ray.ensemble",
-    # PR 11: moved with its `dict[str, Any]` params, overrides and analysis config.
-    "viva_api.simulation.ray.chain",
-}
 
 
 def _banned_modules() -> list[str]:
@@ -62,21 +45,14 @@ def test_the_ban_covers_core_as_a_glob() -> None:
     assert "viva_core.*" in modules and "viva_core" in modules, modules
 
 
-def test_every_module_of_the_ray_package_is_banned_or_named_as_not_yet() -> None:
-    modules = set(_banned_modules())
-    on_disk = {f"viva_api.simulation.ray.{path.stem}" for path in RAY_PACKAGE.glob("*.py") if path.stem != "__init__"}
-    assert on_disk, "found no modules: is this running from the repository root?"
-    if "viva_api.simulation.ray.*" in modules:
-        assert not NOT_YET_BANNED, "the package is banned as a glob: NOT_YET_BANNED must be empty"
-        return
-    undecided = sorted(on_disk - modules - NOT_YET_BANNED)
-    assert not undecided, (
-        f"new in viva_api/simulation/ray and neither under the D12 ban (pyproject.toml) nor named in "
-        f"NOT_YET_BANNED here: {undecided}"
-    )
-    stale = sorted((modules | NOT_YET_BANNED) - on_disk - {"viva_core", "viva_core.*", "viva_api.simulation.ray"})
-    assert not stale, f"listed but not on disk: {stale}"
-    assert not (modules & NOT_YET_BANNED), "a module is both banned and named as not yet banned"
+def test_the_ban_covers_the_ray_package_as_a_glob() -> None:
+    """A glob, so nothing has to remember to list a new module. A module named on its own beside
+    the glob would be harmless to mypy and misleading to a reader, so there are none."""
+    modules = _banned_modules()
+    assert "viva_api.simulation.ray.*" in modules and "viva_api.simulation.ray" in modules, modules
+    by_name = sorted(m for m in modules if m.startswith("viva_api.simulation.ray.") and not m.endswith(".*"))
+    assert not by_name, f"listed by name beside the glob that already covers them: {by_name}"
+    assert any(RAY_PACKAGE.glob("*.py")), "found no modules: is this running from the repository root?"
 
 
 def _explicit_any_ignores(path: Path) -> list[tuple[int, str]]:

@@ -155,27 +155,17 @@ module = ["textual", "textual.*", "process_bigraph", "process_bigraph.*", "bigra
 ignore_missing_imports = true
 
 # D12 (docs/plan-core.md): core carries no `Any`. `strict` does not forbid `Any`; these two flags
-# do. `viva_core.*` is a GLOB on purpose -- a module that moves into core later comes under the
-# ban the day it moves. The ray package is listed BY NAME until the dispatch strategies have
-# landed (plan sequence PR 12 widens it to `viva_api.simulation.ray.*`): those PRs move code
-# and are proven by AST identity, which an annotation change would break.
-# tests/core/test_no_any_in_core.py fails if a ray module is neither listed here nor named there.
+# do. Both entries are GLOBS on purpose: a module that moves into core, or a new module of the
+# ray package, comes under the ban the day it arrives. (The ray package was listed by name while
+# the dispatch strategies moved -- those PRs were proven by AST identity, which an annotation
+# change would have broken -- and became a glob in plan sequence PR 12.)
+# tests/core/test_no_any_in_core.py pins both globs.
 [[tool.mypy.overrides]]
 module = [
     "viva_core",
     "viva_core.*",
     "viva_api.simulation.ray",
-    "viva_api.simulation.ray._seams",
-    "viva_api.simulation.ray.analysis_spec",
-    "viva_api.simulation.ray.batch_layer",
-    "viva_api.simulation.ray.build",
-    "viva_api.simulation.ray.config_interpretation",
-    "viva_api.simulation.ray.image_paths",
-    "viva_api.simulation.ray.parca",
-    "viva_api.simulation.ray.parca_spec",
-    "viva_api.simulation.ray.run_records",
-    "viva_api.simulation.ray.runner_env",
-    "viva_api.simulation.ray.tasks",
+    "viva_api.simulation.ray.*",
 ]
 disallow_any_explicit = true
 disallow_any_unimported = true

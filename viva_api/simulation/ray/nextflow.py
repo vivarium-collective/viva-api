@@ -34,7 +34,7 @@ import tempfile
 from collections.abc import Awaitable, Callable
 from importlib import resources as _res
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict
 
 from viva_api.common.dispatch_validation import resolve_task_env, validate_nextflow_dispatch
 from viva_api.common.hpc.k8s_job_service import K8sJobService
@@ -50,7 +50,9 @@ from viva_core.backends.batch import BatchJobClient
 from viva_core.events.events_env import with_events_env
 
 if TYPE_CHECKING:
-    # ``types-boto3`` is a dev dependency (annotations only): never imported at runtime.
+    # ``types-boto3`` and the kubernetes stubs are dev dependencies (annotations only): never
+    # imported at runtime. (``kubernetes`` itself is imported where the head Job is built.)
+    from kubernetes.client import V1Job
     from types_boto3_batch.type_defs import JobDetailTypeDef
 
 logger = logging.getLogger(__name__)
@@ -85,7 +87,7 @@ def _scaled_memory(base_gb: int) -> str:
 # the guarantee, not the mechanism.
 NF_HEAD_TERMINATION_GRACE_SECONDS = 120
 
-DEFAULT_NF_RESOURCES: dict[str, dict[str, Any]] = {
+DEFAULT_NF_RESOURCES: dict[str, dict[str, object]] = {
     # ParCa is the memory-hungry one and the reason this default exists.
     "parca": {"cpus": 8, "memory": _scaled_memory(32), "time": "4 h"},
     # A lineage is the LONG one -- hours of simulated generations -- so `time`
@@ -102,8 +104,8 @@ DEFAULT_NF_RESOURCES: dict[str, dict[str, Any]] = {
 
 
 def _merge_nf_resources(
-    overrides: dict[str, dict[str, Any]] | None,
-) -> dict[str, dict[str, Any]]:
+    overrides: dict[str, dict[str, object]] | None,
+) -> dict[str, dict[str, object]]:
     """DEFAULT_NF_RESOURCES with per-label overrides merged in.
 
     Merged rather than replaced, and merged per KEY within a label: overriding
@@ -141,6 +143,38 @@ def _command_belongs_to_campaign(command: str, campaign_stem: str) -> bool:
         if re.sub(r"[^a-z0-9-]+", "-", segment.lower()).strip("-") == campaign_stem:
             return True
     return False
+
+
+class NextflowDispatch(TypedDict, total=False):
+    """The ``nextflow_dispatch`` block of a simulation config. Every key is optional to the type;
+    ``validate_nextflow_dispatch`` (run at the API boundary and again in ``submit``) refuses a
+    block without ``composite_id``, or a ``resume`` without ``resume_from``.
+
+    Beyond those two rules and ``task_env`` this DECLARES the contract; nothing enforces it yet.
+    ``params`` is the composite generator's own and is passed through unread.
+    """
+
+    composite_id: str
+    params: dict[str, object] | None
+    executor: str
+    launch: bool
+    resume: bool
+    resume_from: str | None
+    work_dir: str | None
+    resources: dict[str, dict[str, object]] | None
+    nextflow_args: list[str] | None
+    task_env: dict[str, str]
+    max_spot_attempts: int | None
+    max_transfer_attempts: int | None
+    max_retries: int | None
+
+
+#: The retry counts a caller may tune (they ride into the awsbatch profile as they came).
+_NF_RETRY_KEYS: tuple[Literal["max_spot_attempts", "max_transfer_attempts", "max_retries"], ...] = (
+    "max_spot_attempts",
+    "max_transfer_attempts",
+    "max_retries",
+)
 
 
 class NextflowBatch(Protocol):
@@ -189,7 +223,7 @@ def nf_session_s3_uri(experiment_id: str) -> str:
     return f"s3://{settings.s3_work_bucket}/{settings.s3_work_prefix}/{experiment_id}/session"
 
 
-def nf_generator_params(params: dict[str, Any] | None, run_id: str) -> dict[str, Any]:
+def nf_generator_params(params: dict[str, object] | None, run_id: str) -> dict[str, object]:
     """The composite generator's parameters, with `experiment_id` defaulted to the run.
 
     `workflow_nf` defaults its own `experiment_id` to the literal string
@@ -213,13 +247,13 @@ def render_nf_command(
     *,
     runner_s3_uri: str,
     composite_id: str,
-    params: dict[str, Any] | None,
+    params: dict[str, object] | None,
     executor: str,
     launch: bool,
     outdir: str,
     pbg_runner_s3_uri: str,
-    nf_params: dict[str, Any] | None = None,
-    resources: dict[str, dict[str, Any]] | None = None,
+    nf_params: dict[str, object] | None = None,
+    resources: dict[str, dict[str, object]] | None = None,
     work_dir: str | None = None,
     resume: bool = False,
     stage_out_s3: str | None = None,
@@ -342,7 +376,7 @@ class NextflowStrategy:
 
     def _awsbatch_nf_params(
         self, commit: str, experiment_id: str, task_env: dict[str, str] | None = None
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """The `awsbatch` profile's inputs, derived from settings -- never from the request.
 
         These name the deployment's queue, registry and work bucket, so they are
@@ -395,7 +429,7 @@ class NextflowStrategy:
             "work_dir": f"s3://{settings.s3_work_bucket}/{settings.s3_work_prefix}/{experiment_id}/work",
         }
 
-    def _nf_head_job(self, job_name: str, experiment_id: str, commit: str, command: str) -> Any:
+    def _nf_head_job(self, job_name: str, experiment_id: str, commit: str, command: str) -> "V1Job":
         """The head Job, modelled on vEcoli's (``simulation_service_k8s.py``).
 
         ``backoff_limit=0`` deliberately: a half-finished Nextflow run is not
@@ -470,7 +504,7 @@ class NextflowStrategy:
         self,
         ecoli_simulation: Simulation,
         database_service: DatabaseService,
-        nf_dispatch: dict[str, Any],
+        nf_dispatch: NextflowDispatch,
         *,
         correlation_id: str | None = None,
     ) -> JobId:
@@ -548,20 +582,20 @@ class NextflowStrategy:
         runner_s3_uri = await stage_render_nf(run_id)
         pbg_runner_s3_uri = await self._stage_runner(run_id)
         executor = str(nf_dispatch.get("executor", "local"))
-        nf_params: dict[str, Any] | None = None
+        nf_params: dict[str, object] | None = None
         work_dir = nf_dispatch.get("work_dir")
         if executor == "awsbatch":
             nf_params = self._awsbatch_nf_params(commit, campaign_key, task_env=task_env)
             if task_env:
                 logger.info("Nextflow dispatch %s: task_env passthrough %s", run_id, task_env)
             # Retry counts are the caller's to tune; the deployment's identity is not.
-            for key in ("max_spot_attempts", "max_transfer_attempts", "max_retries"):
+            for key in _NF_RETRY_KEYS:
                 if nf_dispatch.get(key) is not None:
                     nf_params[key] = nf_dispatch[key]
             # `-work-dir` on the command line wins over the profile's `workDir`; both
             # are set so a config lifted out of the render dir and run by hand behaves
             # the same as the dispatch did.
-            work_dir = work_dir or nf_params["work_dir"]
+            work_dir = work_dir or str(nf_params["work_dir"])  # a str already: built just above
             # Where `publishDir` copies task outputs. Without it a campaign that
             # exits 0 leaves its science in the work dir under a content hash --
             # measured at 633 MB across 43 objects, against 78 KB of render

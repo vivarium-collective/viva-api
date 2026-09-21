@@ -291,7 +291,7 @@ async def test_the_nextflow_strategy_runs_on_two_image_names_a_cluster_and_a_run
         patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
         patch("viva_api.simulation.ray.nextflow.stage_render_nf", new=AsyncMock(return_value="s3://bucket/r.py")),
     ):
-        dispatch = {"composite_id": "pkg.composites.workflow_nf"}
+        dispatch: nextflow.NextflowDispatch = {"composite_id": "pkg.composites.workflow_nf"}
         job_id = await strategy.submit(cast("Simulation", run), database, dispatch, correlation_id="c")
 
     assert job_id.backend.name == "K8S_NEXTFLOW" and staged == ["run-a1b2"]
@@ -356,7 +356,7 @@ class OnlyMultiNodeBatch(OnlyASubmitter):
 async def test_the_multi_node_strategy_runs_on_a_batch_and_a_runner_stager_and_sizes_its_shards() -> None:
     """...and nothing else of the service. Also the unit-level form of viva-api#730's fix: the shard
     count a run receives is the job definition's vCPUs times its nodes."""
-    from viva_api.simulation.ray.multi_node import MultiNodeCompositeStrategy
+    from viva_api.simulation.ray.multi_node import MultiNodeCompositeStrategy, MultiNodeDispatch
 
     async def stage_runner(experiment_id: str) -> str:
         return f"s3://bucket/{experiment_id}/run_pbg.py"
@@ -370,7 +370,7 @@ async def test_the_multi_node_strategy_runs_on_a_batch_and_a_runner_stager_and_s
         experiment_id="exp-1",
         config=SimpleNamespace(experiment_id="exp-1", task_env=None),
     )
-    dispatch = {"composite_id": "pkg.composites.colony", "num_nodes": 2}
+    dispatch: MultiNodeDispatch = {"composite_id": "pkg.composites.colony", "num_nodes": 2}
     with (
         patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
         patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
@@ -387,6 +387,7 @@ async def test_the_multi_node_strategy_runs_on_a_batch_and_a_runner_stager_and_s
 
 @pytest.mark.asyncio
 async def test_the_services_multi_node_strategy_is_handed_the_services_own_layer_and_stager() -> None:
+    from viva_api.simulation.ray.multi_node import MultiNodeDispatch
     from viva_api.simulation.simulation_service_ray import SimulationServiceRay
 
     service, database, submitted = SimulationServiceRay(), MagicMock(), []
@@ -411,7 +412,7 @@ async def test_the_services_multi_node_strategy_is_handed_the_services_own_layer
         patch.object(service.batch, "client", return_value=OnlyMultiNodeBatch().client()),
         patch.object(service, "stage_runner", new=AsyncMock(return_value="s3://bucket/run_pbg.py")) as staged,
     ):
-        dispatch = {"composite_id": "pkg.composites.colony"}
+        dispatch: MultiNodeDispatch = {"composite_id": "pkg.composites.colony"}
         await service._multi_node().submit(cast("Simulation", run), database, dispatch, correlation_id="c")
 
     assert [name.split("-")[1] for name in submitted] == ["parca", "mnp"], submitted
