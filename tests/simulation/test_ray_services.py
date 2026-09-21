@@ -324,3 +324,95 @@ async def test_the_services_nextflow_strategy_is_handed_the_services_own_layer_a
     ):
         assert await service.reap_cancelled_campaign("nf-sim9-run-a1b2-xyz123") == 5
     k8s.get_job_status.assert_called_once_with("nf-sim9-run-a1b2-xyz123")
+
+
+class OnlyMultiNodeBatch(OnlyASubmitter):
+    """The whole of ``MultiNodeBatch``: an MNP submitter for the run and its ParCa, a container
+    submitter for the analysis (inherited), and the client for one read of a job definition."""
+
+    def __init__(self, vcpus: str = "16") -> None:
+        super().__init__()
+        self.mnp: list[dict[str, Any]] = []
+        self._vcpus = vcpus
+
+    def ensure_mnp_job_def(self, image: str, commit: str) -> str:
+        return f"mnp-{commit}:1"
+
+    def submit_mnp(self, **kwargs: Any) -> str:
+        self.mnp.append(kwargs)
+        return f"mnp-job-{len(self.mnp)}"
+
+    def client(self) -> Any:
+        requirement = {"type": "VCPU", "value": self._vcpus}
+        ranges = [{"container": {"resourceRequirements": [requirement]}}]
+        client = MagicMock()
+        client.describe_job_definitions.return_value = {
+            "jobDefinitions": [{"nodeProperties": {"nodeRangeProperties": ranges}}]
+        }
+        return client
+
+
+@pytest.mark.asyncio
+async def test_the_multi_node_strategy_runs_on_a_batch_and_a_runner_stager_and_sizes_its_shards() -> None:
+    """...and nothing else of the service. Also the unit-level form of viva-api#730's fix: the shard
+    count a run receives is the job definition's vCPUs times its nodes."""
+    from viva_api.simulation.ray.multi_node import MultiNodeCompositeStrategy
+
+    async def stage_runner(experiment_id: str) -> str:
+        return f"s3://bucket/{experiment_id}/run_pbg.py"
+
+    batch, database = OnlyMultiNodeBatch(vcpus="16"), MagicMock()
+    database.get_simulator = AsyncMock(return_value=SimpleNamespace(environment_key="tmp-abc1234-0a1b2c"))
+    database.insert_hpcrun = AsyncMock()
+    run = SimpleNamespace(
+        simulator_id=1,
+        database_id=42,
+        experiment_id="exp-1",
+        config=SimpleNamespace(experiment_id="exp-1", task_env=None),
+    )
+    dispatch = {"composite_id": "pkg.composites.colony", "num_nodes": 2}
+    with (
+        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+    ):
+        strategy = MultiNodeCompositeStrategy(batch, stage_runner=stage_runner)
+        await strategy.submit(cast("Simulation", run), database, dispatch, correlation_id="corr")
+
+    parca, composite = batch.mnp
+    assert parca["job_name"].startswith("ray-parca-tmp-abc1234-0a1b2c-")  # the environment key (D11)
+    assert composite["num_nodes"] == 2 and composite["depends_on"] == ["mnp-job-1"]
+    assert "RAY_SHARDS_DEFAULT=32" in composite["ray_job_cmd"]  # 16 vCPUs x 2 nodes (#730)
+    assert batch.submitted == []  # no container job: the analysis comes later, from the scheduler
+
+
+@pytest.mark.asyncio
+async def test_the_services_multi_node_strategy_is_handed_the_services_own_layer_and_stager() -> None:
+    from viva_api.simulation.simulation_service_ray import SimulationServiceRay
+
+    service, database, submitted = SimulationServiceRay(), MagicMock(), []
+    database.get_simulator = AsyncMock(return_value=SimpleNamespace(environment_key="abc1234"))
+    database.insert_hpcrun = AsyncMock()
+    run = SimpleNamespace(
+        simulator_id=1,
+        database_id=42,
+        experiment_id="exp-1",
+        config=SimpleNamespace(experiment_id="exp-1", task_env=None),
+    )
+
+    def submit_mnp(**kwargs: Any) -> str:
+        submitted.append(kwargs["job_name"])
+        return f"job-{len(submitted)}"
+
+    with (
+        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+        patch.object(service.batch, "ensure_mnp_job_def", return_value="mnp:1"),
+        patch.object(service.batch, "submit_mnp", side_effect=submit_mnp),
+        patch.object(service.batch, "client", return_value=OnlyMultiNodeBatch().client()),
+        patch.object(service, "stage_runner", new=AsyncMock(return_value="s3://bucket/run_pbg.py")) as staged,
+    ):
+        dispatch = {"composite_id": "pkg.composites.colony"}
+        await service._multi_node().submit(cast("Simulation", run), database, dispatch, correlation_id="c")
+
+    assert [name.split("-")[1] for name in submitted] == ["parca", "mnp"], submitted
+    staged.assert_awaited_once_with("exp-1")  # late-bound: the swap on the SERVICE is what the strategy got

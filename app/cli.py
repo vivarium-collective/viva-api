@@ -3017,6 +3017,23 @@ def smoke_list() -> None:
         console.print(f"  tier {check.tier}  [memphis.primary]{check.name:<13}[/] {check.summary}")
 
 
+def _smoke_output_lister(batch_jobs: Any, checks: list[Any], aws_region: str | None) -> Any:
+    """The chain check counts a run's output where it is written instead of downloading GBs of it.
+    That needs the same Batch access as the cancel checks (to find where the run wrote) plus S3.
+    No access is not an error: the check downloads instead, and says so."""
+    from app import smoke  # local, as in ``smoke_run``: the CLI must start without importing it
+
+    if batch_jobs is None or not any(check.name in smoke.LISTS_RUN_OUTPUTS for check in checks):
+        return None
+    try:
+        return smoke.AwsRunOutputLister(batch_jobs, region=aws_region)
+    except Exception as e:
+        get_console().print(
+            f"[memphis.hint]no S3 access ({type(e).__name__}): the chain check will download instead[/]"
+        )
+        return None
+
+
 @smoke_cli.command("run", help="Run smoke checks against a deployed API. Exits non-zero on any failure.")
 def smoke_run(
     tier: int = Option(
@@ -3085,11 +3102,12 @@ def smoke_run(
     # Built only when one of them will run; no access is a SKIP with the reason, not an error.
     batch_jobs = None
     batch_unavailable = "no cancel check selected"
-    if any(check.name in smoke.NEEDS_BATCH_ACCESS for check in checks):
+    if any(check.name in smoke.NEEDS_BATCH_ACCESS | smoke.LISTS_RUN_OUTPUTS for check in checks):
         try:
             batch_jobs = smoke.AwsBatchJobLister(region=aws_region)
         except Exception as e:
             batch_unavailable = f"{type(e).__name__}: {str(e)[:160]}"
+    list_run_outputs = _smoke_output_lister(batch_jobs, checks, aws_region)
     image_pushed_at = None
     registry_unavailable = "no build check selected"
     if build and any(check.name in smoke.NEEDS_REGISTRY_ACCESS for check in checks):
@@ -3105,6 +3123,7 @@ def smoke_run(
         build_repo_url=build_repo_url,
         build_branch=build_branch,
         image_pushed_at=image_pushed_at,
+        list_run_outputs=list_run_outputs,
         image_pushed_at_unavailable=registry_unavailable,
         active_batch_jobs=batch_jobs,
         active_batch_jobs_unavailable=batch_unavailable,

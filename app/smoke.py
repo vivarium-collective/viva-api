@@ -142,6 +142,10 @@ class SmokeOptions:
     #: The build check needs it for the same reason the cancel checks need Batch: the API
     #: would answer COMPLETED from a build that happened last week.
     image_pushed_at: Callable[[str], datetime | None] | None = None
+    #: experiment token -> the S3 URIs of everything that run wrote. For a run whose output is
+    #: too big to fetch through a tunnel just to count it (a chain: GBs). None: fall back to the
+    #: download, which is slow and says so.
+    list_run_outputs: Callable[[str], list[str]] | None = None
     image_pushed_at_unavailable: str = "no registry access was configured"
     build_timeout_seconds: float = 3600.0
     now: Callable[[], datetime] = lambda: datetime.now(UTC)
@@ -854,6 +858,32 @@ def _run_simulation(
     return simulation_id, evidence
 
 
+def _require_listed_outputs(
+    opts: SmokeOptions, simulation_id: int, evidence: dict[str, Any], expect_summaries: int
+) -> int | None:
+    """``_require_outputs`` for a run whose output is too big to download just to count it: LIST
+    what the run wrote instead. Same assertion, from the same facts -- objects that exist, and
+    one ``summary.json`` per finished seed -- read where they are rather than hauled through a
+    tunnel. At checkpoint C2 the chain check spent 30 of its 77 minutes downloading 3.6 GB
+    after the server had finished.
+
+    ``None`` when no lister is available or it found nothing to list: the caller downloads.
+    """
+    if opts.list_run_outputs is None:
+        return None
+    uris = opts.list_run_outputs(str(evidence["experiment_id"]))
+    if not uris:
+        return None
+    summaries = [u for u in uris if u.rsplit("/", 1)[-1] == "summary.json"]
+    evidence.update(output_files=len(uris), seed_summaries=len(summaries), outputs_via="s3-listing")
+    if len(summaries) < expect_summaries:
+        raise CheckFailed(
+            f"simulation {simulation_id} COMPLETED but S3 holds {len(summaries)} per-seed summary.json "
+            f"file(s), expected {expect_summaries} ({len(uris)} objects in all)"
+        )
+    return len(uris)
+
+
 def _require_outputs(svc: SmokeService, simulation_id: int, evidence: dict[str, Any], expect_summaries: int) -> int:
     """COMPLETED is a claim; the output is the fact. Download it and count the per-seed
     ``summary.json`` files a finished lineage writes."""
@@ -887,8 +917,12 @@ def check_sim_chain(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[st
         raise CheckFailed(f"chain {simulation_id} COMPLETED but chain-progress says {progress}")
     if progress.get("seeds_total") != 2:
         raise CheckFailed(f"chain {simulation_id}: expected 2 seeds, chain-progress says {progress}")
-    files = _require_outputs(svc, simulation_id, evidence, expect_summaries=2)
-    return f"simulation {simulation_id}: 2/2 seeds succeeded over 2 generations, {files} output files", evidence
+    # ``sim-default`` is the check that the API can SERVE a run's output (a small one). Here the
+    # question is only whether both seeds wrote theirs, so look where it is written.
+    listed = _require_listed_outputs(opts, simulation_id, evidence, expect_summaries=2)
+    files = listed if listed is not None else _require_outputs(svc, simulation_id, evidence, expect_summaries=2)
+    how = "listed in S3" if listed is not None else "downloaded (no S3 access: slow for a chain)"
+    return f"simulation {simulation_id}: 2/2 seeds succeeded over 2 generations, {files} output files {how}", evidence
 
 
 def check_sim_nextflow(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
@@ -1184,6 +1218,23 @@ class AwsBatchJobLister:
         yield " ".join((job.get("container") or {}).get("command") or [])
         yield from (str(value) for value in (job.get("tags") or {}).values())
 
+    def described(self, token: str, *, statuses: tuple[str, ...]) -> list[dict[str, Any]]:
+        """The full ``describe_jobs`` objects of the run's jobs in ``statuses`` -- for a caller
+        that needs what a job DECLARED (its environment), not just that it exists."""
+        ids = [
+            job["jobId"]
+            for queue in self._queues()
+            for status in statuses
+            for page in self._pages(self._client.list_jobs, jobQueue=queue, jobStatus=status)
+            for job in self._matching(page.get("jobSummaryList", []), token)
+        ]
+        ids = sorted(set(ids))
+        return [
+            job
+            for i in range(0, len(ids), 100)
+            for job in self._client.describe_jobs(jobs=ids[i : i + 100]).get("jobs", [])
+        ]
+
     def __call__(self, token: str) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
         for queue in self._queues():
@@ -1214,6 +1265,54 @@ class AwsBatchJobLister:
                 if d["jobId"] in parents
             ]
         return found
+
+
+class AwsRunOutputLister:
+    """The real ``SmokeOptions.list_run_outputs``: everything a run wrote to S3, found without
+    being told where -- the API does not say, and a client cannot read the server's bucket
+    settings. The run's own Batch jobs do say: each declares its output prefix in its
+    environment (``CONTAINER_OUT_S3`` / ``RAY_OUT_S3``). So: the finished jobs named for the
+    run, their declared prefixes, and what is under them. Read-only (List*/Describe*).
+    """
+
+    FINISHED = ("SUCCEEDED",)
+
+    def __init__(self, jobs: AwsBatchJobLister, region: str | None = None, s3_client: Any = None) -> None:
+        self._jobs = jobs
+        if s3_client is None:
+            import boto3
+
+            s3_client = boto3.client("s3", region_name=region)
+        self._s3 = s3_client
+
+    def prefixes(self, token: str) -> list[str]:
+        """The output prefixes the run's finished jobs declare, outermost only: an analysis job
+        writes to the run's root, which already contains each seed's own prefix.
+
+        Only prefixes that NAME the run. The run's ParCa job is one of its jobs too (it carries the
+        run's ``ExperimentId`` tag) and declares an output prefix -- the ParCa cache, keyed by the
+        commit and shared by every run on it. That is not this run's output: found live, where it
+        turned 53 objects into 61."""
+        found: set[str] = set()
+        for job in self._jobs.described(token, statuses=self.FINISHED):
+            for entry in (job.get("container") or {}).get("environment") or []:
+                value = str(entry.get("value", ""))
+                if str(entry.get("name", "")).endswith("_OUT_S3") and value.startswith("s3://") and token in value:
+                    found.add(value.rstrip("/") + "/")
+        return sorted(p for p in found if not any(p != other and p.startswith(other) for other in found))
+
+    def __call__(self, token: str) -> list[str]:
+        uris: list[str] = []
+        for prefix in self.prefixes(token):
+            bucket, _, key_prefix = prefix.removeprefix("s3://").partition("/")
+            kwargs: dict[str, Any] = {"Bucket": bucket, "Prefix": key_prefix}
+            while True:
+                page = self._s3.list_objects_v2(**kwargs)
+                uris.extend(f"s3://{bucket}/{item['Key']}" for item in page.get("Contents", []))
+                if not page.get("IsTruncated"):
+                    break
+                kwargs["ContinuationToken"] = page["NextContinuationToken"]
+        return sorted(set(uris))
 
 
 class AwsImagePushedAt:
@@ -1349,6 +1448,9 @@ CHECKS: tuple[Check, ...] = (
 NEEDS_BATCH_ACCESS = frozenset({"sim-cancel", "chain-cancel", "nextflow-cancel"})
 #: ...and the one that asserts on the image registry.
 NEEDS_REGISTRY_ACCESS = frozenset({"build"})
+#: ...and the one that counts a run's output in S3 rather than downloading it (needs Batch, to
+#: find where the run wrote, and S3). Without access it still runs: it downloads.
+LISTS_RUN_OUTPUTS = frozenset({"sim-chain"})
 
 #: Tier 2 checks spend their time waiting on AWS Batch, so they run side by side.
 CONCURRENT_TIERS = frozenset({2})
