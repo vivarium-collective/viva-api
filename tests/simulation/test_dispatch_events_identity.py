@@ -133,7 +133,7 @@ def test_the_known_dispatch_paths_are_all_still_covered() -> None:
         if _calls_named(fn, "with_events_env")
     }
     expected = {
-        "_submit_nextflow_dispatch",
+        "nextflow.submit",  # NextflowStrategy (P2.1 PR 8)
         "mbp_tracked.submit",  # MbpTrackedStrategy (P2.1 PR 7)
         "_submit_multi_node_composite",
         "submit_chain_dispatch_job",

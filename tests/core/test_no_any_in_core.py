@@ -34,6 +34,8 @@ RAY_PACKAGE = Path("viva_api/simulation/ray")
 NOT_YET_BANNED: set[str] = {
     # PR 7: moved with the `dict[str, Any]` dispatch block and command parameters it had in the service.
     "viva_api.simulation.ray.mbp_tracked",
+    # PR 8: moved with its `dict[str, Any]` dispatch block, resources map and rendered params.
+    "viva_api.simulation.ray.nextflow",
 }
 
 

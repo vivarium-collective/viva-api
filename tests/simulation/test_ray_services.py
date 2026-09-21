@@ -7,7 +7,7 @@ That they CAN be tested like this is the reason they are services and not mixins
 
 from collections.abc import Coroutine
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,6 +19,9 @@ from viva_api.simulation.models import TaskRunRequest
 from viva_api.simulation.ray.build import RayImageBuilder
 from viva_api.simulation.ray.image_paths import TASK_OUT_DIR
 from viva_api.simulation.ray.tasks import RayTaskService
+
+if TYPE_CHECKING:
+    from viva_api.simulation.models import Simulation
 
 
 class FakeLocalTasks:
@@ -242,3 +245,82 @@ async def test_the_mbp_tracked_strategy_runs_on_a_submitter_alone() -> None:
     assert tracked["depends_on"] == ["batch-job-1"] and tracked["stage_s3"] == parca["out_s3"]
     # the ParCa job is written down as a companion, so a cancel can stop it (viva-api#709)
     assert database.insert_hpcrun.await_args.kwargs["external_job_ids"] == ["batch-job-1"]
+
+
+class OnlyNextflowBatch:
+    """The whole of ``NextflowBatch``: two image names and the engine. This mechanism submits
+    nothing through the layer, so it is handed no way to."""
+
+    def __init__(self) -> None:
+        self.engine_calls = 0
+
+    def image_uri(self, commit: str) -> str:
+        return f"registry/image:{commit}"
+
+    def submit_image_uri(self, commit: str) -> str:
+        return f"registry/image:{commit}-submit"
+
+    def engine(self) -> Any:
+        self.engine_calls += 1
+        engine = MagicMock()
+        engine.terminate_matching.return_value = 3
+        return engine
+
+
+@pytest.mark.asyncio
+async def test_the_nextflow_strategy_runs_on_two_image_names_a_cluster_and_a_runner_stager() -> None:
+    from viva_api.simulation.ray import nextflow
+
+    batch, k8s, staged = OnlyNextflowBatch(), MagicMock(), []
+
+    async def stage_runner(experiment_id: str) -> str:
+        staged.append(experiment_id)
+        return f"s3://bucket/{experiment_id}/run_pbg.py"
+
+    database = MagicMock()
+    database.get_simulator = AsyncMock(return_value=SimpleNamespace(environment_key="tmp-abc1234-0a1b2c"))
+    run = SimpleNamespace(
+        simulator_id=1,
+        database_id=9,
+        experiment_id="run-a1b2",
+        config=SimpleNamespace(experiment_id="run-a1b2", task_env=None),
+    )
+    strategy = nextflow.NextflowStrategy(batch, k8s, stage_runner=stage_runner)
+    with (
+        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch("viva_api.common.storage.data_layout.get_settings", _ray_settings),
+        patch("viva_api.simulation.ray.nextflow.stage_render_nf", new=AsyncMock(return_value="s3://bucket/r.py")),
+    ):
+        dispatch = {"composite_id": "pkg.composites.workflow_nf"}
+        job_id = await strategy.submit(cast("Simulation", run), database, dispatch, correlation_id="c")
+
+    assert job_id.backend.name == "K8S_NEXTFLOW" and staged == ["run-a1b2"]
+    (head,) = [call.args[0] for call in k8s.create_job.call_args_list]
+    assert (
+        head.spec.template.spec.containers[0].image == "registry/image:tmp-abc1234-0a1b2c-submit"
+    )  # D11: the key, not the commit
+
+    # ...and the reap: only once the head is gone, and through the engine it was handed
+    k8s.get_job_status.return_value = "still there"
+    assert await strategy.reap_cancelled_campaign("nf-sim9-run-a1b2-xyz123") is None and batch.engine_calls == 0
+    k8s.get_job_status.return_value = None
+    with patch("viva_api.simulation.ray._seams.get_settings", _ray_settings):
+        assert await strategy.reap_cancelled_campaign("nf-sim9-run-a1b2-xyz123") == 3
+    assert batch.engine_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_the_services_nextflow_strategy_is_handed_the_services_own_layer_and_cluster() -> None:
+    from viva_api.simulation.simulation_service_ray import SimulationServiceRay
+
+    k8s = MagicMock()
+    k8s.get_job_status.return_value = None
+    service = SimulationServiceRay(k8s_job_service=k8s)
+    engine = MagicMock()
+    engine.terminate_matching.return_value = 5
+    with (
+        patch("viva_api.simulation.ray._seams.get_settings", _ray_settings),
+        patch.object(service.batch, "engine", return_value=engine),
+    ):
+        assert await service.reap_cancelled_campaign("nf-sim9-run-a1b2-xyz123") == 5
+    k8s.get_job_status.assert_called_once_with("nf-sim9-run-a1b2-xyz123")
