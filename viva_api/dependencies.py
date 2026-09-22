@@ -506,8 +506,8 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         default_backend = get_job_backend()
         compose_registry: dict[ComputeBackend, ComposeSimulationService] = {}
         if settings.ray_mnp_queue:
-            from viva_api.compose.handlers import hooks_source
             from viva_api.simulation.compose_analysis import ComposeAnalysisChainer
+            from viva_api.simulation.compose_hooks import hooks_source
             from viva_api.simulation.compose_simulators import simulator_environment_key
             from viva_api.simulation.compose_staging import compose_parca_staging
             from viva_api.simulation.dispatch.batch_layer import BatchLayer
