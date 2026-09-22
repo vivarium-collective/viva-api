@@ -1,6 +1,7 @@
-"""Unit tests for viva_api/compose/biomodel_documents.py."""
+"""Unit tests for viva_core/contrib/sysbio/biomodel_documents.py."""
 
-from viva_api.compose.biomodel_documents import (
+from viva_api.compose.biomodels_service import UniformTimeCourseSpec
+from viva_core.contrib.sysbio.biomodel_documents import (
     COPASI_STEP_ADDRESS,
     TELLURIUM_STEP_ADDRESS,
     TYPES_DICT,
@@ -8,7 +9,6 @@ from viva_api.compose.biomodel_documents import (
     make_multi_biomodel_document,
     make_utc_step_state,
 )
-from viva_api.compose.biomodels_service import UniformTimeCourseSpec
 
 
 def _utc() -> UniformTimeCourseSpec:
