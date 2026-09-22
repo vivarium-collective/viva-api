@@ -1,4 +1,4 @@
-# Strategy B — direct: #742 in full, compatibility not maintained
+# Strategy B — direct: #742 in full, compatibility not maintained through the refactor
 
 *Draft for review, 2026-09-22. Companion to [`strategy-core-incremental.md`](strategy-core-incremental.md);
 both respond to viva-api#742. Written to be the strongest honest version of the direct route, not a
@@ -16,6 +16,12 @@ distribution. viva-api ends as `viva_core` plus a thin `sms` package that contri
 hooks, analyses and layouts through core's extension points and serves **no endpoints of its own**.
 
 This is the end state #742 describes, taken literally, with the migration it implies written down.
+It is not a different destination from Strategy A — A reaches the same `viva_core` and then faces
+this same decision afterwards. The difference is *when* the callers change: B changes them during
+the refactor, accepting the added risk in exchange for never carrying two spellings; A holds them
+still until the refactor is proven and decides then. Jim's position (2026-09-22): compatibility was
+held to contain risk, not as a commitment; if Eran accepts the added risk and has the time to help
+design the final configuration, B is acceptable.
 
 ## What changes for callers
 
@@ -51,7 +57,7 @@ says so and dates it, rather than carrying two spellings indefinitely.
 
 ## What this costs, and what it buys
 
-*Costs.* Three repositories change in lock-step at least four times (viva-api, vivarium-workbench,
+*Costs.* The risk this refactor has so far kept off the table. Three repositories change in lock-step at least four times (viva-api, vivarium-workbench,
 sms-ptools), plus atlantis. Every removal is a deploy on **both** Stanford sites, and prod is on
 0.9.78 with a catch-up that is "not part of this work" — the direct route makes it part of this work.
 PTools is the weak point: private, hand-built, no client, no pin. The P7 table move and the
@@ -66,8 +72,10 @@ what #742 says it already is: a package that registers itself, with no endpoints
 
 ## The question this document exists to put
 
-Strategy A keeps the contract and reaches the same `viva_core`. Strategy B reaches a *smaller
-total system* — no facades — at the price of coordinated breaking releases across three repositories
-and two sites, and of bringing prod's catch-up into scope. The decision is whether the permanent
-facades of A are debt worth carrying for the workbench and PTools, or debt worth paying off on a
-clock. That is Jim's and Eran's to make, not a thread's.
+Strategy A keeps the contract through the refactor and reaches the same `viva_core`; the facades
+it leaves are then dated or kept by a separate decision. Strategy B reaches the *smaller total
+system* — no facades — sooner, at the price of coordinated breaking releases across three
+repositories and two sites during the refactor, and of bringing prod's catch-up into scope now.
+The decision is about risk and time, not about the destination: hold the callers still until the
+core is proven (A), or change them alongside it with Eran's design time on the final configuration
+(B). That is Jim's and Eran's to make, not a thread's.
