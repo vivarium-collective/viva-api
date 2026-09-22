@@ -1,6 +1,7 @@
 """Request handlers for the compose simulation subsystem."""
 
 import asyncio
+import importlib.resources as _res
 import json
 import logging
 import random
@@ -11,7 +12,6 @@ from pathlib import Path
 
 from fastapi import BackgroundTasks, HTTPException
 
-from viva_api.compose.container_def import build_pbg_def
 from viva_api.compose.database_service import ComposeDatabaseService
 from viva_api.compose.hpc_utils import get_compose_correlation_id, get_compose_experiment_id
 from viva_api.compose.job_monitor import ComposeJobMonitor
@@ -28,8 +28,15 @@ from viva_api.compose.models import (
     get_singularity_hash,
 )
 from viva_api.compose.simulation_service import ComposeSimulationService
+from viva_core.compose.container_def import build_pbg_def
 
 logger = logging.getLogger(__name__)
+
+
+def _runner_source() -> str:
+    """The generic ``run_pbg.py`` runner, as text, for the recipe to embed. Read here, at the call, not by
+    the recipe at import: the runner is this package's until it moves into core."""
+    return (_res.files("viva_api.compose") / "run_pbg.py").read_text()
 
 
 def _check_allow_list(extra_pip_deps: list[str] | None, pb_allow_list: PBAllowList) -> None:
@@ -99,7 +106,7 @@ async def run_compose_simulation(
     _check_allow_list(extra_pip_deps, pb_allow_list)
 
     suffix = simulation_request.simulation_file_type.get_files_suffix()
-    singularity_rep = build_pbg_def(suffix, extra_pip_deps=extra_pip_deps)
+    singularity_rep = build_pbg_def(suffix, extra_pip_deps=extra_pip_deps, runner_source=_runner_source())
 
     simulator_db = database_service.get_simulator_db()
     simulator_version = await simulator_db.get_simulator_by_def_hash(get_singularity_hash(singularity_rep))

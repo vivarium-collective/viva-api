@@ -19,7 +19,6 @@ from viva_api.compose.handlers import (
 )
 from viva_api.compose.job_monitor import ComposeJobMonitor
 from viva_api.compose.models import (
-    DEFAULT_COMPOSE_ALLOW_LIST,
     BiGraphComputeType,
     BiGraphProcess,
     BiGraphStep,
@@ -38,6 +37,7 @@ from viva_api.compose.models import (
 )
 from viva_api.compose.simulation_service import ComposeSimulationService
 from viva_api.config import ComputeBackend, get_settings
+from viva_api.simulation.compose_allow_list import DEFAULT_COMPOSE_ALLOW_LIST
 from viva_core.environments import EnvironmentNotResolvable
 
 logger = logging.getLogger(__name__)

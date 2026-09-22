@@ -40,6 +40,15 @@ class SSHTarget(StrEnumBase):
     BUILD = "build"  # ARM64 build machine (build_node_*) — Docker image builds + ECR push
 
 
+class ComputeBackend(StrEnumBase):
+    """The DEFAULT dispatch mechanism of a deployment (``COMPUTE_BACKEND``), and the per-request choice a
+    compose run may make. Coarser than :class:`JobBackend`: it names a way of running, not a job's home."""
+
+    SLURM = "slurm"  # SLURM via SSH to a login node (UCONN CCAM)
+    BATCH = "batch"  # AWS Batch via Nextflow (Stanford)
+    RAY = "ray"  # AWS Batch multi-node-parallel transient Ray cluster (Stanford, v2ecoli)
+
+
 class JobBackend(StrEnumBase):
     """Backend system used to execute HPC jobs."""
 

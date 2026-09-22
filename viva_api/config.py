@@ -9,6 +9,7 @@ from typing import Literal
 from dotenv import load_dotenv
 from pydantic_settings import SettingsConfigDict
 
+from viva_core.models import ComputeBackend as ComputeBackend  # re-exported: its home is core (P3d-4b-2)
 from viva_core.settings import CoreSettings, set_core_settings_provider
 from viva_core.settings import get_local_cache_dir as get_local_cache_dir  # re-exported: many importers
 from viva_core.storage.file_paths import HPCFilePath
@@ -451,14 +452,6 @@ class Settings(CoreSettings):
     compose_nats_url: str = ""  # NATS server URL (optional)
     # compose_nats_worker_event_subject: inherited from CoreSettings (P3d-2)
     compose_has_messaging: bool = False  # Enable NATS messaging
-
-
-class ComputeBackend(StrEnum):
-    """Compute backend for simulation workloads."""
-
-    SLURM = "slurm"  # SLURM via SSH to a login node (UCONN CCAM)
-    BATCH = "batch"  # AWS Batch via Nextflow (Stanford)
-    RAY = "ray"  # AWS Batch multi-node-parallel transient Ray cluster (Stanford, v2ecoli)
 
 
 def get_job_backend() -> ComputeBackend:
