@@ -506,11 +506,12 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         default_backend = get_job_backend()
         compose_registry: dict[ComputeBackend, ComposeSimulationService] = {}
         if settings.ray_mnp_queue:
-            from viva_api.compose.simulation_service_ray import ComposeSimulationServiceRay
+            from viva_api.compose.handlers import runner_source
             from viva_api.simulation.compose_analysis import ComposeAnalysisChainer
             from viva_api.simulation.compose_simulators import simulator_environment_key
             from viva_api.simulation.compose_staging import compose_parca_staging
             from viva_api.simulation.dispatch.batch_layer import BatchLayer
+            from viva_core.compose.simulation_service_ray import ComposeSimulationServiceRay
 
             # Compose names what it needs of Batch (``ComposeBatch``) and imports no SMS code to
             # get it; this is the composition root, so this is where it is handed SMS's layer.
@@ -527,6 +528,7 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
                 stage_inputs=compose_parca_staging,
                 files=get_file_service(),
                 environment_key_of=simulator_environment_key,
+                runner_source=runner_source,
             )
             logger.info("✓ Compose backend registered: ray (AWS Batch MNP)")
         if default_backend == ComputeBackend.SLURM:

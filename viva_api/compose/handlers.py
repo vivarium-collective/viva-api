@@ -33,7 +33,7 @@ from viva_core.compose.container_def import build_pbg_def
 logger = logging.getLogger(__name__)
 
 
-def _runner_source() -> str:
+def runner_source() -> str:
     """The generic ``run_pbg.py`` runner, as text, for the recipe to embed. Read here, at the call, not by
     the recipe at import: the runner is this package's until it moves into core."""
     return (_res.files("viva_api.compose") / "run_pbg.py").read_text()
@@ -106,7 +106,7 @@ async def run_compose_simulation(
     _check_allow_list(extra_pip_deps, pb_allow_list)
 
     suffix = simulation_request.simulation_file_type.get_files_suffix()
-    singularity_rep = build_pbg_def(suffix, extra_pip_deps=extra_pip_deps, runner_source=_runner_source())
+    singularity_rep = build_pbg_def(suffix, extra_pip_deps=extra_pip_deps, runner_source=runner_source())
 
     simulator_db = database_service.get_simulator_db()
     simulator_version = await simulator_db.get_simulator_by_def_hash(get_singularity_hash(singularity_rep))

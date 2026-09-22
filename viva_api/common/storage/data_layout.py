@@ -33,19 +33,12 @@ paths use the ``s3_work_bucket``.
 """
 
 from viva_api.config import ComputeBackend, get_settings
-
-
-def _bucket() -> str:
-    return get_settings().s3_work_bucket
-
-
-def _prefix() -> str:
-    return get_settings().s3_output_prefix
+from viva_core.storage import layout
 
 
 def s3_uri(key: str) -> str:
     """Prepend the sim-data bucket (``s3_work_bucket``) to a bucket-relative key."""
-    return f"s3://{_bucket()}/{key}"
+    return layout.s3_uri(get_settings().s3_work_bucket, key)
 
 
 def key_from_uri(uri: str) -> str:
@@ -70,7 +63,7 @@ class RayLayout:
     @staticmethod
     def experiment_prefix(experiment_id: str) -> str:
         """Bucket-relative key prefix for a Ray run's outputs (single-nested)."""
-        return f"{_prefix()}/{experiment_id}"
+        return layout.experiment_prefix(get_settings().s3_output_prefix, experiment_id)
 
     @staticmethod
     def results_uri(experiment_id: str) -> str:
@@ -183,14 +176,14 @@ class NextflowLayout:
         NOTE: the download side reads one level deeper — see ``experiment_prefix`` —
         because the workflow nests the run dir under this prefix.
         """
-        return s3_uri(f"{_prefix()}/{experiment_id}")
+        return s3_uri(layout.experiment_prefix(get_settings().s3_output_prefix, experiment_id))
 
     @staticmethod
     def experiment_prefix(experiment_id: str) -> str:
         """Bucket-relative key prefix the Nextflow DOWNLOAD reads. DOUBLE-nested
         (``{prefix}/{experiment_id}/{experiment_id}``) — intentionally distinct from
         the single-nested ``RayLayout.experiment_prefix``."""
-        return f"{_prefix()}/{experiment_id}/{experiment_id}"
+        return f"{layout.experiment_prefix(get_settings().s3_output_prefix, experiment_id)}/{experiment_id}"
 
 
 def layout_for(backend: ComputeBackend) -> type[RayLayout] | type[NextflowLayout]:

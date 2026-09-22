@@ -438,7 +438,8 @@ viva_core/
   events/     events_env, ingest, chrome_trace
   env_worker/ service, relay, schemas          (P3d-4a/b-3: in place)
   compose/    models, container_def, database_service, tables_orm, job_monitor, service  (P3d-4b: in place)
-              run_pbg, render_nf, the Batch service (3d-4c); the allow-list default is the application's
+              simulation_service_ray (the Batch service, P3d-4c-1); run_pbg, render_nf (3d-4c-2); the allow-list default is the application's
+  storage/    …, layout (the two output-location primitives, pure; P3d-4c-1)
   tasks/      snapshot, …
   datasets/   registry, walk
   storage/    file services, s3 helpers, CoreLayout

@@ -26,6 +26,12 @@ from viva_api.compose.models import (
 from viva_api.compose.simulation_service_ray import COMPOSE_OUT_DIR, ComposeSimulationServiceRay
 from viva_api.simulation.dispatch.batch_layer import BatchLayer
 
+
+# The runner is handed in, as the composition root hands it (P3d-4c-1); the tests only stage it.
+def _RUNNER() -> str:
+    return "print('a runner')\n"
+
+
 RUNTIME = "ghcr.io/vivarium-collective/viva-core-runtime:0.1.0"
 
 
@@ -34,6 +40,8 @@ def _settings(**overrides: object) -> types.SimpleNamespace:
         "ecr_account_id": "476270107793",
         "batch_region": "us-gov-west-1",
         "ray_ecr_repository": "v2ecoli",
+        "s3_work_bucket": "test-bucket",
+        "s3_output_prefix": "vecoli-output",
         "compose_ray_image_tag": "deploy-wide-tag",
         "compose_pbg_core_builder": "v2ecoli.core:build_core",
         "compose_parca_cache_dir": "/app/v2ecoli/out/cache",
@@ -69,7 +77,7 @@ async def test_a_composite_in_the_runtime_environment_runs_as_one_container_and_
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(mod, "get_settings", _settings)
-    svc = ComposeSimulationServiceRay(batch=BatchLayer())
+    svc = ComposeSimulationServiceRay(runner_source=_RUNNER, batch=BatchLayer())
     job_defs: list[tuple[str, str]] = []
     submitted: dict[str, object] = {}
 
@@ -109,7 +117,7 @@ async def test_without_an_environment_a_compose_run_is_the_multi_node_job_it_alw
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(mod, "get_settings", lambda: _settings(compose_parca_cache_dir=""))
-    svc = ComposeSimulationServiceRay(batch=BatchLayer())
+    svc = ComposeSimulationServiceRay(runner_source=_RUNNER, batch=BatchLayer())
     monkeypatch.setattr(svc._batch, "ensure_mnp_job_def", lambda image, commit: "mnp:1")
     submitted: dict[str, object] = {}
 
