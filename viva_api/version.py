@@ -1498,6 +1498,30 @@
 #            exist; /app/viva_api/simulation/dispatch/ exists and /app/viva_api/simulation/ray/ does
 #            NOT; `_submit_in_environment` is in /app/viva_api/compose/simulation_service_ray.py;
 #            the pod's environment carries CORE_RUNTIME_IMAGE.
+#           0.9.154 -- core split, deploy checkpoint E (docs/plan-core.md section 8): P3d-1 through 3d-4c-2.
+#            The compose and env-worker packages are IN viva_core (3,025+ lines: models, container_def,
+#            database_service, tables_orm, job_monitor, the abstract service, the Batch service, the
+#            runner, render_nf; env_worker service/relay/schemas; the site resolver; layout primitives).
+#            Self-replacing shims at every old name; no route, no schema and no table changed.
+#            ONE RUNTIME CONTRACT CHANGE, which is what this checkpoint exists to prove (#773):
+#              the runner (run_pbg.py) is core's and GENERIC; what SMS's model needs of it -- the parquet
+#              emitter override, the batch-baseline composite ids -- is viva_api/compose/runner_hooks.py,
+#              uploaded beside the runner and copied beside it into EVERY job (chain, multi-node,
+#              ensemble, compose), named by PBG_RUNNER_HOOKS=runner_hooks. A named-but-missing hooks file
+#              fails the job before the run. Nothing else in the job changed.
+#            REWIRING, proven equal to what it replaced (#763 #765 #766 #767 #768 #770 #771 #772):
+#              compose's ParCa staging (StageInputs) and simulator lookup (EnvironmentKeyOf) are hooks;
+#              14 settings + s3_work_bucket/s3_output_prefix are CoreSettings fields (same env names);
+#              compose is handed its file service and SSH provider; ComputeBackend lives in
+#              viva_core.models (re-exported); the allow-list default is
+#              viva_api/simulation/compose_allow_list.py; one relay frame that is JSON but not an
+#              object is now WorkerUnavailable instead of an AttributeError.
+#            No migration; the -db-migration overlay tag is bumped to stay equal, the Job is not run.
+#            MARKERS: /app/viva_core/compose/run_pbg.py and /app/viva_api/compose/runner_hooks.py exist;
+#            `stage_runner_commands` is in /app/viva_api/simulation/dispatch/runner_env.py;
+#            /app/viva_api/compose/run_pbg.py is a 16-line self-replacing shim.
+#            SMOKE: Tier 0 + 1 + 2 with --build --require-aws (all five simulations run the new runner
+#            contract), plus --environment runtime.
 #           0.9.153 -- core split, deploy checkpoint D2 (docs/plan-core.md section 8). Deployed NOW, ahead
 #            of checkpoint E, for ONE reason: the shared ECR repository's tags became write-once on
 #            2026-09-21 (sms-cdk#55, live for both sites), and 0.9.152 never asks whether an image
@@ -1522,7 +1546,7 @@
 #            /app/viva_api/simulation/compose_analysis.py, /app/viva_api/compose/env_worker_schemas.py,
 #            /app/viva_core/api/app.py and /app/viva_api/core_wiring.py exist;
 #            `_submit_analysis_job` is GONE from /app/viva_api/compose/simulation_service_ray.py.
-__version__ = "0.9.153"
+__version__ = "0.9.154"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in
