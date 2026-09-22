@@ -492,7 +492,7 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         # endpoints answer 503 with a reason on a deployment that has no compose
         # database, instead of failing at first use.
         from viva_api.api.routers.env_worker import set_env_worker_task_service
-        from viva_api.compose.env_worker_relay import TaskRunner, set_runner
+        from viva_core.env_worker.relay import TaskRunner, set_runner
 
         task_db = compose_db.get_env_worker_task_db()
         set_env_worker_task_service(task_db)
@@ -678,7 +678,7 @@ async def _shutdown_background_work() -> None:
             logger.warning("ComposeJobMonitor did not stop cleanly", exc_info=True)
         set_compose_job_monitor(None)
 
-    from viva_api.compose import env_worker_relay
+    from viva_core.env_worker import relay as env_worker_relay
 
     if env_worker_relay.runner is not None:
         try:

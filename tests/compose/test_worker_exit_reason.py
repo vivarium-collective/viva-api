@@ -22,7 +22,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from viva_api.common.hpc.k8s_job_service import K8sJobService
-from viva_api.compose.env_worker_relay import TaskRunner, WorkerUnavailable
+from viva_core.env_worker.relay import TaskRunner, WorkerUnavailable
 
 JOB = "env-worker-f78672f-partial1-f44cb5fd"
 

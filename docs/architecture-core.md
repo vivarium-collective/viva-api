@@ -436,8 +436,9 @@ viva_core/
   backends/   base (JobBackend), batch, k8s, slurm, local, nextflow, build
   db/         orm (CoreBase, schema "core"), stores, reconcile, migrations/
   events/     events_env, ingest, chrome_trace
-  env_worker/ service, relay, models
-  compose/    run_pbg, render_nf, container_def, allow_list, registry
+  env_worker/ service, relay, schemas          (P3d-4a/b-3: in place)
+  compose/    models, container_def, database_service, tables_orm, job_monitor, service  (P3d-4b: in place)
+              run_pbg, render_nf, the Batch service (3d-4c); the allow-list default is the application's
   tasks/      snapshot, …
   datasets/   registry, walk
   storage/    file services, s3 helpers, CoreLayout

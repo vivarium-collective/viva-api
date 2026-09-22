@@ -82,8 +82,8 @@ class TestComposeStatusLifecycle:
     """
 
     def test_running_and_queued_are_not_terminal(self) -> None:
-        from viva_api.compose.database_service import _TERMINAL_COMPOSE_STATUSES
         from viva_api.compose.tables_orm import ComposeJobStatusDB
+        from viva_core.compose.database_service import _TERMINAL_COMPOSE_STATUSES
 
         # the two that broke: an in-flight job MUST remain pollable
         assert ComposeJobStatusDB.RUNNING not in _TERMINAL_COMPOSE_STATUSES
@@ -92,8 +92,8 @@ class TestComposeStatusLifecycle:
         assert ComposeJobStatusDB.WAITING not in _TERMINAL_COMPOSE_STATUSES
 
     def test_terminal_states_are_actually_terminal(self) -> None:
-        from viva_api.compose.database_service import _TERMINAL_COMPOSE_STATUSES
         from viva_api.compose.tables_orm import ComposeJobStatusDB
+        from viva_core.compose.database_service import _TERMINAL_COMPOSE_STATUSES
 
         for done in (ComposeJobStatusDB.COMPLETED, ComposeJobStatusDB.FAILED, ComposeJobStatusDB.CANCELLED):
             assert done in _TERMINAL_COMPOSE_STATUSES
@@ -101,8 +101,8 @@ class TestComposeStatusLifecycle:
     def test_every_status_is_classified(self) -> None:
         # a new enum value must be consciously put on one side or the other, not
         # silently treated as in-flight (poll-forever) or terminal (never-poll).
-        from viva_api.compose.database_service import _TERMINAL_COMPOSE_STATUSES
         from viva_api.compose.tables_orm import ComposeJobStatusDB
+        from viva_core.compose.database_service import _TERMINAL_COMPOSE_STATUSES
 
         terminal = set(_TERMINAL_COMPOSE_STATUSES)
         in_flight = set(ComposeJobStatusDB) - terminal

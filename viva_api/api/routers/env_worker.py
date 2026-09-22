@@ -19,7 +19,6 @@ import anyio.to_thread
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from viva_api.api.auth import require_caller, resolve_caller
-from viva_api.compose import env_worker_relay as relay
 from viva_api.compose.env_worker_schemas import (
     CompositeRef,
     CompositeSelector,
@@ -50,6 +49,7 @@ from viva_api.compose.env_worker_service import (
 )
 from viva_api.compose.models import ComposeJobStatus, EnvWorkerTask
 from viva_api.config import get_settings
+from viva_core.env_worker import relay
 
 if TYPE_CHECKING:
     from viva_api.compose.database_service import EnvWorkerTaskDatabaseService
