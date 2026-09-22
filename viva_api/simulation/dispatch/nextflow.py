@@ -33,7 +33,6 @@ import re
 import shlex
 import tempfile
 from collections.abc import Awaitable, Callable
-from importlib import resources as _res
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, TypedDict
 
@@ -48,6 +47,7 @@ from viva_api.simulation.dispatch.batch_layer import _rand_suffix
 from viva_api.simulation.dispatch.image_paths import V2ECOLI_CORE_BUILDER, V2ECOLI_DIR
 from viva_api.simulation.models import Simulation
 from viva_core.backends.batch import BatchJobClient
+from viva_core.compose.runner_files import render_nf_source
 from viva_core.events.events_env import with_events_env
 
 if TYPE_CHECKING:
@@ -59,8 +59,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # The Nextflow compiler, staged the same way and for the same reason (Batch caps a
-# container override command at 8192 bytes).
-_RENDER_NF_SRC = (_res.files("viva_api.compose") / "render_nf.py").read_text()
+# container override command at 8192 bytes). Read from CORE's package, where the file lives since
+# P3d-4c-2: ``viva_api.compose.render_nf`` is a self-replacing shim, and staging THAT text shipped a
+# 16-line file whose first statement imports ``viva_core`` -- inside the science image, which has no
+# such package (checkpoint E, simulation 1403). A module shim is transparent to an import and opaque
+# to a file read.
+_RENDER_NF_SRC = render_nf_source()
 
 
 # Per-label resources for the Nextflow dispatch. NOT optional in practice: a

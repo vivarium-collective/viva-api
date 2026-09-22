@@ -10,6 +10,7 @@ import importlib.resources as _res
 from collections.abc import Callable
 
 RUNNER_FILENAME = "run_pbg.py"
+RENDER_NF_FILENAME = "render_nf.py"
 HOOKS_FILENAME = "runner_hooks.py"
 #: What the runner imports (``PBG_RUNNER_HOOKS``): the hooks file's stem, as a sibling module.
 HOOKS_MODULE = "runner_hooks"
@@ -23,6 +24,11 @@ HooksSource = Callable[[], str]
 def runner_source() -> str:
     """The generic runner's text, for staging or for embedding in a recipe."""
     return (_res.files("viva_core.compose") / RUNNER_FILENAME).read_text()
+
+
+def render_nf_source() -> str:
+    """The Nextflow compiler's text (``render_nf.py``), staged beside the runner by the Nextflow head."""
+    return (_res.files("viva_core.compose") / RENDER_NF_FILENAME).read_text()
 
 
 def hooks_s3_uri(runner_s3_uri: str) -> str:
