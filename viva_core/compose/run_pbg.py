@@ -1,0 +1,1202 @@
+"""Generic process-bigraph runner executed inside the compose container.
+
+CLI contract (fixed by sms-api's ``_build_run_command``)::
+
+    python run_pbg.py <input-file> -o <outdir> -n <steps>
+
+Writes results into ``/experiment/output`` (the bind-mounted, zipped dir).
+The ``-o`` value is accepted for CLI compatibility but output always lands in
+``RESULTS_DIR`` so it matches sms-api's ``zip -r ../results.zip`` collection.
+
+A second, equally generic mode builds the document itself rather than reading
+one from disk::
+
+    python run_pbg.py --composite-id <id> --overrides '<json>' -n <steps>
+
+``<id>`` is any id resolvable by ``process_bigraph.composite_spec.get()`` (the
+single registry every ``@composite_generator``/``@composite_spec`` decorator
+registers into) — not specific to any one workspace. This is what lets a
+model-specific dispatcher (e.g. viva-api's vEcoli ensemble endpoint) submit a
+config-driven run through the exact same execution mechanism a hand-authored
+``.pbg`` document uses, instead of shelling out to a bespoke per-workspace CLI
+script. Exactly one of ``input_file`` or ``--composite-id`` is required.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import importlib
+import json
+import math
+import os
+import shutil
+import subprocess
+import sys
+import time
+from collections.abc import Iterator, Mapping
+from contextlib import AbstractContextManager
+from pathlib import Path
+from typing import Protocol
+
+RESULTS_DIR = Path(os.environ.get("PBG_RESULTS_DIR", "/experiment/output"))
+
+
+# The process-bigraph objects this runner touches, by what it asks of them. process-bigraph is
+# imported lazily (it exists in the image, not necessarily where this file is type-checked), so
+# its classes are not named in annotations; each of these is the few members the runner uses.
+class Core(Protocol):
+    def register_link(self, name: str, target: object) -> object: ...
+
+
+class CompositeSpec(Protocol):
+    def to_document(self, *, overrides: Mapping[str, object], core: Core | None) -> dict[str, object]: ...
+
+
+class RunnableComposite(Protocol):
+    def run(self, interval: int) -> object: ...
+
+    def serialize_state(self) -> object: ...
+
+
+class Span(Protocol):
+    def end(self, status: str, error: str | None = None, /) -> object: ...
+
+
+class EventEmitter(Protocol):
+    @property
+    def enabled(self) -> bool: ...
+
+    def event(self, event_name: str, /, **attrs: object) -> object: ...
+
+    def start_span(self, kind: str, /, **attrs: object) -> Span: ...
+
+    def flush(self) -> object: ...
+
+
+class RunnerHooks(Protocol):
+    """What an APPLICATION may add to the generic runner, from a sibling module it stages beside
+    this file (``PBG_RUNNER_HOOKS=<module name>``). Both members are optional; the runner asks for
+    each with ``getattr`` and falls back to doing nothing."""
+
+    def emitter_override(
+        self, out_dir: Path, overrides: Mapping[str, object] | None
+    ) -> AbstractContextManager[None]: ...
+
+    @property
+    def batch_baseline_composite_ids(self) -> frozenset[str]: ...
+
+
+class _NoHooks:
+    """The generic runner: nothing overridden, no composite is a batch-baseline Step."""
+
+    batch_baseline_composite_ids: frozenset[str] = frozenset()
+
+    def emitter_override(self, out_dir: Path, overrides: Mapping[str, object] | None) -> AbstractContextManager[None]:
+        return contextlib.nullcontext()
+
+
+def _load_hooks() -> RunnerHooks:
+    """The application's hooks, if the dispatcher staged any: a module named by ``PBG_RUNNER_HOOKS``,
+    importable from THIS file's directory (the staged layout; ``render_nf`` finds ``run_pbg`` the same
+    way). Named but not importable is a staging bug and fails here, loudly, before the run."""
+    name = (os.environ.get("PBG_RUNNER_HOOKS") or "").strip()
+    if not name:
+        return _NoHooks()
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    try:
+        module = importlib.import_module(name)
+    except ModuleNotFoundError as exc:
+        raise SystemExit(
+            f"run_pbg: PBG_RUNNER_HOOKS={name!r} but no such module is staged beside {__file__}; "
+            f"the dispatcher must stage the hooks file with the runner."
+        ) from exc
+    return _hooks_from(module)
+
+
+def _hooks_from(module: object) -> RunnerHooks:
+    override = getattr(module, "emitter_override", None)
+    ids = getattr(module, "batch_baseline_composite_ids", None)
+    base = _NoHooks()
+
+    class _Hooks:
+        batch_baseline_composite_ids: frozenset[str] = (
+            frozenset(ids) if isinstance(ids, frozenset | set) else frozenset()
+        )
+
+        def emitter_override(
+            self, out_dir: Path, overrides: Mapping[str, object] | None
+        ) -> AbstractContextManager[None]:
+            if not callable(override):
+                return base.emitter_override(out_dir, overrides)
+            result: object = override(out_dir, overrides)
+            if not isinstance(result, AbstractContextManager):
+                raise SystemExit(f"run_pbg: {module!r}.emitter_override did not return a context manager")
+            return result
+
+    return _Hooks()
+
+
+def _workspace_core() -> Core | None:
+    """The *workspace's own* core builder, when the deployment names one.
+
+    ``PBG_CORE_BUILDER`` is a ``"module.path:callable"`` string (e.g.
+    ``"v2ecoli.core:build_core"``) that the compose container sets. This matters
+    because the generic core below registers only process-bigraph's base types plus
+    the pbg-emitters links — a workspace's own ``build_core`` typically registers
+    much more (v2ecoli's registers ``ECOLI_TYPES`` plus several process/step links).
+    Process *addresses* (``local:…``) resolve dynamically via importlib, but
+    registered *types* do not, so a document referencing a workspace type fails to
+    resolve against the generic core.
+
+    Kept generic on purpose: any workspace names its own builder rather than this
+    runner hardcoding one. Returns None (falling back to the generic core) when the
+    var is unset or the target can't be imported.
+    """
+    spec = os.environ.get("PBG_CORE_BUILDER", "").strip()
+    if not spec:
+        return None
+    if ":" not in spec:
+        print(f"run_pbg: ignoring malformed PBG_CORE_BUILDER={spec!r} (want 'module:callable')")
+        return None
+    mod_name, _, fn_name = spec.partition(":")
+    try:
+        core = getattr(importlib.import_module(mod_name), fn_name)()
+    except Exception as e:
+        print(f"run_pbg: PBG_CORE_BUILDER={spec!r} failed ({e}); falling back to the generic core")
+        return None
+    print(f"run_pbg: using workspace core from {spec}")
+    typed: Core = core  # untyped from the builder; what the runner asks of it is ``Core``
+    return typed
+
+
+def _build_core() -> Core:
+    """A process-bigraph Core (process-bigraph's own base types) with pbg-emitters'
+    link classes registered.
+
+    ``Composite`` requires a ``core`` (``bigraph_schema.edge.Edge.__init__`` raises
+    ``"must provide a core"`` when it's ``None``) — the baseline construction is
+    ``allocate_core()`` + ``process_bigraph.register_types()``, the same pair
+    ``process_bigraph``'s own package init uses. ``pbg-emitters`` ships in every
+    compose container (``container_def.py``) but a document's
+    ``{"address": "local:ParquetEmitter", ...}`` step only resolves if the Core
+    it's built against has that address registered, so it's added the same way
+    v2ecoli's own ``build_core()`` does (``v2ecoli/core.py``) — any uploaded
+    document that wires a pbg-emitters step (zarr/parquet, matching what
+    ``observable_reader.py`` expects) resolves the same way it would in a
+    workspace that authored it.
+    """
+    from bigraph_schema import allocate_core
+    from process_bigraph import register_types
+
+    core = register_types(allocate_core())
+
+    try:
+        from pbg_emitters import ParquetEmitter
+
+        core.register_link("ParquetEmitter", ParquetEmitter)
+    except ImportError:
+        pass  # [parquet] extra not installed in this image
+    try:
+        from pbg_emitters import SQLiteEmitter
+
+        core.register_link("SQLiteEmitter", SQLiteEmitter)
+    except ImportError:
+        pass  # [sqlite] extra not installed in this image
+    try:
+        from pbg_emitters import XArrayEmitter
+
+        core.register_link("XArrayEmitter", XArrayEmitter)
+    except ImportError:
+        pass  # [xarray] extra not installed in this image
+    typed: Core = core
+    return typed
+
+
+# Emitter config keys that name WHERE output is written, by emitter kind.
+# ParquetEmitter -> out_dir (emitter_presets.parquet_vecoli), XArrayEmitter -> out_uri.
+_EMITTER_OUT_KEYS = ("out_dir", "out_uri")
+
+# process_bigraph built-in emitter classes with NO location config at all (their
+# class names still match the broad "emitter" in address.lower() test below, but
+# neither reads out_dir/out_uri -- RAMEmitter keeps everything in memory,
+# ConsoleEmitter just prints). Backlog item 88: a colony composite's plain
+# emitter_from_wires({...}) resolves to address="local:RAMEmitter" by default
+# (process_bigraph.emitter.emitter_from_wires); without this exclusion
+# _redirect_emitters would stuff a meaningless out_dir key into its config and
+# count it as "redirected", which silently defeats run()'s own
+# `if n_redirected == 0: _persist_emitter_history(...)` fallback -- the exact
+# in-memory-emitter case that fallback exists to catch.
+_NON_FILE_BACKED_EMITTER_CLASSES = ("RAMEmitter", "ConsoleEmitter")
+
+
+def _emitter_class_name(address: str) -> str:
+    """The CLASS an address names, whichever spelling registered it.
+
+    A link can be registered under its bare class name or its dotted import path, and a
+    document may use either: ``local:RAMEmitter`` and
+    ``local:process_bigraph.emitter.RAMEmitter`` are the same class. Under a workspace core
+    (``v2ecoli.core:build_core``) ONLY the dotted form resolves for process_bigraph's own
+    emitters -- so comparing the whole tail after ``:`` to a bare class name treated a
+    dotted in-memory emitter as file-backed: it was "redirected" (a meaningless ``out_dir``
+    stuffed into its config), which skipped the in-memory history fallback, and the
+    ``PBG_REQUIRE_OUTPUT`` gate then failed a run that had in fact emitted. Found by
+    ``atlantis smoke``'s compose check on its first live run (2026-09-19).
+    """
+    return address.split(":")[-1].rsplit(".", 1)[-1]
+
+
+def _flush_emitters(composite: object) -> None:
+    """Flush any ParquetEmitter steps' buffered rows before the process exits.
+
+    A ParquetEmitter is typically constructed deep inside a composite's step
+    factory (see ``viva_emitters.lifecycle``'s own docstring) — this generic
+    runner never sees the instance directly, so it cannot call ``close()`` on
+    it itself. Without an explicit flush, the trailing partial batch (rows
+    since the last ``batch_size`` flush) stays in memory and is lost when the
+    process exits: ``ParquetEmitter.__del__``'s finalizer is a best-effort,
+    non-blocking safety net (by its own docstring), not a guarantee, and
+    interpreter shutdown does not reliably run `__del__` on module-level
+    instances. Mirrors v2ecoli's own ``composites._helpers.flush_parquet()``,
+    reimplemented generically here since ``run_pbg.py`` has no v2ecoli-specific
+    knowledge — same ``viva_emitters.ParquetEmitter.flush_all_in_composite``
+    call, guarded the same way ``_build_core()`` guards every pbg-emitters
+    import (the ``[parquet]`` extra need not be installed in every image).
+    """
+    try:
+        from viva_emitters import ParquetEmitter
+    except ImportError:
+        return  # [parquet] extra not installed in this image
+    ParquetEmitter.flush_all_in_composite(composite, success=True)
+
+
+def _persist_emitter_history(composite: object, results_dir: Path) -> Path | None:
+    """Gather and persist a composite's own IN-MEMORY emitter history
+    (backlog item 88) — the generic fallback for whichever document declared
+    an emitter that ``_redirect_emitters`` had nothing to redirect (no
+    ``out_dir``/``out_uri`` key present, e.g. a plain in-memory emitter such
+    as ``emitter_from_wires({...})`` with no explicit sink configured).
+
+    Only called when ``_redirect_emitters`` redirected zero emitters — a
+    document using a real file-backed emitter (ParquetEmitter/XArrayEmitter,
+    the comparison-ensemble path's own setup) already ships its own output via
+    that redirect, so this never runs for it and never duplicates or
+    interferes with that path.
+
+    Writes ``emitter_history.json`` (a dict of ``"path.tuple.joined.by.dots" ->
+    results-list``, JSON-safe via ``default=str``) alongside ``final_state.json``
+    when the composite has emitter data to gather; returns ``None`` (not an
+    error — a document may legitimately have no emitter at all) when it
+    doesn't. Best-effort and never raises: a composite this generic runner
+    knows nothing about may not support ``gather_emitter_results`` the way
+    v2ecoli's colony composite does, and a report that can't be built from
+    missing history is a real, honestly-absent downstream state — not a
+    reason to fail an otherwise-successful dispatch.
+    """
+    try:
+        from process_bigraph import gather_emitter_results
+
+        results = gather_emitter_results(composite)
+    except Exception:
+        print("run_pbg: gather_emitter_results failed or unsupported for this composite; skipping history persist")
+        return None
+    if not results:
+        return None
+    history = {".".join(str(p) for p in path): rows for path, rows in results.items()}
+    out = results_dir / "emitter_history.json"
+    out.write_text(json.dumps(history, default=str))
+    print(f"run_pbg: persisted in-memory emitter history ({len(history)} emitter(s)) -> {out}")
+    return out
+
+
+def _env_truthy(value: str | None) -> bool:
+    """A permissive truthiness test for an env-var string: any value other than
+    the usual falsy spellings counts as set."""
+    if not value:
+        return False
+    return value.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+# zarr metadata files. A store always has these; they are written at construction,
+# BEFORE any data chunk. Their presence proves a store exists, not that data landed.
+_ZARR_METADATA_NAMES = (".zgroup", ".zarray", ".zattrs", ".zmetadata", "zarr.json")
+
+
+def _parquet_has_real_data(p: Path) -> bool:
+    """True when a parquet file holds real emitted data, not just the always-emitted
+    ``global_time`` column. An emitter with no declared emit_paths emits ONLY
+    ``global_time`` (process_bigraph adds it unconditionally), yielding a non-empty
+    but data-less 1-column file — the CD2 Run 2 / mecillinam failure. A real emit
+    has global_time PLUS at least one observable, i.e. >1 column and >0 rows.
+
+    Reads only the parquet footer (cheap). pyarrow is imported lazily so this module
+    stays stdlib-only at import time (it is staged into the simulator image); if the
+    file cannot be parsed as parquet, fall back to the old size>0 signal rather than
+    crash the gate.
+    """
+    try:
+        import pyarrow.parquet as pq
+
+        md = pq.ParquetFile(str(p)).metadata
+        return bool(md.num_rows > 0 and md.num_columns > 1)
+    except Exception:
+        return p.stat().st_size > 0
+
+
+def _zarr_has_chunk(results_dir: Path) -> bool:
+    """True when a zarr store under *results_dir* holds at least one real data chunk
+    — a non-metadata file with size>0 — rather than only root metadata markers. The
+    XArrayEmitter writes the store's metadata at construction; if the view has no
+    leaves or no populated tick lands, no chunk ever follows, leaving a metadata-only
+    store (the CD2 Run 4 failure). Symmetric with the parquet size>0 check.
+    """
+    for p in results_dir.rglob("*"):
+        if p.is_file() and ".zarr" in str(p) and p.name not in _ZARR_METADATA_NAMES and p.stat().st_size > 0:
+            return True
+    return False
+
+
+def _has_emitted_output(results_dir: Path) -> bool:
+    """True when *results_dir* holds REAL emitted output — a parquet with data
+    beyond ``global_time``, a zarr store with a real chunk, or a non-empty in-memory
+    ``emitter_history.json`` — as opposed to only the always-written
+    ``final_state.json`` fallback (NOT counted) or a data-less emit (a global_time-only
+    parquet or a chunk-less zarr store), which a run with undeclared emit_paths
+    produces and which must NOT be mistaken for success.
+    """
+    for pattern in ("*.pq", "*.parquet"):
+        for p in results_dir.rglob(pattern):
+            if p.is_file() and p.stat().st_size > 0 and _parquet_has_real_data(p):
+                return True
+    if _zarr_has_chunk(results_dir):
+        return True
+    history = results_dir / "emitter_history.json"
+    if history.is_file() and history.stat().st_size > 0:
+        try:
+            if history.read_text().strip() not in ("", "{}"):
+                return True
+        except OSError:
+            return True  # exists and non-empty but unreadable here — treat as present
+    return False
+
+
+# How long to keep re-checking the shared prefix before giving up. Peer nodes sync on a
+# periodic timer (RAY_OUT_SYNC_INTERVAL, default 30 s), so a peer that emitted may not have
+# uploaded in the last few seconds when the driver reaches this check. We are asking "did
+# ANYTHING get emitted", not "is it complete", so one interval plus slack is enough.
+_SHARED_OUTPUT_WAIT_SECONDS = 90
+_SHARED_OUTPUT_POLL_SECONDS = 15
+
+_OUTPUT_SUFFIXES = (".pq", ".parquet")
+_ZARR_MARKERS = _ZARR_METADATA_NAMES
+
+
+def _has_emitted_output_shared(out_s3: str) -> bool | None:
+    """True/False when the shared S3 prefix can be listed; ``None`` when it cannot.
+
+    ``None`` is deliberately distinct from ``False``: "no output" and "could not look" are
+    different answers, and only the first justifies failing a run.
+
+    Shells out to the AWS CLI rather than importing boto3 — this module is stdlib-only by
+    design (it is staged into the simulator image, not installed with viva-api), and the
+    image's own entrypoint already depends on `aws` for these very syncs.
+    """
+    aws = shutil.which("aws")
+    if aws is None:
+        # The image's entrypoint warns and skips its own S3 sync in this case, so there is
+        # nothing to cross-check against either.
+        return None
+    try:
+        # Fixed argv (no shell), absolute resolved binary, and out_s3 comes from the
+        # entrypoint's own RAY_OUT_S3 -- the same value it syncs to.
+        proc = subprocess.run(  # noqa: S603
+            [aws, "s3", "ls", "--recursive", out_s3],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    for line in proc.stdout.splitlines():
+        # `aws s3 ls --recursive` → "<date> <time> <size> <key>"
+        parts = line.split(maxsplit=3)
+        if len(parts) < 4:
+            continue
+        try:
+            size = int(parts[2])
+        except ValueError:
+            continue
+        key = parts[3]
+        if size > 0 and key.endswith(_OUTPUT_SUFFIXES):
+            return True
+        # A real zarr CHUNK (a non-metadata file with data) — NOT just a store's
+        # marker. The XArrayEmitter writes markers at construction, before any data;
+        # counting a marker alone lets a chunk-less (empty-view) store pass. Match
+        # the local gate's _zarr_has_chunk. (Column-level emptiness of a parquet — a
+        # global_time-only emit — is caught by the per-node local gate, which can read
+        # the footer; an S3 listing cannot, so parquet stays size>0 here.)
+        base = key.rsplit("/", 1)[-1]
+        if size > 0 and ".zarr" in key and base not in _ZARR_MARKERS:
+            return True
+        if size > 0 and key.endswith("emitter_history.json"):
+            return True
+    return False
+
+
+def _assert_emitted_output(results_dir: Path, redirected_from_s3: list[str] | None = None) -> None:
+    """Fail the run (``SystemExit(1)``) when it produced no emitted output.
+
+    Gated by ``PBG_REQUIRE_OUTPUT`` (set by sms-api's Ray/compose dispatch, where
+    a zero-output run is always a failure), so the generic runner's other users —
+    a bare document whose only artifact is ``final_state.json`` — are unaffected
+    by default.
+
+    Closes the CD2 false-success chain (audit §2.4/§2.10 / P0-3): a composite
+    emits nothing (a missing ``[parquet]`` extra silently degrading to an
+    in-memory RAMEmitter, a declared emit path that resolved to nothing, a
+    zero-step run) → run_pbg writes ``final_state.json`` → exit 0 → Batch
+    SUCCEEDED → the run lands ``completed`` with no science in it. The SLURM
+    compose path already guards this (``compose/simulation_service.py:94-95``);
+    this is the stronger Ray/compose equivalent — ``final_state.json`` ALWAYS
+    exists here, so it asserts on the emitted store, not on that fallback.
+
+    ``redirected_from_s3`` (the ``_redirect_emitters`` return value's own second
+    element) covers a DIFFERENT real gap from ``RAY_OUT_S3`` below, confirmed on
+    real infra 2026-09-09 (Dispatch 727:Run 3, seed0): a ``LineageProcess``-driven
+    chain-dispatch composite builds its OWN per-generation parquet emitter
+    independently (``v2ecoli/workflow/lineage.py``'s ``_build_generation`` calls
+    ``set_parquet_emitter_override`` itself, reading its OWN ``config["out_dir"]``
+    — a plain config value on a ``local:LineageProcess`` node, which
+    ``_redirect_emitters`` never touches since that address has no "emitter" in
+    it) — so it can, and in that real run did, keep writing straight to the
+    ORIGINAL pre-redirect S3 destination, verified (``_assert_generation_emitted``/
+    ``_assert_history_landed`` in that same module) INTERNALLY, while this
+    process's own local ``results_dir`` — the only thing the check below used to
+    look at — stayed empty. ``RAY_OUT_S3`` doesn't cover this: it's set only for
+    multi-node Ray dispatch, never for chain-dispatch's single-node-per-generation
+    jobs, so there was previously no cross-check available at all for this shape,
+    and a genuinely successful ~360MB run was reported a hard failure. Checking
+    each emitter's own pre-redirect location closes this generically, without
+    needing to know whether a document is LineageProcess-shaped, MNP-shaped, or
+    anything else — see ``_redirect_emitters``'s own docstring.
+    """
+    if not _env_truthy(os.environ.get("PBG_REQUIRE_OUTPUT")):
+        return
+    if _has_emitted_output(results_dir):
+        return
+
+    # This process's OWN filesystem is not authoritative (viva-api#419, and see this
+    # function's own docstring above for the chain-dispatch/LineageProcess instance of the
+    # same underlying fact: the node/process that actually ran an emitter's flush need not be
+    # this one, or need not have honored the local redirect at all). Twice on 2026-09-04 a
+    # fully successful multi-node lineage run was failed here because Ray put every actor on a
+    # peer and the driver checked an empty directory; the run's ~700 MB of parquet was already
+    # in S3. What IS authoritative is wherever the run's own emitter(s) really wrote: the
+    # shared prefix every MNP node syncs into (RAY_OUT_S3), AND/OR each emitter's own
+    # pre-redirect S3 location (redirected_from_s3) for a document that had one. Consult all
+    # of them, under one shared deadline, before failing.
+    out_s3 = (os.environ.get("RAY_OUT_S3") or "").strip()
+    candidates = list(dict.fromkeys([*([out_s3] if out_s3 else []), *(redirected_from_s3 or [])]))
+    if candidates:
+        deadline = time.monotonic() + _SHARED_OUTPUT_WAIT_SECONDS
+        any_reachable = False
+        while True:
+            for candidate in candidates:
+                found = _has_emitted_output_shared(candidate)
+                if found:
+                    return
+                if found is not None:
+                    any_reachable = True
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(_SHARED_OUTPUT_POLL_SECONDS)
+        shown = ", ".join(candidates)
+        where = (
+            f"nor under any checked shared prefix ({shown}) (checked for {_SHARED_OUTPUT_WAIT_SECONDS}s)"
+            if any_reachable
+            else f"and the checked shared prefix(es) ({shown}) could not be listed"
+        )
+    else:
+        where = "and no shared prefix (RAY_OUT_S3) or redirected emitter S3 location is available to cross-check"
+
+    raise SystemExit(
+        f"run_pbg: PBG_REQUIRE_OUTPUT is set but the run produced no emitted output under "
+        f"{results_dir} {where} (no non-empty parquet/zarr store and no emitter history; only "
+        f"the final_state.json fallback would remain). Refusing to report success."
+    )
+
+
+def _final_global_time(results_dir: Path) -> float | None:
+    """Read ``global_time`` from the run's ``final_state.json``, or ``None`` if it
+    is not present/readable as a number.
+
+    process_bigraph tracks simulated time as a top-level ``global_time`` in the
+    composite state that ``serialize_state()`` writes here. It is how much
+    biological time the run actually advanced — the single most robust tell of a
+    generation that "completed" without running (sms-ecoli#210 §3d / PR #375 §3e:
+    a swap campaign collapsing to one tick reaches ``final_state.json`` with
+    ``global_time`` ~= one time-step, e.g. 1.0, while a real generation reaches its
+    doubling time).
+    """
+    fs = results_dir / "final_state.json"
+    if not fs.is_file():
+        return None
+    try:
+        state = json.loads(fs.read_text())
+    except (OSError, ValueError):
+        return None
+    gt = state.get("global_time") if isinstance(state, dict) else None
+    # bool is an int subclass — exclude it so a stray True can't read as 1.0.
+    if isinstance(gt, bool) or not isinstance(gt, int | float):
+        return None
+    return float(gt)
+
+
+def _lineage_generation_duration_total(results_dir: Path) -> float | None:
+    """Sum real elapsed simulated time found anywhere in the run's
+    ``final_state.json``, or ``None`` if no such shape is present.
+
+    v2ecoli's ``LineageProcess`` (chain-dispatch's ``stop_at_division`` route,
+    and pbg-native's ``lineage_ray_batch``) does not report elapsed simulated
+    time through the composite's top-level ``global_time`` at all — its own
+    docstring: "the inner composite's global_time RESTARTS at 0 each
+    generation." What it reports instead is a real per-generation ``duration``
+    in the ``summary`` its ``update()`` returns
+    (``{"summary": {"generations": [{"duration": ..., "divided": ...}, ...]}}``).
+    A chain-dispatch job that runs exactly one generation per external
+    ``Composite.run(interval)`` call still only advances the OUTER composite's
+    own clock by that one call's requested interval regardless of how long the
+    generation's own internal division-seeking loop actually took — so a real,
+    multi-thousand-second division reads as ``global_time`` ~= the requested
+    interval (often 1.0), indistinguishable from a genuine one-tick collapse if
+    ``global_time`` were the only signal checked. Found live: sms-ecoli#210,
+    dispatch 297 (real division at t=2527s, `global_time` read back as 1.0).
+    Recursive rather than path-specific, since a lineage node's own key in the
+    document varies by composite/seed.
+
+    A SECOND, independently-real shape covered here since 2026-09-09: chain-
+    dispatch's actual top-level process for ``mecillinam_wellmixed.json`` (and
+    every other ``BatchBaselineRunner``-driven composite,
+    ``address: local:v2ecoli.steps.batch_baseline_runner.BatchBaselineRunner``)
+    reports its own real elapsed time as ``{"batch": {"wall_s": ..., ...}}``, a
+    DIFFERENT top-level shape from ``LineageProcess``'s own direct
+    ``summary.generations`` return — the walk above never matched it, so this
+    path always fell back to the misleading ``global_time`` and 1.0. Confirmed
+    live: Dispatch 736:Run 3 seed0, real division at t=2528s, ``final_state.
+    json``'s own ``batch.wall_s`` == 2528.0 (matching the separately-uploaded
+    ``summary.json``'s own ``duration`` exactly), while ``global_time`` == 1.0.
+    Never visible before viva-api#543 (this file's own emit-output gate,
+    checked FIRST, always failed first for this exact dispatch shape).
+    """
+    fs = results_dir / "final_state.json"
+    if not fs.is_file():
+        return None
+    try:
+        state = json.loads(fs.read_text())
+    except (OSError, ValueError):
+        return None
+
+    durations: list[float] = []
+
+    def _walk(node: object) -> None:
+        if isinstance(node, dict):
+            summary = node.get("summary")
+            if isinstance(summary, dict):
+                durations.extend(_durations_from_generations(summary.get("generations")))
+            durations.extend(_duration_from_batch_wall_s(node.get("batch")))
+            for value in node.values():
+                _walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                _walk(value)
+
+    _walk(state)
+    return sum(durations) if durations else None
+
+
+def _duration_from_batch_wall_s(batch: object) -> list[float]:
+    """Extract a valid numeric ``wall_s`` from a ``BatchBaselineRunner``-shaped
+    ``batch`` node — 0 or 1 values, list-returning to match
+    ``_durations_from_generations``'s own ``durations.extend(...)`` call shape."""
+    if not isinstance(batch, dict):
+        return []
+    wall_s = batch.get("wall_s")
+    if isinstance(wall_s, bool) or not isinstance(wall_s, int | float):
+        return []
+    return [float(wall_s)]
+
+
+def _durations_from_generations(generations: object) -> list[float]:
+    """Extract valid numeric ``duration`` values from a ``summary.generations`` list."""
+    if not isinstance(generations, list):
+        return []
+    out: list[float] = []
+    for gen in generations:
+        if not isinstance(gen, dict):
+            continue
+        duration = gen.get("duration")
+        if isinstance(duration, bool) or not isinstance(duration, int | float):
+            continue
+        out.append(float(duration))
+    return out
+
+
+def _assert_run_advanced(results_dir: Path) -> None:
+    """Fail the run (``SystemExit(1)``) when it emitted output but did not actually
+    advance in simulated time.
+
+    Gated by ``PBG_MIN_GLOBAL_TIME`` (a float the dispatch sets to a value safely
+    below one real generation and far above a single tick). ``_assert_emitted_output``
+    proves a store EXISTS but not that it holds a real trajectory — presence, not
+    effect. A swap campaign that collapses to one tick (sms-ecoli#210 §3d / PR #375
+    §3e: the swap reaches the run but the generation closes after one tick,
+    ``global_time`` ~= 1.0) still writes a non-empty ``1.pq`` and passes the
+    presence check. This is the effect check: the run must have advanced past
+    ``PBG_MIN_GLOBAL_TIME`` of simulated time.
+
+    Opt-in: unset/empty ``PBG_MIN_GLOBAL_TIME`` → no check (unchanged behavior), so
+    only a dispatch that knows the expected generation length turns it on. Runs
+    after ``final_state.json`` is written, so it reads ``global_time`` from that file
+    and the file survives as a postmortem artifact on failure.
+
+    Checks the larger of two independent signals: the composite's own top-level
+    ``global_time``, and (when present) the total ``duration`` across any
+    ``LineageProcess``-shaped generation summary (see
+    ``_lineage_generation_duration_total``) — a chain-dispatch/pbg-native
+    generation's real elapsed time lives in the latter, not the former (sms-
+    ecoli#210, dispatch 297: a genuine division at t=2527s still reads
+    ``global_time`` ~= 1.0, since that field only counts the outer composite's
+    own ``run(interval)`` ticks, decoupled from how long the generation's own
+    internal division-seeking loop took).
+    """
+    raw = os.environ.get("PBG_MIN_GLOBAL_TIME")
+    if raw is None or raw.strip() == "":
+        return
+    try:
+        minimum = float(raw)
+    except ValueError:
+        raise SystemExit(f"run_pbg: PBG_MIN_GLOBAL_TIME={raw!r} is not a number.")
+    gt = _final_global_time(results_dir)
+    lineage_total = _lineage_generation_duration_total(results_dir)
+    candidates = [v for v in (gt, lineage_total) if v is not None]
+    if not candidates:
+        raise SystemExit(
+            f"run_pbg: PBG_MIN_GLOBAL_TIME={minimum} is set but {results_dir}/final_state.json "
+            f"has no readable global_time (and no LineageProcess-shaped generation summary) — "
+            f"cannot verify the run advanced. Refusing to report success."
+        )
+    effective = max(candidates)
+    if effective < minimum:
+        detail = f"global_time={gt}" if gt is not None else "global_time=<unreadable>"
+        if lineage_total is not None:
+            detail += f", lineage_generation_duration_total={lineage_total}"
+        raise SystemExit(
+            f"run_pbg: the run advanced only {effective} of simulated time ({detail}) "
+            f"(< PBG_MIN_GLOBAL_TIME={minimum}) under {results_dir}. The emitted store is "
+            f"non-empty but the generation did not run — e.g. a one-tick collapse "
+            f"(a swap that reaches the run but closes the generation after one tick; "
+            f"the first case was the model's issue 210). Refusing to report success."
+        )
+
+
+def _redirect_emitters(node: object, results_dir: Path) -> tuple[int, list[str]]:
+    """Point every emitter step's output location at *results_dir*, recursively.
+
+    A document's emitter usually resolves its own output location relative to the
+    authoring WORKSPACE — v2ecoli's baseline omits ``out_dir`` on purpose so it
+    lands in ``<workspace>/.pbg/parquet-runs``. That is correct locally and wrong
+    here: the Batch entrypoint syncs only ``RAY_OUT_DIR`` (this ``results_dir``) to
+    S3, so a workspace-relative emitter writes real output that never leaves the
+    container — the run "succeeds" and produces nothing readable.
+
+    So we rewrite the location key in the loaded document before constructing the
+    Composite. Any pre-existing value is overridden rather than preserved: it was
+    computed in the authoring environment, and inside this container the ONLY
+    directory that reaches S3 is ``results_dir``. Returns ``(count, original_s3_
+    locations)``: ``count`` is the number of emitters redirected (0 is a
+    legitimate answer — a document need not declare one; it is also the correct
+    answer for a document whose only emitter is a non-file-backed one, e.g.
+    ``RAMEmitter`` — see ``_NON_FILE_BACKED_EMITTER_CLASSES``), unchanged from
+    the old int-returning signature. ``original_s3_locations`` is the (possibly
+    empty, possibly smaller than ``count``) subset of pre-redirect location
+    values that looked like a real ``s3://`` URI — extra cross-check candidates
+    for ``_assert_emitted_output``, see that function's own docstring for why a
+    redirected document's real output can still land at its ORIGINAL location
+    instead of ``results_dir``.
+
+    **Exception: an ``out_uri``-keyed (xarray/zarr) emitter goes straight to S3
+    instead, when ``RAY_OUT_S3`` is set.** Every other file-backed emitter's local
+    write is safe to leave best-effort-synced (``ray-batch-entrypoint.sh``'s
+    ``start_output_sync``, "never fails the job on its own") because its own chunks
+    are independent files — losing an unsynced local buffer on a node change costs
+    nothing structurally. zarr is not: ``viva_emitters.xarray_emitter.zarr_writer.
+    _check_group`` requires the PREVIOUS generation's own group to still exist in
+    the SAME store when the next generation opens it, and this process's own
+    filesystem is not authoritative on a multi-node run — Ray places ``ray:``-
+    addressed actors wherever it likes (viva-api#419, ``_assert_emitted_output``
+    below hit this exact fact from the read side). If the actor owning a seed's
+    lineage gets restarted on a different node between generations, that node's
+    local disk never had the previous generation's zarr group, and
+    ``_check_group`` fails loudly — the real cause of CD2 Dispatch 665/666 (dies
+    around generation 3-4 on a multi-hour run; never surfaces on a short 1-2
+    generation run, which is why Run 4's dispatches never hit it). zarr/fsspec
+    write ``s3://`` URIs natively — v2ecoli's own ``_open_xarray_emitter`` already
+    branches on ``out_is_s3``, just never previously handed a real one — so
+    routing it straight to the same shared prefix every node's periodic sync
+    targets gives it real, durable, node-independent state instead of a single
+    node's disk. Falls back to the shared local redirect when ``RAY_OUT_S3`` is
+    unset (e.g. a non-Batch/local dev context), so nothing changes there.
+    """
+    count = 0
+    s3_locations: list[str] = []
+    if isinstance(node, dict):
+        address = node.get("address")
+        is_file_backed = (
+            isinstance(address, str)
+            and "emitter" in address.lower()
+            and _emitter_class_name(address) not in _NON_FILE_BACKED_EMITTER_CLASSES
+        )
+        if is_file_backed:
+            config = node.get("config")
+            if not isinstance(config, dict):
+                config = {}
+                node["config"] = config
+            # Reuse whichever key this emitter already speaks; default to out_dir.
+            key = next((k for k in _EMITTER_OUT_KEYS if k in config), "out_dir")
+            before = config.get(key)
+            out_s3 = (os.environ.get("RAY_OUT_S3") or "").strip()
+            # Belt-and-suspenders on the class itself, not just the key: `key` picks
+            # out_dir first if a config ever carried BOTH out_dir and out_uri (no
+            # real emitter_arg does today, confirmed against every real K4/J3/Run3/
+            # Run4 dispatch config, but nothing stops one from arising later) --
+            # that would silently mask a real xarray emitter behind the old local
+            # redirect, exactly as silently as the bug this fix closes. Checking the
+            # actual registered class name removes the guesswork entirely.
+            is_xarray = (
+                key == "out_uri" and isinstance(address, str) and _emitter_class_name(address) == "XArrayEmitter"
+            )
+            if isinstance(before, str) and before.startswith("s3://"):
+                s3_locations.append(before)
+            if is_xarray and out_s3:
+                config[key] = out_s3
+                count += 1
+                print(f"run_pbg: redirected emitter {address} {key}: {before!r} -> {out_s3} (S3-direct)")
+            else:
+                config[key] = str(results_dir)
+                count += 1
+                print(f"run_pbg: redirected emitter {address} {key}: {before!r} -> {results_dir}")
+        for value in node.values():
+            sub_count, sub_locations = _redirect_emitters(value, results_dir)
+            count += sub_count
+            s3_locations.extend(sub_locations)
+    elif isinstance(node, list):
+        for item in node:
+            sub_count, sub_locations = _redirect_emitters(item, results_dir)
+            count += sub_count
+            s3_locations.extend(sub_locations)
+    return count, s3_locations
+
+
+def _lookup_spec(composite_id: str) -> CompositeSpec:
+    """Resolve a registered composite spec, forcing package discovery once if needed."""
+    from process_bigraph.composite_spec import discover_specs
+    from process_bigraph.composite_spec import get as get_spec
+
+    spec = get_spec(composite_id)
+    if spec is None:
+        # The defining module may not have been imported yet (its
+        # @composite_generator/@composite_spec decorator only fires on
+        # import) — discover_specs() walks every installed
+        # bigraph-schema-dependent package to force that, then retry once.
+        discover_specs()
+        spec = get_spec(composite_id)
+    if spec is None:
+        raise SystemExit(f"run_pbg: no composite registered as {composite_id!r}")
+    typed: CompositeSpec = spec
+    return typed
+
+
+def _declared_params(spec: object) -> dict[str, object]:
+    params = getattr(spec, "parameters", None) or {}
+    return dict(params) if isinstance(params, dict) else {}
+
+
+def _apply_declared_run_identity(
+    spec: object, overrides: Mapping[str, object] | None, experiment_id: str | None
+) -> dict[str, object]:
+    """Thread the dispatch's ``experiment_id`` into the overrides -- but ONLY when
+    the composite declares that parameter.
+
+    Why here and not on the API side: ``CompositeSpec.to_document`` raises
+    ``KeyError("unknown override(s)")`` for any key the generator does not
+    declare, and the API has no view of a composite's schema (resolution
+    happens in this container). So a blanket server-side default would break
+    every composite that never heard of ``experiment_id``. Without it, every
+    lineage-shaped MNP dispatch that omits the key falls back to the
+    generator's literal default -- ``lineage_ray_batch`` -> the hive partition
+    ``experiment_id=lineage_ray_batch`` on EVERY campaign (sms-ecoli#166: Runs
+    1/2/4 all landed under the same key), which is exactly the collision
+    ``_nf_generator_params`` already prevents on the Nextflow path. An explicit
+    override always wins.
+    """
+    merged = dict(overrides or {})
+    if experiment_id and "experiment_id" in _declared_params(spec) and not merged.get("experiment_id"):
+        merged["experiment_id"] = experiment_id
+    return merged
+
+
+def _is_batch_baseline_shape(composite_id: str | None, *, n_seeds: int, n_generations: int) -> bool:
+    """``ecoli_baseline`` with more than one seed or generation builds
+    ``BatchBaselineRunner`` (``composites/ecoli_baseline.py``, ``baseline``'s
+    ``n_seeds>1 or n_generations>1`` gate), a Step that completes in one
+    update; ``-n 1`` is then the whole run."""
+    if not composite_id or composite_id not in _load_hooks().batch_baseline_composite_ids:
+        return False
+    return n_seeds > 1 or n_generations > 1
+
+
+def _as_int(value: object, default: int) -> int:
+    """``int(value or default)`` for a JSON value -- a number or a numeric string; anything else raises."""
+    if not value:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        raise TypeError(f"not a number: {value!r}")
+    return int(value)
+
+
+def _as_float(value: object, default: float) -> float:
+    if not value:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        raise TypeError(f"not a number: {value!r}")
+    return float(value)
+
+
+def _check_required_run_interval(
+    spec: object, overrides: Mapping[str, object] | None, steps: int, composite_id: str | None = None
+) -> None:
+    """Refuse to under-run a lineage-shaped composite.
+
+    ``Composite.run(steps)`` advances TOTAL SIMULATED TIME, and every
+    ``ray:LineageProcess`` node's own ``interval`` is ``max_duration_per_gen``,
+    so a run shorter than ``n_generations * max_duration_per_gen`` invokes
+    nothing and emits nothing -- yet exits 0 (Dispatch 438; sms-ecoli#166,
+    eagmon's comment 5579146363). The API clamps ``steps`` up when the request
+    carries ``n_generations`` (viva-api 87e5ca04), but it cannot see the
+    composite's DEFAULTS, so a request that omits ``n_generations`` (default 1)
+    and ``steps`` (default 1) still slips through as a 1-second run. This
+    runner CAN see the declared parameters, so it is the one place the check
+    is generic: any composite that declares ``n_generations`` is lineage-shaped
+    by its own contract; any other composite is untouched. Fail loud rather
+    than silently stretch the run -- the caller asked for a duration, and a
+    wrong one is a bug in the request, not something to paper over.
+
+    Two shapes are exempt, because for them ``-n`` is a trigger, not a budget:
+
+    * **``stop_at_division`` set** (the retired per-generation chain job,
+      ``_seed_generation_command``, item 103): ``LineageProcess`` advances to a
+      real division INTERNALLY regardless of the nominal step count. Kept for
+      any caller that still sends it.
+    * **The batch shape of ``ecoli_baseline``** (``n_generations > 1`` or
+      ``n_seeds > 1`` on ``V2ECOLI_BATCH_BASELINE_COMPOSITE_ID``): ``baseline()``
+      routes that request to ``BatchBaselineRunner``, a *Step* whose ONE update
+      runs every seed's whole lineage (``run_workflow`` -> per-seed
+      ``LineageProcess``), so ``-n 1`` IS the complete run. This is exactly what
+      chain dispatch submits since viva-api#578 (``_seed_lineage_command``:
+      ``n_generations=N``, ``-n 1``, no ``stop_at_division``); without this
+      exemption every whole-lineage chain job was refused here on 0.9.135
+      (sms-ecoli#166, 2026-09-10). Sizing ``-n`` to ``n_generations *
+      max_duration_per_gen`` instead would only add tens of thousands of empty
+      framework ticks around a Step that already ran once.
+
+    The contract itself is exactly right for MNP's ``lineage_ray_batch`` (one
+    continuous invocation of ``ray:LineageProcess`` nodes with per-generation
+    intervals, no early exit) and for the single-cell ``ecoli_baseline`` (no
+    batch route, so a 1 s run really is Dispatch 438's failure shape: no
+    ``n_generations``, no ``steps``, nothing makes the run advance).
+    """
+    declared = _declared_params(spec)
+    if "n_generations" not in declared:
+        return
+    merged: dict[str, object] = {k: v.get("default") if isinstance(v, dict) else None for k, v in declared.items()}
+    merged.update(overrides or {})
+    if merged.get("stop_at_division"):
+        return  # self-terminates at a real division; steps is a trigger, not a budget
+    try:
+        n_generations = _as_int(merged.get("n_generations"), 1)
+        max_duration = _as_float(merged.get("max_duration_per_gen"), 3600.0)
+        n_seeds = _as_int(merged.get("n_seeds"), 1)
+    except (TypeError, ValueError):
+        return  # not ours to validate; the generator will
+    if _is_batch_baseline_shape(composite_id, n_seeds=n_seeds, n_generations=n_generations):
+        return  # BatchBaselineRunner is a Step: one update runs the whole sweep
+    required = math.ceil(n_generations * max_duration)
+    if steps < required:
+        raise SystemExit(
+            f"run_pbg: refusing to under-run lineage-shaped composite: -n {steps} < required "
+            f"{required} (= n_generations {n_generations} x max_duration_per_gen {max_duration:g} s). "
+            "`-n` is TOTAL SIMULATED SECONDS, not a tick count; a shorter run invokes no "
+            "generation and emits nothing. Set multi_node_dispatch.steps (or n_generations in "
+            "params so the API can derive it)."
+        )
+
+
+def _resolve_document(
+    input_file: str | None, composite_id: str | None, overrides: Mapping[str, object] | None, core: Core | None
+) -> tuple[dict[str, object], Core | None]:
+    """Load a static ``.pbg`` document, or build one from a registered composite.
+
+    Returns ``(document, core)`` — NOT just the document. A composite's own
+    ``core_extensions`` (e.g. ecoli_colony's ``pymunk_agent`` type +
+    ``EcoliWCM``/``ColonyGrowthGif`` link registration via
+    ``_register_colony_core``) are applied here via
+    ``process_bigraph.composite_generator.apply_core_extensions`` — the same
+    real helper ``run_runner.execute()`` uses, not a hand-rolled loop — because
+    ``to_document()`` alone never applies them (only the higher-level
+    ``to_composite()`` does, which this runner can't call directly: it needs
+    the intermediate document for its own emitter-redirect/override logic
+    below). Critically, an extension may return a NEW core object rather than
+    mutating the one it's passed (``_register_colony_core`` builds a fresh
+    viva_munk-based core, confirmed live — backlog item 88); the caller MUST
+    use the returned core, not its own original one, when later constructing
+    ``Composite(document, core=core)`` — a first attempt that applied the
+    extension but kept using the original core silently built against an
+    unextended one and failed with "unable to parse type map[pymunk_agent]".
+
+    The composite-id branch resolves through ``process_bigraph.composite_spec`` —
+    the same registry ``vivarium_workbench.lib.pbg_export.export_composite_pbg``
+    already resolves composites through for the Composites-tab / remote-run path.
+    Building the document HERE (in-process, same call that constructs ``Composite``
+    below) never crosses a serialization boundary, so unlike a document loaded from
+    disk, realized-edge fields (a live ``instance``, resolved port schemas) are
+    exactly what the generator function returns — nothing to strip or rewrite.
+    """
+    if composite_id:
+        from process_bigraph.composite_generator import apply_core_extensions
+
+        spec = _lookup_spec(composite_id)
+        core = apply_core_extensions(spec, core)
+        document: dict[str, object] = spec.to_document(overrides=overrides or {}, core=core)
+        return document, core
+    if input_file is None:
+        raise ValueError("_resolve_document: input_file is required when composite_id is not given")
+    loaded: object = json.loads(Path(input_file).read_text())
+    if not isinstance(loaded, dict):
+        raise SystemExit(f"run_pbg: {input_file} is not a JSON object")
+    return loaded, core
+
+
+# ---------------------------------------------------------------------------
+# Observability bootstrap (docs/plan-observability.md, dispatcher/runner layer)
+# ---------------------------------------------------------------------------
+#
+# The chain and MNP paths run THIS script directly (``python /tmp/run_pbg.py``)
+# and never pass through process-bigraph's ``run_step``/``run_composite``
+# entrypoints, so with the engine's library default (silent) they emitted
+# nothing: cluster acceptance on sim 957 found zero events on the chain path
+# while the Nextflow path (``run_step``) emitted 96. Mirror what the
+# entrypoints and v2ecoli's ``LineageStep.configure_for_task`` do: a stdout
+# sink unless ``PBG_EVENT_SINKS`` says otherwise, plus ``<results_dir>/events.jsonl``,
+# and one task span around the run. Everything here is best-effort -- an
+# older process-bigraph without ``events`` (or any failure inside it) leaves the
+# run exactly as it was.
+EVENTS_COMPONENT = "viva_api.run_pbg"
+EVENTS_FILENAME = "events.jsonl"
+
+
+def _configure_events(results_dir: Path | None) -> EventEmitter | None:
+    """Install the process-wide emitter for this run, or return ``None`` when
+    process-bigraph does not expose ``events`` (older engine) -- every caller
+    then skips observability entirely.
+
+    An emitter that is already enabled (an entrypoint configured it, or the
+    environment did) is kept -- only the file sink is added if missing.
+    """
+    try:
+        from process_bigraph import events as _events
+    except ImportError:
+        return None
+    try:
+        emitter = _events.get_emitter()
+        if not emitter.enabled:
+            emitter = _events.configure(default="stdout")
+        if results_dir is not None:
+            path = str(Path(results_dir) / EVENTS_FILENAME)
+            sinks = getattr(emitter, "_sinks", None)
+            if isinstance(sinks, list) and not any(getattr(sink, "path", None) == path for sink in sinks):
+                Path(results_dir).mkdir(parents=True, exist_ok=True)
+                sinks.append(_events.FileSink(path))
+        typed: EventEmitter = emitter
+        return typed
+    except Exception:  # observability must never break the run
+        return None
+
+
+@contextlib.contextmanager
+def _task_span(emitter: EventEmitter | None, label: str, **attrs: object) -> Iterator[Span | None]:
+    """One ``task`` span (same shape as process-bigraph's ``run_step``) plus
+    ``task.start``/``task.end`` events attributed to this runner. No-op when
+    ``emitter`` is ``None``."""
+    if emitter is None:
+        yield None
+        return
+    span = emitter.start_span("task", name=label, **attrs)
+    emitter.event("task.start", component=EVENTS_COMPONENT, name=label, **attrs)
+    try:
+        yield span
+    except BaseException as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        emitter.event("task.end", level="error", component=EVENTS_COMPONENT, status="error", name=label, error=error)
+        span.end("error", error)
+        emitter.flush()
+        raise
+    else:
+        emitter.event("task.end", component=EVENTS_COMPONENT, status="ok", name=label)
+        span.end("ok")
+        emitter.flush()
+
+
+def run(
+    input_file: str | None,
+    steps: int,
+    results_dir: Path = RESULTS_DIR,
+    *,
+    composite_id: str | None = None,
+    overrides: Mapping[str, object] | None = None,
+    experiment_id: str | None = None,
+) -> Path:
+    """Get a document (static file, or built from ``composite_id`` + ``overrides``),
+    run it ``steps`` times, write ``final_state.json`` -- inside one observability
+    task span (see ``_configure_events``). The actual work is ``_run``.
+    """
+    label = composite_id or (Path(input_file).stem if input_file else "run_pbg")
+    emitter = _configure_events(results_dir)
+    with _task_span(
+        emitter, label, composite_id=composite_id, input_file=input_file, steps=steps, experiment_id=experiment_id
+    ):
+        return _run(
+            input_file, steps, results_dir, composite_id=composite_id, overrides=overrides, experiment_id=experiment_id
+        )
+
+
+def _run(
+    input_file: str | None,
+    steps: int,
+    results_dir: Path = RESULTS_DIR,
+    *,
+    composite_id: str | None = None,
+    overrides: Mapping[str, object] | None = None,
+    experiment_id: str | None = None,
+) -> Path:
+    """Get a document (static file, or built from ``composite_id`` + ``overrides``),
+    run it ``steps`` times, write ``final_state.json``.
+
+    Any pbg-emitters step the document itself wires (``local:ParquetEmitter`` etc.)
+    resolves via ``_build_core()`` and writes its own zarr/parquet output alongside
+    this snapshot — ``final_state.json`` stays as the always-present fallback so a
+    document with no emitter step still produces *something* under ``results_dir``.
+    """
+    from process_bigraph import Composite  # imported lazily so tests can stub it
+
+    results_dir.mkdir(parents=True, exist_ok=True)
+    # Prefer the workspace's own core (it registers types the generic one can't know
+    # about); fall back to the generic core when no builder is named. Test against
+    # None explicitly — a Core is a registry-ish object that may well define
+    # __bool__/__len__, and `or` would silently discard a valid-but-empty one.
+    core = _workspace_core()
+    if core is None:
+        core = _build_core()
+    if composite_id:
+        # Both guards need the composite's DECLARED parameters, which only this
+        # side of the container boundary can see. Do them before the emitter
+        # override below, which reads overrides["experiment_id"] itself.
+        spec = _lookup_spec(composite_id)
+        overrides = _apply_declared_run_identity(spec, overrides, experiment_id)
+        _check_required_run_interval(spec, overrides, steps, composite_id=composite_id)
+    with _load_hooks().emitter_override(results_dir, overrides):
+        document, core = _resolve_document(input_file, composite_id, overrides, core)
+        # Neither _workspace_core()/_build_core() nor a composite's own
+        # core_extensions register process_bigraph's remote-address PROTOCOLS
+        # ('ray'/'rest'/'parallel'/'git' -> RayProtocol/RestProtocol/...) --
+        # confirmed directly: process_bigraph.register_types() (used by
+        # _build_core()) only adds a few misc types, and a workspace's own
+        # PBG_CORE_BUILDER (e.g. v2ecoli.core:build_core) has no reason to
+        # know about this generic-runner concern either. Without this, any
+        # document referencing e.g. a 'ray:SomeProcess' address fails at
+        # Composite-build time with "value is not a protocol: ray" -- confirmed
+        # live (backlog item 88). MUST run AFTER _resolve_document, on the
+        # core it actually returns: a first attempt registered protocols
+        # BEFORE _resolve_document ran core_extensions, and ecoli_colony's own
+        # core_extensions entry (_register_colony_core) discards its input and
+        # builds a brand-new core instead of mutating in place (the same real
+        # convention _resolve_document's own core_extensions fix already
+        # handles) -- so the registration landed on a core that got thrown
+        # away, and the SAME core-that's-actually-used problem recurred one
+        # layer up. Registering it unconditionally, on whatever core survives
+        # to this point, is safe and generic: a document with no such address
+        # simply never looks the type up.
+        from process_bigraph.protocols import register_types as register_protocol_types
+
+        core = register_protocol_types(core)
+        # Emitters must write where the entrypoint syncs from, not where the authoring
+        # workspace would have put them.
+        n_redirected, redirected_from_s3 = _redirect_emitters(document, results_dir)
+        composite = Composite(document, core=core)  # full-path local:! addresses resolve via importlib
+    composite.run(steps)
+    _flush_emitters(composite)
+    # Backlog item 88: a document whose emitter is a plain in-memory one (no
+    # out_dir/out_uri to redirect -- n_redirected == 0) has nothing else
+    # shipping its data to results_dir/S3. Gather and persist it generically
+    # here so ANY composite dispatched through this runner this way (not just
+    # ecoli_colony) gets its trajectory captured, not just the final snapshot
+    # below. A document with a real file-backed emitter already shipped its
+    # own output via the redirect above, so this is skipped for it.
+    if n_redirected == 0:
+        _persist_emitter_history(composite, results_dir)
+    out = results_dir / "final_state.json"
+    out.write_text(json.dumps(composite.serialize_state(), default=str))
+    # P0-3: nothing downstream asserts the run produced the science it was asked
+    # for. Under PBG_REQUIRE_OUTPUT (set by sms-api's Ray/compose dispatch), refuse
+    # to exit 0 when only final_state.json was produced. Runs AFTER final_state is
+    # written so it survives as a postmortem artifact even on this failure.
+    _assert_emitted_output(results_dir, redirected_from_s3)
+    # P0-3 (effect, not just presence): a run can emit a non-empty store yet not have
+    # advanced — a one-tick collapse (sms-ecoli#210 §3d / #375 §3e). Under
+    # PBG_MIN_GLOBAL_TIME (opt-in), refuse to exit 0 unless real simulated time elapsed.
+    _assert_run_advanced(results_dir)
+    return out
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input_file", nargs="?", default=None)
+    parser.add_argument("--composite-id", dest="composite_id", default=None)
+    parser.add_argument("--overrides", default=None, help="JSON object of composite-generator parameter overrides")
+    parser.add_argument("-o", "--output", default=str(RESULTS_DIR))
+    parser.add_argument("-n", "--steps", type=int, default=1)
+    parser.add_argument(
+        "--experiment-id",
+        dest="experiment_id",
+        default=None,
+        help="dispatch identity; injected into overrides only if the composite declares experiment_id",
+    )
+    args = parser.parse_args(argv)
+    if bool(args.input_file) == bool(args.composite_id):
+        parser.error("exactly one of input_file or --composite-id is required")
+    overrides = json.loads(args.overrides) if args.overrides else None
+    run(
+        args.input_file,
+        args.steps,
+        composite_id=args.composite_id,
+        overrides=overrides,
+        experiment_id=args.experiment_id,
+    )
+
+
+if __name__ == "__main__":
+    main()

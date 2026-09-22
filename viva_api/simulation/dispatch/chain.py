@@ -46,7 +46,12 @@ from viva_api.simulation.dispatch import _seams, parca_spec
 from viva_api.simulation.dispatch.analysis_spec import analysis_memory_class, analysis_modules_for
 from viva_api.simulation.dispatch.batch_layer import ContainerSubmitter, _rand_suffix
 from viva_api.simulation.dispatch.image_paths import ANALYSIS_OUT_DIR, PARCA_CACHE_DIR, SIM_OUT_DIR, V2ECOLI_DIR
-from viva_api.simulation.dispatch.runner_env import PBG_RUNNER_ENV, V2ECOLI_BATCH_BASELINE_COMPOSITE_ID
+from viva_api.simulation.dispatch.runner_env import (
+    PBG_RUNNER_ENV,
+    RUNNER_PATH,
+    V2ECOLI_BATCH_BASELINE_COMPOSITE_ID,
+    stage_runner_commands,
+)
 from viva_api.simulation.models import JobType, Simulation
 from viva_core.backends.batch import SUBMIT_JOB_MAX_ATTEMPTS, SubmitJobPacer
 from viva_core.events.events_env import with_events_env
@@ -213,8 +218,8 @@ def seed_generation_command(
     env = PBG_RUNNER_ENV
     return (
         f"cd {V2ECOLI_DIR}"
-        f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
-        f" && {env} python /tmp/run_pbg.py"
+        f"{stage_runner_commands(runner_s3_uri)}"
+        f" && {env} python {RUNNER_PATH}"
         f" --composite-id {composite_id or V2ECOLI_BATCH_BASELINE_COMPOSITE_ID}"
         f" --overrides {shlex.quote(json.dumps(overrides))} -n 1"
     )
@@ -284,8 +289,8 @@ def seed_lineage_command(
     env = PBG_RUNNER_ENV
     return (
         f"cd {V2ECOLI_DIR}"
-        f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
-        f" && {env} python /tmp/run_pbg.py"
+        f"{stage_runner_commands(runner_s3_uri)}"
+        f" && {env} python {RUNNER_PATH}"
         f" --composite-id {composite_id or V2ECOLI_BATCH_BASELINE_COMPOSITE_ID}"
         f" --overrides {shlex.quote(json.dumps(overrides))} -n 1"
     )

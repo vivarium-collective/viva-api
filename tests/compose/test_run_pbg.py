@@ -8,8 +8,9 @@ from typing import Any
 
 import pytest
 
-from viva_api.compose import run_pbg
+from viva_api.compose import runner_hooks
 from viva_api.simulation.dispatch import chain
+from viva_core.compose import run_pbg
 
 
 class FakeCore:
@@ -127,7 +128,7 @@ def test_flush_emitters_is_a_noop_without_parquet_extra(monkeypatch: pytest.Monk
     run_pbg._flush_emitters(composite=object())  # must not raise
 
 
-# --- _v2ecoli_parquet_emitter_override: item 61 follow-up ---
+# --- runner_hooks.emitter_override (was run_pbg._v2ecoli_parquet_emitter_override; P3d-4c-2): item 61 follow-up ---
 #
 # The flush fix above (test_run_flushes_parquet_emitters_after_composite_run)
 # mocks viva_emitters.ParquetEmitter.flush_all_in_composite entirely, so it
@@ -179,7 +180,7 @@ def test_v2ecoli_emitter_override_calls_parquet_vecoli_with_real_run_identity(
     monkeypatch.setitem(sys.modules, "v2ecoli.library.emitter_presets", fake_presets_mod)
     monkeypatch.setitem(sys.modules, "v2ecoli.composites._helpers", fake_helpers_mod)
 
-    with run_pbg._v2ecoli_parquet_emitter_override(
+    with runner_hooks.emitter_override(
         tmp_path / "out",
         {"experiment_id": "sim69-real-9c6d", "seed": 3, "initial_generation_index": 1},
     ):
@@ -211,7 +212,7 @@ def test_v2ecoli_emitter_override_defaults_when_overrides_missing_seed_or_genera
     monkeypatch.setitem(sys.modules, "v2ecoli.library.emitter_presets", fake_presets_mod)
     monkeypatch.setitem(sys.modules, "v2ecoli.composites._helpers", fake_helpers_mod)
 
-    with run_pbg._v2ecoli_parquet_emitter_override(tmp_path / "out", None):
+    with runner_hooks.emitter_override(tmp_path / "out", None):
         pass
 
     assert calls == [
@@ -235,7 +236,7 @@ def test_v2ecoli_emitter_override_clears_even_when_the_body_raises(
     monkeypatch.setitem(sys.modules, "v2ecoli.library.emitter_presets", fake_presets_mod)
     monkeypatch.setitem(sys.modules, "v2ecoli.composites._helpers", fake_helpers_mod)
 
-    with pytest.raises(ValueError, match="boom"), run_pbg._v2ecoli_parquet_emitter_override(tmp_path / "out", {}):
+    with pytest.raises(ValueError, match="boom"), runner_hooks.emitter_override(tmp_path / "out", {}):
         raise ValueError("boom")
 
     assert set_calls[-1] is None  # cleared in the finally, not left dangling
@@ -248,7 +249,7 @@ def test_v2ecoli_emitter_override_is_a_noop_without_v2ecoli_installed(
     many this generic runner serves) — degrade silently, matching every
     other optional-dependency guard in this module."""
     monkeypatch.setitem(sys.modules, "v2ecoli.library.emitter_presets", None)
-    with run_pbg._v2ecoli_parquet_emitter_override(tmp_path / "out", {}):
+    with runner_hooks.emitter_override(tmp_path / "out", {}):
         pass  # must not raise
 
 
@@ -1378,7 +1379,7 @@ _COLONY = _Spec({"n_cells": {"type": "integer", "default": 4}})
 
 
 def test_run_identity_is_injected_only_when_the_composite_declares_it() -> None:
-    from viva_api.compose.run_pbg import _apply_declared_run_identity
+    from viva_core.compose.run_pbg import _apply_declared_run_identity
 
     assert _apply_declared_run_identity(_LINEAGE, {"seed": 3}, "sim172-run2-ab12") == {
         "seed": 3,
@@ -1393,7 +1394,7 @@ def test_run_identity_is_injected_only_when_the_composite_declares_it() -> None:
 
 def test_lineage_composite_refuses_to_under_run_even_with_all_defaults() -> None:
     """The hole the API-side clamp cannot see: n_generations AND steps both omitted."""
-    from viva_api.compose.run_pbg import _check_required_run_interval
+    from viva_core.compose.run_pbg import _check_required_run_interval
 
     with pytest.raises(SystemExit, match="refusing to under-run.*-n 1 < required 3600"):
         _check_required_run_interval(_LINEAGE, {}, 1)
@@ -1401,7 +1402,7 @@ def test_lineage_composite_refuses_to_under_run_even_with_all_defaults() -> None
 
 
 def test_required_run_interval_uses_the_overrides_when_given() -> None:
-    from viva_api.compose.run_pbg import _check_required_run_interval
+    from viva_core.compose.run_pbg import _check_required_run_interval
 
     with pytest.raises(SystemExit, match="required 14400"):
         _check_required_run_interval(_LINEAGE, {"n_generations": 4}, 3600)
@@ -1419,12 +1420,15 @@ _BASELINE = _Spec({
 _BASELINE_ID = "v2ecoli.composites.ecoli_baseline.ecoli_baseline"
 
 
-def test_batch_shape_of_ecoli_baseline_is_exempt_from_the_under_run_check() -> None:
+def test_batch_shape_of_ecoli_baseline_is_exempt_from_the_under_run_check(monkeypatch: pytest.MonkeyPatch) -> None:
     """viva-api#578's whole-lineage chain job (sms-ecoli#166, 2026-09-10):
     ecoli_baseline with n_generations>1 builds BatchBaselineRunner, a Step whose
     one update runs the whole lineage, so `-n 1` is the complete run. On 0.9.135
-    this guard refused every such job."""
-    from viva_api.compose.run_pbg import _check_required_run_interval
+    this guard refused every such job. Which ids ARE the batch-baseline Step is the
+    application's hook (P3d-4c-2), so the test stages SMS's hooks the way a job does."""
+    from viva_core.compose.run_pbg import _check_required_run_interval
+
+    monkeypatch.setenv("PBG_RUNNER_HOOKS", "viva_api.compose.runner_hooks")
 
     _check_required_run_interval(_BASELINE, {"n_generations": 20, "n_seeds": 1}, 1, composite_id=_BASELINE_ID)
     _check_required_run_interval(_BASELINE, {"n_generations": 1, "n_seeds": 4}, 1, composite_id=_BASELINE_ID)
@@ -1439,13 +1443,15 @@ def test_batch_shape_of_ecoli_baseline_is_exempt_from_the_under_run_check() -> N
         )
 
 
-def test_chain_whole_lineage_command_passes_the_under_run_guard() -> None:
+def test_chain_whole_lineage_command_passes_the_under_run_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     """The exact overrides `_seed_lineage_command` emits (n_generations=N, -n 1,
     no stop_at_division) must clear the guard the container runs them through."""
     import json
     import shlex
 
-    from viva_api.compose.run_pbg import _check_required_run_interval
+    from viva_core.compose.run_pbg import _check_required_run_interval
+
+    monkeypatch.setenv("PBG_RUNNER_HOOKS", "viva_api.compose.runner_hooks")
     from viva_api.simulation.dispatch.runner_env import V2ECOLI_BATCH_BASELINE_COMPOSITE_ID
 
     cmd = chain.seed_lineage_command(
@@ -1469,7 +1475,7 @@ def test_stop_at_division_is_exempt_from_the_under_run_check() -> None:
     makes LineageProcess advance to a real division internally, so steps is a
     trigger, not a simulated-time budget. Must not reopen Dispatch 438 (no
     stop_at_division at all, the real under-run this check exists for)."""
-    from viva_api.compose.run_pbg import _check_required_run_interval
+    from viva_core.compose.run_pbg import _check_required_run_interval
 
     _check_required_run_interval(_LINEAGE, {"stop_at_division": True}, 1)  # exempt: fine
     _check_required_run_interval(
@@ -1482,7 +1488,7 @@ def test_stop_at_division_is_exempt_from_the_under_run_check() -> None:
 
 
 def test_non_lineage_composites_are_never_checked() -> None:
-    from viva_api.compose.run_pbg import _check_required_run_interval
+    from viva_core.compose.run_pbg import _check_required_run_interval
 
     _check_required_run_interval(_COLONY, {"n_cells": 6}, 1)  # a colony's 1 step is its own business
 
@@ -1526,19 +1532,19 @@ class _FakeEmitter:
     def enabled(self) -> bool:
         return bool(self._sinks)
 
-    def start_span(self, span_name: str, **attrs: Any) -> Any:
+    def start_span(self, span_name: str, /, **attrs: Any) -> Any:
         record: dict[str, Any] = {"name": span_name, "attrs": attrs, "status": None, "error": None}
         self.spans.append(record)
 
         class _Span:
-            def end(_self, status: str = "ok", error: str | None = None) -> None:
+            def end(_self, status: str = "ok", error: str | None = None, /) -> None:
                 record["status"] = status
                 record["error"] = error
 
         return _Span()
 
-    def event(self, event_name: str, level: str = "info", component: str = "process_bigraph", **payload: Any) -> None:
-        self.events.append({"event": event_name, "level": level, "component": component, **payload})
+    def event(self, event_name: str, /, **payload: object) -> None:
+        self.events.append({"event": event_name, "level": "info", "component": "process_bigraph", **payload})
 
     def flush(self) -> None:
         self.flushes += 1
@@ -1731,3 +1737,45 @@ def test_emitter_class_name() -> None:
     assert run_pbg._emitter_class_name("local:RAMEmitter") == "RAMEmitter"
     assert run_pbg._emitter_class_name("local:process_bigraph.emitter.RAMEmitter") == "RAMEmitter"
     assert run_pbg._emitter_class_name("RAMEmitter") == "RAMEmitter"
+
+
+# --- the hooks seam (P3d-4c-2): the generic runner, and what an application stages beside it ---
+
+
+def test_without_hooks_the_runner_is_generic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("PBG_RUNNER_HOOKS", raising=False)
+    hooks = run_pbg._load_hooks()
+    assert hooks.batch_baseline_composite_ids == frozenset()
+    with hooks.emitter_override(tmp_path, {"seed": 1}):
+        pass  # a null context: nothing to override
+    assert not run_pbg._is_batch_baseline_shape(_BASELINE_ID, n_seeds=4, n_generations=1)
+
+
+def test_hooks_named_but_not_staged_fail_before_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PBG_RUNNER_HOOKS", "no_such_hooks_module")
+    with pytest.raises(SystemExit, match="PBG_RUNNER_HOOKS='no_such_hooks_module' but no such module is staged"):
+        run_pbg._load_hooks()
+
+
+def test_sms_hooks_are_what_the_runner_declares(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The two members the seam names, with the values the runner carried until P3d-4c-2."""
+    monkeypatch.setenv("PBG_RUNNER_HOOKS", "viva_api.compose.runner_hooks")
+    hooks = run_pbg._load_hooks()
+    assert hooks.batch_baseline_composite_ids == runner_hooks.batch_baseline_composite_ids
+    assert _BASELINE_ID in hooks.batch_baseline_composite_ids
+    assert run_pbg._is_batch_baseline_shape(_BASELINE_ID, n_seeds=4, n_generations=1)
+
+
+def test_hooks_are_stdlib_only_at_module_scope() -> None:
+    """Both staged files run where only the science image's packages exist; anything else is imported
+    lazily, inside the hook, or the file fails at import before the run."""
+    import ast
+
+    for path in (Path(run_pbg.__file__), Path(runner_hooks.__file__)):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        names = {
+            ((n.module or "") if isinstance(n, ast.ImportFrom) else n.names[0].name).split(".")[0]
+            for n in tree.body
+            if isinstance(n, ast.Import | ast.ImportFrom)
+        }
+        assert names <= set(sys.stdlib_module_names) | {"__future__"}, f"{path.name}: {names}"

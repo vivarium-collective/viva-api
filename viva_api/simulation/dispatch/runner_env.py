@@ -8,6 +8,7 @@ their commands from it, and a mechanism that has become a strategy object cannot
 """
 
 from viva_api.simulation.dispatch.image_paths import SIM_OUT_DIR, V2ECOLI_CORE_BUILDER, V2ECOLI_DIR
+from viva_core.compose.runner_files import HOOKS_ENV, HOOKS_FILENAME, RUNNER_FILENAME, hooks_s3_uri
 
 # Registered composite id (process_bigraph.composite_spec) for the multi-generation
 # batch orchestrator, and the workspace core-builder that resolves its registered
@@ -71,7 +72,19 @@ V2ECOLI_BATCH_BASELINE_COMPOSITE_ID = "v2ecoli.composites.ecoli_baseline.ecoli_b
 # set on this CD2 baseline/lineage path, NOT the generic compose path (which can run
 # legitimately short composites).
 PBG_MIN_GLOBAL_TIME = 10.0
+# PBG_RUNNER_HOOKS: the runner is core's and generic (P3d-4c-2); what SMS's model needs of it -- the
+# parquet emitter override, the batch-baseline composite ids -- is ``viva_api/compose/runner_hooks.py``,
+# staged beside the runner (``stage_runner``) and copied beside it into the job (``stage_runner_commands``).
 PBG_RUNNER_ENV = (
     f"PBG_RESULTS_DIR={SIM_OUT_DIR} PBG_CORE_BUILDER={V2ECOLI_CORE_BUILDER}"
-    f" PYTHONPATH={V2ECOLI_DIR} PBG_REQUIRE_OUTPUT=1 PBG_MIN_GLOBAL_TIME={PBG_MIN_GLOBAL_TIME}"
+    f" PYTHONPATH={V2ECOLI_DIR} PBG_REQUIRE_OUTPUT=1 PBG_MIN_GLOBAL_TIME={PBG_MIN_GLOBAL_TIME} {HOOKS_ENV}"
 )
+
+RUNNER_PATH = f"/tmp/{RUNNER_FILENAME}"  # noqa: S108
+HOOKS_PATH = f"/tmp/{HOOKS_FILENAME}"  # noqa: S108
+
+
+def stage_runner_commands(runner_s3_uri: str) -> str:
+    """The ``&& aws s3 cp …`` pair that puts the runner AND the hooks into the job, from the URI
+    ``stage_runner`` returned. One place, so no mechanism can copy one without the other."""
+    return f" && aws s3 cp {runner_s3_uri} {RUNNER_PATH} && aws s3 cp {hooks_s3_uri(runner_s3_uri)} {HOOKS_PATH}"
