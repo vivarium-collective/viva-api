@@ -81,3 +81,22 @@ async def test_slurm_is_reached_through_the_provider_and_only_when_it_is_needed(
     unwired = ComposeJobMonitor(nats_client=None, database_service=MagicMock())
     with pytest.raises(RuntimeError, match="No SLURM SSH session provider"):
         await unwired._update_slurm_jobs([run])
+
+
+@pytest.mark.asyncio
+async def test_with_no_runner_a_run_is_refused_before_anything_is_submitted() -> None:
+    """The runner (``run_pbg.py``) is the application's package data until it moves into core; compose is
+    handed a reader for it (P3d-4c-1) and refuses to stage a run without one."""
+    batch = MagicMock()
+    svc = ComposeSimulationServiceRay(batch=batch, files=AsyncMock())
+    request = MagicMock()
+    request.sim_request.request_file_path = "doc.pbg"
+    with pytest.raises(RuntimeError, match="No runner source"):
+        await svc.submit_simulation_job(request, experiment_id="exp-1")
+    batch.submit_mnp.assert_not_called()
+
+
+def test_the_sms_runner_reader_reads_the_runner() -> None:
+    from viva_api.compose.handlers import runner_source
+
+    assert "process_bigraph" in runner_source() or "def " in runner_source()

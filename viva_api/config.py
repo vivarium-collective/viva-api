@@ -203,9 +203,9 @@ class Settings(CoreSettings):
     # batch_region: inherited from CoreSettings (P3d-2)
 
     # S3 settings for workflow data
-    s3_work_bucket: str = ""  # S3 bucket for Nextflow work dir and outputs
+    # s3_work_bucket: inherited from CoreSettings (P3d-4c-1)
     s3_work_prefix: str = "nextflow/work"  # Prefix for Nextflow work directory
-    s3_output_prefix: str = "vecoli-output"  # Prefix for workflow output data
+    s3_output_prefix: str = "vecoli-output"  # the application supplies the default (P3d-4c-1)
 
     # --- Simulation event stream (observability plan D4a; viva_api.common.events_env) ---
     # Every dispatched task gets PBG_* identity env so the process-bigraph engine

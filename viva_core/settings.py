@@ -39,6 +39,11 @@ class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, n
     # Local cache for downloads
     storage_local_cache_dir: str = "./local_cache"
 
+    # Where a run's outputs go: one bucket, one prefix, ``{prefix}/{experiment_id}/`` per run
+    # (``viva_core.storage.layout``). The prefix's default is the application's (P3d-4c-1).
+    s3_work_bucket: str = ""
+    s3_output_prefix: str = ""
+
     # AWS S3
     storage_s3_bucket: str = ""
     storage_s3_region: str = "us-east-1"

@@ -4,7 +4,7 @@ import importlib.resources as _res
 
 import pytest
 
-from viva_api.compose.handlers import _runner_source
+from viva_api.compose.handlers import runner_source
 from viva_core.compose.container_def import build_pbg_def
 
 RUNNER = "print('a runner')\n"
@@ -29,5 +29,5 @@ def test_the_runner_is_handed_in_not_read_by_the_recipe() -> None:
     into core, which cannot). The SLURM handler reads it and hands it over; the two must agree."""
     with pytest.raises(TypeError):
         build_pbg_def("pbg")  # type: ignore[call-arg]
-    assert _runner_source() == (_res.files("viva_api.compose") / "run_pbg.py").read_text()
-    assert "def " in _runner_source()
+    assert runner_source() == (_res.files("viva_api.compose") / "run_pbg.py").read_text()
+    assert "def " in runner_source()
