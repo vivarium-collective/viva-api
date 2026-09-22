@@ -18,12 +18,19 @@ import logging
 import random
 import string
 import tempfile
-from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, override
 
 from viva_core.compose.database_service import ComposeDatabaseService
 from viva_core.compose.models import ComposeHpcRun, ComposeJobStatus, ComposeSimulation, ComposeSimulatorVersion
+from viva_core.compose.runner_files import (
+    HOOKS_ENV,
+    HOOKS_FILENAME,
+    RUNNER_FILENAME,
+    HooksSource,
+    hooks_s3_uri,
+    runner_source,
+)
 from viva_core.compose.service import ComposeSimulationService
 from viva_core.environments.site import environment_image, job_definition_key, named_environment_image
 from viva_core.models import JobBackend, JobStatus
@@ -39,7 +46,8 @@ logger = logging.getLogger(__name__)
 # RAY_OUT_DIR → RAY_OUT_S3 (the compose results uri).
 COMPOSE_OUT_DIR = "/tmp/pbg_out"  # noqa: S108
 COMPOSE_DOC_PATH = "/tmp/pbg_doc.pbg"  # noqa: S108
-COMPOSE_RUNNER_PATH = "/tmp/run_pbg.py"  # noqa: S108
+COMPOSE_RUNNER_PATH = f"/tmp/{RUNNER_FILENAME}"  # noqa: S108
+COMPOSE_HOOKS_PATH = f"/tmp/{HOOKS_FILENAME}"  # noqa: S108
 
 # AWS Batch job state → ComposeJobStatus (via the shared JobStatus mapping).
 _JOBSTATUS_TO_COMPOSE: dict[JobStatus, ComposeJobStatus] = {
@@ -163,7 +171,7 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         stage_inputs: StageInputs | None = None,
         files: FileService | None = None,
         environment_key_of: EnvironmentKeyOf | None = None,
-        runner_source: Callable[[], str] | None = None,
+        runner_hooks: HooksSource | None = None,
     ) -> None:
         # The Batch/job-def/submit plumbing, HANDED IN. Until P2.1 PR 6 this built a whole
         # ``SimulationServiceRay()`` -- an E. coli simulation service, with its scheduler-facing
@@ -177,14 +185,19 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         # moment of use, which is the application's module; compose cannot move while it imports it.
         self._files = files
         self._environment_key_of = environment_key_of
-        # The generic runner's text, staged beside the document for the job. HANDED IN (P3d-4c-1):
-        # the runner is the application's package data until it moves into core.
-        self._runner_source = runner_source
+        # The application's runner hooks (``run_pbg.RunnerHooks``), staged beside core's runner and
+        # named to it. None: the generic runner (P3d-4c-2).
+        self._runner_hooks = runner_hooks
 
-    def _runner(self) -> str:
-        if self._runner_source is None:
-            raise RuntimeError("No runner source was handed to compose; cannot stage run_pbg.py for the job.")
-        return self._runner_source()
+    @staticmethod
+    async def _upload_text(file_service: FileService, text: str, key: str) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tmp:
+            tmp.write(text)
+            local = tmp.name
+        try:
+            await file_service.upload_file(Path(local), S3FilePath(s3_path=Path(key)))
+        finally:
+            Path(local).unlink(missing_ok=True)
 
     def _image_uri(self, commit: str | None = None) -> str:
         # A resolved per-commit build (item 98: ComposeSimulationRequest.simulator_id)
@@ -203,7 +216,9 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
             )
         return environment_image(settings, settings.compose_ray_image_tag)
 
-    def _compose_command(self, doc_s3_uri: str, runner_s3_uri: str, steps: int, *, workspace_core: bool = True) -> str:
+    def _compose_command(
+        self, doc_s3_uri: str, runner_s3_uri: str, steps: int, *, workspace_core: bool = True, hooks: bool = False
+    ) -> str:
         """Download the doc AND the runner from S3, run it → RAY_OUT_DIR.
 
         The runner is fetched from S3 (staged by ``submit_simulation_job``) rather
@@ -223,10 +238,15 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         env = f"PBG_RESULTS_DIR={COMPOSE_OUT_DIR} PBG_REQUIRE_OUTPUT=1"
         if core_builder:
             env += f" PBG_CORE_BUILDER={core_builder}"
+        # The application's hooks, when it staged some: copied beside the runner and named to it.
+        stage_hooks = f" && aws s3 cp {hooks_s3_uri(runner_s3_uri)} {COMPOSE_HOOKS_PATH}" if hooks else ""
+        if hooks:
+            env += f" {HOOKS_ENV}"
         return (
             f"mkdir -p {COMPOSE_OUT_DIR}"
             f" && aws s3 cp {doc_s3_uri} {COMPOSE_DOC_PATH}"
             f" && aws s3 cp {runner_s3_uri} {COMPOSE_RUNNER_PATH}"
+            f"{stage_hooks}"
             f" && {env} python {COMPOSE_RUNNER_PATH}"
             f" {COMPOSE_DOC_PATH} -o {COMPOSE_OUT_DIR} -n {steps}"
         )
@@ -264,14 +284,12 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
         await file_service.upload_file(Path(doc_path), S3FilePath(s3_path=Path(doc_key)))
         doc_s3_uri = layout.s3_uri(get_settings().s3_work_bucket, doc_key)
 
-        runner_key = f"{exp_prefix}/run_pbg.py"
-        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tmp:
-            tmp.write(self._runner())
-            runner_local = tmp.name
-        try:
-            await file_service.upload_file(Path(runner_local), S3FilePath(s3_path=Path(runner_key)))
-        finally:
-            Path(runner_local).unlink(missing_ok=True)
+        runner_key = f"{exp_prefix}/{RUNNER_FILENAME}"
+        await self._upload_text(file_service, runner_source(), runner_key)
+        if self._runner_hooks is not None and simulation.sim_request.environment is None:
+            # The hooks are the application's, for ITS image; a registered environment has no
+            # application in it (the runtime image), so they are neither staged nor named there.
+            await self._upload_text(file_service, self._runner_hooks(), f"{exp_prefix}/{HOOKS_FILENAME}")
         runner_s3_uri = layout.s3_uri(get_settings().s3_work_bucket, runner_key)
 
         steps = int(simulation.sim_request.end_time_point)
@@ -297,7 +315,7 @@ class ComposeSimulationServiceRay(ComposeSimulationService):
             job_name=f"compose-{experiment_id}"[:128],
             job_definition=job_def,
             num_nodes=num_nodes,
-            ray_job_cmd=self._compose_command(doc_s3_uri, runner_s3_uri, steps),
+            ray_job_cmd=self._compose_command(doc_s3_uri, runner_s3_uri, steps, hooks=self._runner_hooks is not None),
             out_s3=layout.results_uri(get_settings().s3_work_bucket, get_settings().s3_output_prefix, experiment_id),
             out_dir=COMPOSE_OUT_DIR,
             stage_s3=stage_s3,

@@ -43,7 +43,7 @@ from viva_api.simulation.dispatch.analysis_spec import analysis_memory_class, an
 from viva_api.simulation.dispatch.batch_layer import ContainerSubmitter, MnpSubmitter, _rand_suffix
 from viva_api.simulation.dispatch.config_interpretation import _thread_injected_processes_into_params
 from viva_api.simulation.dispatch.image_paths import ANALYSIS_OUT_DIR, PARCA_CACHE_DIR, SIM_OUT_DIR, V2ECOLI_DIR
-from viva_api.simulation.dispatch.runner_env import PBG_RUNNER_ENV
+from viva_api.simulation.dispatch.runner_env import PBG_RUNNER_ENV, RUNNER_PATH, stage_runner_commands
 from viva_api.simulation.models import JobType, Simulation
 from viva_api.simulation.tables_orm import AnalysisStatusDB
 from viva_core.events.events_env import with_events_env
@@ -125,8 +125,8 @@ def multi_node_composite_command(
     ident = f" --experiment-id {shlex.quote(str(experiment_id))}" if experiment_id else ""
     return (
         f"cd {V2ECOLI_DIR}"
-        f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
-        f" && {env} python /tmp/run_pbg.py"
+        f"{stage_runner_commands(runner_s3_uri)}"
+        f" && {env} python {RUNNER_PATH}"
         f" --composite-id {shlex.quote(composite_id)}"
         f" --overrides {shlex.quote(json.dumps(params))} -n {int(steps)}{ident}"
     )

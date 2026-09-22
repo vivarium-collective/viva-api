@@ -36,7 +36,12 @@ from viva_api.simulation.dispatch.config_interpretation import (
 )
 from viva_api.simulation.dispatch.image_paths import PARCA_CACHE_DIR, SIM_OUT_DIR, V2ECOLI_DIR
 from viva_api.simulation.dispatch.run_records import record_run_with_companions
-from viva_api.simulation.dispatch.runner_env import PBG_RUNNER_ENV, V2ECOLI_BATCH_BASELINE_COMPOSITE_ID
+from viva_api.simulation.dispatch.runner_env import (
+    PBG_RUNNER_ENV,
+    RUNNER_PATH,
+    V2ECOLI_BATCH_BASELINE_COMPOSITE_ID,
+    stage_runner_commands,
+)
 from viva_api.simulation.models import CompositeEngine, Simulation, VecoliSource
 from viva_core.events.events_env import with_events_env
 
@@ -153,8 +158,8 @@ def sim_command(
         env = PBG_RUNNER_ENV
         return (
             f"cd {V2ECOLI_DIR}"
-            f" && aws s3 cp {runner_s3_uri} /tmp/run_pbg.py"
-            f" && {env} python /tmp/run_pbg.py"
+            f"{stage_runner_commands(runner_s3_uri)}"
+            f" && {env} python {RUNNER_PATH}"
             f" --composite-id {V2ECOLI_BATCH_BASELINE_COMPOSITE_ID}"
             f" --overrides {shlex.quote(json.dumps(overrides))} -n 1"
         )

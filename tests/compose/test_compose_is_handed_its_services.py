@@ -7,7 +7,7 @@ the application's composition root: a package that imports it cannot move into c
 
 import ast
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -83,20 +83,55 @@ async def test_slurm_is_reached_through_the_provider_and_only_when_it_is_needed(
         await unwired._update_slurm_jobs([run])
 
 
+def test_the_sms_hooks_reader_reads_the_hooks_and_core_reads_its_own_runner() -> None:
+    """Core stages ITS runner; the application hands compose the hooks' text (P3d-4c-2)."""
+    from viva_api.compose.handlers import hooks_source
+    from viva_core.compose.runner_files import runner_source
+
+    assert "def emitter_override(" in hooks_source() and "batch_baseline_composite_ids" in hooks_source()
+    assert "def _load_hooks(" in runner_source()
+
+
+def test_the_compose_command_copies_the_hooks_beside_the_runner_only_when_it_has_some() -> None:
+    """Core's runner is generic; an application's hooks are copied beside it and named to it, and only
+    on the application's own image (P3d-4c-2)."""
+    from viva_core.compose.runner_files import HOOKS_ENV, hooks_s3_uri
+
+    svc = ComposeSimulationServiceRay(batch=MagicMock(), runner_hooks=lambda: "hooks")
+    runner = "s3://b/out/exp-1/run_pbg.py"
+    with patch("viva_core.compose.simulation_service_ray.get_settings") as settings:
+        settings.return_value.compose_pbg_core_builder = ""
+        with_hooks = svc._compose_command("s3://b/out/exp-1/input.pbg", runner, 5, hooks=True)
+        without = svc._compose_command("s3://b/out/exp-1/input.pbg", runner, 5, hooks=False)
+    assert f"aws s3 cp {hooks_s3_uri(runner)} /tmp/runner_hooks.py" in with_hooks and HOOKS_ENV in with_hooks
+    assert "runner_hooks" not in without
+
+
 @pytest.mark.asyncio
-async def test_with_no_runner_a_run_is_refused_before_anything_is_submitted() -> None:
-    """The runner (``run_pbg.py``) is the application's package data until it moves into core; compose is
-    handed a reader for it (P3d-4c-1) and refuses to stage a run without one."""
+async def test_compose_stages_cores_runner_and_the_applications_hooks_beside_it() -> None:
+    uploaded: list[str] = []
+
+    async def upload_file(path: object, s3_path: object) -> object:
+        uploaded.append(str(getattr(s3_path, "s3_path", s3_path)))
+        return s3_path
+
+    files = MagicMock()
+    files.upload_file = upload_file
     batch = MagicMock()
-    svc = ComposeSimulationServiceRay(batch=batch, files=AsyncMock())
+    batch.ensure_mnp_job_def.return_value = "mnp:1"
+    batch.submit_mnp.return_value = "job-1"
+    svc = ComposeSimulationServiceRay(batch=batch, files=files, runner_hooks=lambda: "hooks text")
     request = MagicMock()
-    request.sim_request.request_file_path = "doc.pbg"
-    with pytest.raises(RuntimeError, match="No runner source"):
+    request.sim_request.request_file_path = __file__
+    request.sim_request.environment = None
+    request.sim_request.simulator_id = None
+    request.sim_request.end_time_point = 3
+    request.sim_request.num_nodes = None
+    with patch("viva_core.compose.simulation_service_ray.get_settings") as settings:
+        s = settings.return_value
+        s.s3_work_bucket, s.s3_output_prefix = "b", "out"
+        s.compose_ray_image_tag, s.compose_pbg_core_builder, s.ray_num_nodes = "tag", "", 1
+        s.ecr_account_id, s.batch_region, s.ray_ecr_repository = "1", "r", "repo"
         await svc.submit_simulation_job(request, experiment_id="exp-1")
-    batch.submit_mnp.assert_not_called()
-
-
-def test_the_sms_runner_reader_reads_the_runner() -> None:
-    from viva_api.compose.handlers import runner_source
-
-    assert "process_bigraph" in runner_source() or "def " in runner_source()
+    assert [u.rsplit("/", 1)[1] for u in uploaded] == ["input.pbg", "run_pbg.py", "runner_hooks.py"]
+    assert "PBG_RUNNER_HOOKS=runner_hooks" in batch.submit_mnp.call_args.kwargs["ray_job_cmd"]

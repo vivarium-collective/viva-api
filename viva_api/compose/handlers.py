@@ -29,14 +29,15 @@ from viva_api.compose.models import (
 )
 from viva_api.compose.simulation_service import ComposeSimulationService
 from viva_core.compose.container_def import build_pbg_def
+from viva_core.compose.runner_files import runner_source
 
 logger = logging.getLogger(__name__)
 
 
-def runner_source() -> str:
-    """The generic ``run_pbg.py`` runner, as text, for the recipe to embed. Read here, at the call, not by
-    the recipe at import: the runner is this package's until it moves into core."""
-    return (_res.files("viva_api.compose") / "run_pbg.py").read_text()
+def hooks_source() -> str:
+    """SMS's runner hooks (``runner_hooks.py``), as text, for staging beside core's generic runner -- what
+    its model needs of the runner (P3d-4c-2). Read at the call, so a test can patch it."""
+    return (_res.files("viva_api.compose") / "runner_hooks.py").read_text()
 
 
 def _check_allow_list(extra_pip_deps: list[str] | None, pb_allow_list: PBAllowList) -> None:
@@ -106,6 +107,8 @@ async def run_compose_simulation(
     _check_allow_list(extra_pip_deps, pb_allow_list)
 
     suffix = simulation_request.simulation_file_type.get_files_suffix()
+    # Core's generic runner. No hooks: this container is python-slim + process-bigraph, where the
+    # hooks' lazy imports fail and they were already a no-op (P3d-4c-2).
     singularity_rep = build_pbg_def(suffix, extra_pip_deps=extra_pip_deps, runner_source=runner_source())
 
     simulator_db = database_service.get_simulator_db()

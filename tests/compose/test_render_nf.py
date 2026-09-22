@@ -68,8 +68,8 @@ def _install_fake_pbg(monkeypatch: pytest.MonkeyPatch, deploy: Any) -> None:
 def _render(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, deploy: Any, **kwargs: Any) -> dict[str, Any]:
     _install_fake_pbg(monkeypatch, deploy)
     with (
-        patch("viva_api.compose.run_pbg._build_core", return_value=object()),
-        patch("viva_api.compose.run_pbg._resolve_document", return_value=({"state": {}}, object())),
+        patch("viva_core.compose.run_pbg._build_core", return_value=object()),
+        patch("viva_core.compose.run_pbg._resolve_document", return_value=({"state": {}}, object())),
     ):
         return render_nf.render("v2ecoli.composites.workflow_nf", tmp_path, **kwargs)
 
@@ -142,11 +142,17 @@ def test_executor_is_forwarded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
 # --- render_nf must survive where it actually RUNS -------------------------
 
 
+def _is_ours(name: str) -> bool:
+    """The two packages the simulator image does NOT have."""
+    return name.split(".")[0] in ("viva_api", "viva_core")
+
+
 def test_render_nf_resolves_run_pbg_without_viva_api(tmp_path: Path) -> None:
     """render_nf is staged into the SIMULATOR image, which has no `viva_api`.
 
     It reuses run_pbg's resolver, and originally did so via
-    `from viva_api.compose.run_pbg import ...`. That import works in the api pod
+    `from viva_core.compose.run_pbg import ...` (now `viva_core.compose.run_pbg`;
+    the image has neither package). That import works in the api pod
     and fails in the only place the script actually runs -- after a successful
     5.8 GB pull and a clean container start, which is the most expensive
     possible moment to find out.
@@ -167,15 +173,12 @@ def test_render_nf_resolves_run_pbg_without_viva_api(tmp_path: Path) -> None:
     shutil.copy(rp.__file__, staged / "run_pbg.py")
 
     class _BlockVivaApi:
-        def find_module(self, name: str, path: object = None) -> object:
-            return self if name == "viva_api" or name.startswith("viva_api.") else None
-
         def find_spec(self, name: str, path: object = None, target: object = None) -> None:
-            if name == "viva_api" or name.startswith("viva_api."):
+            if _is_ours(name):
                 raise ModuleNotFoundError(f"No module named {name!r}")
             return None
 
-    saved_modules = {k: v for k, v in sys.modules.items() if k.startswith("viva_api")}
+    saved_modules = {k: v for k, v in sys.modules.items() if _is_ours(k)}
     for k in saved_modules:
         del sys.modules[k]
     sys.meta_path.insert(0, _BlockVivaApi())
@@ -207,13 +210,13 @@ def test_render_nf_says_what_is_missing_when_run_pbg_was_not_staged(tmp_path: Pa
 
     class _BlockAll:
         def find_spec(self, name: str, path: object = None, target: object = None) -> None:
-            if name == "viva_api" or name.startswith("viva_api."):
+            if _is_ours(name):
                 raise ModuleNotFoundError(f"No module named {name!r}")
             return None
 
     # `run_pbg` must go too: a previous test imports it as a TOP-LEVEL module,
     # and a cached entry would satisfy the fallback and mask the failure.
-    saved = {k: v for k, v in sys.modules.items() if k.startswith("viva_api") or k == "run_pbg"}
+    saved = {k: v for k, v in sys.modules.items() if _is_ours(k) or k == "run_pbg"}
     for k in saved:
         del sys.modules[k]
     sys.meta_path.insert(0, _BlockAll())

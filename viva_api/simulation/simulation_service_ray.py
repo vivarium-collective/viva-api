@@ -28,7 +28,6 @@ image per submission, we derive a per-commit MNP job-def revision from the sms-c
 base (cloning its node properties, swapping the image to ``v2ecoli:<commit>``).
 """
 
-import importlib.resources as _res
 import logging
 import tempfile
 from dataclasses import dataclass, field
@@ -42,6 +41,7 @@ from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.common.simulator_defaults import DEFAULT_BRANCH, DEFAULT_REPO
 from viva_api.common.storage import data_layout
 from viva_api.common.storage.file_paths import S3FilePath
+from viva_api.compose.handlers import hooks_source
 from viva_api.simulation.database_service import DatabaseService
 from viva_api.simulation.dispatch import _seams, parca_spec
 from viva_api.simulation.dispatch.batch_layer import BatchLayer
@@ -70,6 +70,7 @@ from viva_core.backends.batch import (
     BatchJobDetail,
     batch_exit_code,
 )
+from viva_core.compose.runner_files import HOOKS_FILENAME, RUNNER_FILENAME, runner_source
 
 if TYPE_CHECKING:
     # ``types-boto3`` is a dev dependency (annotations only): never imported at runtime.
@@ -81,7 +82,6 @@ logger = logging.getLogger(__name__)
 # resource (same source viva_api.compose.simulation_service_ray stages for compose jobs) so
 # the multi-generation batch path below dispatches through the identical mechanism instead
 # of a v2ecoli-specific CLI script — see backlog items 26/27.
-_RUNNER_SRC = (_res.files("viva_api.compose") / "run_pbg.py").read_text()
 
 # The SubmitJob pacer, its 50-TPS rationale and the DescribeJobs chunk size moved to
 # ``viva_core.backends.batch`` with the rest of the Batch engine (docs/plan-core.md P2.1,
@@ -145,7 +145,7 @@ class SimulationServiceRay(SimulationService):
         return self.batch.get_batch_job_details(job_ids)
 
     async def stage_runner(self, experiment_id: str) -> str:
-        """Upload the generic run_pbg.py runner to S3 for this experiment; return its URI.
+        """Upload the generic run_pbg.py runner (and SMS's hooks beside it) to S3 for this experiment; return its URI.
 
         Mirrors ``viva_api.compose.simulation_service_ray.ComposeSimulationServiceRay``'s
         own runner staging exactly (same source, same per-experiment S3 layout) -- the
@@ -165,14 +165,17 @@ class SimulationServiceRay(SimulationService):
         if file_service is None:
             raise RuntimeError("FileService not initialized; cannot stage run_pbg.py to S3.")
         exp_prefix = data_layout.RayLayout.experiment_prefix(experiment_id)
-        runner_key = f"{exp_prefix}/run_pbg.py"
-        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tmp:
-            tmp.write(_RUNNER_SRC)
-            runner_local = tmp.name
-        try:
-            await file_service.upload_file(Path(runner_local), S3FilePath(s3_path=Path(runner_key)))
-        finally:
-            Path(runner_local).unlink(missing_ok=True)
+        runner_key = f"{exp_prefix}/{RUNNER_FILENAME}"
+        # Core's generic runner, and beside it SMS's hooks -- what its model needs of the runner
+        # (P3d-4c-2). ``stage_runner_commands`` copies both into the job; ``PBG_RUNNER_ENV`` names them.
+        for key, text in ((runner_key, runner_source()), (f"{exp_prefix}/{HOOKS_FILENAME}", hooks_source())):
+            with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tmp:
+                tmp.write(text)
+                local = tmp.name
+            try:
+                await file_service.upload_file(Path(local), S3FilePath(s3_path=Path(key)))
+            finally:
+                Path(local).unlink(missing_ok=True)
         return data_layout.s3_uri(runner_key)
 
     @property

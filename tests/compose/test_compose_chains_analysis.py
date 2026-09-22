@@ -33,9 +33,9 @@ from viva_api.simulation.dispatch.batch_layer import BatchLayer
 from viva_api.simulation.tables_orm import AnalysisStatusDB
 
 
-# The runner is handed in, as the composition root hands it (P3d-4c-1); the tests only stage it.
-def _RUNNER() -> str:
-    return "print('a runner')\n"
+# The hooks are handed in, as the composition root hands them (P3d-4c-2); the tests only stage them.
+def _HOOKS() -> str:
+    return "batch_baseline_composite_ids = frozenset()\n"
 
 
 _ANALYSIS_OPTIONS = {"report_cards": ["mass_conservation"]}
@@ -88,7 +88,7 @@ async def test_submit_simulation_job_chains_analysis_when_analysis_options_prese
     simulation = _simulation(tmp_path, analysis_options=_ANALYSIS_OPTIONS)
     layer = BatchLayer()
     svc = ComposeSimulationServiceRay(
-        runner_source=_RUNNER,
+        runner_hooks=_HOOKS,
         batch=layer,
         after_submit=ComposeAnalysisChainer(layer),
         environment_key_of=simulator_environment_key,
@@ -170,7 +170,7 @@ async def test_submit_simulation_job_submits_no_analysis_when_analysis_options_a
     simulation = _simulation(tmp_path, analysis_options=None)
     layer = BatchLayer()
     svc = ComposeSimulationServiceRay(
-        runner_source=_RUNNER,
+        runner_hooks=_HOOKS,
         batch=layer,
         after_submit=ComposeAnalysisChainer(layer),
         environment_key_of=simulator_environment_key,
@@ -209,7 +209,7 @@ async def test_a_compose_service_with_no_hook_submits_the_run_and_chains_nothing
     service nobody handed one to -- a core with no application -- runs the composite and stops there:
     no container job, no database, no crash, even when the request carries ``analysis_options``."""
     monkeypatch.setattr(mod, "get_settings", lambda: _settings())
-    svc = ComposeSimulationServiceRay(runner_source=_RUNNER, batch=BatchLayer())
+    svc = ComposeSimulationServiceRay(runner_hooks=_HOOKS, batch=BatchLayer())
     monkeypatch.setattr(svc._batch, "ensure_mnp_job_def", lambda image, commit: "smscdk-ray-mnp:1")
     monkeypatch.setattr(svc._batch, "submit_mnp", lambda **kwargs: "compose-sim-job-1")
     for name in ("ensure_container_job_def", "submit_container"):

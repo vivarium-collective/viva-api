@@ -4,8 +4,8 @@ import importlib.resources as _res
 
 import pytest
 
-from viva_api.compose.handlers import runner_source
 from viva_core.compose.container_def import build_pbg_def
+from viva_core.compose.runner_files import runner_source
 
 RUNNER = "print('a runner')\n"
 
@@ -26,8 +26,8 @@ def test_def_injects_extra_pip_deps() -> None:
 
 def test_the_runner_is_handed_in_not_read_by_the_recipe() -> None:
     """The recipe read ``run_pbg.py`` from the application's package at import time (P3d-4b-2 moved it
-    into core, which cannot). The SLURM handler reads it and hands it over; the two must agree."""
+    into core, which cannot); since P3d-4c-2 the runner is core's and the SLURM handler embeds that one."""
     with pytest.raises(TypeError):
         build_pbg_def("pbg")  # type: ignore[call-arg]
-    assert runner_source() == (_res.files("viva_api.compose") / "run_pbg.py").read_text()
-    assert "def " in runner_source()
+    assert runner_source() == (_res.files("viva_core.compose") / "run_pbg.py").read_text()
+    assert "def _load_hooks(" in runner_source()
