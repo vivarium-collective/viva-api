@@ -1519,7 +1519,7 @@
 #            No migration; the -db-migration overlay tag is bumped to stay equal, the Job is not run.
 #            MARKERS: /app/viva_core/compose/run_pbg.py and /app/viva_api/compose/runner_hooks.py exist;
 #            `stage_runner_commands` is in /app/viva_api/simulation/dispatch/runner_env.py;
-#            /app/viva_api/compose/run_pbg.py is a 16-line shim (`sys.modules[__name__] = _moved`).
+#            /app/viva_api/compose/run_pbg.py is a 16-line self-replacing shim.
 #            SMOKE: Tier 0 + 1 + 2 with --build --require-aws (all five simulations run the new runner
 #            contract), plus --environment runtime.
 #           0.9.153 -- core split, deploy checkpoint D2 (docs/plan-core.md section 8). Deployed NOW, ahead
