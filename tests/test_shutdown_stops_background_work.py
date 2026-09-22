@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from viva_api import dependencies
-from viva_api.compose import env_worker_relay
-from viva_api.compose.job_monitor import ComposeJobMonitor
+from viva_core.compose.job_monitor import ComposeJobMonitor
+from viva_core.env_worker import relay as env_worker_relay
 
 
 @pytest.fixture

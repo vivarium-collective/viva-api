@@ -166,13 +166,6 @@ module = [
     "viva_core.*",
     "viva_api.simulation.dispatch",
     "viva_api.simulation.dispatch.*",
-    # P3d-4b: the compose modules that are next into viva_core, by name until they move (the glob
-    # above then covers them). A module arrives in core Any-free or not at all.
-    "viva_api.compose.database_service",
-    "viva_api.compose.env_worker_relay",
-    "viva_api.compose.env_worker_schemas",
-    "viva_api.compose.job_monitor",
-    "viva_api.compose.tables_orm",
 ]
 disallow_any_explicit = true
 disallow_any_unimported = true

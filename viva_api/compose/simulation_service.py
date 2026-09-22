@@ -5,7 +5,6 @@ import logging
 import random
 import string
 import tempfile
-from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
 from textwrap import dedent
@@ -26,40 +25,15 @@ from viva_api.compose.hpc_utils import (
 )
 from viva_api.compose.models import (
     ComposeHpcRun,
-    ComposeJobStatus,
     ComposeJobType,
     ComposeSimulation,
     ComposeSimulatorVersion,
 )
 from viva_api.config import Settings, get_settings
+from viva_core.compose.service import ComposeSimulationService as ComposeSimulationService  # its home is core
 from viva_core.infra.ssh.ssh_service import SSHSessionService
 
 logger = logging.getLogger(__name__)
-
-
-class ComposeSimulationService(ABC):
-    # Which JobBackend this service submits to — tags the ComposeHpcRun so status
-    # polling knows whether to query SLURM (via SSH) or AWS Batch (describe_jobs).
-    backend: "JobBackend"
-    # SLURM builds a per-def Singularity container before the run; prebuilt-image
-    # backends (Ray/Batch) skip that build-and-wait step in _dispatch_compose_job.
-    requires_container_build: bool = True
-
-    @abstractmethod
-    async def submit_simulation_job(
-        self, simulation: ComposeSimulation, experiment_id: str, override_command: str | None = None
-    ) -> str:
-        """Submit the run; return the backend job id as a string (SLURM int-as-str or Batch UUID)."""
-
-    @abstractmethod
-    async def build_container(
-        self, simulator_version: ComposeSimulatorVersion, random_str: str, db_service: ComposeDatabaseService
-    ) -> ComposeHpcRun:
-        pass
-
-    async def get_job_status(self, job_id_ext: str) -> ComposeJobStatus | None:
-        """Poll this backend for a run's status. Default None = 'use the SLURM monitor path'."""
-        return None
 
 
 class ComposeSimulationServiceHpc(ComposeSimulationService):
