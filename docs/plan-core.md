@@ -564,6 +564,7 @@ though later text had started to assume some of them.
 | 7 | The core CLI's name (`viva`?), and whether `atlantis` delegates its generic verbs to it | P8 | — |
 | 8 | **Does core depend on `pbest`** for the address parser and the recipe generator (`compose-api` already imports its types), or carry its own copy? | P5 | depend, if `pbest` stays domain-neutral: a third copy is how the three partial implementations happened |
 | 9 | **What does "compatible" mean** for selecting an environment, beyond an exact spec hash: covering `provides`? version ranges? a curated list only? | P5 | exact match first; `provides`-covers second |
+| 10 | **viva-api#742 (Eran, 2026-09-21): push the split to "one object, one run, one record" — and one surface?** Six ranked changes and five questions for Jim. Two strategies are drafted for the two of them to decide between: [`strategy-core-incremental.md`](strategy-core-incremental.md) (Eran's `viva_core` end state, the SMS contract unchanged for the scope of this refactor — to contain risk, not as a commitment to permanence) and [`strategy-core-direct.md`](strategy-core-direct.md) (no facades; the callers change during the refactor, with Eran's design time and the added risk accepted). #776 (the `JobStore` seam) is consistent with both | before P4a | **open — Jim and Eran** |
 
 ## 7a. Migrations: proper, tested, and honest about reversibility
 
@@ -781,6 +782,18 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-22** — **#742 is a decision for the two humans, and it now has two documents instead of a thread.**
+  Eran's issue (2026-09-21 03:25Z) proposes taking the split to "one object, one run, one record" and
+  asks Jim five D-series questions. Its 15-comment thread was conducted by sessions under both logins;
+  Jim first saw it on 2026-09-22 ("This is Jim the human … Are you advocating breaking the api contract
+  with workbench and ptools?"). Two strategy documents are drafted for review: **A, incremental** —
+  Eran's `viva_core` end state (templates as the campaign primitive at P7, `core.job` as the record,
+  one environment concept, one generic run surface) with the SMS contract unchanged for the scope of this refactor (the 29 workbench
+  paths, the 3 PTools calls, the aliases) — held still to contain risk, not as a commitment to
+  permanence, which Jim never intended; **B, direct** — the same core with no facades, every SMS
+  surface dated and removed on a clock, with the coordinated workbench / PTools / atlantis releases and
+  the prod catch-up that implies — acceptable to Jim if Eran takes on the added risk and the design
+  of the final configuration. Open question 10; nothing in P0–P3d is undone by either. #776 fits both.
 - **2026-09-21** — **Checkpoint D2 passed on dev (0.9.153, #762, tag `v0.9.153`): the build adopts, the tags are write-once, and core answers at `/viva/v1`.**
   Jim: "merge viva-api#761, and then get back on the plan. if we need a deploy now then do it". It was
   needed: sms-cdk#55 had already made `v2ecoli` `IMMUTABLE`, so until #761 was on a site a retry of a
