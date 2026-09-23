@@ -85,7 +85,7 @@ async def test_slurm_is_reached_through_the_provider_and_only_when_it_is_needed(
 
 def test_the_sms_hooks_reader_reads_the_hooks_and_core_reads_its_own_runner() -> None:
     """Core stages ITS runner; the application hands compose the hooks' text (P3d-4c-2)."""
-    from viva_api.compose.handlers import hooks_source
+    from viva_api.simulation.compose_hooks import hooks_source
     from viva_core.compose.runner_files import runner_source
 
     assert "def emitter_override(" in hooks_source() and "batch_baseline_composite_ids" in hooks_source()

@@ -41,7 +41,7 @@ from viva_api.common.models import JobBackend, JobId, JobStatus
 from viva_api.common.simulator_defaults import DEFAULT_BRANCH, DEFAULT_REPO
 from viva_api.common.storage import data_layout
 from viva_api.common.storage.file_paths import S3FilePath
-from viva_api.compose.handlers import hooks_source
+from viva_api.simulation.compose_hooks import hooks_source
 from viva_api.simulation.database_service import DatabaseService
 from viva_api.simulation.dispatch import _seams, parca_spec
 from viva_api.simulation.dispatch.batch_layer import BatchLayer

@@ -556,8 +556,8 @@ async def run_v2ecoli(
     """
     import json as _json
 
-    from viva_api.compose.handlers import run_compose_v2ecoli
     from viva_api.config import get_settings
+    from viva_api.simulation.compose_curated import run_compose_v2ecoli
 
     # Parse features list
     try:

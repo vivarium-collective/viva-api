@@ -1,8 +1,8 @@
 import pytest
 from fastapi import HTTPException
 
-from viva_api.compose.handlers import _check_allow_list
 from viva_api.compose.models import PBAllowList
+from viva_core.compose.handlers import _check_allow_list
 
 
 def test_allowed_deps_pass() -> None:
