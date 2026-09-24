@@ -9,7 +9,7 @@ statement was ``from viva_core.compose import render_nf`` -- inside the science 
 
 import ast
 
-from viva_api.compose.handlers import hooks_source
+from viva_api.simulation.compose_hooks import hooks_source
 from viva_api.simulation.dispatch import nextflow
 from viva_core.compose.runner_files import render_nf_source, runner_source
 
