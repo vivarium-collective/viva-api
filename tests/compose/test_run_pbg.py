@@ -1726,7 +1726,7 @@ def test_redirect_emitters_leaves_in_memory_emitters_alone_in_either_spelling(ad
 def test_redirect_emitters_sends_a_dotted_xarray_emitter_to_s3(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RAY_OUT_S3", "s3://bucket/prefix/")
     doc: dict[str, Any] = {
-        "state": {"emitter": {"address": "local:pbg_emitters.XArrayEmitter", "config": {"out_uri": "local/path"}}}
+        "state": {"emitter": {"address": "local:viva_emitters.XArrayEmitter", "config": {"out_uri": "local/path"}}}
     }
     n, _ = run_pbg._redirect_emitters(doc, tmp_path)
     assert n == 1

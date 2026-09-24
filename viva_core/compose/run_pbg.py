@@ -194,19 +194,19 @@ def _build_core() -> Core:
     core = register_types(allocate_core())
 
     try:
-        from pbg_emitters import ParquetEmitter
+        from viva_emitters import ParquetEmitter
 
         core.register_link("ParquetEmitter", ParquetEmitter)
     except ImportError:
         pass  # [parquet] extra not installed in this image
     try:
-        from pbg_emitters import SQLiteEmitter
+        from viva_emitters import SQLiteEmitter
 
         core.register_link("SQLiteEmitter", SQLiteEmitter)
     except ImportError:
         pass  # [sqlite] extra not installed in this image
     try:
-        from pbg_emitters import XArrayEmitter
+        from viva_emitters import XArrayEmitter
 
         core.register_link("XArrayEmitter", XArrayEmitter)
     except ImportError:

@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from viva_api.compose.models import ComposeJobType, ComposeSimulatorVersion
 from viva_api.config import get_settings
+from viva_core.compose.ids import compose_correlation_id, compose_experiment_id
 
 
 def get_compose_slurm_log_file(slurm_job_name: str) -> Path:
@@ -34,9 +34,6 @@ def get_compose_sim_results_path(experiment_id: str) -> Path:
     return get_compose_experiment_dir(experiment_id) / "results.zip"
 
 
-def get_compose_correlation_id(random_string: str, job_type: ComposeJobType) -> str:
-    return f"{job_type.value}-{random_string}"
-
-
-def get_compose_experiment_id(simulator: ComposeSimulatorVersion, random_str: str) -> str:
-    return f"{simulator.singularity_def_hash}_{random_str}"
+# The two ids moved to ``viva_core.compose.ids`` (P3d-4d-1); these names stay for their importers.
+get_compose_correlation_id = compose_correlation_id
+get_compose_experiment_id = compose_experiment_id
