@@ -23,7 +23,7 @@ You are an expert developer working on **SMS API** (a.k.a. Atlantis), a FastAPI-
 
 - **Repo root**: `.` (current working directory)
 - **Main package**: `viva_api/`
-- **Three client surfaces**: `app/cli.py` (Typer CLI), `app/tui.py` (Textual TUI), `app/gui.py` (Marimo GUI)
+- **Three client surfaces**: `app/cli.py` (Typer CLI), `app/tui.py` (Textual TUI), `app/ui/dashboard.py` (Marimo GUI)
 - **Python**: 3.13 (exact). Package manager: `uv`. Linter: `ruff` (line length 120). Type checker: `mypy` strict.
 - **Current version**: check `viva_api/version.py`
 
@@ -166,4 +166,4 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 The three client surfaces (CLI/TUI/GUI) follow a Memphis/DAW design language:
 - CLI: `app/cli_theme.py` — Rich markup, Memphis color palette
 - TUI: `app/tui.py` — Textual, animated green↔purple gradient banner
-- GUI: `app/gui.py` — Marimo, HTML/CSS DAW panel cards with colored left-border strips
+- GUI: `app/ui/dashboard.py` — Marimo, HTML/CSS DAW panel cards with colored left-border strips

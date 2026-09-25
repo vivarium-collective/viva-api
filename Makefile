@@ -93,7 +93,7 @@ clean-build: ## Clean build artifacts
 # ----------------------------------------------------------------------------
 # PyPI publish — mirrors ../vecoli_deployment's publish workflow so that
 # `pip install viva-api` ships the full end-user bundle (app.cli, app.tui,
-# app.gui, app_data_service, etc.) to stakeholders.
+# app.ui.dashboard, app_data_service, etc.) to stakeholders.
 #
 # Usage:
 #   make publish                              # reads token from ~/.ssh/.pypi-viva-api (falls back to ~/.ssh/.pypi-sms-api)

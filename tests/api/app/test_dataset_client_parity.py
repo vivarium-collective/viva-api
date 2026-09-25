@@ -17,7 +17,7 @@ import pytest
 
 _APP = Path(__file__).resolve().parents[3] / "app"
 _TUI = (_APP / "tui.py").read_text(encoding="utf-8")
-_GUI = (_APP / "gui.py").read_text(encoding="utf-8")
+_GUI = (_APP / "ui" / "dashboard.py").read_text(encoding="utf-8")
 
 #: Named here rather than derived, so a method added to E2EDataService and surfaced nowhere
 #: fails loudly.

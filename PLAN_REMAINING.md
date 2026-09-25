@@ -46,7 +46,7 @@
 
 ## 3. ~~GUI Auto-Refresh (todo:27)~~ DONE
 
-**What it is:** In `app/gui.py`, when a simulation is dispatched, the status and workflow log should auto-refresh using `mo.ui.refresh` at a reasonable interval instead of requiring manual page reloads.
+**What it is:** In `app/ui/dashboard.py`, when a simulation is dispatched, the status and workflow log should auto-refresh using `mo.ui.refresh` at a reasonable interval instead of requiring manual page reloads.
 
 **Current state:** The GUI can submit simulations and show status, but status display is static — you have to manually re-run the cell or reload.
 
@@ -84,7 +84,7 @@
 
 **What it is:** The last item for three-client parity. Create `app/ui/eute.py` — a Marimo notebook that exposes the full EUTE workflow (build → parca → sim → analysis → download) matching what CLI and TUI already do.
 
-**Current state:** The GUI (`app/gui.py`) exists and has the Memphis/DAW theme, simulator selection, simulation submission, and status display. But it doesn't cover the complete end-to-end flow in a single notebook the way the CLI does.
+**Current state:** The GUI (`app/ui/dashboard.py`) exists and has the Memphis/DAW theme, simulator selection, simulation submission, and status display. But it doesn't cover the complete end-to-end flow in a single notebook the way the CLI does.
 
 **What's needed:**
 - Simulator build panel (steps 1-3): repo URL + branch input, build trigger, status polling with auto-refresh
