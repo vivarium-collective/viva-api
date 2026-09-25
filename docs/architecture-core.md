@@ -594,12 +594,22 @@ only through it and the hook registries.
 
 ## 2.4 URLs
 
-| Prefix | Owner | Note |
+Under Strategy B (plan-core D14, 2026-09-25) `/viva/v1` is **the** surface and every SMS-shaped
+prefix is dated: it keeps answering until its successor is served on both Stanford sites and
+every caller has shipped a release that switches on capability membership, then it is removed,
+one surface per release (plan-core P8b, M1–M7). Until 2026-09-25 this table said "permanent
+aliases"; that word overstated the intent.
+
+| Prefix | Owner | Status |
 |---|---|---|
-| `/viva/v1/{jobs,environments,tasks,composites,workers,datasets,events}` | core | new canonical surface; root prefix configurable |
-| `/compose/v1`, `/env-worker/v1` | core | permanent aliases on the same routers |
-| `/api/v1/tasks`, `/api/v1/datasets`, `/simulations/{id}/datasets`, `/analyses/{id}/datasets` | SMS facade | inject SMS defaults, call `CoreClient` |
-| `/api/v1/*` (the rest), `/core/v1/*`, `/ws` | SMS | unchanged |
+| `/viva/v1/{environments,composites,jobs,tasks,workers,datasets,events,capabilities,health}` | core | the canonical surface, spelled by resource family (D17); root prefix configurable |
+| `/viva/v1/compose`, `/viva/v1/env-worker` | core | the code's spelling, mounted in the SMS application as a **dated interim** (P3g) so pure-prefix callers can switch early; removed at M5 |
+| `/compose/v1`, `/env-worker/v1` | core | aliases on the same routers; dated — M2, M1 |
+| `/core/v1/simulator/*`, `/core/v1/simulation/parca*`, `/core/v1/capabilities` | SMS facade | over `/viva/v1/environments`, a run of the parca composite, `/viva/v1/capabilities`; dated — M3 |
+| `/api/v1/tasks`, `/api/v1/datasets`, `/simulations/{id}/datasets`, `/analyses/{id}/datasets` | SMS facade | inject SMS defaults, call `CoreClient`; dated — M4 |
+| `/api/v1/simulations*` (mutations and reads), `/api/v1/analyses*`, `/api/v1/parca/*` | SMS facade | over `/viva/v1/composites` and `/viva/v1/datasets` from P5b; dated — M6 |
+| `GET /api/v1/simulations`, `GET /api/v1/analyses?experiment_id=`, `GET /api/v1/analyses/{id}/data` | SMS facade (the PTools trio, D18) | re-implemented over datasets, shapes unchanged; the **last** removal — M7, after every site's `sms-ptools` is rebuilt |
+| `/`, `/home`, `/health`, `/version`, `/docs`, `/openapi.json`, `/ws` | the deployment | stay |
 
 ## 2.5 Database
 
@@ -614,8 +624,17 @@ Same database, new **`core` schema**, its own Alembic chain and version table.
   (`observables`, nullable), `core.task`, `core.task_script`, `core.env_worker_task`,
   `core.environment`, the compose registry, `core.dataset`.
 - **`public.hpcrun` remains, as the SMS extension row** — primary key = foreign key to
-  `core.job.id`. Ids are preserved, the `jobref_*` and `chain_*` query shapes survive, and
-  the link lives on the SMS side. It becomes a soft reference before the second Deployment.
+  `core.job.id`. Ids are preserved, the `jobref_*` query shapes survive, and the link lives on
+  the SMS side. It becomes a soft reference before the second Deployment. **The `chain_*`
+  columns do not survive** (D15, 2026-09-25): the campaign driver retires the chain state
+  machine at P4c, before P7 moves the table, so the extension row carries no campaign state —
+  live handles and companions are `core.job` rows with `owner_kind="campaign"`.
+- **`core.environment`** (P5; in `public` until P7): `id`, `spec_hash` (unique with `variant`),
+  `kind`, `recipe`, `repo_url`, `commit`, `key`, `variant`, `image`, `image_digest`, `status`,
+  `build_job_id`, `provides`, `temporary`, `label`, `created_at`, `created_by`,
+  **`legacy_simulator_id`**. Every `simulator` row is copied in once (D11 makes the copy
+  complete); `simulator` stays, read-only, and is never dropped.
+- **At UConn, core has its own database** (D19) rather than a schema in the SMS database.
 - `core.dataset` is the #661 table without the three SMS producer foreign keys: producer is
   `producer_job_id` and/or an opaque `(owner_kind, owner_id)`. The SMS facade derives
   `simulation_id` / `analysis_id` / `parca_dataset_id` for its DTO. No foreign key points
@@ -630,6 +649,15 @@ through `InProcessCoreClient` — URLs unchanged, no ALB work. Then the same ima
 as a second Deployment (`uvicorn viva_core.api.app:app`): core owns the pollers, the relay
 (single replica, or connection affinity) and its prefixes; SMS switches to `HttpCoreClient`,
 first proxying the core prefixes, then handing them to the ALB.
+
+**Two sites, and UConn first for the second Deployment** (plan-core §4b, D19–D20): at UConn
+(RKE2 + SLURM, nginx ingress) core runs as its own Deployment beside the existing SMS pod, with
+its own database, reached through additive `/viva` and `/env-worker` ingress paths — the P9(a)
+shape, rehearsed on the simpler stack. **At P10** core is its own repository, image and PyPI
+distribution; SMS consumes it two ways at once — as a **pinned dependency** for what it imports
+(the `CoreClient` Protocol and DTOs, `JobStore`/`Job`, template and environment types, the hook
+interfaces) and **over HTTP** for what core does — never as a git submodule (D16). Both modes
+stay behind `CoreClient`: in-process for a laptop or a small site, remote for production.
 
 ## 2.7 A standalone core CLI
 

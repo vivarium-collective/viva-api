@@ -1,10 +1,11 @@
 # Strategy A — incremental: Eran's end state for `viva_core`, the SMS contract unchanged for the scope of this refactor
 
 *Draft for review, 2026-09-22. One of two companion documents (the other is
-[`strategy-core-direct.md`](strategy-core-direct.md)). Both respond to viva-api#742. Neither is
-adopted until Jim and Eran agree; the adopted one becomes a dated decision-log entry in
-[`plan-core.md`](plan-core.md) and the delta rows in [`architecture-core.md`](architecture-core.md)
-change to match.*
+[`strategy-core-direct.md`](strategy-core-direct.md)). Both respond to viva-api#742.*
+
+> **NOT ADOPTED — Strategy B was, on 2026-09-25** (plan-core D14–D21 and the decision-log entry of
+> that date). Kept for the record: its "what the SMS contract is" table is still the list of
+> surfaces that D14 dates, and its `contract` smoke check was adopted as part of P3g.
 
 ## The claim
 
