@@ -553,14 +553,23 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
                 runner_hooks=hooks_source,
             )
             logger.info("✓ Compose backend registered: ray (AWS Batch MNP)")
+        # The SLURM compose service is handed SMS's run command for its own image (the v2ecoli
+        # direct-invocation mode, U2b-1) and the site's results cache; it knows neither itself.
+        from viva_api.simulation.compose_run_command import v2ecoli_run_command
+
+        def _slurm_compose() -> ComposeSimulationServiceHpc:
+            return ComposeSimulationServiceHpc(
+                slurm_ssh=_slurm_ssh,
+                run_command=v2ecoli_run_command,
+                results_cache_dir=Path(settings.cache_dir) / "compose",
+            )
+
         if default_backend == ComputeBackend.SLURM:
-            compose_registry[ComputeBackend.SLURM] = ComposeSimulationServiceHpc(slurm_ssh=_slurm_ssh)
+            compose_registry[ComputeBackend.SLURM] = _slurm_compose()
             logger.info("✓ Compose backend registered: slurm (HPC)")
         # Default: the deployment's compute backend if built, else whatever's available
         # (Stanford runs COMPUTE_BACKEND=ray → Ray; UCONN → SLURM).
-        compose_sim = compose_registry.get(default_backend) or next(
-            iter(compose_registry.values()), ComposeSimulationServiceHpc(slurm_ssh=_slurm_ssh)
-        )
+        compose_sim = compose_registry.get(default_backend) or next(iter(compose_registry.values()), _slurm_compose())
         compose_monitor = ComposeJobMonitor(
             nats_client=None, database_service=compose_db, sim_registry=compose_registry, slurm_ssh=_slurm_ssh
         )

@@ -144,7 +144,6 @@ async def test_the_slurm_backend_owns_its_results_download_and_the_batch_backend
     from collections.abc import AsyncIterator
     from contextlib import AbstractAsyncContextManager, asynccontextmanager
     from pathlib import Path
-    from unittest.mock import patch
 
     downloads: list[tuple[Path, str]] = []
 
@@ -162,13 +161,105 @@ async def test_the_slurm_backend_owns_its_results_download_and_the_batch_backend
 
             return _cm()
 
-    slurm = ComposeSimulationServiceHpc(env=MagicMock(), slurm_ssh=lambda: _Sessions())  # type: ignore[arg-type,return-value]
-    with patch(
-        "viva_api.compose.simulation_service.Path",
-        lambda p: Path(str(tmp_path)) / "cache" if str(p) == "/app/.results_cache/compose" else Path(p),
-    ):
-        got = await slurm.results_archive("exp-1")
+    slurm = ComposeSimulationServiceHpc(
+        env=MagicMock(),
+        slurm_ssh=lambda: _Sessions(),  # type: ignore[arg-type,return-value]
+        results_cache_dir=Path(str(tmp_path)) / "cache",  # the site's, handed in (U2b-1)
+    )
+    got = await slurm.results_archive("exp-1")
     assert got is not None and got.read_bytes() == b"zip" and len(downloads) == 1
 
     batch = ComposeSimulationServiceRay(batch=MagicMock())
     assert await batch.results_archive("exp-1") is None
+
+
+def _slurm_request(tmp_path: Path) -> MagicMock:
+    """A compose request shaped enough for the sbatch script: an input file, a type, an end time."""
+    request = MagicMock()
+    request.request_file_path = tmp_path / "in.pbg"
+    request.request_file_path.write_text("{}")
+    request.simulation_file_type.get_files_suffix.return_value = "pbg"
+    request.end_time_point = 5
+    request.is_batch = False
+    simulation = MagicMock()
+    simulation.sim_request = request
+    simulation.simulator_version.singularity_def_hash = "abc123"
+    return simulation
+
+
+class _RecordingSessions:
+    """An SSH provider that records every upload and the sbatch text submitted."""
+
+    def __init__(self) -> None:
+        self.uploads: list[tuple[str, str]] = []
+
+    def session(self) -> object:
+        from collections.abc import AsyncIterator
+        from contextlib import asynccontextmanager
+
+        uploads = self.uploads
+
+        class _Ssh:
+            async def run_command(self, command: str, check: bool = True) -> tuple[int, str, str]:
+                return 0, "4242" if command.startswith("sbatch") else "", ""
+
+            async def scp_upload(self, local_file: Path, remote_path: object) -> None:
+                uploads.append((Path(str(local_file)).name, Path(str(local_file)).read_text()))
+
+        @asynccontextmanager
+        async def _cm() -> AsyncIterator[_Ssh]:
+            yield _Ssh()
+
+        return _cm()
+
+
+@pytest.mark.asyncio
+async def test_the_slurm_service_runs_the_hooks_plan_or_its_generic_command(tmp_path: Path) -> None:
+    """U2b-1: the service knows no science image. SMS's ``v2ecoli`` mode is a ``ContainerRun`` hook
+    whose plan (a command and a script to place beside the input) the service uses when the hook has
+    one; with no plan -- or no hook -- the generic ``singularity run`` of the input file is used."""
+    from contextlib import ExitStack
+
+    from viva_api.simulation.compose_run_command import SCRIPT_NAME, v2ecoli_run_command
+
+    env = MagicMock(slurm_qos="", slurm_node_list="", slurm_partition="cpu", compose_cache_base_path="")
+    env.compose_containers_output_dir = "/output"
+    paths = {
+        "get_compose_singularity_container_file": Path("/img/abc.sif"),
+        "get_compose_experiment_dir": Path("/sims/exp"),
+        "get_compose_slurm_log_file": Path("/logs/x.out"),
+        "get_compose_slurm_submit_file": Path("/logs/x.sbatch"),
+        "get_compose_sim_input_path": Path("/sims/exp/exp.omex"),
+    }
+
+    async def submit(override: str | None, *, hook: bool) -> dict[str, str]:
+        """Submit one run; the files uploaded, by name."""
+        sessions = _RecordingSessions()
+        service = ComposeSimulationServiceHpc(
+            env=env,
+            slurm_ssh=lambda: sessions,  # type: ignore[arg-type,return-value]
+            run_command=v2ecoli_run_command if hook else None,
+        )
+        assert await service.submit_simulation_job(_slurm_request(tmp_path), "exp", override_command=override) == "4242"
+        return dict(sessions.uploads)
+
+    with ExitStack() as stack:
+        for name, value in paths.items():
+            stack.enter_context(patch(f"viva_api.compose.simulation_service.{name}", return_value=value))
+
+        # the hook has a plan: its command, and its script placed beside the input
+        uploads = await submit('{"mode": "v2ecoli", "cache_dir": "/out/cache", "seed": 3}', hook=True)
+        assert SCRIPT_NAME in uploads and "exp.sbatch" in uploads
+        assert f"/experiment/{SCRIPT_NAME}" in uploads["exp.sbatch"] and "singularity exec" in uploads["exp.sbatch"]
+        assert "make_composite(cache_dir='/out/cache', seed=3" in uploads[SCRIPT_NAME]
+        assert "composite.run(5)" in uploads[SCRIPT_NAME]
+
+        # the hook declines (no override, or another mode): the generic run, and no extra file
+        for override in (None, '{"mode": "other"}'):
+            uploads = await submit(override, hook=True)
+            assert SCRIPT_NAME not in uploads
+            assert "singularity run" in uploads["exp.sbatch"] and "/experiment/exp.pbg" in uploads["exp.sbatch"]
+
+        # no hook at all: the same generic run
+        uploads = await submit('{"mode": "v2ecoli", "cache_dir": "/out/cache", "seed": 3}', hook=False)
+        assert SCRIPT_NAME not in uploads and "singularity run" in uploads["exp.sbatch"]
