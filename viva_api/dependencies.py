@@ -475,13 +475,13 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
 
         from sqlalchemy.ext.asyncio import async_sessionmaker
 
-        from viva_api.api.routers.compose import set_compose_services
         from viva_api.compose.database_service import ComposeDatabaseService
         from viva_api.compose.job_monitor import ComposeJobMonitor
         from viva_api.compose.simulation_service import ComposeSimulationService, ComposeSimulationServiceHpc
         from viva_api.compose.tables_orm import create_compose_db
         from viva_api.simulation.compose_allow_list import DEFAULT_COMPOSE_ALLOW_LIST
         from viva_api.simulation.db_startup import create_tables_if_enabled
+        from viva_core.api.routers.compose import set_compose_services
 
         await create_tables_if_enabled(engine, create_compose_db, enabled=get_settings().db_create_all, what="compose")
 
@@ -547,7 +547,13 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         # operator-curated table (see AllowListDatabaseService.seed_if_empty).
         await compose_db.get_allow_list_db().seed_if_empty(DEFAULT_COMPOSE_ALLOW_LIST)
 
-        set_compose_services(db=compose_db, sim=compose_sim, monitor=compose_monitor)
+        set_compose_services(
+            db=compose_db,
+            sim=compose_sim,
+            monitor=compose_monitor,
+            default_allow_list=DEFAULT_COMPOSE_ALLOW_LIST,
+            files=get_file_service(),
+        )
         set_compose_job_monitor(compose_monitor)
 
         # Start compose job monitor polling

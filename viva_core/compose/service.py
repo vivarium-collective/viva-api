@@ -4,6 +4,7 @@ application until a SLURM site can test it (``docs/plan-core.md`` P3d-4), the Ba
 """
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 from viva_core.compose.database_service import ComposeDatabaseService
 from viva_core.compose.models import ComposeHpcRun, ComposeJobStatus, ComposeSimulation, ComposeSimulatorVersion
@@ -32,4 +33,12 @@ class ComposeSimulationService(ABC):
 
     async def get_job_status(self, job_id_ext: str) -> ComposeJobStatus | None:
         """Poll this backend for a run's status. Default None = 'use the SLURM monitor path'."""
+        return None
+
+    async def results_archive(self, experiment_id: str) -> Path | None:
+        """A results archive this backend BUILT ITSELF, fetched to a local path -- or ``None`` when
+        the backend's runs write their outputs straight to object storage, where the results route
+        streams them from the run's prefix. The SLURM backend zips on the HPC side and downloads
+        that zip over SSH; the Batch backend returns None. (P3d-4d-2: out of the route, which knew
+        one backend's transport.)"""
         return None

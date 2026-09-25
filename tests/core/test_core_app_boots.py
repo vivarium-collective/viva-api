@@ -60,7 +60,10 @@ print(json.dumps({"health": health, "image": found["image"], "paths": paths, "le
     seen = json.loads(done.stdout.strip().splitlines()[-1])
     assert seen["health"] == {"status": "ok", "services": {"environments": True}}
     assert seen["image"] == "registry.example.org/sim:abc1234"
-    assert seen["paths"] == ["/viva/v1/environments/resolve", "/viva/v1/health"]
+    # Core's own two, plus the compose router at core's prefix (P3d-4d-2).
+    assert "/viva/v1/environments/resolve" in seen["paths"] and "/viva/v1/health" in seen["paths"]
+    assert "/viva/v1/compose/simulation/run" in seen["paths"]
+    assert not any(p.startswith("/compose/v1") for p in seen["paths"])  # that prefix is the application's
     assert seen["leaked"] == []
 
 

@@ -15,7 +15,6 @@ import pytest
 from fastapi import HTTPException
 
 import viva_api.compose.simulation_service_ray as mod
-from viva_api.api.routers import compose as compose_router
 from viva_api.compose.container_def import ContainerizationFileRepr
 from viva_api.compose.models import (
     ComposeSimulation,
@@ -25,6 +24,7 @@ from viva_api.compose.models import (
 )
 from viva_api.compose.simulation_service_ray import COMPOSE_OUT_DIR, ComposeSimulationServiceRay
 from viva_api.simulation.dispatch.batch_layer import BatchLayer
+from viva_core.api.routers import compose as compose_router
 
 
 # The hooks are handed in, as the composition root hands them (P3d-4c-2); the tests only stage them.

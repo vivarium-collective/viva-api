@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.153
+  version: 0.9.155
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -3070,79 +3070,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /compose/v1/curated/ecoli:
-    post:
-      tags:
-      - Compose Curated
-      summary: Run a v2ecoli whole-cell simulation via process-bigraph
-      description: 'Run a v2ecoli whole-cell E. coli simulation.
-
-
-        Unlike Copasi/Tellurium, v2ecoli does not require an SBML upload.
-
-        The biological model is pre-computed in the ParCa cache and the
-
-        55 biological processes are composed at runtime via process-bigraph.'
-      operationId: compose-run-v2ecoli
-      parameters:
-      - name: duration
-        in: query
-        required: false
-        schema:
-          type: number
-          description: Simulation duration in seconds.
-          default: 60.0
-          title: Duration
-        description: Simulation duration in seconds.
-      - name: seed
-        in: query
-        required: false
-        schema:
-          type: integer
-          description: Random seed for stochastic processes.
-          default: 0
-          title: Seed
-        description: Random seed for stochastic processes.
-      - name: interval
-        in: query
-        required: false
-        schema:
-          type: number
-          description: Execution interval (timestep) in seconds.
-          default: 1.0
-          title: Interval
-        description: Execution interval (timestep) in seconds.
-      - name: features
-        in: query
-        required: false
-        schema:
-          type: string
-          description: JSON list of feature modules, e.g. '["ppgpp_regulation"]'
-          default: '[]'
-          title: Features
-        description: JSON list of feature modules, e.g. '["ppgpp_regulation"]'
-      - name: cache_dir
-        in: query
-        required: false
-        schema:
-          type: string
-          description: Absolute path to pre-computed ParCa cache inside container.
-          default: /out/cache
-          title: Cache Dir
-        description: Absolute path to pre-computed ParCa cache inside container.
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ComposeSimulationExperiment'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /compose/v1/biomodels/identifiers:
     get:
       tags:
@@ -3229,6 +3156,79 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BiomodelsRunResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /compose/v1/curated/ecoli:
+    post:
+      tags:
+      - Compose Curated
+      summary: Run a v2ecoli whole-cell simulation via process-bigraph
+      description: 'Run a v2ecoli whole-cell E. coli simulation.
+
+
+        Unlike Copasi/Tellurium, v2ecoli does not require an SBML upload.
+
+        The biological model is pre-computed in the ParCa cache and the
+
+        55 biological processes are composed at runtime via process-bigraph.'
+      operationId: compose-run-v2ecoli
+      parameters:
+      - name: duration
+        in: query
+        required: false
+        schema:
+          type: number
+          description: Simulation duration in seconds.
+          default: 60.0
+          title: Duration
+        description: Simulation duration in seconds.
+      - name: seed
+        in: query
+        required: false
+        schema:
+          type: integer
+          description: Random seed for stochastic processes.
+          default: 0
+          title: Seed
+        description: Random seed for stochastic processes.
+      - name: interval
+        in: query
+        required: false
+        schema:
+          type: number
+          description: Execution interval (timestep) in seconds.
+          default: 1.0
+          title: Interval
+        description: Execution interval (timestep) in seconds.
+      - name: features
+        in: query
+        required: false
+        schema:
+          type: string
+          description: JSON list of feature modules, e.g. '["ppgpp_regulation"]'
+          default: '[]'
+          title: Features
+        description: JSON list of feature modules, e.g. '["ppgpp_regulation"]'
+      - name: cache_dir
+        in: query
+        required: false
+        schema:
+          type: string
+          description: Absolute path to pre-computed ParCa cache inside container.
+          default: /out/cache
+          title: Cache Dir
+        description: Absolute path to pre-computed ParCa cache inside container.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeSimulationExperiment'
         '422':
           description: Validation Error
           content:
@@ -4995,7 +4995,8 @@ components:
           additionalProperties: true
           type: object
           title: Config
-          description: vEcoli-style config to translate
+          description: A simulator config document, in the shape the worker's workspace
+            translates
       additionalProperties: true
       type: object
       required:

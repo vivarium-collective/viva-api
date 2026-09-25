@@ -94,4 +94,10 @@ def create_core_app(container: CoreContainer | None = None) -> FastAPI:
     held = container or container_from_settings(get_core_settings())
     app = FastAPI(title="viva-core", docs_url=f"{CORE_PREFIX}/docs", openapi_url=f"{CORE_PREFIX}/openapi.json")
     app.include_router(build_core_router(lambda: held))
+    # The compose router, at core's own prefix. Its services arrive through ``set_compose_services``
+    # from whoever composes this app (P3d-4d-2); a standalone core that has wired none answers 500
+    # by name on those routes, and serves everything else.
+    from viva_core.api.routers.compose import router as compose_router
+
+    app.include_router(compose_router, prefix=f"{CORE_PREFIX}/compose")
     return app

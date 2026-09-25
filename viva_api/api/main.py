@@ -166,9 +166,13 @@ app.include_router(build_core_router(core_container))
 
 # -- compose (process-bigraph) router -- #
 try:
-    from viva_api.api.routers.compose import router as compose_router
+    from viva_api.api.routers.compose_sms import router as compose_sms_router
+    from viva_core.api.routers.compose import router as compose_router
 
+    # Core's compose router at the prefix SMS's callers use (unchanged for this refactor), plus
+    # SMS's own curated-model route at the same prefix (P3d-4d-2).
     app.include_router(compose_router, prefix="/compose/v1")
+    app.include_router(compose_sms_router, prefix="/compose/v1")
     logger.info("Compose router registered at /compose/v1")
 except ImportError:
     logger.warning("Could not register compose router (compose deps may not be installed)")

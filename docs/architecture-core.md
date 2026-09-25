@@ -438,6 +438,9 @@ viva_core/
   events/     events_env, ingest, chrome_trace
   env_worker/ service, relay, schemas          (P3d-4a/b-3: in place)
   compose/    models, container_def, database_service, tables_orm, job_monitor, service  (P3d-4b: in place)
+  api/routers/compose  (P3d-4d-2a: in place; served at /viva/v1/compose and, by SMS, at /compose/v1)
+  contrib/sysbio/      biomodels_service, biomodel_documents  (P3d-4d-2a: in place)
+  storage/s3_streaming (P3d-4d-2a)
               simulation_service_ray (the Batch service, P3d-4c-1); run_pbg, render_nf, runner_files (3d-4c-2);
               the allow-list default and the runner HOOKS (runner_hooks.py, staged beside the runner) are the application's
   storage/    …, layout (the two output-location primitives, pure; P3d-4c-1)
@@ -656,7 +659,7 @@ Status: `planned` → `in progress` → `done (PR, version)`. Phases refer to `p
 
 | # | Seam | Current | Target | Phase | Status |
 |---|---|---|---|---|---|
-| 1 | Import boundary | none enforced | import-linter: core ↛ viva_api, app | P0 / P1 | in progress — seven contracts; **enforced:** `core-is-standalone` (P1a, transitive) and env workers + relay (#680); report-only: 5 (**12** direct edges as of 2026-09-20: compose 3, `dependencies.py` → routers 4, server → `app` 3, `config` 1, `local_task_service` 1; a ratchet — the count never rises) |
+| 1 | Import boundary | none enforced | import-linter: core ↛ viva_api, app | P0 / P1 | in progress — seven contracts; **enforced:** `core-is-standalone` (P1a, transitive) and env workers + relay (#680); report-only: 4 contracts / **5** edges as of 2026-09-25 (was 6 at 3d-4b, **12** direct edges as of 2026-09-20: compose 3, `dependencies.py` → routers 4, server → `app` 3, `config` 1, `local_task_service` 1; a ratchet — the count never rises) |
 | 2 | Generic modules | under `viva_api/common`, `api/` | `viva_core/{infra,storage,backends,events,api}` + aliasing shim | P1 | in progress — P1a: `models`, `infra/messaging`, `events/events_env`, `backends/{job_service,k8s_job_service,models,nextflow_weblog}` moved; old paths are self-replacing stubs. P1b: `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved |
 | 3 | Batch engine | private methods of `SimulationServiceRay` | `viva_core/backends/batch.py` (`BatchJobClient`, composed) | P2.1 | in progress — cut 2: the engine exists in core, settings-free, with its own tests (`tests/core/test_batch_backend.py`); `SimulationServiceRay` delegates through `_batch_jobs()`; `compose` still reaches it via the service's private methods (→ P2.3); not yet behind the `JobBackend` Protocol |
 | 4 | Backends | three unrelated shapes in `viva_core/backends/` (`batch.py`, `k8s_job_service.py`, `slurm_service.py`) sharing only `JobStatus` / `JobId` | `JobBackend` adapters: batch, k8s, slurm, local | P5 (was P2.3) | planned — **deferred with a trigger**: a core Protocol with one implementation would quietly be Batch-shaped, so it waits for its second consumer (`compose` on the core seam) and is not final before a second backend implements it |

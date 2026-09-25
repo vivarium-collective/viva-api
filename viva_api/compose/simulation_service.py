@@ -18,6 +18,7 @@ from viva_api.compose.hpc_utils import (
     get_compose_correlation_id,
     get_compose_experiment_dir,
     get_compose_sim_input_path,
+    get_compose_sim_results_path,
     get_compose_singularity_container_file,
     get_compose_singularity_def_file,
     get_compose_slurm_log_file,
@@ -51,6 +52,18 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
         if self._slurm_ssh is None:
             raise RuntimeError("No SLURM SSH session provider was handed to the SLURM compose service.")
         return self._slurm_ssh()
+
+    async def results_archive(self, experiment_id: str) -> Path | None:
+        """The zip the HPC-side job runner built, downloaded over SSH into the local results cache
+        (once; later calls find it). Raises ``RuntimeError`` when the download fails."""
+        remote_path = get_compose_sim_results_path(experiment_id)
+        cache_dir = Path("/app/.results_cache/compose")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        local_path = cache_dir / f"{experiment_id}_results.zip"
+        if not local_path.exists():
+            async with self._ssh_sessions().session() as ssh:
+                await ssh.scp_download(local_file=local_path, remote_path=HPCFilePath(remote_path=remote_path))
+        return local_path if local_path.exists() else None
 
     def _build_run_command(
         self,

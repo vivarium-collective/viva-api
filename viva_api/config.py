@@ -425,7 +425,7 @@ class Settings(CoreSettings):
     # compose_image_base_path: inherited from CoreSettings (P3d-2)
     # compose_sim_base_path: inherited from CoreSettings (P3d-2)
     compose_cache_base_path: str = ""  # HPC path for compose ParCa cache (bind-mounted into containers)
-    compose_containers_output_dir: str = "/output"  # Container-internal output dir
+    # compose_containers_output_dir: inherited from CoreSettings (P3d-4d-2)
     # Ray/Batch compose runner image (prebuilt, carries process-bigraph + pbg-emitters).
     # `<ray_ecr_repository>:<compose_ray_image_tag>` — the deploy points this at the served
     # workspace's image. Generic run_pbg.py runs inside it.
