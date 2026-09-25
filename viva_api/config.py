@@ -119,7 +119,7 @@ class Settings(CoreSettings):
     slurm_partition: str = ""
     slurm_node_list: str = ""  # comma-separated list of nodes, e.g., "node1,node2"
     slurm_qos: str = ""
-    slurm_log_base_path: HPCFilePath = HPCFilePath(remote_path=Path(""))
+    # slurm_log_base_path: inherited from CoreSettings (P3f; the file_paths <-> settings cycle is broken)
     slurm_base_path: HPCFilePath = HPCFilePath(remote_path=Path(""))
 
     # Apptainer/Singularity temp directory for container builds

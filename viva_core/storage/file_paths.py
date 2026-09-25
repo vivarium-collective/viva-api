@@ -2,8 +2,6 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from viva_core.settings import get_core_settings
-
 
 class HPCFilePath(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     """Represents a file path on the HPC remote system.
@@ -41,6 +39,8 @@ class HPCFilePath(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not o
         Returns:
             Path: The translated local path for filesystem access.
         """
+        from viva_core.settings import get_core_settings  # at call time: settings declares an HPCFilePath field
+
         settings = get_core_settings()
         local_prefix = settings.path_local_prefix
         remote_prefix = settings.path_remote_prefix

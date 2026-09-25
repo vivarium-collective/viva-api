@@ -24,6 +24,8 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from viva_core.storage.file_paths import HPCFilePath
+
 
 class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     # No env_prefix (yet): these are the variable names every existing deployment already
@@ -57,6 +59,9 @@ class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, n
     # This process's ROLE in the deployment: a stable name, not a pod name. Env-worker tasks are
     # stamped with it and the boot sweep settles only its own role's.
     owner_instance: str = "api"
+
+    # Where a SLURM job's log lands, as an HPC path (the SLURM backend writes ``<base>/<job>.out``).
+    slurm_log_base_path: HPCFilePath = HPCFilePath(remote_path=Path(""))
 
     # AWS S3
     storage_s3_bucket: str = ""

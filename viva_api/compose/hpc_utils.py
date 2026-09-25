@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from viva_api.config import get_settings
 from viva_core.compose.ids import compose_correlation_id, compose_experiment_id
+from viva_core.settings import get_core_settings as get_settings
 
 
 def get_compose_slurm_log_file(slurm_job_name: str) -> Path:

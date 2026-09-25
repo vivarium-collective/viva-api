@@ -173,6 +173,7 @@ check-minikube:
 .PHONY: spec
 spec:
 	@uv run --no-cache ./viva_api/api/openapi_spec.py
+	@uv run --no-cache ./viva_core/api/openapi_spec.py
 
 .PHONY: new
 new:
