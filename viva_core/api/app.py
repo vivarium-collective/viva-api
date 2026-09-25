@@ -11,7 +11,8 @@ The routes reach services through a ``CoreContainer`` handed in as a PROVIDER, c
 an application builds its container when it starts, after this router is included.
 """
 
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI, HTTPException
 
@@ -25,8 +26,8 @@ from viva_core.environments import (
     EnvironmentResolverNotConfigured,
     EnvironmentSpec,
     ExplicitSpec,
-    RegistryEnvironmentResolver,
 )
+from viva_core.lifespan import environments_from_settings, start_core
 from viva_core.settings import CoreSettings, get_core_settings
 from viva_core.version import __version__
 
@@ -52,7 +53,16 @@ def build_core_router(container: Callable[[], CoreContainer], *, prefix: str = C
     @router.get("/health", response_model=CoreHealth, operation_id="core-health", tags=["Viva Core"])
     def health() -> CoreHealth:
         """Which core services this deployment provides. Core's own; the application has its own."""
-        return CoreHealth(version=__version__, services={"environments": container().environments is not None})
+        held = container()
+        workers = held.env_worker
+        return CoreHealth(
+            version=__version__,
+            services={
+                "environments": held.environments is not None,
+                "compose": held.compose is not None,
+                "workers": workers is not None and workers.service is not None,
+            },
+        )
 
     @router.get(
         "/capabilities",
@@ -91,29 +101,42 @@ def build_core_router(container: Callable[[], CoreContainer], *, prefix: str = C
 
 
 def container_from_settings(settings: CoreSettings) -> CoreContainer:
-    """A standalone core's container: whatever its own settings are enough to build."""
-    environments = None
-    if settings.environment_registry and settings.environment_repository:
-        environments = RegistryEnvironmentResolver(
-            registry=settings.environment_registry,
-            repository=settings.environment_repository,
-            runtime_image=settings.core_runtime_image or None,
-        )
-    return CoreContainer(settings=settings, environments=environments)
+    """A standalone core's container BEFORE its lifespan has run: what the settings are enough to
+    build synchronously (the environment resolver). The rest -- the database, compose, the env
+    workers -- is ``viva_core.lifespan.start_core``'s, and arrives when the app starts (U2e)."""
+    return CoreContainer(settings=settings, environments=environments_from_settings(settings))
 
 
 def create_core_app(container: CoreContainer | None = None) -> FastAPI:
     """Core as an application of its own. With no container it builds one from ``CoreSettings`` --
-    which is all a standalone core has, and all it may need (decision D7)."""
-    held = container or container_from_settings(get_core_settings())
-    set_container_provider(lambda: held)
+    which is all a standalone core has, and all it may need (decision D7): the select-only
+    container at once, and on startup everything ``start_core`` can build from the settings, with
+    a shutdown that stops the pollers before the engine goes. A container handed in is served as
+    is, with no lifespan -- the embedding application (or a test) owns its services' lives."""
+    held: list[CoreContainer] = [container or container_from_settings(get_core_settings())]
+    set_container_provider(lambda: held[0])
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        if container is not None:
+            yield
+            return
+        running = await start_core(get_core_settings())
+        held[0] = running.container
+        try:
+            yield
+        finally:
+            await running.stop()
+            held[0] = container_from_settings(get_core_settings())
+
     app = FastAPI(
         title="viva-core",
         version=__version__,
         docs_url=f"{CORE_PREFIX}/docs",
         openapi_url=f"{CORE_PREFIX}/openapi.json",
+        lifespan=lifespan,
     )
-    app.include_router(build_core_router(lambda: held))
+    app.include_router(build_core_router(lambda: held[0]))
     # The compose and env-worker routers, at core's own prefix. Their services are the container's
     # (P3e); a standalone core whose container holds none answers by name on those routes, and
     # serves everything else.

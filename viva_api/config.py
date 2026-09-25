@@ -93,19 +93,9 @@ class Settings(CoreSettings):
     mongodb_collection_sims: str = "BiosimSims"
     mongodb_collection_compare: str = "BiosimCompare"
 
-    postgres_user: str = "<USER>"
-    postgres_password: str = ""
-    postgres_database: str = "sms"
-    postgres_host: str = "localhost"
-    postgres_port: int = 5432
-    postgres_pool_size: int = 10  # number of connections in the pool
-    postgres_max_overflow: int = 5  # maximum number of connections that can be created beyond the pool size
-    postgres_pool_timeout: int = 30  # timeout for acquiring a connection from the pool in seconds
-    postgres_pool_recycle: int = 1800  # recycle connections every seconds
-    # Run Base/ComposeBase create_all at startup. True suits a laptop or a test; a DEPLOYED site
-    # sets it false, because there the schema belongs to the alembic-migrate Job alone -- see
-    # viva_api/simulation/db_startup.py for why create_all is corrosive in production.
-    db_create_all: bool = True
+    # postgres_* and db_create_all: inherited from CoreSettings (U2e) -- same names, same variables.
+    # DB_CREATE_ALL=true suits a laptop or a test; a DEPLOYED site sets it false, because there the
+    # schema belongs to the alembic-migrate Job alone -- see viva_api/simulation/db_startup.py.
 
     # This process's ROLE in the deployment: a stable name, NOT a pod name (pod names change on
     # every restart, and the env-worker boot sweep has to recognise the rows its predecessor

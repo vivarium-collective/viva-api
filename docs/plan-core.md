@@ -1031,7 +1031,7 @@ split; each has an owner-less issue or a named moment.
 | P8b | removals M1 … M7 | | | | not started; each after its caller is on both sites |
 | P9a / b / c | | | | | not started (checkpoint N); rehearsed at UConn first (U3–U4) |
 | P10 | | | | | not started |
-| U0 … U5 | the UConn track (§4b) | | | | U1 merged (#796, rides 0.9.157); **U2 in progress**: U2a the SLURM settings onto `CoreSettings` (#798), U2b-1 the SLURM compose service's run command as a hook (#800; the v2ecoli mode was inside it; `ContainerRun`, `viva_api/simulation/compose_run_command.py`), U2d the registry naming and the env-worker Job settings (#801), **U2b-2 the service into core — `viva_core/compose/simulation_service_hpc.py` + `hpc_paths.py`, verbatim, shims at the old names; proven on the Docker cluster: build → run → results in 40 s** (`tests/compose/test_slurm_compose_service_on_a_cluster.py`, `slurm`-marked, 7/7 in the lane); **U2c the file-service factory** (`viva_core/storage/factory.py`: `file_service_for(backend)` exhaustive over `StorageBackend`, `file_service_from_settings()`; the composition root's if/elif is gone — a standalone core makes the same choice); next U2e the lifespan; **U2f `Dockerfile-core` + `build-core.yml`** (core served by uvicorn from the app factory, no application package in the image, image `ghcr.io/vivarium-collective/viva-core:<core tag>` on core's line, write-once; the workflow's gate is `tests/core` + an in-image boot check); **U2g the `JobBackend` Protocol** (`viva_core/backends/base.py` + `batch_backend.py` + `slurm_backend.py`; the SLURM one proven on the Docker cluster: container job, bare job, cancel, unknown handle; the Batch one on the engine with a fake client); core's overlay is a new directory, the SMS overlays untouched until U5 |
+| U0 … U5 | the UConn track (§4b) | | | | U1 merged (#796, rides 0.9.157); **U2 in progress**: U2a the SLURM settings onto `CoreSettings` (#798), U2b-1 the SLURM compose service's run command as a hook (#800; the v2ecoli mode was inside it; `ContainerRun`, `viva_api/simulation/compose_run_command.py`), U2d the registry naming and the env-worker Job settings (#801), **U2b-2 the service into core — `viva_core/compose/simulation_service_hpc.py` + `hpc_paths.py`, verbatim, shims at the old names; proven on the Docker cluster: build → run → results in 40 s** (`tests/compose/test_slurm_compose_service_on_a_cluster.py`, `slurm`-marked, 7/7 in the lane); **U2c the file-service factory** (`viva_core/storage/factory.py`: `file_service_for(backend)` exhaustive over `StorageBackend`, `file_service_from_settings()`; the composition root's if/elif is gone — a standalone core makes the same choice); **U2f `Dockerfile-core` + `build-core.yml`** (core served by uvicorn from the app factory, no application package in the image, image `ghcr.io/vivarium-collective/viva-core:<core tag>` on core's line, write-once; the workflow's gate is `tests/core` + an in-image boot check); **U2g the `JobBackend` Protocol** (`viva_core/backends/base.py` + `batch_backend.py` + `slurm_backend.py`; the SLURM one proven on the Docker cluster: container job, bare job, cancel, unknown handle; the Batch one on the engine with a fake client); **U2e the lifespan** (`viva_core/lifespan.py` `start_core` / `RunningCore.stop`; `postgres_*` + `db_create_all` onto `CoreSettings`; `viva_core/infra/db.py`; `create_core_app()` with no container runs it; `/viva/v1/health` reports `compose` and `workers`; proven: the app boots with SLURM settings against the Docker cluster and a Postgres container, monitor polling, compose routes answering, clean shutdown) — **U2 complete**; next U3; core's overlay is a new directory, the SMS overlays untouched until U5 |
 | U1 | the local SLURM cluster: `tests/fixtures/slurm_cluster/` (compose-api's harness, verbatim) + `tests/fixtures/slurm_fixtures_backend.py` (the `slurm_backend` fixture: the container in CI, `--slurm-backend cluster` for Mantis); `port` on `SSHSessionService` and `slurm_submit_port`; `tests/common/test_slurm_backend.py` (SSH, and the conformance of `sbatch --parsable`, `squeue`, `scontrol` with core's parsers); CI job `tests-slurm` | 0.9.157 | 2026-09-25 (tests only) | — | **merged — #796** (`06d41b6d`; 6 tests green against the container, locally in 58 s and in CI); checkpoint UA's second half — green against Mantis with `--slurm-backend cluster` — still to run from a VPN laptop with the key |
 
 ## Decision log
@@ -1041,6 +1041,28 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-25** — **U2e: a standalone core has a lifespan — U2 is complete.** `viva_core/lifespan.py`:
+  `start_core(settings)` builds what the settings are enough for, each configured-or-absent — the
+  environment resolver, the file service (U2c's factory), the SLURM SSH sessions and on them the
+  SLURM compose service (U2b-2), the database and on it the compose database, the env-worker task
+  tier (`TaskRunner`) and the compose job monitor (started), the env-worker service when a namespace
+  and a module image are named — into a `CoreContainer`; `RunningCore.stop()` ends the monitor, the
+  runner and the relay sockets BEFORE disposing the engine. `create_core_app()` with no container
+  serves the select-only container at once and swaps in `start_core`'s at startup (the routes read
+  the provider per request, so nothing else changes); a container handed in gets no lifespan — the
+  embedding application owns its services' lives, as before. `postgres_*` and `db_create_all` moved
+  onto `CoreSettings` (D19: core's own database; SMS inherits them, same variables), with
+  `viva_core/infra/db.py` for the engine and `postgres_configured` (the `<USER>` placeholder means
+  "none", not a user). `/viva/v1/health` now reports `compose` and `workers` beside `environments`.
+  Left out on purpose, as SMS's: the simulation-service registry, the scheduler, Redis, the Batch
+  compose service (its settings are the application's until the strategies land), the allow-list
+  seed. **Proof:** `tests/core/test_core_lifespan.py` — with nothing configured the container
+  carries the absences and stop() is a no-op; `slurm`-marked, the app boots with the Docker
+  cluster's SLURM settings and a Postgres testcontainer: health says `compose: true`, the SLURM
+  compose service is the registered backend, the monitor is polling, `create_all` made the compose
+  schema and the read routes answer from it, the task tier exists and the worker service does not,
+  and after the client closes the poller is stopped and the select-only container is back (32 s).
+  With U2f's image this is a deployable standalone core on SLURM — what U3's overlay runs.
 - **2026-09-25** — **U2g: core's `JobBackend` Protocol is declared, with two implementations at once.**
   `viva_core/backends/base.py`: `JobSpec` (name, command, image — `""` = bare on the host —, env,
   resources, labels, `depends_on` handles of the same backend), `JobHandle` (backend kind + the
