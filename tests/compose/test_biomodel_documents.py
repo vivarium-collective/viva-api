@@ -1,14 +1,15 @@
-"""Unit tests for viva_api/compose/biomodel_documents.py."""
+"""Unit tests for viva_core/contrib/sysbio/biomodel_documents.py."""
 
-from viva_api.compose.biomodel_documents import (
+from viva_api.compose.biomodels_service import UniformTimeCourseSpec
+from viva_core.contrib.sysbio.biomodel_documents import (
     COPASI_STEP_ADDRESS,
     TELLURIUM_STEP_ADDRESS,
     TYPES_DICT,
+    BiomodelEntry,
     make_biomodel_document,
     make_multi_biomodel_document,
     make_utc_step_state,
 )
-from viva_api.compose.biomodels_service import UniformTimeCourseSpec
 
 
 def _utc() -> UniformTimeCourseSpec:
@@ -115,8 +116,10 @@ class TestMakeBiomodelDocument:
             {"copasi": COPASI_STEP_ADDRESS, "tellurium": TELLURIUM_STEP_ADDRESS},
         )
         state = doc["state"]
-        assert state["BIOMD001_copasi_step"]["address"] == COPASI_STEP_ADDRESS
-        assert state["BIOMD001_tellurium_step"]["address"] == TELLURIUM_STEP_ADDRESS
+        copasi, tellurium = state["BIOMD001_copasi_step"], state["BIOMD001_tellurium_step"]
+        assert isinstance(copasi, dict) and isinstance(tellurium, dict)
+        assert copasi["address"] == COPASI_STEP_ADDRESS
+        assert tellurium["address"] == TELLURIUM_STEP_ADDRESS
 
     def test_step_key_uses_biomodel_id(self) -> None:
         doc = make_biomodel_document("MY_MODEL_42", "/x.sbml", _utc(), {"copasi": COPASI_STEP_ADDRESS})
@@ -138,7 +141,7 @@ class TestMakeBiomodelDocument:
 
 class TestMakeMultiBiomodelDocument:
     def test_multiple_models_present(self) -> None:
-        info = [
+        info: list[BiomodelEntry] = [
             {
                 "biomodel_id": "BIOMD001",
                 "sbml_path": "/a.sbml",
@@ -159,11 +162,12 @@ class TestMakeMultiBiomodelDocument:
         assert "BIOMD002" in doc["schema"]
 
     def test_each_model_has_step(self) -> None:
-        info = [
+        info: list[BiomodelEntry] = [
             {"biomodel_id": "A", "sbml_path": "/a.sbml", "utc": _utc(), "steps": {"tellurium": TELLURIUM_STEP_ADDRESS}},
         ]
         doc = make_multi_biomodel_document(info)
-        assert "A_tellurium_step" in doc["state"]["A"]
+        a = doc["state"]["A"]
+        assert isinstance(a, dict) and "A_tellurium_step" in a
 
     def test_empty_list_returns_empty_doc(self) -> None:
         doc = make_multi_biomodel_document([])

@@ -91,6 +91,7 @@ class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, n
     compose_ray_image_tag: str = ""
     compose_pbg_core_builder: str = ""
     compose_nats_worker_event_subject: str = "compose.worker.events"
+    compose_containers_output_dir: str = "/output"  # where a composite's container writes its outputs
 
 
 _provider: Callable[[], CoreSettings] | None = None

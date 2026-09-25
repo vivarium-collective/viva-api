@@ -135,3 +135,40 @@ async def test_compose_stages_cores_runner_and_the_applications_hooks_beside_it(
         await svc.submit_simulation_job(request, experiment_id="exp-1")
     assert [u.rsplit("/", 1)[1] for u in uploaded] == ["input.pbg", "run_pbg.py", "runner_hooks.py"]
     assert "PBG_RUNNER_HOOKS=runner_hooks" in batch.submit_mnp.call_args.kwargs["ray_job_cmd"]
+
+
+@pytest.mark.asyncio
+async def test_the_slurm_backend_owns_its_results_download_and_the_batch_backend_has_none(tmp_path: object) -> None:
+    """``results_archive`` (P3d-4d-2): the SLURM service fetches the HPC-side zip over the SSH provider it
+    was handed; the Batch service returns None, because its runs write straight to object storage."""
+    from collections.abc import AsyncIterator
+    from contextlib import AbstractAsyncContextManager, asynccontextmanager
+    from pathlib import Path
+    from unittest.mock import patch
+
+    downloads: list[tuple[Path, str]] = []
+
+    class _Ssh:
+        async def scp_download(self, local_file: Path, remote_path: object) -> None:
+            local_file.parent.mkdir(parents=True, exist_ok=True)
+            local_file.write_bytes(b"zip")
+            downloads.append((local_file, str(getattr(remote_path, "remote_path", remote_path))))
+
+    class _Sessions:
+        def session(self) -> AbstractAsyncContextManager[_Ssh]:
+            @asynccontextmanager
+            async def _cm() -> AsyncIterator[_Ssh]:
+                yield _Ssh()
+
+            return _cm()
+
+    slurm = ComposeSimulationServiceHpc(env=MagicMock(), slurm_ssh=lambda: _Sessions())  # type: ignore[arg-type,return-value]
+    with patch(
+        "viva_api.compose.simulation_service.Path",
+        lambda p: Path(str(tmp_path)) / "cache" if str(p) == "/app/.results_cache/compose" else Path(p),
+    ):
+        got = await slurm.results_archive("exp-1")
+    assert got is not None and got.read_bytes() == b"zip" and len(downloads) == 1
+
+    batch = ComposeSimulationServiceRay(batch=MagicMock())
+    assert await batch.results_archive("exp-1") is None
