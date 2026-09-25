@@ -1,6 +1,6 @@
 [project]
 name = "viva_api"
-version = "0.9.154"
+version = "0.9.155"
 description = "This is the api server for Vivarium simulation services."
 authors = [{ name = "Alex Patrie", email = "alexanderpatrie@gmail.com" }, { name = "Jim Schaff", email = "jschaff@gmail.com" }]
 requires-python = ">=3.13,<3.14"
@@ -151,7 +151,7 @@ strict = true
 exclude = ['^notes/', '^viva_api/api/client/.*', '^app/ui/.*', '^app/gui\\.py$', '^app/tui\\.py$', '^sms_api/.*']
 
 [[tool.mypy.overrides]]
-module = ["textual", "textual.*", "process_bigraph", "process_bigraph.*", "bigraph_schema", "bigraph_schema.*", "pbg_emitters", "pbg_emitters.*", "viva_emitters", "viva_emitters.*", "v2ecoli", "v2ecoli.*", "biosimulators_utils.*", "libsedml.*", "libsbml.*", "spython.*", "nats.*", "biomodels", "biomodels.*", "fsspec", "fsspec.*", "pyarrow", "pyarrow.*"]
+module = ["textual", "textual.*", "process_bigraph", "process_bigraph.*", "bigraph_schema", "bigraph_schema.*", "viva_emitters", "viva_emitters.*", "v2ecoli", "v2ecoli.*", "biosimulators_utils.*", "libsedml.*", "libsbml.*", "spython.*", "nats.*", "biomodels", "biomodels.*", "fsspec", "fsspec.*", "pyarrow", "pyarrow.*"]
 ignore_missing_imports = true
 
 # D12 (docs/plan-core.md): core carries no `Any`. `strict` does not forbid `Any`; these two flags
