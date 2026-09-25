@@ -1031,7 +1031,8 @@ split; each has an owner-less issue or a named moment.
 | P8b | removals M1 … M7 | | | | not started; each after its caller is on both sites |
 | P9a / b / c | | | | | not started (checkpoint N); rehearsed at UConn first (U3–U4) |
 | P10 | | | | | not started |
-| U0 … U5 | the UConn track (§4b) | | | | not started; U1–U2 after P3g; core's overlay is a new directory, the SMS overlays untouched until U5 |
+| U0 … U5 | the UConn track (§4b) | | | | U1 written (#796), the rest not started; U2 after P3g; core's overlay is a new directory, the SMS overlays untouched until U5 |
+| U1 | the local SLURM cluster: `tests/fixtures/slurm_cluster/` (compose-api's harness, verbatim) + `tests/fixtures/slurm_fixtures_backend.py` (the `slurm_backend` fixture: the container in CI, `--slurm-backend cluster` for Mantis); `port` on `SSHSessionService` and `slurm_submit_port`; `tests/common/test_slurm_backend.py` (SSH, and the conformance of `sbatch --parsable`, `squeue`, `scontrol` with core's parsers); CI job `tests-slurm` | | | | **written — #796** (6 tests green against the container in CI); checkpoint UA = the lane green in CI and green against Mantis from VPN |
 
 ## Decision log
 
