@@ -1180,8 +1180,8 @@ paths:
     post:
       tags:
       - Analyses
-      summary: Run an analysis
-      operationId: run-ecoli-simulation-analysis
+      summary: Run an analysis (legacy, SLURM sites only)
+      operationId: run-slurm-analysis
       requestBody:
         content:
           application/json:
@@ -1204,7 +1204,7 @@ paths:
                   anyOf:
                   - $ref: '#/components/schemas/TsvOutputFile'
                   - $ref: '#/components/schemas/OutputFileMetadata'
-                title: Response Run-Ecoli-Simulation-Analysis
+                title: Response Run-Slurm-Analysis
         '422':
           description: Validation Error
           content:

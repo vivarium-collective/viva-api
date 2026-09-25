@@ -85,7 +85,7 @@ def sync_detailed(
     client: Union[AuthenticatedClient, Client],
     body: ExperimentAnalysisRequest,
 ) -> Response[Union[HTTPValidationError, list[Union["OutputFileMetadata", "TsvOutputFile"]]]]:
-    """Run an analysis
+    """Run an analysis (legacy, SLURM sites only)
 
     Args:
         body (ExperimentAnalysisRequest): Request body for the ``POST /analyses`` (ptools)
@@ -127,7 +127,7 @@ def sync(
     client: Union[AuthenticatedClient, Client],
     body: ExperimentAnalysisRequest,
 ) -> Optional[Union[HTTPValidationError, list[Union["OutputFileMetadata", "TsvOutputFile"]]]]:
-    """Run an analysis
+    """Run an analysis (legacy, SLURM sites only)
 
     Args:
         body (ExperimentAnalysisRequest): Request body for the ``POST /analyses`` (ptools)
@@ -164,7 +164,7 @@ async def asyncio_detailed(
     client: Union[AuthenticatedClient, Client],
     body: ExperimentAnalysisRequest,
 ) -> Response[Union[HTTPValidationError, list[Union["OutputFileMetadata", "TsvOutputFile"]]]]:
-    """Run an analysis
+    """Run an analysis (legacy, SLURM sites only)
 
     Args:
         body (ExperimentAnalysisRequest): Request body for the ``POST /analyses`` (ptools)
@@ -204,7 +204,7 @@ async def asyncio(
     client: Union[AuthenticatedClient, Client],
     body: ExperimentAnalysisRequest,
 ) -> Optional[Union[HTTPValidationError, list[Union["OutputFileMetadata", "TsvOutputFile"]]]]:
-    """Run an analysis
+    """Run an analysis (legacy, SLURM sites only)
 
     Args:
         body (ExperimentAnalysisRequest): Request body for the ``POST /analyses`` (ptools)
