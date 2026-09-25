@@ -2,7 +2,19 @@
 
 *Draft for review, 2026-09-22. Companion to [`strategy-core-incremental.md`](strategy-core-incremental.md);
 both respond to viva-api#742. Written to be the strongest honest version of the direct route, not a
-straw man. Neither is adopted until Jim and Eran agree.*
+straw man.*
+
+> **ADOPTED 2026-09-25, with modifications** — see plan-core.md decisions **D14–D21** and the
+> 2026-09-25 decision-log entry, which is where the adopted form lives; this document is the
+> proposal as it was reviewed. The modifications: #742 is treated as a proposal assessed change by
+> change, not adopted whole; templates land as a **typed core-native port** with the record's
+> *shape* before the table (D15); `simulator` → `environment` waits for P5's table and keeps
+> `legacy_simulator_id`; `/viva/v1/composites` is built, not renamed; the PTools trio is the last
+> facade, re-implemented over datasets (D18) — there is no hidden PTools dependency; the code's
+> `/viva/v1/{compose,env-worker}` spelling is mounted as a dated interim (D17); the repository
+> stays one until P10 (D16); prod's catch-up runs right after checkpoint F; and **core must run
+> standalone at UConn** (plan-core §4b), which this draft did not consider. The sequence below is
+> superseded by the order table at the top of plan-core §4.
 
 ## The claim
 
