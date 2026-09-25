@@ -43,6 +43,7 @@ from viva_api.simulation.models import (
     TaskDTO,
     WorkerEvent,
 )
+from viva_api.simulation.owner_ref import dataset_owner, run_owner
 from viva_api.simulation.tables_orm import (
     AnalysisStatusDB,
     JobStatusDB,
@@ -1172,10 +1173,13 @@ class DatabaseServiceSQL(DatabaseService):
                     if existing is None:
                         if all(value is None for value in producers.values()):
                             raise ValueError(f"dataset {uri} needs a producer (simulation, ParCa dataset or analysis)")
+                        owner = dataset_owner(**producers)  # dual-written beside the producer FKs (P4a)
                         row = ORMDataset(
                             uri=uri,
                             kind=kind,
                             **producers,
+                            owner_kind=owner[0] if owner else None,
+                            owner_id=owner[1] if owner else None,
                             **optional_fields,
                             attributes=incoming_attributes,
                             tags=_merge_tags(None, tags),
@@ -1553,6 +1557,7 @@ class DatabaseServiceSQL(DatabaseService):
         jobref_parca_dataset_id = ref_id if job_type == JobType.PARCA else None
         jobref_simulator_id = ref_id if job_type == JobType.BUILD_IMAGE else None
         jobref_analysis_id = ref_id if job_type == JobType.ANALYSIS else None
+        owner_kind, owner_id = run_owner(job_type, ref_id)  # dual-written beside the jobref_* columns (P4a)
 
         async with self.async_sessionmaker() as session, session.begin():
             orm_hpc_run = ORMHpcRun(
@@ -1564,6 +1569,8 @@ class DatabaseServiceSQL(DatabaseService):
                 jobref_simulation_id=jobref_simulation_id,
                 jobref_parca_dataset_id=jobref_parca_dataset_id,
                 jobref_analysis_id=jobref_analysis_id,
+                owner_kind=owner_kind,
+                owner_id=owner_id,
                 start_time=datetime.datetime.now(),
                 correlation_id=correlation_id,
                 chain_n_generations=chain_n_generations,

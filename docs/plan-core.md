@@ -769,7 +769,7 @@ split; each has an owner-less issue or a named moment.
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image. 2.3a the model + `RegistryEnvironmentResolver` (`viva_core/environments/`, no caller changed) — #748 · 2.3b the four derivations ask it (`common/site_environments.py`) — #749 · 2.3c the core runtime image + core's container entrypoint (`Dockerfile-core-runtime`, `viva_core/runtime/`) — #750 · 2.3d-1 a task may name an environment (`TaskRunRequest.environment`) — #751 · 2.3d-2 Batch pulls the image; dev names it — #752 · 2.3d-3 a compose run may name an environment (one container) | | | | **done and deployed** — dev is 0.9.152 (checkpoint D, 2026-09-21, tag `v0.9.152`): the four image derivations ask one resolver, `CORE_RUNTIME_IMAGE` is live, a task and a compose run may name `environment="runtime"`. Measured on dev: `compose` 21.6 s in the runtime image against 495.9 s on the science image; a cold-fleet `task` starts in 106 s against 221 s. Prod: repeat the one-job trial pull from its VPC before it names the image |
 | P3 | settings, DI, app factory. 3a `create_core_app()` boots alone; SMS includes core's router under `/viva/v1` | | | | **in progress** — 3a, 3b, 3c deployed at D2 (0.9.153); **3d-1 … 3d-4d-1 deployed at E (0.9.154/0.9.155, tag `v0.9.155`)**; 3d-1 done (compose's ParCa staging is a hook); 3d-2 done (the 14 settings compose and env-worker read are `CoreSettings` fields); 3d-3 done (compose is handed its services; it imports nothing of `viva_api.dependencies`); 3d-4a done (the env-worker service and the site resolver are in `viva_core`); 3d-4b-1 done (five compose modules `Any`-free, the D12 ban on for them by name); 3d-4b-2 done (`models` and `container_def` are in `viva_core`; `ComputeBackend` too); 3d-4b-3 done (the five and the abstract service are in `viva_core`: 3,025 lines under `viva_core/compose/` + `env_worker/`); 3d-4c-1 done (the Batch compose service is in `viva_core`; the layout primitives too); 3d-4c-2 done (the runner and `render_nf` are core's; SMS's hooks are a staged sibling — every dispatch command changed, undeployed); 3d-4d-1 done (the compose handlers are core's); 3d-4d-2a done (the compose router is core's, served at `/viva/v1/compose` and, unchanged, at `/compose/v1`; BioModels in `contrib/sysbio`); 3d-4d-2b done (the env-worker router and identity are core's) — **3d-4 complete**; 3e done (containers replace the setters: the routers carry none, `current_container()` is the one seam); 3f done (settings split finished; two OpenAPI documents; the lifespan runs without the scheduler) — **P3 complete**; next **checkpoint E2** (deploy 3d-4d-2a/b, 3e, 3f), then P4. **SLURM compose stays in SMS** until a SLURM site can test it |
-| P4a | | | | | not started (checkpoint F) |
+| P4a | owner-ref expand | `a4b6c8d0e2f4`: `hpcrun.{owner_kind,owner_id,output_uri}`, `dataset.{owner_kind,owner_id,producer_job_id,trace_id}`, backfilled from the FKs, dual-written (`viva_api/simulation/owner_ref.py`) | the FKs stay authoritative | | **P4a-1 written** (the migration + dual-write); the dataset code move and `/viva/v1/datasets` are P4a-2; deploy = **checkpoint F** (a migration Job) |
 | P4b | | | | | not started (checkpoint F) |
 | P5 | | | | | not started (checkpoint G) |
 | P6 | | | | | not started (checkpoint H) |
@@ -785,6 +785,29 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-25** — **P4a-1: the owner-ref expand — one `(owner_kind, owner_id)` beside the foreign keys, backfilled, dual-written.**
+  Jim: "can we start on the next step". The first brick of P4, and what #776's adapters need; it
+  depends on neither #776 nor the #778 decision, both of which keep P4. **The columns:**
+  `hpcrun.owner_kind`, `owner_id`, `output_uri`; `dataset.owner_kind`, `owner_id`, `producer_job_id`,
+  `trace_id` — all nullable, all additive, migration `a4b6c8d0e2f4` (`IF NOT EXISTS`, reversible).
+  **The rule**, in one module (`viva_api/simulation/owner_ref.py`) and in the migration's backfill so
+  the two agree for every row: `owner_kind` is the owning table's name — `simulation`,
+  `parca_dataset`, `simulator`, `analysis` — and `owner_id` its id as text; a dataset takes the first
+  producer named, in the order the table has always preferred them. **A VARCHAR, not an enum**, as the
+  P4b row of section 7 requires: a new kind (core's `task`, `env_worker`) is a row, not a migration,
+  which is what keeps this reversible. The backfill touches only rows with no owner, so the
+  reconciler's re-run never overwrites what the dual-write recorded — proven by a test that upgrades,
+  hand-writes an owner, downgrades, upgrades again and finds the derived one. **Dual-write** in
+  `insert_hpcrun` and `upsert_dataset`; the foreign keys stay authoritative until P7. `output_uri`,
+  `producer_job_id` and `trace_id` are added now and stay NULL until their writers (P4b's adapters,
+  the ingest hook). **The fingerprint contract:** a marker (`hpcrun.owner_kind column exists`) and
+  its predicate, the pinned heads in three test files, and the "previous release" rehearsal that
+  must drop the new columns too. Chain-vs-`create_all` parity holds. **Proof:** `make check` clean
+  twice; suite 2303 passed (5 new). **Deploys as checkpoint F** — a migration Job, then the app; the
+  first DB deploy since B2.
+  One thing this surfaced for #776: its `JobOwnerKind` enum names `user`/`task`/`campaign`/
+  `env_worker`, but the owners SMS's rows actually have are its tables. Core's `Job.owner_kind`
+  should be a `str` with core naming only its own kinds — noted for the review.
 - **2026-09-25** — **P3f: the settings split is finished, core has its own OpenAPI document, and P3 is complete.**
   Jim: "merge #786 and continue with 3f". Three things. **Settings.** 3d-2 left one field behind:
   `slurm_log_base_path`, typed `HPCFilePath`, whose module imported `viva_core.settings` — a cycle.

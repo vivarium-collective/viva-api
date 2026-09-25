@@ -304,3 +304,68 @@ async def test_simulator_temporary_marker_revision_round_trips(
 
     await _upgrade(empty_database, "f4c8a2e6d0b3", monkeypatch)
     assert await _schema(empty_database) == at_head
+
+
+@pytest.mark.asyncio
+async def test_owner_ref_expand_backfills_from_the_foreign_keys_and_round_trips(
+    empty_database: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """a4b6c8d0e2f4, plan P4a: the owner-ref columns are added beside the foreign keys, backfilled
+    from them with the writer's rule, never overwrite an owner already recorded, and drop cleanly."""
+    from sqlalchemy import text
+
+    await _upgrade(empty_database, "f4c8a2e6d0b3", monkeypatch)
+    engine = create_async_engine(empty_database)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO simulator (id, git_commit_hash, git_repo_url, git_branch, created_at) "
+                "VALUES (7, 'abc1234', 'https://x/y', 'main', now())"
+            )
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO hpcrun (id, job_type, correlation_id, job_backend, status, jobref_simulator_id) "
+                "VALUES (1, 'BUILD_IMAGE', 'c1', 'batch', 'RUNNING', 7)"
+            )
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO analysis (id, name, config, last_updated, experiment_id, status) "
+                "VALUES (3, 'a', '{}', 'now', 'exp', 'READY')"
+            )
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO dataset (id, kind, uri, attributes, tags, analysis_id) "
+                "VALUES (1, 'store', 's3://b/k', '{}', '[]', 3)"
+            )
+        )
+    await engine.dispose()
+
+    await _upgrade(empty_database, "a4b6c8d0e2f4", monkeypatch)
+    engine = create_async_engine(empty_database)
+    async with engine.connect() as conn:
+        run = (await conn.execute(text("SELECT owner_kind, owner_id, output_uri FROM hpcrun WHERE id = 1"))).one()
+        ds = (
+            await conn.execute(text("SELECT owner_kind, owner_id, producer_job_id, trace_id FROM dataset WHERE id = 1"))
+        ).one()
+    await engine.dispose()
+    assert tuple(run) == ("simulator", "7", None)  # the writer's rule: the owning table, the id as text
+    assert tuple(ds) == ("analysis", "3", None, None)  # the first producer named; the P4b columns stay NULL
+
+    # Idempotent and never overwriting: a second upgrade is a no-op on a row that already has an owner.
+    engine = create_async_engine(empty_database)
+    async with engine.begin() as conn:
+        await conn.execute(text("UPDATE hpcrun SET owner_kind = 'task', owner_id = 'x' WHERE id = 1"))
+    await engine.dispose()
+    monkeypatch.setenv("SQLALCHEMY_DATABASE_URL", empty_database)
+    await asyncio.to_thread(command.downgrade, _alembic_config(empty_database), "f4c8a2e6d0b3")
+    assert "owner_kind" not in (await _schema(empty_database))["tables"]["hpcrun"]["columns"]
+    assert "producer_job_id" not in (await _schema(empty_database))["tables"]["dataset"]["columns"]
+    await _upgrade(empty_database, "a4b6c8d0e2f4", monkeypatch)
+    engine = create_async_engine(empty_database)
+    async with engine.connect() as conn:
+        run = (await conn.execute(text("SELECT owner_kind, owner_id FROM hpcrun WHERE id = 1"))).one()
+    await engine.dispose()
+    assert tuple(run) == ("simulator", "7")  # the downgrade dropped the hand-written owner; the backfill re-derived it
