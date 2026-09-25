@@ -21,10 +21,14 @@ field, its default and its environment variable name.
 from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from viva_core.storage.file_paths import HPCFilePath
+
+#: The object stores a file service can be built for (``viva_core.storage``).
+StorageBackend = Literal["gcs", "s3", "qumulo"]
 
 
 class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
@@ -62,6 +66,23 @@ class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, n
 
     # Where a SLURM job's log lands, as an HPC path (the SLURM backend writes ``<base>/<job>.out``).
     slurm_log_base_path: HPCFilePath = HPCFilePath(remote_path=Path(""))
+    # The SLURM backend (decision D4; UConn track U2): the submit host reached over SSH, and the
+    # scheduler's partition / QoS / node list every sbatch template names. Moved here from the
+    # application's settings (same names, same variables) so the SLURM compose service can be core's.
+    slurm_submit_host: str = ""
+    slurm_submit_port: int = 22  # a SLURM cluster in Docker publishes sshd on a port of Docker's choosing
+    slurm_submit_user: str = ""
+    slurm_submit_key_path: str = ""
+    slurm_submit_known_hosts: str | None = None
+    slurm_partition: str = ""
+    slurm_node_list: str = ""  # comma-separated, e.g. "node1,node2"; empty = the scheduler's choice
+    slurm_qos: str = ""
+    # The root under which this site keeps its SLURM work (sbatch files, logs, images, runs).
+    slurm_base_path: HPCFilePath = HPCFilePath(remote_path=Path(""))
+
+    # Which object store the file service talks to. The application's file-service factory reads
+    # it today; core's does from U2.
+    storage_backend: StorageBackend = "s3"
 
     # AWS S3
     storage_s3_bucket: str = ""
@@ -111,6 +132,9 @@ class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, n
     compose_pbg_core_builder: str = ""
     compose_nats_worker_event_subject: str = "compose.worker.events"
     compose_containers_output_dir: str = "/output"  # where a composite's container writes its outputs
+    # An HPC path the SLURM compose service bind-mounts into a composite's container at /out/cache;
+    # empty = nothing mounted. What goes there is the application's business (a staged input set).
+    compose_cache_base_path: str = ""
 
 
 _provider: Callable[[], CoreSettings] | None = None

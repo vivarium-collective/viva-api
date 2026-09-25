@@ -55,6 +55,25 @@ def test_moved_modules_read_through_the_provider(standalone: None, tmp_path: Pat
     assert get_local_cache_dir() == tmp_path
 
 
+def test_the_slurm_backend_is_configured_through_core(standalone: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """U2 (the UConn track): a standalone core on a SLURM site reads its submit host, scheduler
+    names and work root from the same variables the application always used."""
+    monkeypatch.setenv("SLURM_SUBMIT_HOST", "haproxy-ssh")
+    monkeypatch.setenv("SLURM_SUBMIT_PORT", "2222")
+    monkeypatch.setenv("SLURM_PARTITION", "vcell")
+    monkeypatch.setenv("SLURM_BASE_PATH", '{"remote_path": "/projects/SMS/sms_api/prod"}')
+    monkeypatch.setenv("STORAGE_BACKEND", "qumulo")
+    settings = get_core_settings()
+    assert (settings.slurm_submit_host, settings.slurm_submit_port, settings.slurm_partition) == (
+        "haproxy-ssh",
+        2222,
+        "vcell",
+    )
+    assert settings.slurm_base_path.remote_path == Path("/projects/SMS/sms_api/prod")
+    assert settings.storage_backend == "qumulo"
+    assert settings.compose_cache_base_path == ""
+
+
 def test_the_application_hands_core_its_own_settings_object() -> None:
     """Importing anything under ``viva_api`` registers the provider; core then returns the
     application's object -- the SAME object, not an equal one."""

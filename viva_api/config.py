@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from pydantic_settings import SettingsConfigDict
 
 from viva_core.models import ComputeBackend as ComputeBackend  # re-exported: its home is core (P3d-4b-2)
-from viva_core.settings import CoreSettings, set_core_settings_provider
+from viva_core.settings import CoreSettings, StorageBackend, set_core_settings_provider
 from viva_core.settings import get_local_cache_dir as get_local_cache_dir  # re-exported: many importers
 from viva_core.storage.file_paths import HPCFilePath
 
@@ -50,7 +50,9 @@ def _parse_docker_config_json(path: str) -> tuple[str, str]:
 
 KV_DRIVER = Literal["file", "s3", "gcs"]
 TS_DRIVER = Literal["zarr", "n5", "zarr3"]
-STORAGE_BACKEND = Literal["gcs", "s3", "qumulo"]
+STORAGE_BACKEND = (
+    StorageBackend  # the type is core's (viva_core.settings.StorageBackend); this name is kept for importers
+)
 
 # -- load dev env -- #
 REPO_ROOT = os.path.dirname(os.path.dirname(__file__))
@@ -80,11 +82,10 @@ class APIFilePath(Path):
 class Settings(CoreSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
-    storage_backend: STORAGE_BACKEND = "s3"
-
-    # Storage backends (GCS / S3 / Qumulo), the local cache dir and the local<->remote path
-    # prefixes are INHERITED from viva_core.settings.CoreSettings -- one definition of each
-    # field, its default and its variable name (core split, docs/plan-core.md P1b).
+    # Storage backends (GCS / S3 / Qumulo), the backend selector (storage_backend, U2), the local
+    # cache dir and the local<->remote path prefixes are INHERITED from
+    # viva_core.settings.CoreSettings -- one definition of each field, its default and its
+    # variable name (core split, docs/plan-core.md P1b).
 
     mongodb_uri: str = "mongodb://localhost:27017"
     mongodb_database: str = "biosimulations"
@@ -112,16 +113,9 @@ class Settings(CoreSettings):
     # value per Deployment that accepts env-worker tasks; "api" is the only one today.
     # owner_instance: inherited from CoreSettings (P3d-4d-2b)
 
-    slurm_submit_host: str = ""
-    slurm_submit_port: int = 22  # a SLURM cluster in Docker publishes sshd on a port of Docker's choosing
-    slurm_submit_user: str = ""  # "svc_vivarium"
-    slurm_submit_key_path: str = ""  # "/Users/jimschaff/.ssh/id_rsa"
-    slurm_submit_known_hosts: str | None = None
-    slurm_partition: str = ""
-    slurm_node_list: str = ""  # comma-separated list of nodes, e.g., "node1,node2"
-    slurm_qos: str = ""
-    # slurm_log_base_path: inherited from CoreSettings (P3f; the file_paths <-> settings cycle is broken)
-    slurm_base_path: HPCFilePath = HPCFilePath(remote_path=Path(""))
+    # The SLURM backend's settings -- slurm_submit_{host,port,user,key_path,known_hosts},
+    # slurm_{partition,node_list,qos}, slurm_base_path (U2) and slurm_log_base_path (P3f) -- are
+    # INHERITED from viva_core.settings.CoreSettings: one definition, the same variable names.
 
     # Apptainer/Singularity temp directory for container builds
     # Use local SSD/NVMe (/tmp) for builds with many small files (faster metadata ops)
@@ -396,7 +390,7 @@ class Settings(CoreSettings):
     # --- Compose (process-bigraph) subsystem settings ---
     # compose_image_base_path: inherited from CoreSettings (P3d-2)
     # compose_sim_base_path: inherited from CoreSettings (P3d-2)
-    compose_cache_base_path: str = ""  # HPC path for compose ParCa cache (bind-mounted into containers)
+    # compose_cache_base_path: inherited from CoreSettings (U2); SMS puts its ParCa cache there
     # compose_containers_output_dir: inherited from CoreSettings (P3d-4d-2)
     # Ray/Batch compose runner image (prebuilt, carries process-bigraph + pbg-emitters).
     # `<ray_ecr_repository>:<compose_ray_image_tag>` — the deploy points this at the served
