@@ -1498,6 +1498,24 @@
 #            exist; /app/viva_api/simulation/dispatch/ exists and /app/viva_api/simulation/ray/ does
 #            NOT; `_submit_in_environment` is in /app/viva_api/compose/simulation_service_ray.py;
 #            the pod's environment carries CORE_RUNTIME_IMAGE.
+#           0.9.156 -- core split, deploy checkpoint E2 (docs/plan-core.md section 8): the end of P3.
+#            REWIRING ONLY, proven equal to what it replaced; no route, schema, table or job changed:
+#              #784 the compose router is core's (served at /viva/v1/compose and, unchanged, at
+#                   /compose/v1); /curated/ecoli is SMS's own router at the same prefix; the results
+#                   route asks the backend for its archive (results_archive) instead of knowing SSH;
+#                   S3 tar streaming and BioModels (contrib/sysbio) in core.
+#              #785 the env-worker router is core's (/viva/v1/env-worker and /env-worker/v1); auth
+#                   and oidc in core with their eight settings.
+#              #786 the container replaces the setters: ComposeServices + EnvWorkerServices on
+#                   CoreContainer, routes ask current_container(); no router setter, no relay.runner.
+#              #787 settings split finished (slurm_log_base_path); core's own OpenAPI document
+#                   (viva_core/api/spec, 47 operations); the lifespan starts without a JobScheduler.
+#            No migration; the -db-migration overlay tag is bumped to stay equal, the Job is not run.
+#            MARKERS: /app/viva_core/api/routers/compose.py and env_worker.py exist; /app/viva_core/
+#            container.py defines ComposeServices; /app/viva_core/api/spec/openapi_3_1_0_generated.yaml
+#            exists; `def set_compose_services` is NOT in /app/viva_core/api/routers/compose.py.
+#            SMOKE: Tier 0 + 1 + 2 with --require-aws, plus --environment runtime. The question is only
+#            whether the wiring holds live: every service now reaches its route through the container.
 #           0.9.155 -- core split, checkpoint E CLOSE. 0.9.154's Tier 2 was 20/2/2: both failures were the
 #            Nextflow path, one bug -- the head staged render_nf.py by reading it as package data from
 #            viva_api.compose, which since 0.9.154 is the 16-line self-replacing shim (559 bytes; its first
@@ -1556,7 +1574,7 @@
 #            /app/viva_api/simulation/compose_analysis.py, /app/viva_api/compose/env_worker_schemas.py,
 #            /app/viva_core/api/app.py and /app/viva_api/core_wiring.py exist;
 #            `_submit_analysis_job` is GONE from /app/viva_api/compose/simulation_service_ray.py.
-__version__ = "0.9.155"
+__version__ = "0.9.156"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in
