@@ -34,5 +34,18 @@ class EnvironmentModel(BaseModel):  # type: ignore[explicit-any]  # pydantic's, 
 
 class CoreHealth(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
     status: Literal["ok"] = "ok"
+    #: Core's own version (``viva_core.version``), for humans and bug reports -- not for feature detection.
+    version: str
     #: Which core services this deployment provides, by name.
     services: dict[str, bool]
+
+
+class CoreCapabilities(BaseModel):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
+    """What this running deployment can serve. Clients test ``capabilities`` for membership; ``version``
+    is core's own, for humans (``viva_core.api.capabilities`` has the contract)."""
+
+    version: str
+    capabilities: list[str] = Field(
+        description="Stable capability names this deployment serves right now. Test membership; "
+        "absence means 'not available here'. Unknown names should be ignored."
+    )

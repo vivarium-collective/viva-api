@@ -161,12 +161,21 @@ def _has_dual_engine_comparison() -> bool:
     return _has_container_jobs()
 
 
+def _serves_viva_v1_surface() -> bool:
+    """Core's routers answer under ``/viva/v1`` in this process (plan-core P3g). A surface fact, marked
+    by ``viva_api/api/main.py`` when it includes them; asked of core so the two capability routes agree."""
+    from viva_core.api.capabilities import CAPABILITY_VIVA_V1_SURFACE, served
+
+    return CAPABILITY_VIVA_V1_SURFACE in served()
+
+
 #: (name, probe). Order here is irrelevant -- ``detect_capabilities`` sorts.
 CAPABILITY_REGISTRY: list[tuple[str, Callable[[], bool]]] = [
     (CAPABILITY_CHAIN_DISPATCH, _has_chain_dispatch),
     (CAPABILITY_CHAIN_PROGRESS, _has_chain_progress),
     (CAPABILITY_CONTAINER_JOBS, _has_container_jobs),
     (CAPABILITY_DUAL_ENGINE_COMPARISON, _has_dual_engine_comparison),
+    ("viva-v1-surface", _serves_viva_v1_surface),
 ]
 
 

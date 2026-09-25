@@ -1018,7 +1018,7 @@ split; each has an owner-less issue or a named moment.
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image. 2.3a the model + `RegistryEnvironmentResolver` (`viva_core/environments/`, no caller changed) — #748 · 2.3b the four derivations ask it (`common/site_environments.py`) — #749 · 2.3c the core runtime image + core's container entrypoint (`Dockerfile-core-runtime`, `viva_core/runtime/`) — #750 · 2.3d-1 a task may name an environment (`TaskRunRequest.environment`) — #751 · 2.3d-2 Batch pulls the image; dev names it — #752 · 2.3d-3 a compose run may name an environment (one container) | | | | **done and deployed** — dev is 0.9.152 (checkpoint D, 2026-09-21, tag `v0.9.152`): the four image derivations ask one resolver, `CORE_RUNTIME_IMAGE` is live, a task and a compose run may name `environment="runtime"`. Measured on dev: `compose` 21.6 s in the runtime image against 495.9 s on the science image; a cold-fleet `task` starts in 106 s against 221 s. Prod: repeat the one-job trial pull from its VPC before it names the image |
 | P3 | settings, DI, app factory. 3a `create_core_app()` boots alone; SMS includes core's router under `/viva/v1` | | | | **done, deployed (E2, 0.9.156)** — 3a, 3b, 3c deployed at D2 (0.9.153); **3d-1 … 3d-4d-1 deployed at E (0.9.154/0.9.155, tag `v0.9.155`)**; 3d-1 done (compose's ParCa staging is a hook); 3d-2 done (the 14 settings compose and env-worker read are `CoreSettings` fields); 3d-3 done (compose is handed its services; it imports nothing of `viva_api.dependencies`); 3d-4a done (the env-worker service and the site resolver are in `viva_core`); 3d-4b-1 done (five compose modules `Any`-free, the D12 ban on for them by name); 3d-4b-2 done (`models` and `container_def` are in `viva_core`; `ComputeBackend` too); 3d-4b-3 done (the five and the abstract service are in `viva_core`: 3,025 lines under `viva_core/compose/` + `env_worker/`); 3d-4c-1 done (the Batch compose service is in `viva_core`; the layout primitives too); 3d-4c-2 done (the runner and `render_nf` are core's; SMS's hooks are a staged sibling — every dispatch command changed, undeployed); 3d-4d-1 done (the compose handlers are core's); 3d-4d-2a done (the compose router is core's, served at `/viva/v1/compose` and, unchanged, at `/compose/v1`; BioModels in `contrib/sysbio`); 3d-4d-2b done (the env-worker router and identity are core's) — **3d-4 complete**; 3e done (containers replace the setters: the routers carry none, `current_container()` is the one seam); 3f done — **P3 complete and deployed: checkpoint E2 passed (0.9.156, tag `v0.9.156`)**; next P4. **SLURM compose stays in SMS** until a SLURM site can test it |
 | Strategy B | the docs PR: D14–D21, the order under B, P3g / P4c / P5b / P8b, §4b, checkpoints F2 … UE | — | — | — | **written 2026-09-25**; the replies on #742 and workbench#1150 go with it |
-| P3g | dual-surface scaffolding | | | | not started (checkpoint F2); caller release W1 |
+| P3g | dual-surface scaffolding — #792 the interim `/viva/v1/{compose,env-worker}` mounts in the SMS app (served, not documented twice), `viva_core/version.py`, `GET /viva/v1/capabilities` + `viva-v1-surface` on both capability routes, `version` in core's health · #793 the duplicate `operationId` (`run-slurm-analysis`) · #794 one GUI notebook (`app/ui/dashboard.py` was a symlink to `app/gui.py`) · #795 the smoke `contract` check (`app/contract.py`, baseline recorded from dev 0.9.156, 22 operations) | | | | **all four written, CI green** (checkpoint F2, code only; caller release W1) |
 | P4a | P4a-1 owner-ref expand — #790 (`a4b6c8d0e2f4`: `hpcrun.{owner_kind,owner_id,output_uri}`, `dataset.{owner_kind,owner_id,producer_job_id,trace_id}`, backfilled, dual-written; `viva_api/simulation/owner_ref.py`) · P4a-2 the dataset code move + `/viva/v1/datasets` | | | | **P4a-1 written, #790 open** (checkpoint F: the migration Job, then the app); P4a-2 not started (checkpoint G) |
 | P4b | #776 reshaped per D15 + the SMS adapters; `/viva/v1/{tasks,jobs}`; `task_script` | | | | not started (checkpoint G) |
 | P-jump | Stanford prod 0.9.78 → F | | | | not started; right after F (Jim, 2026-09-25) |
@@ -1040,6 +1040,24 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-25** — **P3g, first PR: the dual-surface scaffolding.** The first code of Strategy B
+  (adopted the same day; the decisions and the order are in #791). Two lines in
+  `viva_api/api/main.py` include core's compose and env-worker routers a second time, under
+  `/viva/v1/compose` and `/viva/v1/env-worker` — the spelling a standalone core already serves — so
+  a caller can leave `/compose/v1` and `/env-worker/v1` before the resource families exist (D17). They
+  are served and **not** in the application's OpenAPI document (`include_in_schema=False`): the
+  routes carry explicit operation ids, and a second copy would duplicate every one; core's own
+  document describes that spelling, and `atlantis smoke`'s `routes` check, which compares
+  documents, is unaffected. **Capabilities move to core**: `viva_core/api/capabilities.py` restates
+  the application's contract (membership, never version; a raising probe is "not advertised") and
+  adds one kind of probe — a *served surface*, marked by whoever mounts the routers; `GET
+  /viva/v1/capabilities` (`core-capabilities`) advertises core's marks plus the application's probes,
+  handed over on `CoreContainer.capabilities`, so it and `/core/v1/capabilities` list the same
+  names; both now say `viva-v1-surface`. **Core has a version line** (`viva_core/version.py`,
+  `0.1.0`, D16), reported by `/viva/v1/health` and the capabilities route for humans. Proof: the
+  standalone boot test (health carries the version; the capabilities route; an application's
+  raising probe degrades), the two-documents test (the interim spelling answers by name on the SMS
+  app and appears once, in core's document), and the capabilities test (both routes agree).
 - **2026-09-25** — **Strategy B is adopted; #742 is answered proposal by proposal; core must run standalone at UConn.**
   Jim: "eran likes the direct approach and so do I … look deeply at the implications", then "consider
   eran's proposal in #742 as a proposal which will inform design after discussion rather than as a

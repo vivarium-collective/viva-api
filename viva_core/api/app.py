@@ -15,7 +15,8 @@ from collections.abc import Callable
 
 from fastapi import APIRouter, FastAPI, HTTPException
 
-from viva_core.api.schemas import CoreHealth, EnvironmentModel, ResolveEnvironmentRequest
+from viva_core.api.capabilities import CAPABILITY_VIVA_V1_SURFACE, detect, mark_served
+from viva_core.api.schemas import CoreCapabilities, CoreHealth, EnvironmentModel, ResolveEnvironmentRequest
 from viva_core.container import CoreContainer, set_container_provider
 from viva_core.environments import (
     Dependency,
@@ -27,6 +28,7 @@ from viva_core.environments import (
     RegistryEnvironmentResolver,
 )
 from viva_core.settings import CoreSettings, get_core_settings
+from viva_core.version import __version__
 
 CORE_PREFIX = "/viva/v1"
 
@@ -50,7 +52,19 @@ def build_core_router(container: Callable[[], CoreContainer], *, prefix: str = C
     @router.get("/health", response_model=CoreHealth, operation_id="core-health", tags=["Viva Core"])
     def health() -> CoreHealth:
         """Which core services this deployment provides. Core's own; the application has its own."""
-        return CoreHealth(services={"environments": container().environments is not None})
+        return CoreHealth(version=__version__, services={"environments": container().environments is not None})
+
+    @router.get(
+        "/capabilities",
+        response_model=CoreCapabilities,
+        operation_id="core-capabilities",
+        tags=["Viva Core"],
+        summary="What this deployment can serve (for client feature detection)",
+    )
+    def capabilities() -> CoreCapabilities:
+        """Stable names a client tests for membership -- never a version comparison. Core's own
+        (the surfaces mounted in this process) plus the application's probes, if it embeds core."""
+        return CoreCapabilities(version=__version__, capabilities=detect(container().capabilities))
 
     @router.post(
         "/environments/resolve",
@@ -93,7 +107,12 @@ def create_core_app(container: CoreContainer | None = None) -> FastAPI:
     which is all a standalone core has, and all it may need (decision D7)."""
     held = container or container_from_settings(get_core_settings())
     set_container_provider(lambda: held)
-    app = FastAPI(title="viva-core", docs_url=f"{CORE_PREFIX}/docs", openapi_url=f"{CORE_PREFIX}/openapi.json")
+    app = FastAPI(
+        title="viva-core",
+        version=__version__,
+        docs_url=f"{CORE_PREFIX}/docs",
+        openapi_url=f"{CORE_PREFIX}/openapi.json",
+    )
     app.include_router(build_core_router(lambda: held))
     # The compose and env-worker routers, at core's own prefix. Their services are the container's
     # (P3e); a standalone core whose container holds none answers by name on those routes, and
@@ -103,4 +122,5 @@ def create_core_app(container: CoreContainer | None = None) -> FastAPI:
 
     app.include_router(compose_router, prefix=f"{CORE_PREFIX}/compose")
     app.include_router(env_worker_router, prefix=f"{CORE_PREFIX}/env-worker")
+    mark_served(CAPABILITY_VIVA_V1_SURFACE)
     return app
