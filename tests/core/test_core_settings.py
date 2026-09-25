@@ -69,7 +69,15 @@ def test_the_application_hands_core_its_own_settings_object() -> None:
 #: application's own image (its registry repository; the workspace root inside it), so the value
 #: cannot be written in core -- the vocabulary guard would refuse it, rightly -- and core's own
 #: default is EMPTY: there is no second value to disagree with, only an absent one to fill.
-APPLICATION_SUPPLIES_THE_DEFAULT = {"env_worker_workspace_path", "ray_ecr_repository", "s3_output_prefix"}
+APPLICATION_SUPPLIES_THE_DEFAULT = {
+    "env_worker_workspace_path",
+    "ray_ecr_repository",
+    "s3_output_prefix",
+    # U2d: what an env-worker Job is labelled and runs as, and where its module image keeps the module
+    "env_worker_app_label",
+    "env_worker_service_account",
+    "env_worker_module_path",
+}
 
 
 def test_every_core_field_has_exactly_one_definition() -> None:

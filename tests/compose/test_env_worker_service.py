@@ -34,15 +34,9 @@ def service(monkeypatch: pytest.MonkeyPatch) -> tuple[EnvWorkerService, MagicMoc
     guessing a registry would run the science under an environment nobody chose.
     """
 
-    class _S:
+    class _S(_SiteSettings):
         ecr_account_id = "476270107793"
-        batch_region = "us-gov-west-1"
-        ray_ecr_repository = "v2ecoli"
         k8s_job_namespace = "sms-api-stanford-test"
-        env_worker_module_image = "ghcr.io/vivarium-collective/vivarium-workbench:0.3.57"
-        env_worker_workspace_path = "/app/v2ecoli"
-        env_worker_memory_request = "512Mi"
-        env_worker_memory_limit = "8Gi"
 
     monkeypatch.setattr("viva_api.compose.env_worker_service.get_settings", lambda: _S())
     k8s = MagicMock()
@@ -50,21 +44,61 @@ def service(monkeypatch: pytest.MonkeyPatch) -> tuple[EnvWorkerService, MagicMoc
     return svc, k8s
 
 
-def test_missing_ecr_account_refuses_rather_than_guessing(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _S:
-        ecr_account_id = ""
-        batch_region = "us-gov-west-1"
-        ray_ecr_repository = "v2ecoli"
-        k8s_job_namespace = "ns"
-        env_worker_module_image = "ghcr.io/vivarium-collective/vivarium-workbench:0.3.57"
-        env_worker_workspace_path = "/app/v2ecoli"
-        env_worker_memory_request = "512Mi"
-        env_worker_memory_limit = "8Gi"
+class _SiteSettings:
+    """What a deployment supplies (the application's defaults for the U2d fields)."""
 
-    monkeypatch.setattr("viva_api.compose.env_worker_service.get_settings", lambda: _S())
+    ecr_account_id = ""
+    batch_region = "us-gov-west-1"
+    ray_ecr_repository = "v2ecoli"
+    environment_registry = ""
+    environment_repository = ""
+    k8s_job_namespace = "ns"
+    env_worker_module_image = "ghcr.io/vivarium-collective/vivarium-workbench:0.3.57"
+    env_worker_workspace_path = "/app/v2ecoli"
+    env_worker_memory_request = "512Mi"
+    env_worker_memory_limit = "8Gi"
+    env_worker_app_label = "sms-api"
+    env_worker_service_account = "batch-submit"
+    env_worker_module_path = "/app/vivarium-workbench/vivarium_workbench"
+
+
+def test_missing_ecr_account_refuses_rather_than_guessing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("viva_api.compose.env_worker_service.get_settings", lambda: _SiteSettings())
     svc = EnvWorkerService(k8s=MagicMock(), namespace="ns")
     with pytest.raises(EnvWorkerLaunchError, match="ecr_account_id"):
         svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN)
+
+
+def test_a_site_that_names_its_registry_in_full_needs_no_ecr_account(monkeypatch: pytest.MonkeyPatch) -> None:
+    """U2d: a standalone core on RKE2 pulls its environments from ghcr; the worker image is resolved
+    the same way the site's other images are, and nothing here spells a registry host."""
+
+    class _S(_SiteSettings):
+        environment_registry = "ghcr.io/vivarium-collective"
+        environment_repository = "viva-core"
+        env_worker_app_label = ""
+        env_worker_service_account = ""
+
+    monkeypatch.setattr("viva_api.compose.env_worker_service.get_settings", lambda: _S())
+    k8s = MagicMock()
+    svc = EnvWorkerService(k8s=k8s, namespace="ns")
+    handle = svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN)
+    assert handle.image == f"ghcr.io/vivarium-collective/viva-core:{COMMIT}"
+    job = k8s.create_job.call_args[0][0]
+    assert "app" not in job.metadata.labels and job.metadata.labels["job-type"] == "env-worker"
+    assert job.spec.template.spec.service_account_name is None  # the namespace's default
+
+
+def test_the_jobs_deployment_names_come_from_settings(service: tuple[EnvWorkerService, MagicMock]) -> None:
+    """U2d: the label, the service account and the module path were literals in core naming one
+    deployment; they are the site's settings now, and the application supplies today's values."""
+    svc, k8s = service
+    svc.start(commit=COMMIT, callback_host=HOST, callback_port=PORT, token=TOKEN)
+    job = k8s.create_job.call_args[0][0]
+    assert job.metadata.labels["app"] == "sms-api"
+    assert job.spec.template.spec.service_account_name == "batch-submit"
+    init = job.spec.template.spec.init_containers[0]
+    assert "/app/vivarium-workbench/vivarium_workbench/env_worker.py" in init.command[-1]
 
 
 def _created_job(k8s: MagicMock) -> Any:
@@ -259,15 +293,9 @@ def test_workspace_defaults_to_the_images_own_checkout(service: tuple[EnvWorkerS
 
 
 def test_missing_module_image_refuses_rather_than_guessing(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _S:
+    class _S(_SiteSettings):
         ecr_account_id = "476270107793"
-        batch_region = "us-gov-west-1"
-        ray_ecr_repository = "v2ecoli"
-        k8s_job_namespace = "ns"
         env_worker_module_image = ""
-        env_worker_workspace_path = "/app/v2ecoli"
-        env_worker_memory_request = "512Mi"
-        env_worker_memory_limit = "8Gi"
 
     monkeypatch.setattr("viva_api.compose.env_worker_service.get_settings", lambda: _S())
     svc = EnvWorkerService(k8s=MagicMock(), namespace="ns")
@@ -393,13 +421,9 @@ def test_a_site_can_lower_the_ceiling_without_a_code_change(
     """The point of the setting. A site on smaller nodes must be able to come
     down; hard-coding the dev-node answer would strand them."""
 
-    class _S:
+    class _S(_SiteSettings):
         ecr_account_id = "476270107793"
-        batch_region = "us-gov-west-1"
-        ray_ecr_repository = "v2ecoli"
-        k8s_job_namespace = "ns"
         env_worker_module_image = "ghcr.io/vivarium-collective/vivarium-workbench:0.3.72"
-        env_worker_workspace_path = "/app/v2ecoli"
         env_worker_memory_request = "256Mi"
         env_worker_memory_limit = "3Gi"
 

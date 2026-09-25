@@ -309,6 +309,11 @@ class Settings(CoreSettings):
     env_worker_workspace_path: str = (
         "/app/v2ecoli"  # overrides CoreSettings: the default names this application's image
     )
+    # What this application's env-worker Jobs are labelled, run as, and where the workbench image
+    # keeps the worker module (U2d): the values core carried as literals until 2026-09-25.
+    env_worker_app_label: str = "sms-api"  # overrides CoreSettings: names this deployment
+    env_worker_service_account: str = "batch-submit"  # overrides CoreSettings: kustomize/base/rbac-jobs.yaml
+    env_worker_module_path: str = "/app/vivarium-workbench/vivarium_workbench"  # overrides CoreSettings
     # Memory the worker pod may use. Settings rather than constants because the
     # right ceiling is a property of the SITE's nodes, not of this code: dev runs
     # t3.xlarge (~14.4Gi allocatable, 11% requested), and a site on smaller nodes

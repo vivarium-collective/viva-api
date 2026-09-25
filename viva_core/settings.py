@@ -104,6 +104,13 @@ class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, n
     env_worker_workspace_path: str = ""  # the application supplies its own default
     env_worker_memory_request: str = "512Mi"
     env_worker_memory_limit: str = "8Gi"
+    # What an env-worker Job is labelled, runs as, and where its module is inside the module image
+    # (U2d; until then these named one deployment inside core). The application supplies each
+    # default; a standalone core with none labels nothing, uses the namespace's default service
+    # account, and refuses to stage a module from nowhere.
+    env_worker_app_label: str = ""
+    env_worker_service_account: str = ""
+    env_worker_module_path: str = ""
     ray_ecr_repository: str = ""  # the application supplies its own default
     compose_image_base_path: str = ""
     compose_sim_base_path: str = ""
