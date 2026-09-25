@@ -98,6 +98,8 @@ def create_core_app(container: CoreContainer | None = None) -> FastAPI:
     # from whoever composes this app (P3d-4d-2); a standalone core that has wired none answers 500
     # by name on those routes, and serves everything else.
     from viva_core.api.routers.compose import router as compose_router
+    from viva_core.api.routers.env_worker import router as env_worker_router
 
     app.include_router(compose_router, prefix=f"{CORE_PREFIX}/compose")
+    app.include_router(env_worker_router, prefix=f"{CORE_PREFIX}/env-worker")
     return app

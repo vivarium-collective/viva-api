@@ -23,7 +23,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from viva_api.api.routers import env_worker as ew
+from viva_core.api.routers import env_worker as ew
 
 
 @pytest.fixture

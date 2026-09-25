@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException, Request
 
-from viva_api.api import auth
+from viva_core.api import auth
 
 
 def _Req(**headers: str) -> Request:
@@ -198,9 +198,11 @@ def test_every_env_var_the_overlay_sets_is_actually_read() -> None:
 
     repo = Path(__file__).resolve().parents[2]
     fields = {name.upper() for name in Settings.model_fields}
+    # Both packages: a reader that moved into core (the relay's advertise host, P3d-4d-2b) still reads.
     source = "\n".join(
         path.read_text(encoding="utf-8")
-        for path in (repo / "viva_api").rglob("*.py")
+        for package in ("viva_api", "viva_core")
+        for path in (repo / package).rglob("*.py")
         if "api/client/" not in path.as_posix()
     )
     overlay = (repo / "kustomize" / "overlays" / "sms-api-stanford-test" / "kustomization.yaml").read_text(

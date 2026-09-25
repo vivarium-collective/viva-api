@@ -24,7 +24,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import Request
 
-from viva_api.api import oidc
+from viva_core.api import oidc
 
 ISSUER = "https://keycloak.example.test/realms/viva"
 AUDIENCE = "viva-api"
@@ -285,7 +285,7 @@ def test_a_verified_token_beats_the_unverified_header(monkeypatch: pytest.Monkey
     a way to impersonate anyone -- which is exactly what this module was added to
     stop. So the source carrying evidence wins.
     """
-    from viva_api.api import auth
+    from viva_core.api import auth
 
     monkeypatch.setattr(auth, "identity_header_name", lambda: "X-Auth-Request-Email")
     caller = auth.resolve_caller(_req_both(_token(keypair), "impostor@example.test"))
@@ -295,7 +295,7 @@ def test_a_verified_token_beats_the_unverified_header(monkeypatch: pytest.Monkey
 def test_the_header_still_works_where_no_token_is_sent(monkeypatch: pytest.MonkeyPatch) -> None:
     """Adding a second source must not remove the first. Most deployments have
     only the header, and nothing about them changes."""
-    from viva_api.api import auth
+    from viva_core.api import auth
 
     monkeypatch.setattr(auth, "identity_header_name", lambda: "X-Auth-Request-Email")
     request = Request({
@@ -314,7 +314,7 @@ def test_an_invalid_token_falls_through_to_the_header(monkeypatch: pytest.Monkey
     a stale token looks like a caller with none; the clients cover it from the
     other side, since `atlantis worker submit` warns when the server did not
     record the identity it was given."""
-    from viva_api.api import auth
+    from viva_core.api import auth
 
     monkeypatch.setattr(auth, "identity_header_name", lambda: "X-Auth-Request-Email")
     expired = _token(keypair, exp=int(time.time()) - 3600)
@@ -324,7 +324,7 @@ def test_an_invalid_token_falls_through_to_the_header(monkeypatch: pytest.Monkey
 def test_an_absurdly_long_subject_is_capped_not_stored_whole(monkeypatch: pytest.MonkeyPatch, keypair: Any) -> None:
     """A verified subject still lands in a database column. The issuer is
     trusted for authenticity, not for restraint."""
-    from viva_api.api import auth
+    from viva_core.api import auth
 
     monkeypatch.setattr(auth, "identity_header_name", lambda: "")
     token = _token(keypair, email="x" * 5000)

@@ -201,9 +201,9 @@ def test_batch_status_omits_result_payloads() -> None:
 def test_batch_status_says_whether_a_result_is_waiting() -> None:
     """Omitting the payload must not force a caller to guess. `has_result` is
     what makes one targeted GET obviously worthwhile."""
-    from viva_api.api.routers.env_worker import _to_status
     from viva_api.compose.env_worker_schemas import TaskStatusResponse
     from viva_api.compose.models import ComposeJobStatus, EnvWorkerTask
+    from viva_core.api.routers.env_worker import _to_status
 
     def _task(result: object | None) -> EnvWorkerTask:
         return EnvWorkerTask(

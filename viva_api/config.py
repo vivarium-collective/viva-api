@@ -110,7 +110,7 @@ class Settings(CoreSettings):
     # every restart, and the env-worker boot sweep has to recognise the rows its predecessor
     # left behind). Tasks are stamped with it and the sweep settles only its own role's. One
     # value per Deployment that accepts env-worker tasks; "api" is the only one today.
-    owner_instance: str = "api"
+    # owner_instance: inherited from CoreSettings (P3d-4d-2b)
 
     slurm_submit_host: str = ""
     slurm_submit_user: str = ""  # "svc_vivarium"
@@ -341,36 +341,7 @@ class Settings(CoreSettings):
     # Empty issuer = the whole feature is off, which is the default and is a
     # legitimate steady state. Nothing changes for a deployment that sets none of
     # these.
-    oidc_issuer: str = ""
-    # REQUIRED whenever oidc_issuer is set, and deliberately has no default. An
-    # issuer-only check accepts a token minted by the same IdP for a DIFFERENT
-    # relying party, which is a real confused-deputy hole rather than a nicety.
-    # oidc.py refuses to validate at all rather than skip this check.
-    oidc_audience: str = ""
-    # Signing algorithms this deployment will accept, comma separated. An
-    # allowlist, not a suggestion: accepting whatever the token's own header
-    # names is the classic JWT algorithm-confusion bug, and "none" must never
-    # appear here.
-    oidc_algorithms: str = "RS256"
-    # How long a fetched JWKS is reused before refetch. Key ROTATION does not
-    # wait for this -- an unknown `kid` forces an immediate refetch -- so this
-    # only bounds how long a REVOKED key stays usable.
-    oidc_jwks_cache_seconds: int = 300
-    # Clock skew tolerance on exp/nbf. Small and explicit; generous leeway on
-    # expiry is how a stolen token stays useful.
-    oidc_leeway_seconds: int = 30
-    # Cap on the JWKS fetch. This runs on the request path on a cache miss, so it
-    # is short by design -- see the module docstring in oidc.py.
-    oidc_fetch_timeout_seconds: float = 5.0
-
-    # Env var is IDENTITY_HEADER -- the field name uppercased, because these
-    # Settings carry NO env_prefix. Worth stating: this was deployed once as
-    # VIVA_API_IDENTITY_HEADER (the name used in the plan and in every docstring
-    # around it), which pydantic-settings silently ignored -- the variable was on
-    # the pod, `settings.identity_header` was still "", and the whole seam was
-    # dead config. The same mistake had already been made once here with
-    # ENV_WORKER_WORKSPACE_PATH.
-    identity_header: str = ""
+    # oidc_*, identity_header: inherited from CoreSettings (P3d-4d-2b): identity is core's, its routes read it
 
     ray_ecr_repository: str = "v2ecoli"  # the Ray image repo (submit_build_image_job); overrides CoreSettings
     ray_parca_mode: str = "full"  # v2ecoli-parca --mode (fast for debug, full for production)
