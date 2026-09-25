@@ -89,16 +89,21 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     await start_standalone()
 
     # --- JobScheduler setup ---
+    # The scheduler is SMS's (the simulation and analysis state machines). A deployment that
+    # configures no simulation backend has none, and the app serves without it -- core's routes,
+    # compose and env workers do not need it (P3f). Say so once, rather than refuse to start.
     job_scheduler = get_job_scheduler()
-    if not job_scheduler:
-        raise RuntimeError("JobScheduler is not initialized. Please check your configuration.")
-    await job_scheduler.subscribe()
-    await job_scheduler.start_polling(interval_seconds=5)  # configurable interval
+    if job_scheduler:
+        await job_scheduler.subscribe()
+        await job_scheduler.start_polling(interval_seconds=5)  # configurable interval
+    else:
+        logger.warning("JobScheduler is not initialized: no simulation backend configured; serving without it")
 
     try:
         yield
     finally:
-        await job_scheduler.close()
+        if job_scheduler:
+            await job_scheduler.close()
     await shutdown_standalone()
 
 

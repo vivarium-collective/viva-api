@@ -440,6 +440,7 @@ viva_core/
   compose/    models, container_def, database_service, tables_orm, job_monitor, service  (P3d-4b: in place)
   api/routers/compose  (P3d-4d-2a: in place; served at /viva/v1/compose and, by SMS, at /compose/v1)
   api/routers/env_worker, api/auth, api/oidc  (P3d-4d-2b: in place; /viva/v1/env-worker and, by SMS, /env-worker/v1)
+  api/openapi_spec.py, api/spec/  (P3f: core's own OpenAPI document; the application's stays the union)
   contrib/sysbio/      biomodels_service, biomodel_documents  (P3d-4d-2a: in place)
   storage/s3_streaming (P3d-4d-2a)
               simulation_service_ray (the Batch service, P3d-4c-1); run_pbg, render_nf, runner_files (3d-4c-2);

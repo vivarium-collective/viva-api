@@ -1,0 +1,2666 @@
+openapi: 3.1.0
+info:
+  title: viva-core
+  version: 0.1.0
+paths:
+  /viva/v1/health:
+    get:
+      tags:
+      - Viva Core
+      summary: Health
+      description: Which core services this deployment provides. Core's own; the application
+        has its own.
+      operationId: core-health
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoreHealth'
+  /viva/v1/environments/resolve:
+    post:
+      tags:
+      - Viva Core
+      - Environments
+      summary: Which environment would a run with this need be given? (select; never
+        builds)
+      operationId: core-resolve-environment
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveEnvironmentRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvironmentModel'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/compose/simulation/run:
+    post:
+      tags:
+      - Compose Simulation
+      summary: Run a process-bigraph simulation (OMEX/PBG/SBML upload)
+      operationId: compose-run-simulation
+      parameters:
+      - name: interval_time
+        in: query
+        required: false
+        schema:
+          type: number
+          default: 1.0
+          title: Interval Time
+      - name: batch_submission
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Batch Submission
+      - name: simulator_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Simulator Id
+      - name: environment
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Run in a registered environment instead of a simulator''s
+            image: ''runtime'' is the core runtime image, for a composite that needs
+            only what process-bigraph ships. Not with simulator_id.'
+          title: Environment
+        description: 'Run in a registered environment instead of a simulator''s image:
+          ''runtime'' is the core runtime image, for a composite that needs only what
+          process-bigraph ships. Not with simulator_id.'
+      - name: compute_backend
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - $ref: '#/components/schemas/ComputeBackend'
+          - type: 'null'
+          title: Compute Backend
+      - name: extra_pip_deps
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          title: Extra Pip Deps
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_compose-run-simulation'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeSimulationExperiment'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/compose/simulation/run-document:
+    post:
+      tags:
+      - Compose Simulation
+      summary: Run a process-bigraph simulation (document as inline JSON)
+      description: "The JSON-body sibling of ``submit_simulation`` \u2014 same dispatch,\
+        \ no\nmultipart file needed. For a programmatic caller (a CLI, a generated\n\
+        client, or a future workbench path) that already holds the document as a\n\
+        Python/JSON value, this skips the upload-file round-trip entirely."
+      operationId: compose-run-simulation-document
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComposeDocumentSubmission'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeSimulationExperiment'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/compose/simulation/{simulation_id}/status:
+    get:
+      tags:
+      - Compose Results
+      summary: Get compose simulation job status
+      operationId: compose-get-simulation-status
+      parameters:
+      - name: simulation_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Simulation Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeHpcRun'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/compose/simulations/status/batch:
+    get:
+      tags:
+      - Compose Results
+      summary: Batch status lookup for compose simulations
+      operationId: compose-get-simulations-status-batch
+      parameters:
+      - name: ids
+        in: query
+        required: true
+        schema:
+          type: array
+          items:
+            type: integer
+          title: Ids
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ComposeHpcRun'
+                title: Response Compose-Get-Simulations-Status-Batch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/compose/simulation/{simulation_id}/results:
+    get:
+      tags:
+      - Compose Results
+      summary: Download compose simulation results (zip on SLURM, tar.gz on Ray/Batch)
+      operationId: compose-get-simulation-results
+      parameters:
+      - name: simulation_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Simulation Id
+      responses:
+        '200':
+          description: Results archive -- a zip on SLURM (SSH/SCP off the HPC filesystem),
+            a tar.gz on Ray/Batch (streamed from S3)
+          content:
+            application/json:
+              schema: {}
+            application/zip: {}
+            application/gzip: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/compose/simulator/{simulator_id}/build/status:
+    get:
+      tags:
+      - Compose Results
+      summary: Get compose container build status
+      operationId: compose-get-simulator-build-status
+      parameters:
+      - name: simulator_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Simulator Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeHpcRun'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/compose/simulation/{simulation_id}/document:
+    get:
+      tags:
+      - Compose Results
+      summary: Retrieve the process-bigraph document used for a compose simulation
+      description: 'Return the process-bigraph document (PBG JSON, SBML XML, or OMEX
+        manifest)
+
+        that was uploaded when this simulation was submitted.'
+      operationId: compose-get-simulation-document
+      parameters:
+      - name: simulation_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Simulation Id
+      responses:
+        '200':
+          description: PBG/SBML document content
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Compose-Get-Simulation-Document
+        '404':
+          description: Simulation not found or no document stored
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/compose/simulators:
+    get:
+      tags:
+      - Compose Compute
+      summary: List registered compose simulators
+      operationId: compose-list-simulators
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeRegisteredSimulators'
+  /viva/v1/compose/processes:
+    get:
+      tags:
+      - Compose Compute
+      summary: List registered process-bigraph processes
+      operationId: compose-list-processes
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/BiGraphProcess'
+                type: array
+                title: Response Compose-List-Processes
+  /viva/v1/compose/steps:
+    get:
+      tags:
+      - Compose Compute
+      summary: List registered process-bigraph steps
+      operationId: compose-list-steps
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/BiGraphStep'
+                type: array
+                title: Response Compose-List-Steps
+  /viva/v1/compose/curated/copasi:
+    post:
+      tags:
+      - Compose Curated
+      summary: Run COPASI simulation from SBML
+      operationId: compose-run-copasi
+      parameters:
+      - name: start_time
+        in: query
+        required: true
+        schema:
+          type: number
+          title: Start Time
+      - name: duration
+        in: query
+        required: true
+        schema:
+          type: number
+          title: Duration
+      - name: num_data_points
+        in: query
+        required: true
+        schema:
+          type: number
+          title: Num Data Points
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_compose-run-copasi'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeSimulationExperiment'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/compose/curated/tellurium:
+    post:
+      tags:
+      - Compose Curated
+      summary: Run Tellurium simulation from SBML
+      operationId: compose-run-tellurium
+      parameters:
+      - name: start_time
+        in: query
+        required: true
+        schema:
+          type: number
+          title: Start Time
+      - name: end_time
+        in: query
+        required: true
+        schema:
+          type: number
+          title: End Time
+      - name: num_data_points
+        in: query
+        required: true
+        schema:
+          type: number
+          title: Num Data Points
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_compose-run-tellurium'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeSimulationExperiment'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/compose/biomodels/identifiers:
+    get:
+      tags:
+      - Compose BioModels
+      summary: List BioModels database identifiers
+      operationId: compose-list-biomodel-identifiers
+      parameters:
+      - name: n
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          description: Max number of identifiers to return.
+          default: 20
+          title: N
+        description: Max number of identifiers to return.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+                title: Response Compose-List-Biomodel-Identifiers
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/compose/biomodels/{biomodel_id}/metadata:
+    get:
+      tags:
+      - Compose BioModels
+      summary: Get metadata for a BioModels database entry
+      operationId: compose-get-biomodel-metadata
+      parameters:
+      - name: biomodel_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Biomodel Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BiomodelInfo'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/compose/biomodels/run:
+    post:
+      tags:
+      - Compose BioModels
+      summary: Run one or more BioModels through one or more simulators
+      description: "Single entry point for BioModels runs \u2014 subsumes the former\n\
+        single/batch/audit/regression endpoints.\n\n- ``model_ids`` (or the first\
+        \ ``n_models``) selects which models to run.\n- ``simulators``: one runs each\
+        \ model on that simulator; several wire all of\n  them into one PB document\
+        \ per model for cross-validation.\n\nEach model is submitted independently;\
+        \ one that fails to load or submit is\ncollected in ``failed`` rather than\
+        \ aborting the run."
+      operationId: compose-run-biomodels
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BiomodelsRunRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BiomodelsRunResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/workers:
+    post:
+      tags:
+      - Env Worker
+      summary: Run a simulator image as an env worker that dials back to the caller
+      operationId: start-env-worker
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnvWorkerStartRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvWorkerStartResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/workers/{job_name}:
+    get:
+      tags:
+      - Env Worker
+      summary: Status of an env worker, with logs when it has failed
+      operationId: get-env-worker-status
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      - name: include_logs
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Include Logs
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvWorkerStatusResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Env Worker
+      summary: Delete an env worker Job (idempotent)
+      operationId: stop-env-worker
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: string
+                title: Response Stop-Env-Worker
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers:
+    post:
+      tags:
+      - Env Worker
+      summary: Start an env worker that dials back to viva-api, and hold its connection
+      operationId: start-relayed-env-worker
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RelayStartRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelayStartResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/call:
+    post:
+      tags:
+      - Env Worker
+      summary: Forward one JSON-RPC call to a relayed env worker
+      description: "One request, one reply \u2014 the worker protocol is already request/response.\n\
+        \nDeliberately RAW: whatever the worker returned is handed back untouched,\n\
+        sentinels included. This is the escape hatch, and a caller reaching for it\n\
+        has asked for the protocol rather than for an interpretation of it. The\n\
+        named endpoints below are where sentinels become status codes."
+      operationId: call-relayed-env-worker
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RelayCallRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelayCallResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}:
+    delete:
+      tags:
+      - Env Worker
+      summary: Close a relayed worker's connection and delete its Job (idempotent)
+      description: "Stop a worker. NOT ownership-checked, deliberately \u2014 and\
+        \ its tasks are\nsettled with attribution instead.\n\nStopping a worker is\
+        \ overwhelmingly an AUTOMATIC operation: the workbench's\npool calls it on\
+        \ LRU eviction, idle reap, dead-worker replacement and process\nexit. The\
+        \ pool has no identity to present, so an ownership check here would\neither\
+        \ break it or have to let unidentified callers through \u2014 which is the\n\
+        very bypass such a check would exist to close, and would leave the perverse\n\
+        rule that anonymous callers may stop workers while identified ones may not.\n\
+        \nSo the worker is shared infrastructure with an automatic lifecycle; the\
+        \ task\nis the unit of work that has an owner. What is owed to someone whose\
+        \ task\ndies with a worker is not a veto but an EXPLANATION: their task moves\
+        \ to a\nterminal state naming what happened and, where identity is configured,\
+        \ who\ndid it \u2014 rather than hanging in `running` until somebody wonders."
+      operationId: stop-relayed-env-worker
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Stop-Relayed-Env-Worker
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/generators:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Composite generators registered in the worker's workspace
+      description: 'The health check that actually proves the arc, and the reason
+        this one
+
+        earns an endpoint despite having no workbench caller.
+
+
+        `ping` and `initialize` pass even when the workspace is wrong. This does not:
+
+        a worker that could not import the workspace falls back to a GLOBAL scan of
+
+        everything installed in the image, and the give-away is the count of
+
+        generators from packages the workspace does not own.'
+      operationId: list-env-worker-generators
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response List-Env-Worker-Generators
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/registry:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Process/step/type names in the worker's core
+      operationId: read-env-worker-registry
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Read-Env-Worker-Registry
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/composites:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Composites discoverable in the worker's workspace
+      operationId: discover-env-worker-composites
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Discover-Env-Worker-Composites
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/composites/full:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Discovered composites with their resolved detail
+      description: 'The expensive sibling of `/composites`: it resolves each one.
+        Separate
+
+        URLs rather than a `?full=` flag, because the cost difference is large enough
+
+        that a caller should have to ask for it in the path.'
+      operationId: read-env-worker-composites-full
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Read-Env-Worker-Composites-Full
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/visualizations:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Visualization classes available in the worker's workspace
+      operationId: list-env-worker-visualizations
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response List-Env-Worker-Visualizations
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/visualizations/inputs:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Declared input ports of each visualization class
+      operationId: read-env-worker-visualization-inputs
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Read-Env-Worker-Visualization-Inputs
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/core-snapshot:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Registry snapshot plus the workspace document, for a report render
+      description: '`package_path` is REQUIRED rather than defaulted. The worker imports
+
+        `<package_path>.core` and `<package_path>.document`; a default here would
+
+        guess at the caller''s workspace and import whatever that guess named.'
+      operationId: read-env-worker-core-snapshot
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      - name: package_path
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          title: Package Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Read-Env-Worker-Core-Snapshot
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/reexports:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Which allow-listed package re-exports each class
+      description: '`include` is the caller''s allow-list of packages to scan, repeated:
+
+        `?include=a&include=b`. The worker imports each one, so an empty list means
+
+        "scan nothing" -- which is why it is not defaulted to something broader.'
+      operationId: read-env-worker-reexport-map
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      - name: include
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+          default: []
+          title: Include
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Read-Env-Worker-Reexport-Map
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/composite-state:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Build a registered generator's composite state
+      operationId: resolve-env-worker-composite-state
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompositeRef'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Resolve-Env-Worker-Composite-State
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/composite-state/inner:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Drill into a Composite Process and return the inner composite's state
+      description: 'Dispatchable in the worker but absent from its `_CAPABILITIES`
+        list, so
+
+        `initialize`''s handshake does not advertise it. Given a URL here, it is at
+
+        least discoverable from the OpenAPI document.'
+      operationId: resolve-env-worker-inner-composite-state
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InnerCompositeRef'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Resolve-Env-Worker-Inner-Composite-State
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/composite-state/from-config:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Translate a simulator config document into a composite document
+      description: '501 where the workspace ships no translator -- the worker''s
+
+        `__unavailable__`, which is a property of the workspace and not of the request.'
+      operationId: convert-env-worker-config-to-composite
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigDocument'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Convert-Env-Worker-Config-To-Composite
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/composite-state/docs:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Attach per-process docstrings to a resolved composite state
+      operationId: attach-env-worker-process-docs
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StateDocument'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Attach-Env-Worker-Process-Docs
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/observables:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Observable leaves and catalogs of a composite
+      operationId: read-env-worker-observables
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompositeSelector'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Read-Env-Worker-Observables
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/readout-check:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Validate a study's readouts against its composite's real structure
+      description: 'The never-fabricate guard: it is what stops a study declaring
+        a readout
+
+        the composite cannot produce.'
+      operationId: check-env-worker-study-readouts
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReadoutCheck'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Check-Env-Worker-Study-Readouts
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/process-template:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Resolved default config and input-port values for a process or step
+      operationId: read-env-worker-process-template
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcessAddress'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Read-Env-Worker-Process-Template
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/process-run:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: "Run a single update() of one process \u2014 a probe, not a job"
+      description: 'ONE update. Named `probe` in the summary on purpose: `run_process`
+        reads
+
+        like a job-class method and is not one, and that misreading has already been
+
+        made once in this codebase (see `env_worker_routing.JOB_CLASS_METHODS`).'
+      operationId: run-env-worker-process-probe
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcessRun'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Run-Env-Worker-Process-Probe
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/visualizations/render:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Render one visualization composite document to HTML
+      operationId: render-env-worker-visualization-doc
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VizDoc'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Render-Env-Worker-Visualization-Doc
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/visualizations/preview:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Render a visualization class to preview HTML
+      description: '`ok: false` here is NOT an error, deliberately. The worker''s
+        contract is
+
+        that every render outcome including a raise comes back as a 200 body with
+
+        notes; only an unregistered address is non-200.'
+      operationId: preview-env-worker-visualization
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VizPreview'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Preview-Env-Worker-Visualization
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/analysis-viewers:
+    get:
+      tags:
+      - Env Worker Reads
+      summary: Viewer descriptors contributed by the workspace's packages
+      description: 'The listing half of `analysis_viewers`. A GET, because it is a
+        read --
+
+        the `action` flag that used to hide this behind the same name as `launch`
+        is
+
+        exactly the kind of thing named endpoints exist to separate.'
+      operationId: list-env-worker-analysis-viewers
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response List-Env-Worker-Analysis-Viewers
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/relay/workers/{job_name}/analysis-viewers/launch:
+    post:
+      tags:
+      - Env Worker Documents
+      summary: Resolve and invoke one contributed viewer's launch
+      description: 'POST rather than GET: this invokes a contributor''s callable,
+        which may do
+
+        anything the workspace''s code can do. Same operation as `?action=launch`,
+
+        with `uid` required instead of silently defaulting to the listing.'
+      operationId: launch-env-worker-analysis-viewer
+      parameters:
+      - name: job_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ViewerLaunch'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Launch-Env-Worker-Analysis-Viewer
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/tasks:
+    post:
+      tags:
+      - Env Worker
+      summary: Submit a long-running env-worker call; poll for its result
+      description: '202 with a task id. The row is written BEFORE this returns.
+
+
+        That ordering is compose''s contract and it matters more here: the client
+        is
+
+        told to poll and holds nothing else, so a status read that 404s because the
+
+        row had not been written yet would be indistinguishable from a lost task.'
+      operationId: submit-env-worker-task
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskSubmitRequest'
+        required: true
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/tasks/{task_id}:
+    get:
+      tags:
+      - Env Worker
+      summary: Status and result of one env-worker task
+      operationId: get-env-worker-task
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Task Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Env Worker
+      summary: Cancel a task you started
+      description: "The one authorization rule in this API: you cannot cancel someone\
+        \ else's work.\n\nIt exists to prevent an ACCIDENT \u2014 killing a colleague's\
+        \ six-hour study \u2014\nnot an adversary, who can set the identity header\
+        \ to anything. See\nviva_api/api/auth.py.\n\nA task nobody claimed (created_by\
+        \ NULL, which is every task on a deployment\nwith no identity proxy) is cancellable\
+        \ by anyone: there is no owner to\nprotect, and refusing would make the endpoint\
+        \ useless exactly where identity\nis unavailable.\n\nAnonymity is refused\
+        \ only HERE, and only because the alternative is a\ndecorative rule: if an\
+        \ unidentified caller could cancel anything, omitting\nthe header would bypass\
+        \ ownership entirely."
+      operationId: cancel-env-worker-task
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Task Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/env-worker/tasks/status/batch:
+    get:
+      tags:
+      - Env Worker
+      summary: Status for many env-worker tasks in one call (no result payloads)
+      description: "Status only \u2014 results are deliberately omitted. See TaskStatusResponse.\n\
+        \nMirrors compose's /simulations/status/batch, which returns rows carrying\
+        \ no\nlarge payload. A campaign is many tasks, and polling them one at a time\
+        \ is\nwhat this endpoint exists to avoid; shipping every result inline reintroduced\n\
+        the cost in a different dimension."
+      operationId: get-env-worker-tasks-batch
+      parameters:
+      - name: ids
+        in: query
+        required: true
+        schema:
+          type: array
+          items:
+            type: integer
+          title: Ids
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TaskStatusResponse'
+                title: Response Get-Env-Worker-Tasks-Batch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+components:
+  schemas:
+    BiGraphComputeType:
+      type: string
+      enum:
+      - process
+      - step
+      title: BiGraphComputeType
+    BiGraphProcess:
+      properties:
+        module:
+          type: string
+          title: Module
+        name:
+          type: string
+          title: Name
+        compute_type:
+          $ref: '#/components/schemas/BiGraphComputeType'
+        inputs:
+          type: string
+          title: Inputs
+        outputs:
+          type: string
+          title: Outputs
+        database_id:
+          type: integer
+          title: Database Id
+      type: object
+      required:
+      - module
+      - name
+      - compute_type
+      - inputs
+      - outputs
+      - database_id
+      title: BiGraphProcess
+    BiGraphStep:
+      properties:
+        module:
+          type: string
+          title: Module
+        name:
+          type: string
+          title: Name
+        compute_type:
+          $ref: '#/components/schemas/BiGraphComputeType'
+        inputs:
+          type: string
+          title: Inputs
+        outputs:
+          type: string
+          title: Outputs
+        database_id:
+          type: integer
+          title: Database Id
+      type: object
+      required:
+      - module
+      - name
+      - compute_type
+      - inputs
+      - outputs
+      - database_id
+      title: BiGraphStep
+    BiomodelInfo:
+      properties:
+        biomodel_id:
+          type: string
+          title: Biomodel Id
+        metadata:
+          additionalProperties: true
+          type: object
+          title: Metadata
+      type: object
+      required:
+      - biomodel_id
+      - metadata
+      title: BiomodelInfo
+    BiomodelSimulator:
+      type: string
+      enum:
+      - copasi
+      - tellurium
+      title: BiomodelSimulator
+    BiomodelsRunRequest:
+      properties:
+        model_ids:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Model Ids
+          description: Specific BioModel IDs to run. Mutually exclusive with n_models.
+        n_models:
+          anyOf:
+          - type: integer
+            maximum: 1000.0
+            minimum: 1.0
+          - type: 'null'
+          title: N Models
+          description: Run the first N BioModels. Ignored if model_ids is set.
+        simulators:
+          items:
+            $ref: '#/components/schemas/BiomodelSimulator'
+          type: array
+          title: Simulators
+          description: Simulators to run for each model. A single simulator runs the
+            model on it; several are wired into one PB document per model for cross-validation
+            (the former 'audit'/'regression' behavior).
+      type: object
+      title: BiomodelsRunRequest
+      description: "One request shape for every BioModels run \u2014 subsumes the\
+        \ former\nsingle/batch/audit/regression endpoints. Cardinality comes from\n\
+        ``model_ids``/``n_models``; per-model cross-validation comes from listing\n\
+        more than one simulator."
+    BiomodelsRunResult:
+      properties:
+        submitted:
+          items:
+            $ref: '#/components/schemas/ComposeSimulationExperiment'
+          type: array
+          title: Submitted
+        failed:
+          items:
+            type: string
+          type: array
+          title: Failed
+          description: BioModel IDs that failed to submit.
+        total_requested:
+          type: integer
+          title: Total Requested
+          description: Number of models attempted (len(submitted) + len(failed)).
+      type: object
+      required:
+      - submitted
+      - total_requested
+      title: BiomodelsRunResult
+    Body_compose-run-copasi:
+      properties:
+        sbml:
+          type: string
+          contentMediaType: application/octet-stream
+          title: Sbml
+      type: object
+      required:
+      - sbml
+      title: Body_compose-run-copasi
+    Body_compose-run-simulation:
+      properties:
+        uploaded_file:
+          type: string
+          contentMediaType: application/octet-stream
+          title: Uploaded File
+        analysis_options:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Analysis Options
+      type: object
+      required:
+      - uploaded_file
+      title: Body_compose-run-simulation
+    Body_compose-run-tellurium:
+      properties:
+        sbml:
+          type: string
+          contentMediaType: application/octet-stream
+          title: Sbml
+      type: object
+      required:
+      - sbml
+      title: Body_compose-run-tellurium
+    ComposeDocumentSubmission:
+      properties:
+        document:
+          additionalProperties: true
+          type: object
+          title: Document
+          description: The composite document itself, as JSON
+        interval_time:
+          type: number
+          title: Interval Time
+          default: 1.0
+        batch_submission:
+          type: boolean
+          title: Batch Submission
+          default: false
+        simulator_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Simulator Id
+        environment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Environment
+        compute_backend:
+          anyOf:
+          - $ref: '#/components/schemas/ComputeBackend'
+          - type: 'null'
+        extra_pip_deps:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Extra Pip Deps
+        num_nodes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Num Nodes
+        analysis_options:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Analysis Options
+      type: object
+      required:
+      - document
+      title: ComposeDocumentSubmission
+      description: 'A process-bigraph document submitted inline as JSON (POST body),
+        the
+
+        sibling of ComposeSimulationRequest''s file-upload transport -- same
+
+        downstream dispatch, different input shape. Field name/shape mirrors
+
+        env_worker.py''s own StateDocument.document for naming consistency across
+
+        this repo''s two JSON-body document-submission paths.'
+    ComposeHpcRun:
+      properties:
+        database_id:
+          type: integer
+          title: Database Id
+        slurmjobid:
+          type: integer
+          title: Slurmjobid
+        job_id_ext:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Job Id Ext
+        job_backend:
+          type: string
+          title: Job Backend
+          default: slurm
+        correlation_id:
+          type: string
+          title: Correlation Id
+        job_type:
+          $ref: '#/components/schemas/ComposeJobType'
+        sim_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Sim Id
+        simulator_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Simulator Id
+        status:
+          anyOf:
+          - $ref: '#/components/schemas/ComposeJobStatus'
+          - type: 'null'
+        start_time:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Start Time
+        end_time:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: End Time
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+      type: object
+      required:
+      - database_id
+      - slurmjobid
+      - correlation_id
+      - job_type
+      - sim_id
+      - simulator_id
+      title: ComposeHpcRun
+    ComposeJobStatus:
+      type: string
+      enum:
+      - waiting
+      - queued
+      - running
+      - completed
+      - failed
+      - pending
+      - cancelled
+      - out_of_memory
+      - suspended
+      - timeout
+      - unknown
+      title: ComposeJobStatus
+    ComposeJobType:
+      type: string
+      enum:
+      - simulation
+      - build_container
+      title: ComposeJobType
+    ComposeRegisteredSimulators:
+      properties:
+        versions:
+          items:
+            $ref: '#/components/schemas/ComposeSimulatorVersion'
+          type: array
+          title: Versions
+        timestamp:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Timestamp
+      type: object
+      required:
+      - versions
+      title: ComposeRegisteredSimulators
+    ComposeSimulationExperiment:
+      properties:
+        simulation_database_id:
+          type: integer
+          title: Simulation Database Id
+        simulator_database_id:
+          type: integer
+          title: Simulator Database Id
+        last_updated:
+          type: string
+          title: Last Updated
+        metadata:
+          additionalProperties:
+            type: string
+          type: object
+          title: Metadata
+      type: object
+      required:
+      - simulation_database_id
+      - simulator_database_id
+      title: ComposeSimulationExperiment
+    ComposeSimulatorVersion:
+      properties:
+        singularity_def:
+          $ref: '#/components/schemas/ContainerizationFileRepr'
+        singularity_def_hash:
+          type: string
+          title: Singularity Def Hash
+        packages:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/RegisteredPackage'
+            type: array
+          - type: 'null'
+          title: Packages
+        database_id:
+          type: integer
+          title: Database Id
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+      type: object
+      required:
+      - singularity_def
+      - singularity_def_hash
+      - packages
+      - database_id
+      title: ComposeSimulatorVersion
+    CompositeRef:
+      properties:
+        ref:
+          type: string
+          minLength: 1
+          title: Ref
+          description: Registered @composite_generator name
+        overrides:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Overrides
+          description: Generator parameter overrides
+      additionalProperties: true
+      type: object
+      required:
+      - ref
+      title: CompositeRef
+      description: A composite named by a registered generator, optionally with overrides.
+    CompositeSelector:
+      properties:
+        ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ref
+        state:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: State
+        schema:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Schema
+      additionalProperties: true
+      type: object
+      title: CompositeSelector
+      description: 'A composite given EITHER by `ref` OR inline as `{state, schema}`.
+
+
+        Both forms are real and the worker accepts either; sending neither is the
+
+        mistake worth catching here, because the worker answers it with
+
+        `__not_registered__` -- which reads as "your ref is wrong" to a caller who
+
+        sent no ref at all.'
+    ComputeBackend:
+      type: string
+      enum:
+      - slurm
+      - batch
+      - ray
+      title: ComputeBackend
+      description: 'The DEFAULT dispatch mechanism of a deployment (``COMPUTE_BACKEND``),
+        and the per-request choice a
+
+        compose run may make. Coarser than :class:`JobBackend`: it names a way of
+        running, not a job''s home.'
+    ConfigDocument:
+      properties:
+        config:
+          additionalProperties: true
+          type: object
+          title: Config
+          description: A simulator config document, in the shape the worker's workspace
+            translates
+      additionalProperties: true
+      type: object
+      required:
+      - config
+      title: ConfigDocument
+    ContainerizationEngine:
+      type: integer
+      enum:
+      - 0
+      - 1
+      - 2
+      - 3
+      title: ContainerizationEngine
+      description: The container engine a definition targets.
+    ContainerizationFileRepr:
+      properties:
+        representation:
+          type: string
+          title: Representation
+        containerization_engine:
+          $ref: '#/components/schemas/ContainerizationEngine'
+          default: 2
+      type: object
+      required:
+      - representation
+      title: ContainerizationFileRepr
+      description: A textual container-definition file (e.g. a Singularity/apptainer
+        def).
+    CoreHealth:
+      properties:
+        status:
+          type: string
+          const: ok
+          title: Status
+          default: ok
+        services:
+          additionalProperties:
+            type: boolean
+          type: object
+          title: Services
+      type: object
+      required:
+      - services
+      title: CoreHealth
+    DependencyModel:
+      properties:
+        name:
+          type: string
+          title: Name
+        source:
+          type: string
+          title: Source
+          default: pypi
+        version:
+          type: string
+          title: Version
+          default: ''
+      type: object
+      required:
+      - name
+      title: DependencyModel
+    EnvWorkerStartRequest:
+      properties:
+        commit:
+          type: string
+          title: Commit
+          description: Simulator commit; the prebuilt image tag to run
+        callback_host:
+          type: string
+          title: Callback Host
+          description: Host/IP the worker dials back to (the workbench pod IP)
+        callback_port:
+          type: integer
+          maximum: 65535.0
+          minimum: 1.0
+          title: Callback Port
+          description: Port the workbench is listening on
+        token:
+          type: string
+          title: Token
+          description: One-time handshake token the worker must present
+        workspace:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Workspace
+          description: Workspace path inside the worker container; defaults to the
+            deployment's env_worker_workspace_path (the image's own checkout)
+        session_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Key
+          description: Owning session; makes the Job name unique per session
+      type: object
+      required:
+      - commit
+      - callback_host
+      - callback_port
+      - token
+      title: EnvWorkerStartRequest
+      description: "Where to dial back, and which environment to run.\n\n``commit``\
+        \ selects the environment: it is the tag of the prebuilt simulator\nimage,\
+        \ which under \xA72A.8 *is* the execution environment rather than a recipe\n\
+        for rebuilding one."
+    EnvWorkerStartResponse:
+      properties:
+        job_name:
+          type: string
+          title: Job Name
+        image:
+          type: string
+          title: Image
+        namespace:
+          type: string
+          title: Namespace
+      type: object
+      required:
+      - job_name
+      - image
+      - namespace
+      title: EnvWorkerStartResponse
+    EnvWorkerStatusResponse:
+      properties:
+        job_name:
+          type: string
+          title: Job Name
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+        exists:
+          type: boolean
+          title: Exists
+          default: true
+        logs:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Logs
+      type: object
+      required:
+      - job_name
+      title: EnvWorkerStatusResponse
+    EnvironmentModel:
+      properties:
+        image:
+          type: string
+          title: Image
+        spec_hash:
+          type: string
+          title: Spec Hash
+        image_digest:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image Digest
+      type: object
+      required:
+      - image
+      - spec_hash
+      title: EnvironmentModel
+      description: 'What exists: the image a run would pull, and the two identities
+        -- the request it answers
+
+        (``spec_hash``) and what was built (``image_digest``; null until something
+        records it).'
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    InnerCompositeRef:
+      properties:
+        ref:
+          type: string
+          minLength: 1
+          title: Ref
+        hops:
+          items:
+            items:
+              type: string
+            type: array
+          type: array
+          minItems: 1
+          title: Hops
+          description: One node path per drill level
+      additionalProperties: true
+      type: object
+      required:
+      - ref
+      - hops
+      title: InnerCompositeRef
+      description: '`hops` is a LIST OF NODE PATHS, each itself a list of key segments
+        -- which
+
+        is why this is a POST and not the GET the plan first assumed.'
+    PackageType:
+      type: string
+      enum:
+      - pypi
+      - conda
+      title: PackageType
+    ProcessAddress:
+      properties:
+        address:
+          type: string
+          minLength: 1
+          title: Address
+          description: Registry address of a Process or Step
+        config:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Config
+      additionalProperties: true
+      type: object
+      required:
+      - address
+      title: ProcessAddress
+    ProcessRun:
+      properties:
+        address:
+          type: string
+          minLength: 1
+          title: Address
+          description: Registry address of a Process or Step
+        config:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Config
+        inputs:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Inputs
+        interval:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Interval
+      additionalProperties: true
+      type: object
+      required:
+      - address
+      title: ProcessRun
+      description: 'One `update()` -- a probe, not a job. `env_worker._run_process`
+        is
+
+        deliberately NOT job-class: it builds one class, fills its ports and runs
+        a
+
+        single step, which is the Composite Explorer''s "try this process" button.'
+    ReadoutCheck:
+      properties:
+        ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ref
+        state:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: State
+        schema:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Schema
+        spec:
+          additionalProperties: true
+          type: object
+          title: Spec
+          description: The study spec whose readouts are checked
+      additionalProperties: true
+      type: object
+      required:
+      - spec
+      title: ReadoutCheck
+    RegisteredPackage:
+      properties:
+        database_id:
+          type: integer
+          title: Database Id
+        package_type:
+          $ref: '#/components/schemas/PackageType'
+        name:
+          type: string
+          title: Name
+        processes:
+          items:
+            $ref: '#/components/schemas/BiGraphProcess'
+          type: array
+          title: Processes
+        steps:
+          items:
+            $ref: '#/components/schemas/BiGraphStep'
+          type: array
+          title: Steps
+      type: object
+      required:
+      - database_id
+      - package_type
+      - name
+      - processes
+      - steps
+      title: RegisteredPackage
+    RelayCallRequest:
+      properties:
+        method:
+          type: string
+          title: Method
+          description: Worker method name (JSON-RPC)
+        params:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Params
+          description: Method params
+        timeout:
+          type: number
+          maximum: 3600.0
+          exclusiveMinimum: 0.0
+          title: Timeout
+          description: Seconds to wait for this call's reply
+          default: 300.0
+      type: object
+      required:
+      - method
+      title: RelayCallRequest
+    RelayCallResponse:
+      properties:
+        result:
+          anyOf:
+          - {}
+          - type: 'null'
+          title: Result
+      type: object
+      title: RelayCallResponse
+    RelayStartRequest:
+      properties:
+        commit:
+          type: string
+          title: Commit
+          description: Simulator commit; the prebuilt image tag to run
+        workspace:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Workspace
+          description: Workspace path inside the worker container
+        session_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Key
+          description: Owning session; makes the Job name unique per session
+        accept_timeout:
+          type: number
+          maximum: 1800.0
+          exclusiveMinimum: 0.0
+          title: Accept Timeout
+          description: Seconds to wait for the worker to dial back (pod schedule +
+            image pull)
+          default: 300.0
+      type: object
+      required:
+      - commit
+      title: RelayStartRequest
+      description: Start a worker that dials back to *viva-api* rather than to the
+        caller.
+    RelayStartResponse:
+      properties:
+        job_name:
+          type: string
+          title: Job Name
+        image:
+          type: string
+          title: Image
+        namespace:
+          type: string
+          title: Namespace
+        connected:
+          type: boolean
+          title: Connected
+      type: object
+      required:
+      - job_name
+      - image
+      - namespace
+      - connected
+      title: RelayStartResponse
+    ResolveEnvironmentRequest:
+      properties:
+        kind:
+          type: string
+          enum:
+          - explicit
+          - derived
+          title: Kind
+        key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Key
+        variant:
+          type: string
+          title: Variant
+          default: ''
+        dependencies:
+          items:
+            $ref: '#/components/schemas/DependencyModel'
+          type: array
+          title: Dependencies
+      type: object
+      required:
+      - kind
+      title: ResolveEnvironmentRequest
+      description: 'What is needed. ``explicit``: the environment named ``key`` (a
+        commit, or its own marked tag),
+
+        optionally its ``variant`` image. ``derived``: whatever satisfies ``dependencies``
+        -- an EMPTY list
+
+        is a real request, for a composite that needs only the built-ins.'
+    StateDocument:
+      properties:
+        document:
+          additionalProperties: true
+          type: object
+          title: Document
+          description: An already-resolved composite state
+        ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ref
+          description: Generator whose core_extensions resolve bare addresses
+      additionalProperties: true
+      type: object
+      required:
+      - document
+      title: StateDocument
+    TaskResponse:
+      properties:
+        task_id:
+          type: integer
+          title: Task Id
+        job_name:
+          type: string
+          title: Job Name
+        method:
+          type: string
+          title: Method
+        status:
+          type: string
+          title: Status
+        result:
+          anyOf:
+          - {}
+          - type: 'null'
+          title: Result
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+        created_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created By
+        created_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created At
+        started_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Started At
+        ended_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ended At
+      type: object
+      required:
+      - task_id
+      - job_name
+      - method
+      - status
+      title: TaskResponse
+    TaskStatusResponse:
+      properties:
+        task_id:
+          type: integer
+          title: Task Id
+        job_name:
+          type: string
+          title: Job Name
+        method:
+          type: string
+          title: Method
+        status:
+          type: string
+          title: Status
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+        created_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created By
+        created_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created At
+        started_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Started At
+        ended_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ended At
+        has_result:
+          type: boolean
+          title: Has Result
+          default: false
+      type: object
+      required:
+      - task_id
+      - job_name
+      - method
+      - status
+      title: TaskStatusResponse
+      description: "A task WITHOUT its result \u2014 the shape the batch endpoint\
+        \ returns.\n\nMeasured on dev before this existed: five tasks came back as\
+        \ **1.19 MB**,\nof which 1.185 MB was result payloads. The endpoint exists\
+        \ so a campaign can\nbe polled without N round trips; inlining every result\
+        \ defeats exactly that,\nand the cost grows with both the number of tasks\
+        \ and the size of what they\nreturned. Polling twenty tasks every few seconds\
+        \ would have moved megabytes\nper cycle over an SSM tunnel.\n\nSo a *status*\
+        \ endpoint returns status. Fetch the singular\n``GET /tasks/{id}`` for the\
+        \ payload, which is one request at the one moment\na caller actually wants\
+        \ it."
+    TaskSubmitRequest:
+      properties:
+        job_name:
+          type: string
+          title: Job Name
+          description: Relayed worker Job to run this on
+        method:
+          type: string
+          title: Method
+          description: Worker method (JSON-RPC)
+        params:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Params
+          description: Method params
+      type: object
+      required:
+      - job_name
+      - method
+      title: TaskSubmitRequest
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+    ViewerLaunch:
+      properties:
+        uid:
+          type: string
+          minLength: 1
+          title: Uid
+          description: Viewer uid from the listing
+        study:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Study
+        run:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Run
+        ctx:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Ctx
+      additionalProperties: true
+      type: object
+      required:
+      - uid
+      title: ViewerLaunch
+      description: '`analysis_viewers` carries two operations behind an `action` flag.
+        They are
+
+        split into two routes here: listing is a read, launching invokes a
+
+        contributor''s callable. One endpoint with a mode string would hide that.'
+    VizDoc:
+      properties:
+        viz_doc:
+          additionalProperties: true
+          type: object
+          title: Viz Doc
+          description: A visualization composite document
+      additionalProperties: true
+      type: object
+      required:
+      - viz_doc
+      title: VizDoc
+    VizPreview:
+      properties:
+        address:
+          type: string
+          minLength: 1
+          title: Address
+          description: Visualization class address
+        config:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Config
+        source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source
+          description: demo | streaming | investigation
+        note_prefix:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note Prefix
+        investigation_inputs_store:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Investigation Inputs Store
+      additionalProperties: true
+      type: object
+      required:
+      - address
+      title: VizPreview
