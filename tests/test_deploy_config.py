@@ -17,6 +17,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKBENCH_BASE = REPO_ROOT / "kustomize" / "base" / "workbench" / "workbench.yaml"
 DOCKERFILE_API = REPO_ROOT / "Dockerfile-api"
+DOCKERFILE_CORE = REPO_ROOT / "Dockerfile-core"
 
 CANONICAL_REMOTE_REPO_URL = "https://github.com/CovertLabEcoli/sms-ecoli"
 
@@ -140,3 +141,20 @@ def test_api_image_copies_every_package_the_wheel_ships() -> None:
     dockerfile = DOCKERFILE_API.read_text(encoding="utf-8")
     missing = sorted(pkg for pkg in shipped if f" {pkg} /app/{pkg}" not in dockerfile)
     assert not missing, f"Dockerfile-api has no COPY for shipped package(s): {missing}"
+
+
+def test_core_image_carries_core_and_nothing_of_the_application() -> None:
+    """``Dockerfile-core`` (plan-core §4b U2f) is core as its own service: it copies ``viva_core``
+    and no other shipped package -- the application's absence from the image is the boundary a
+    standalone core is held to (``core-is-standalone``), made physical."""
+    import tomllib
+
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    shipped = set(pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["include"]) - {"tests"}
+    dockerfile = DOCKERFILE_CORE.read_text(encoding="utf-8")
+    copied = {pkg for pkg in shipped if f" {pkg} /app/{pkg}" in dockerfile}
+    assert copied == {"viva_core"}, f"Dockerfile-core copies {sorted(copied)}; it must copy viva_core alone"
+    assert "--no-install-project" in dockerfile, "the wheel would need the application packages"
+    assert "ENV UV_NO_DEFAULT_GROUPS=true" in dockerfile or "UV_NO_DEFAULT_GROUPS=true" in dockerfile
+    assert 'uvicorn", "--factory", "viva_core.api.app:create_core_app"' in dockerfile
+    assert '"uv", "run"' not in dockerfile, "`uv run` would try to install the project at container start"
