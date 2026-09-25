@@ -1,14 +1,21 @@
-"""Compose simulation service — submits process-bigraph jobs to SLURM via sms-api SSH."""
+"""Compose simulation service — submits process-bigraph jobs to SLURM via SSH.
 
-import json
+What the service knows: how to turn a composite request into an sbatch script that runs it in a
+Singularity container, how to build that container from its definition, and how to fetch the
+results archive the job zipped. What it does NOT know (U2b-1): any one science image's way of
+being run. That arrives as a hook, ``ContainerRun``, handed in by the composition root; with no
+hook, or a hook that declines, the generic ``singularity run`` is used.
+"""
+
 import logging
 import random
 import string
 import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from textwrap import dedent
-from typing import override
+from typing import Protocol, override
 
 from viva_api.common.hpc.slurm_service import SlurmService
 from viva_api.common.models import JobBackend
@@ -36,17 +43,54 @@ from viva_core.infra.ssh.ssh_service import SSHSessionService
 
 logger = logging.getLogger(__name__)
 
+#: Where the results archives fetched from the HPC side are kept, by default: the deployment's
+#: results-cache mount. The composition root hands in the site's own directory.
+DEFAULT_RESULTS_CACHE_DIR = Path("/app/.results_cache/compose")
+
+
+@dataclass(frozen=True)
+class RunPlan:
+    """What a hook wants run instead of the generic command: the command line the sbatch script
+    executes, and files to place in the experiment directory first (``name -> content``)."""
+
+    command: str
+    files: dict[str, str] = field(default_factory=dict)
+
+
+class ContainerRun(Protocol):
+    """An application's way of running one of its images (U2b-1). Given the run's override
+    command (opaque to the service), the bind clause and container the sbatch script will use,
+    the job name and the request, answer with a plan -- or ``None`` to have the service run its
+    generic ``singularity run``."""
+
+    def __call__(
+        self,
+        override_command: str | None,
+        bind_clause: str,
+        container: Path,
+        job_name: str,
+        simulation: ComposeSimulation,
+    ) -> RunPlan | None: ...
+
 
 class ComposeSimulationServiceHpc(ComposeSimulationService):
     env: Settings
     backend = JobBackend.SLURM
 
     def __init__(
-        self, env: Settings | None = None, *, slurm_ssh: Callable[[], SSHSessionService] | None = None
+        self,
+        env: Settings | None = None,
+        *,
+        slurm_ssh: Callable[[], SSHSessionService] | None = None,
+        run_command: ContainerRun | None = None,
+        results_cache_dir: Path = DEFAULT_RESULTS_CACHE_DIR,
     ) -> None:
         self.env = env or get_settings()
         # The SSH sessions jobs are submitted over, HANDED IN as a provider (P3d-3).
         self._slurm_ssh = slurm_ssh
+        # The application's run command for its own images, if any (U2b-1).
+        self._run_command = run_command
+        self._results_cache_dir = results_cache_dir
 
     def _ssh_sessions(self) -> SSHSessionService:
         if self._slurm_ssh is None:
@@ -57,7 +101,7 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
         """The zip the HPC-side job runner built, downloaded over SSH into the local results cache
         (once; later calls find it). Raises ``RuntimeError`` when the download fails."""
         remote_path = get_compose_sim_results_path(experiment_id)
-        cache_dir = Path("/app/.results_cache/compose")
+        cache_dir = self._results_cache_dir
         cache_dir.mkdir(parents=True, exist_ok=True)
         local_path = cache_dir / f"{experiment_id}_results.zip"
         if not local_path.exists():
@@ -65,61 +109,31 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
                 await ssh.scp_download(local_file=local_path, remote_path=HPCFilePath(remote_path=remote_path))
         return local_path if local_path.exists() else None
 
-    def _build_run_command(
+    def _run_plan(
         self,
         override_command: str | None,
         bind_clause: str,
         singularity_container: Path,
         slurm_job_name: str,
         simulation: ComposeSimulation,
-    ) -> str:
-        """Build the singularity command for the sbatch script."""
-        if override_command:
-            params = json.loads(override_command)
-            if params.get("mode") == "v2ecoli":
-                python = "/micromamba_env/runtime_env/bin/python3.12"
-                mamba_env = "/micromamba_env/runtime_env"
-                # Lines must be indented to match the dedent template (16 spaces)
-                indent = " " * 16
-                return (
-                    f"CONDA_PREFIX={mamba_env} singularity exec \\\n"
-                    f"{indent}    --compat \\\n"
-                    f"{indent}    --env CONDA_PREFIX={mamba_env} \\\n"
-                    f"{indent}    {bind_clause} \\\n"
-                    f"{indent}    {singularity_container} \\\n"
-                    f"{indent}    {python} /experiment/v2ecoli_run.py || true\n"
-                    f"{indent}test -f /experiment/output/final_state.json || "
-                    f'{{ echo "v2ecoli failed: no output produced"; exit 1; }}'
-                )
+    ) -> RunPlan:
+        """The hook's plan when it has one; else the generic ``singularity run`` of the input file."""
+        if self._run_command is not None:
+            plan = self._run_command(override_command, bind_clause, singularity_container, slurm_job_name, simulation)
+            if plan is not None:
+                return plan
         indent = " " * 16
-        return (
-            f"singularity run \\\n"
-            f"{indent}    --compat \\\n"
-            f"{indent}    {bind_clause} \\\n"
-            f"{indent}    {singularity_container} \\\n"
-            f"{indent}    /experiment/{slurm_job_name}."
-            f"{simulation.sim_request.simulation_file_type.get_files_suffix()} \\\n"
-            f'{indent}    -o "{self.env.compose_containers_output_dir}" \\\n'
-            f"{indent}    -n {simulation.sim_request.end_time_point}"
-        )
-
-    @staticmethod
-    def _write_v2ecoli_script(params: dict[str, object], output_dir: str) -> str:
-        """Generate the Python script content for a v2ecoli direct invocation."""
-        cache_dir = params["cache_dir"]
-        seed = params["seed"]
-        features = params.get("features", [])
-        duration = params["duration"]
-        return (
-            f"import os, json\n"
-            f"from v2ecoli.composite import make_composite\n"
-            f"from v2ecoli.cache import save_json\n"
-            f"composite = make_composite(cache_dir='{cache_dir}', seed={seed}, features={features!r})\n"
-            f"composite.run({duration})\n"
-            f"outdir = '/experiment/output'\n"
-            f"os.makedirs(outdir, exist_ok=True)\n"
-            f"save_json(dict(composite.state), os.path.join(outdir, 'final_state.json'))\n"
-            f"print('v2ecoli simulation complete')\n"
+        return RunPlan(
+            command=(
+                f"singularity run \\\n"
+                f"{indent}    --compat \\\n"
+                f"{indent}    {bind_clause} \\\n"
+                f"{indent}    {singularity_container} \\\n"
+                f"{indent}    /experiment/{slurm_job_name}."
+                f"{simulation.sim_request.simulation_file_type.get_files_suffix()} \\\n"
+                f'{indent}    -o "{self.env.compose_containers_output_dir}" \\\n'
+                f"{indent}    -n {simulation.sim_request.end_time_point}"
+            )
         )
 
     @override
@@ -145,9 +159,8 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
                 bind_args.append(f"--bind {self.env.compose_cache_base_path}:/out/cache")
             bind_clause = " \\\n                    ".join(bind_args)
 
-            run_cmd = self._build_run_command(
-                override_command, bind_clause, singularity_container, slurm_job_name, simulation
-            )
+            plan = self._run_plan(override_command, bind_clause, singularity_container, slurm_job_name, simulation)
+            run_cmd = plan.command
             script_content = dedent(f"""\
                 #!/bin/bash
                 #SBATCH --job-name={slurm_job_name}
@@ -175,25 +188,22 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
                 """)
             local_submit_file.write_text(script_content)
 
-            # For v2ecoli mode: write the Python runner script to a local file for upload
-            v2ecoli_script_file: Path | None = None
-            if override_command:
-                params = json.loads(override_command)
-                if params.get("mode") == "v2ecoli":
-                    params["duration"] = simulation.sim_request.end_time_point
-                    script_content_py = self._write_v2ecoli_script(params, self.env.compose_containers_output_dir)
-                    v2ecoli_script_file = Path(tmpdir) / "v2ecoli_run.py"
-                    v2ecoli_script_file.write_text(script_content_py)
+            # The plan's files (an application's runner script, say), written locally for upload.
+            plan_files: list[tuple[Path, str]] = []
+            for name, content in plan.files.items():
+                local_file = Path(tmpdir) / name
+                local_file.write_text(content)
+                plan_files.append((local_file, name))
 
             async with self._ssh_sessions().session() as ssh:
                 await ssh.run_command(f"mkdir -p {experiment_path}")
                 # Upload the simulation input file (OMEX/PBG/SBML)
                 remote_input = HPCFilePath(remote_path=get_compose_sim_input_path(experiment_id=slurm_job_name))
                 await ssh.scp_upload(local_file=simulation.sim_request.request_file_path, remote_path=remote_input)
-                # Upload v2ecoli runner script if applicable
-                if v2ecoli_script_file is not None:
-                    remote_script = HPCFilePath(remote_path=experiment_path / "v2ecoli_run.py")
-                    await ssh.scp_upload(local_file=v2ecoli_script_file, remote_path=remote_script)
+                for local_file, name in plan_files:
+                    await ssh.scp_upload(
+                        local_file=local_file, remote_path=HPCFilePath(remote_path=experiment_path / name)
+                    )
                 slurm_service = SlurmService()
                 remote_sbatch = HPCFilePath(remote_path=get_compose_slurm_submit_file(slurm_job_name=slurm_job_name))
                 slurm_jobid = await slurm_service.submit_job(
