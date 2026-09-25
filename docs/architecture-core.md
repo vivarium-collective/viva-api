@@ -445,7 +445,7 @@ viva_core/
   storage/s3_streaming (P3d-4d-2a)
               simulation_service_ray (the Batch service, P3d-4c-1); run_pbg, render_nf, runner_files (3d-4c-2);
               the allow-list default and the runner HOOKS (runner_hooks.py, staged beside the runner) are the application's
-  storage/    …, layout (the two output-location primitives, pure; P3d-4c-1)
+  storage/    …, layout (the two output-location primitives, pure; P3d-4c-1); factory (the store `storage_backend` names; U2c)
   tasks/      snapshot, …
   datasets/   registry, walk
   storage/    file services, s3 helpers, CoreLayout

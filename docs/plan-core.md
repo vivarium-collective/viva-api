@@ -1031,7 +1031,7 @@ split; each has an owner-less issue or a named moment.
 | P8b | removals M1 … M7 | | | | not started; each after its caller is on both sites |
 | P9a / b / c | | | | | not started (checkpoint N); rehearsed at UConn first (U3–U4) |
 | P10 | | | | | not started |
-| U0 … U5 | the UConn track (§4b) | | | | U1 merged (#796, rides 0.9.157); **U2 in progress**: U2a the SLURM settings onto `CoreSettings` (#798), U2b-1 the SLURM compose service's run command as a hook (the v2ecoli mode was inside it; `ContainerRun`, `viva_api/simulation/compose_run_command.py`), U2b-2 the service into core next; core's overlay is a new directory, the SMS overlays untouched until U5 |
+| U0 … U5 | the UConn track (§4b) | | | | U1 merged (#796, rides 0.9.157); **U2 in progress**: U2a the SLURM settings onto `CoreSettings` (#798), U2b-1 the SLURM compose service's run command as a hook (the v2ecoli mode was inside it; `ContainerRun`, `viva_api/simulation/compose_run_command.py`), U2b-2 the service into core (#802); **U2c the file-service factory** (`viva_core/storage/factory.py`: `file_service_for(backend)` exhaustive over `StorageBackend`, `file_service_from_settings()`; the composition root's if/elif is gone — a standalone core makes the same choice); core's overlay is a new directory, the SMS overlays untouched until U5 |
 | U1 | the local SLURM cluster: `tests/fixtures/slurm_cluster/` (compose-api's harness, verbatim) + `tests/fixtures/slurm_fixtures_backend.py` (the `slurm_backend` fixture: the container in CI, `--slurm-backend cluster` for Mantis); `port` on `SSHSessionService` and `slurm_submit_port`; `tests/common/test_slurm_backend.py` (SSH, and the conformance of `sbatch --parsable`, `squeue`, `scontrol` with core's parsers); CI job `tests-slurm` | 0.9.157 | 2026-09-25 (tests only) | — | **merged — #796** (`06d41b6d`; 6 tests green against the container, locally in 58 s and in CI); checkpoint UA's second half — green against Mantis with `--slurm-backend cluster` — still to run from a VPN laptop with the key |
 
 ## Decision log
@@ -1041,6 +1041,14 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-25** — **U2c: the file service is chosen in core.** `viva_core/storage/factory.py` —
+  `file_service_for(backend)` is a `match` over `StorageBackend` closed with `assert_never`, so a
+  fourth store is a type error until it has a branch, and a stray runtime value raises rather than
+  falling through to some default store (the application's `else` used to *log* an error and leave
+  the service unset). `file_service_from_settings()` reads `storage_backend`. The application's
+  composition root now calls it in place of its own if/elif; the three implementations were already
+  core's and already read their own `storage_*` settings through `get_core_settings()`. This is the
+  piece a standalone core at UConn needs to stream datasets and results from Qumulo (§4b gap 5).
 - **2026-09-25** — **Checkpoint F2 passed on dev (0.9.157, #797, tag `v0.9.157`): P3g is deployed, whole, and U1 with it.**
   Jim: "merge #792, #793, #794, #795 and #796, then run checkpoint F2". Merged in that order with merge
   commits (#792 and #796 needed `main` merged into them after #791 landed: both had edited this
