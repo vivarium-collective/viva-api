@@ -1498,6 +1498,16 @@
 #            exist; /app/viva_api/simulation/dispatch/ exists and /app/viva_api/simulation/ray/ does
 #            NOT; `_submit_in_environment` is in /app/viva_api/compose/simulation_service_ray.py;
 #            the pod's environment carries CORE_RUNTIME_IMAGE.
+#           0.9.155 -- core split, checkpoint E CLOSE. 0.9.154's Tier 2 was 20/2/2: both failures were the
+#            Nextflow path, one bug -- the head staged render_nf.py by reading it as package data from
+#            viva_api.compose, which since 0.9.154 is the 16-line self-replacing shim (559 bytes; its first
+#            statement imports viva_core inside the science image). Fixed in #777: render_nf_source() beside
+#            runner_source() in viva_core/compose/runner_files.py, and a guard that parses every staged text
+#            and fails on a shim. Also carries #775 (compose handlers are core's) and #779 (pbg_emitters ->
+#            viva_emitters in core's runner). No migration.
+#            MARKERS: `def render_nf_source` in /app/viva_core/compose/runner_files.py; /app/viva_core/compose/
+#            handlers.py exists; `viva_emitters` and not `pbg_emitters` in /app/viva_core/compose/run_pbg.py.
+#            SMOKE: sim-nextflow + nextflow-cancel (the two that failed), plus Tier 0/1 and the runtime run.
 #           0.9.154 -- core split, deploy checkpoint E (docs/plan-core.md section 8): P3d-1 through 3d-4c-2.
 #            The compose and env-worker packages are IN viva_core (3,025+ lines: models, container_def,
 #            database_service, tables_orm, job_monitor, the abstract service, the Batch service, the
@@ -1546,7 +1556,7 @@
 #            /app/viva_api/simulation/compose_analysis.py, /app/viva_api/compose/env_worker_schemas.py,
 #            /app/viva_core/api/app.py and /app/viva_api/core_wiring.py exist;
 #            `_submit_analysis_job` is GONE from /app/viva_api/compose/simulation_service_ray.py.
-__version__ = "0.9.154"
+__version__ = "0.9.155"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in
