@@ -826,6 +826,19 @@ split; each has an owner-less issue or a named moment.
   **Merged during or just after the smoke, not deployed:** P3d-1, 3d-2, 3d-3 (#763, #765, #766), #764,
   P3d-4a (#767) and P3d-4b-1 (#768). One of them changes behaviour, in one place — a relay frame that is
   JSON but not an object is now a named error (#768); they ride the next checkpoint.
+- **2026-09-22** — **Checkpoint E found it: a module shim is transparent to an import and opaque to a file read.**
+  0.9.154's Tier 2: `sim-nextflow` FAILED at 171 s (simulation 1403) and `nextflow-cancel` with it.
+  The head's log: `render_nf.py` downloaded at **559 bytes**, then `from viva_core.compose import
+  render_nf as _moved` / `ModuleNotFoundError: No module named 'viva_core'`. `dispatch/nextflow.py`
+  staged the compiler by reading `render_nf.py` as package data from `viva_api.compose` — which since
+  3d-4c-2 is the 16-line self-replacing shim. Every importer of the moved modules was unaffected
+  (the shim IS the module at runtime), which is what the shims are for; a **file read** of the old
+  package gets the shim's text. The runner had already been switched to core's `runner_source()`;
+  the compiler had not. Fix: `render_nf_source()` beside it in `viva_core/compose/runner_files.py`,
+  and a guard that parses every staged text and fails on a shim
+  (`tests/simulation/test_staged_scripts_are_the_real_files.py`) — run against `main` it reports
+  "16 lines; shim: True". The other four Tier 2 paths (chain, multi-node, ensemble, compose) stage
+  the runner and the hooks and passed; only Nextflow stages the compiler.
 - **2026-09-22** — **P3d-4d-1: the compose handlers are core's; two of them were SMS's and go to SMS.**
   Written while checkpoint E's Tier 2 ran (Jim: "option (1)"). `compose/handlers.py` (293 lines) held
   the generic run, the curated run, the allow-list check and the dispatch — and two things that name
