@@ -142,3 +142,38 @@ def test_it_says_what_each_hand_rolled_derivation_said(key: str) -> None:
     assert (
         image_reference(registry=f"{account}.dkr.ecr.{region}.amazonaws.com", repository=repository, key=key) == by_hand
     )
+
+
+# ------------------------------------------------------------------ the site resolver (U2d)
+
+
+def test_a_site_names_its_registry_by_ecr_account_or_in_full_and_is_refused_by_name_with_neither() -> None:
+    """``site_resolver``: an AWS site names an ECR account and region; an on-premises site names its
+    registry in full (``ghcr.io/…``); a site that names neither is refused -- by name, and only for
+    the requests that need a registry."""
+    from types import SimpleNamespace
+
+    from viva_core.environments import EnvironmentResolverNotConfigured
+    from viva_core.environments.site import environment_image, site_resolver
+
+    aws = SimpleNamespace(ecr_account_id="123456789012", batch_region="us-gov-west-1", ray_ecr_repository="sim")
+    assert environment_image(aws, "abc1234") == "123456789012.dkr.ecr.us-gov-west-1.amazonaws.com/sim:abc1234"
+
+    on_prem = SimpleNamespace(
+        ecr_account_id="",
+        batch_region="",
+        ray_ecr_repository="",
+        environment_registry="ghcr.io/vivarium-collective",
+        environment_repository="viva-core",
+        core_runtime_image="ghcr.io/vivarium-collective/viva-core-runtime:0.1.0",
+    )
+    assert (
+        environment_image(on_prem, "abc1234", variant="submit")
+        == "ghcr.io/vivarium-collective/viva-core:abc1234-submit"
+    )
+    assert site_resolver(on_prem).resolve(DerivedSpec()).image == "ghcr.io/vivarium-collective/viva-core-runtime:0.1.0"
+
+    neither = SimpleNamespace(ecr_account_id="", batch_region="", ray_ecr_repository="", core_runtime_image="r:1")
+    with pytest.raises(EnvironmentResolverNotConfigured, match="ECR_ACCOUNT_ID.*ENVIRONMENT_REGISTRY"):
+        environment_image(neither, "abc1234")
+    assert site_resolver(neither).resolve(DerivedSpec()).image == "r:1"  # what needs no registry still answers
