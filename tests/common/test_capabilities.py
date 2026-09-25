@@ -193,3 +193,22 @@ async def test_endpoint_serves_the_payload() -> None:
     body = response.json()
     assert body["version"] == __version__
     assert isinstance(body["capabilities"], list)
+
+
+# --- P3g: the served surface, on both capability routes ------------------
+
+
+@pytest.mark.asyncio
+async def test_the_application_advertises_the_viva_v1_surface_on_both_routes() -> None:
+    """The application mounts core's routers under ``/viva/v1`` as well (the dated interim spelling,
+    D17), and says so where a client looks today (``/core/v1/capabilities``) and where it will look
+    (``/viva/v1/capabilities``) -- with the same names, so switching the probe changes nothing."""
+    from viva_core.version import __version__ as core_version
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        sms = (await client.get("/core/v1/capabilities")).json()
+        core = (await client.get("/viva/v1/capabilities")).json()
+    assert "viva-v1-surface" in sms["capabilities"]
+    assert sorted(sms["capabilities"]) == core["capabilities"]
+    assert sms["version"] == __version__ and core["version"] == core_version

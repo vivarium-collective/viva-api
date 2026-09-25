@@ -194,6 +194,26 @@ try:
 except ImportError:
     logger.warning("Could not register env-worker router")
 
+# -- the same two routers at core's own prefix: the dated interim spelling (plan-core P3g, D17) -- #
+# `/viva/v1/compose` and `/viva/v1/env-worker` are what a standalone core serves today, so a caller
+# switching on the `viva-v1-surface` capability can leave `/compose/v1` and `/env-worker/v1` before
+# the resource families (`/viva/v1/composites`, `/viva/v1/workers`) exist; these mounts go at M5.
+# Served but NOT in this application's OpenAPI document: the routes carry explicit operation ids,
+# and a second copy would duplicate every one -- core's own document is where this spelling is
+# described. `routes` in `atlantis smoke` compares documents, so it is unaffected; the `core` check
+# sees them through the gateway.
+try:
+    from viva_core.api.capabilities import CAPABILITY_VIVA_V1_SURFACE, mark_served
+    from viva_core.api.routers.compose import router as _core_compose_router
+    from viva_core.api.routers.env_worker import router as _core_env_worker_router
+
+    app.include_router(_core_compose_router, prefix="/viva/v1/compose", include_in_schema=False)
+    app.include_router(_core_env_worker_router, prefix="/viva/v1/env-worker", include_in_schema=False)
+    mark_served(CAPABILITY_VIVA_V1_SURFACE)
+    logger.info("Core's compose and env-worker routers also registered at /viva/v1 (interim spelling)")
+except ImportError:
+    logger.warning("Could not register core's routers at /viva/v1")
+
 
 # -- set ui templates and marimo notebook apps -- #
 

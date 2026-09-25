@@ -45,3 +45,21 @@ def test_the_application_document_is_the_union() -> None:
         assert operation_id in sms_ops, f"{operation_id} ({target}) is core's but the application does not serve it"
     committed = yaml.safe_load((Path("viva_api/api/spec/openapi_3_1_0_generated.yaml")).read_text(encoding="utf-8"))
     assert set(_operations(committed)) == set(sms_ops), "the application's committed document is stale; run `make spec`"
+
+
+def test_the_application_serves_the_interim_viva_v1_spelling_but_documents_it_once() -> None:
+    """P3g (D17): the application mounts core's compose and env-worker routers under ``/viva/v1`` as
+    well, so a caller can switch on ``viva-v1-surface`` before the resource families exist. Those
+    routes are SERVED -- they answer by name like the same routes at ``/compose/v1`` -- but they are
+    not in the application's document: the operation ids are explicit and a second copy would
+    duplicate every one. Core's own document is where that spelling is described."""
+    from fastapi.testclient import TestClient
+
+    client = TestClient(sms_app)
+    interim = client.get(f"{CORE_PREFIX}/compose/simulators")
+    assert interim.status_code == client.get("/compose/v1/simulators").status_code != 404
+    assert client.get(f"{CORE_PREFIX}/env-worker/workers/nope").status_code == 503
+    core_paths = core_openapi()["paths"]
+    assert isinstance(core_paths, dict)
+    assert not any(p.startswith(f"{CORE_PREFIX}/compose") for p in sms_app.openapi()["paths"]), "documented twice"
+    assert any(p.startswith(f"{CORE_PREFIX}/compose") for p in core_paths)

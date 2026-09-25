@@ -17,6 +17,7 @@ from viva_core.api import CORE_PREFIX, build_core_router, create_core_app
 from viva_core.container import CoreContainer
 from viva_core.environments import RegistryEnvironmentResolver
 from viva_core.settings import CoreSettings
+from viva_core.version import __version__ as core_version
 
 RUNTIME = "registry.example.org/core-runtime:1"
 
@@ -58,7 +59,7 @@ print(json.dumps({"health": health, "image": found["image"], "paths": paths, "le
     done = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True, check=False)  # noqa: S603
     assert done.returncode == 0, done.stderr[-2000:]
     seen = json.loads(done.stdout.strip().splitlines()[-1])
-    assert seen["health"] == {"status": "ok", "services": {"environments": True}}
+    assert seen["health"] == {"status": "ok", "version": core_version, "services": {"environments": True}}
     assert seen["image"] == "registry.example.org/sim:abc1234"
     # Core's own two, plus the compose router at core's prefix (P3d-4d-2).
     assert "/viva/v1/environments/resolve" in seen["paths"] and "/viva/v1/health" in seen["paths"]
@@ -70,6 +71,29 @@ print(json.dumps({"health": health, "image": found["image"], "paths": paths, "le
 def test_health_says_which_services_this_deployment_provides() -> None:
     assert _client().get(f"{CORE_PREFIX}/health").json()["services"] == {"environments": True}
     assert _client(environments=False).get(f"{CORE_PREFIX}/health").json()["services"] == {"environments": False}
+
+
+def test_health_and_capabilities_carry_cores_own_version_and_the_served_surface() -> None:
+    """P3g / D16: core has a version line of its own, reported for humans; a client switches on the
+    capability NAMES. A standalone core marks the surface it mounts (`viva-v1-surface`) and advertises
+    whatever probes the application that embeds it hands over -- none, here."""
+    client = _client()
+    assert client.get(f"{CORE_PREFIX}/health").json()["version"] == core_version
+    body = client.get(f"{CORE_PREFIX}/capabilities").json()
+    assert body["version"] == core_version
+    assert body["capabilities"] == ["viva-v1-surface"]
+
+    # an application's probes ride along; a raising probe is "not advertised", never a 500
+    def _boom() -> bool:
+        raise RuntimeError("probe exploded")
+
+    with_app = TestClient(
+        create_core_app(
+            CoreContainer(settings=CoreSettings(), capabilities=(("app-thing", lambda: True), ("no", _boom)))
+        )
+    )
+    assert with_app.get(f"{CORE_PREFIX}/capabilities").json()["capabilities"] == ["app-thing", "viva-v1-surface"]
+    assert f"{CORE_PREFIX}/capabilities" in client.get(f"{CORE_PREFIX}/openapi.json").json()["paths"]
 
 
 def test_resolve_answers_with_both_identities_and_never_with_something_close() -> None:
