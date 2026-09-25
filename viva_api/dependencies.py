@@ -487,10 +487,11 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
 
         from viva_api.compose.database_service import ComposeDatabaseService
         from viva_api.compose.job_monitor import ComposeJobMonitor
-        from viva_api.compose.simulation_service import ComposeSimulationService, ComposeSimulationServiceHpc
         from viva_api.compose.tables_orm import create_compose_db
         from viva_api.simulation.compose_allow_list import DEFAULT_COMPOSE_ALLOW_LIST
         from viva_api.simulation.db_startup import create_tables_if_enabled
+        from viva_core.compose.service import ComposeSimulationService
+        from viva_core.compose.simulation_service_hpc import ComposeSimulationServiceHpc
 
         await create_tables_if_enabled(engine, create_compose_db, enabled=get_settings().db_create_all, what="compose")
 

@@ -59,6 +59,9 @@ _OVERRIDDEN_SETTINGS = (
     "slurm_node_list",
     "slurm_log_base_path",
     "slurm_base_path",
+    # what the SLURM compose service derives its remote paths from (viva_core.compose.hpc_paths)
+    "compose_image_base_path",
+    "compose_sim_base_path",
 )
 
 
@@ -240,6 +243,8 @@ def slurm_backend(request: pytest.FixtureRequest) -> Iterator[SlurmBackend]:
         settings.slurm_node_list = ""
         settings.slurm_log_base_path = HPCFilePath(remote_path=CONTAINER_REMOTE_BASE / "htclogs")
         settings.slurm_base_path = HPCFilePath(remote_path=CONTAINER_REMOTE_BASE)
+        settings.compose_image_base_path = str(CONTAINER_REMOTE_BASE / "images")
+        settings.compose_sim_base_path = str(CONTAINER_REMOTE_BASE / "compose")
         set_ssh_session_service(ssh, name=SSHTarget.SLURM)
         _provision_remote_tree(env=details.env)
         yield SlurmBackend(
