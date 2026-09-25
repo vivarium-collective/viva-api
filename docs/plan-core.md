@@ -1031,7 +1031,7 @@ split; each has an owner-less issue or a named moment.
 | P8b | removals M1 … M7 | | | | not started; each after its caller is on both sites |
 | P9a / b / c | | | | | not started (checkpoint N); rehearsed at UConn first (U3–U4) |
 | P10 | | | | | not started |
-| U0 … U5 | the UConn track (§4b) | | | | U1 merged (#796, rides 0.9.157); **U2 in progress**: U2a the SLURM settings onto `CoreSettings` (#798), U2b-1 the SLURM compose service's run command as a hook (#800; the v2ecoli mode was inside it; `ContainerRun`, `viva_api/simulation/compose_run_command.py`), U2d the registry naming and the env-worker Job settings (#801), **U2b-2 the service into core — `viva_core/compose/simulation_service_hpc.py` + `hpc_paths.py`, verbatim, shims at the old names; proven on the Docker cluster: build → run → results in 40 s** (`tests/compose/test_slurm_compose_service_on_a_cluster.py`, `slurm`-marked, 7/7 in the lane); **U2c the file-service factory** (`viva_core/storage/factory.py`: `file_service_for(backend)` exhaustive over `StorageBackend`, `file_service_from_settings()`; the composition root's if/elif is gone — a standalone core makes the same choice); next U2e the lifespan, U2f `Dockerfile-core`, U2g the `JobBackend` Protocol; core's overlay is a new directory, the SMS overlays untouched until U5 |
+| U0 … U5 | the UConn track (§4b) | | | | U1 merged (#796, rides 0.9.157); **U2 in progress**: U2a the SLURM settings onto `CoreSettings` (#798), U2b-1 the SLURM compose service's run command as a hook (#800; the v2ecoli mode was inside it; `ContainerRun`, `viva_api/simulation/compose_run_command.py`), U2d the registry naming and the env-worker Job settings (#801), **U2b-2 the service into core — `viva_core/compose/simulation_service_hpc.py` + `hpc_paths.py`, verbatim, shims at the old names; proven on the Docker cluster: build → run → results in 40 s** (`tests/compose/test_slurm_compose_service_on_a_cluster.py`, `slurm`-marked, 7/7 in the lane); **U2c the file-service factory** (`viva_core/storage/factory.py`: `file_service_for(backend)` exhaustive over `StorageBackend`, `file_service_from_settings()`; the composition root's if/elif is gone — a standalone core makes the same choice); next U2e the lifespan, U2g the `JobBackend` Protocol; **U2f `Dockerfile-core` + `build-core.yml`** (core served by uvicorn from the app factory, no application package in the image, image `ghcr.io/vivarium-collective/viva-core:<core tag>` on core's line, write-once; the workflow's gate is `tests/core` + an in-image boot check); core's overlay is a new directory, the SMS overlays untouched until U5 |
 | U1 | the local SLURM cluster: `tests/fixtures/slurm_cluster/` (compose-api's harness, verbatim) + `tests/fixtures/slurm_fixtures_backend.py` (the `slurm_backend` fixture: the container in CI, `--slurm-backend cluster` for Mantis); `port` on `SSHSessionService` and `slurm_submit_port`; `tests/common/test_slurm_backend.py` (SSH, and the conformance of `sbatch --parsable`, `squeue`, `scontrol` with core's parsers); CI job `tests-slurm` | 0.9.157 | 2026-09-25 (tests only) | — | **merged — #796** (`06d41b6d`; 6 tests green against the container, locally in 58 s and in CI); checkpoint UA's second half — green against Mantis with `--slurm-backend cluster` — still to run from a VPN laptop with the key |
 
 ## Decision log
@@ -1041,6 +1041,21 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-25** — **U2f: core has a deployable artifact.** `Dockerfile-core` builds viva_core as its
+  own service: the same Python base, uv and lockfile as `Dockerfile-api`, the dependencies installed
+  with `--no-install-project` (the project wheel would need the application packages this image
+  deliberately lacks — core is not its own distribution until P10), `viva_core` copied and nothing
+  else, and the venv's uvicorn run directly on `--factory viva_core.api.app:create_core_app` (not
+  `uv run`, which would try to install the project at container start).
+  `tests/test_deploy_config.py` holds the boundary: the only shipped package the Dockerfile copies is
+  `viva_core`. `build-core.yml` mirrors the runtime image's workflow — manual dispatch, a tag on
+  core's version line (D16), an existing tag refused (D11) — with `tests/core` and an in-image boot
+  check (`scripts/core_image_check.py`: `viva_api` must be absent, `/viva/v1/health` reports core's
+  version, `/viva/v1/capabilities` lists `viva-v1-surface`) as the gate. Built and checked locally
+  before the PR. Nothing deploys it yet: it is what the UConn core overlay (U3) runs beside the SMS
+  `api` pod, and later what P9 rolls out at Stanford. Without U2e's lifespan the image serves the
+  select-only core (environments, capabilities, health); compose and env-worker routes answer by
+  name until then.
 - **2026-09-25** — **U2c: the file service is chosen in core.** `viva_core/storage/factory.py` —
   `file_service_for(backend)` is a `match` over `StorageBackend` closed with `assert_never`, so a
   fourth store is a type error until it has a branch, and a stray runtime value raises rather than
