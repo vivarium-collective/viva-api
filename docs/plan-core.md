@@ -1031,7 +1031,7 @@ split; each has an owner-less issue or a named moment.
 | P8b | removals M1 … M7 | | | | not started; each after its caller is on both sites |
 | P9a / b / c | | | | | not started (checkpoint N); rehearsed at UConn first (U3–U4) |
 | P10 | | | | | not started |
-| U0 … U5 | the UConn track (§4b) | | | | U1 merged (#796, rides 0.9.157); **U2 in progress**: U2a the SLURM settings onto `CoreSettings` (#798), U2b-1 the SLURM compose service's run command as a hook (#800; the v2ecoli mode was inside it; `ContainerRun`, `viva_api/simulation/compose_run_command.py`), U2d the registry naming and the env-worker Job settings (#801), **U2b-2 the service into core — `viva_core/compose/simulation_service_hpc.py` + `hpc_paths.py`, verbatim, shims at the old names; proven on the Docker cluster: build → run → results in 40 s** (`tests/compose/test_slurm_compose_service_on_a_cluster.py`, `slurm`-marked, 7/7 in the lane); next U2c the file-service factory, U2e the lifespan, U2f `Dockerfile-core`, U2g the `JobBackend` Protocol; core's overlay is a new directory, the SMS overlays untouched until U5 |
+| U0 … U5 | the UConn track (§4b) | | | | U1 merged (#796, rides 0.9.157); **U2 in progress**: U2a the SLURM settings onto `CoreSettings` (#798), U2b-1 the SLURM compose service's run command as a hook (#800; the v2ecoli mode was inside it; `ContainerRun`, `viva_api/simulation/compose_run_command.py`), U2d the registry naming and the env-worker Job settings (#801), **U2b-2 the service into core — `viva_core/compose/simulation_service_hpc.py` + `hpc_paths.py`, verbatim, shims at the old names; proven on the Docker cluster: build → run → results in 40 s** (`tests/compose/test_slurm_compose_service_on_a_cluster.py`, `slurm`-marked, 7/7 in the lane); **U2c the file-service factory** (`viva_core/storage/factory.py`: `file_service_for(backend)` exhaustive over `StorageBackend`, `file_service_from_settings()`; the composition root's if/elif is gone — a standalone core makes the same choice); next U2e the lifespan, U2f `Dockerfile-core`, U2g the `JobBackend` Protocol; core's overlay is a new directory, the SMS overlays untouched until U5 |
 | U1 | the local SLURM cluster: `tests/fixtures/slurm_cluster/` (compose-api's harness, verbatim) + `tests/fixtures/slurm_fixtures_backend.py` (the `slurm_backend` fixture: the container in CI, `--slurm-backend cluster` for Mantis); `port` on `SSHSessionService` and `slurm_submit_port`; `tests/common/test_slurm_backend.py` (SSH, and the conformance of `sbatch --parsable`, `squeue`, `scontrol` with core's parsers); CI job `tests-slurm` | 0.9.157 | 2026-09-25 (tests only) | — | **merged — #796** (`06d41b6d`; 6 tests green against the container, locally in 58 s and in CI); checkpoint UA's second half — green against Mantis with `--slurm-backend cluster` — still to run from a VPN laptop with the key |
 
 ## Decision log
@@ -1041,6 +1041,14 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-25** — **U2c: the file service is chosen in core.** `viva_core/storage/factory.py` —
+  `file_service_for(backend)` is a `match` over `StorageBackend` closed with `assert_never`, so a
+  fourth store is a type error until it has a branch, and a stray runtime value raises rather than
+  falling through to some default store (the application's `else` used to *log* an error and leave
+  the service unset). `file_service_from_settings()` reads `storage_backend`. The application's
+  composition root now calls it in place of its own if/elif; the three implementations were already
+  core's and already read their own `storage_*` settings through `get_core_settings()`. This is the
+  piece a standalone core at UConn needs to stream datasets and results from Qumulo (§4b gap 5).
 - **2026-09-25** — **U2b-2: the SLURM compose service is core's, and the Docker cluster proves it.**
   `viva_api/compose/simulation_service.py` → `viva_core/compose/simulation_service_hpc.py` and
   `compose/hpc_utils.py` → `viva_core/compose/hpc_paths.py`, both verbatim, `sys.modules` shims at
