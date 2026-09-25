@@ -16,7 +16,7 @@ from collections.abc import Callable
 from fastapi import APIRouter, FastAPI, HTTPException
 
 from viva_core.api.schemas import CoreHealth, EnvironmentModel, ResolveEnvironmentRequest
-from viva_core.container import CoreContainer
+from viva_core.container import CoreContainer, set_container_provider
 from viva_core.environments import (
     Dependency,
     DerivedSpec,
@@ -92,11 +92,12 @@ def create_core_app(container: CoreContainer | None = None) -> FastAPI:
     """Core as an application of its own. With no container it builds one from ``CoreSettings`` --
     which is all a standalone core has, and all it may need (decision D7)."""
     held = container or container_from_settings(get_core_settings())
+    set_container_provider(lambda: held)
     app = FastAPI(title="viva-core", docs_url=f"{CORE_PREFIX}/docs", openapi_url=f"{CORE_PREFIX}/openapi.json")
     app.include_router(build_core_router(lambda: held))
-    # The compose router, at core's own prefix. Its services arrive through ``set_compose_services``
-    # from whoever composes this app (P3d-4d-2); a standalone core that has wired none answers 500
-    # by name on those routes, and serves everything else.
+    # The compose and env-worker routers, at core's own prefix. Their services are the container's
+    # (P3e); a standalone core whose container holds none answers by name on those routes, and
+    # serves everything else.
     from viva_core.api.routers.compose import router as compose_router
     from viva_core.api.routers.env_worker import router as env_worker_router
 

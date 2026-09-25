@@ -17,20 +17,20 @@ import pytest
 
 from viva_api import dependencies
 from viva_core.compose.job_monitor import ComposeJobMonitor
-from viva_core.env_worker import relay as env_worker_relay
+from viva_core.container import ComposeServices, EnvWorkerServices
 
 
 @pytest.fixture
 def restore_globals() -> Iterator[None]:
     saved_scheduler = dependencies.get_job_scheduler()
-    saved_monitor = dependencies.get_compose_job_monitor()
+    saved_compose = dependencies.get_compose_services()
     saved_engine = dependencies.get_postgres_engine()
-    saved_runner = env_worker_relay.runner
+    saved_env_worker = dependencies.get_env_worker_services()
     yield
     dependencies.set_job_scheduler(saved_scheduler)
-    dependencies.set_compose_job_monitor(saved_monitor)
+    dependencies.set_compose_services(saved_compose)
     dependencies.set_postgres_engine(saved_engine)
-    env_worker_relay.set_runner(saved_runner)
+    dependencies.set_env_worker_services(saved_env_worker)
 
 
 @pytest.mark.asyncio
@@ -67,16 +67,16 @@ async def test_shutdown_stops_background_work_before_disposing_the_engine(restor
     engine.dispose = recorder("engine")
 
     dependencies.set_job_scheduler(scheduler)
-    dependencies.set_compose_job_monitor(monitor)
+    dependencies.set_compose_services(ComposeServices(db=MagicMock(), sim=MagicMock(), monitor=monitor))
     dependencies.set_postgres_engine(engine)
-    env_worker_relay.set_runner(runner)
+    dependencies.set_env_worker_services(EnvWorkerServices(runner=runner))
 
     await dependencies.shutdown_standalone()
 
     assert order == ["scheduler", "compose_monitor", "task_runner", "engine"]
     assert dependencies.get_job_scheduler() is None
     assert dependencies.get_compose_job_monitor() is None
-    assert env_worker_relay.runner is None
+    assert dependencies.get_env_worker_services().runner is None
 
 
 @pytest.mark.asyncio
@@ -89,9 +89,9 @@ async def test_one_subsystem_failing_to_stop_does_not_strand_the_others(restore_
     runner.close = AsyncMock()
 
     dependencies.set_job_scheduler(scheduler)
-    dependencies.set_compose_job_monitor(monitor)
+    dependencies.set_compose_services(ComposeServices(db=MagicMock(), sim=MagicMock(), monitor=monitor))
     dependencies.set_postgres_engine(None)
-    env_worker_relay.set_runner(runner)
+    dependencies.set_env_worker_services(EnvWorkerServices(runner=runner))
 
     await dependencies.shutdown_standalone()
 

@@ -119,3 +119,39 @@ def test_an_application_includes_the_router_and_the_paths_are_the_same() -> None
     held.append(CoreContainer(settings=CoreSettings()))  # built AFTER the router was included
     assert client.get(f"{CORE_PREFIX}/health").json()["services"] == {"environments": False}
     assert f"{CORE_PREFIX}/environments/resolve" in client.get("/openapi.json").json()["paths"]
+
+
+def test_a_core_with_no_services_answers_by_name_and_nothing_is_wired_through_a_setter() -> None:
+    """P3e: the routes ask the container of the moment. A standalone core whose container holds no
+    compose or env-worker services says so on those routes (500 / 503 by name) and serves the rest;
+    no router module carries a setter any more."""
+    import ast
+    from pathlib import Path
+
+    import pytest
+    from fastapi.testclient import TestClient
+
+    from viva_core import container as container_mod
+    from viva_core.api.app import create_core_app
+    from viva_core.container import CoreContainer, current_container
+    from viva_core.settings import CoreSettings
+
+    saved = container_mod._provider
+    try:
+        container_mod._provider = None
+        with pytest.raises(RuntimeError, match="no core container is registered"):
+            current_container()
+        app = create_core_app(CoreContainer(settings=CoreSettings()))
+        client = TestClient(app)
+        assert client.get("/viva/v1/health").status_code == 200
+        assert client.get("/viva/v1/compose/simulators").status_code == 500
+        assert "not initialized" in client.get("/viva/v1/compose/simulators").json()["detail"]
+        assert client.get("/viva/v1/env-worker/workers/nope").status_code == 503
+        assert client.get("/viva/v1/env-worker/tasks/1").status_code == 503
+    finally:
+        container_mod._provider = saved
+
+    for router in Path("viva_core/api/routers").glob("*.py"):
+        tree = ast.parse(router.read_text(encoding="utf-8"))
+        setters = [n.name for n in tree.body if isinstance(n, ast.FunctionDef) and n.name.startswith("set_")]
+        assert not setters, f"{router.name} still carries a setter: {setters}"

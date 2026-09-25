@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -17,6 +18,7 @@ from viva_api.config import ComputeBackend, Settings, get_job_backend, get_setti
 from viva_api.log_config import setup_logging
 from viva_api.simulation.database_service import DatabaseService, DatabaseServiceSQL
 from viva_api.simulation.tables_orm import create_db
+from viva_core.container import ComposeServices, EnvWorkerServices
 
 if TYPE_CHECKING:
     from viva_api.common.hpc.local_task_service import LocalTaskService
@@ -172,19 +174,35 @@ def get_job_scheduler() -> "JobScheduler | None":
     return global_job_scheduler
 
 
-# ------ compose job monitor (kept here so shutdown can stop it) ------
+# ------ compose + env-worker services (P3e): built in the lifespan, handed to core's routes ------
+# through the container ``viva_api.core_wiring.core_container`` builds per request. Held here, not
+# pushed into router modules: this is the composition root, and shutdown has to find them.
 
-global_compose_job_monitor: "ComposeJobMonitor | None" = None
+_compose_services: "ComposeServices | None" = None
+_env_worker_services: "EnvWorkerServices" = EnvWorkerServices()
 
 
-def set_compose_job_monitor(monitor: "ComposeJobMonitor | None") -> None:
-    global global_compose_job_monitor
-    global_compose_job_monitor = monitor
+def set_compose_services(services: "ComposeServices | None") -> None:
+    global _compose_services
+    _compose_services = services
+
+
+def get_compose_services() -> "ComposeServices | None":
+    return _compose_services
+
+
+def set_env_worker_services(services: "EnvWorkerServices") -> None:
+    global _env_worker_services
+    _env_worker_services = services
+
+
+def get_env_worker_services() -> "EnvWorkerServices":
+    return _env_worker_services
 
 
 def get_compose_job_monitor() -> "ComposeJobMonitor | None":
-    global global_compose_job_monitor
-    return global_compose_job_monitor
+    services = get_compose_services()
+    return services.monitor if services else None
 
 
 # ------ messaging/cache service (modular standalone: new/arbitrary channels ----
@@ -481,7 +499,6 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         from viva_api.compose.tables_orm import create_compose_db
         from viva_api.simulation.compose_allow_list import DEFAULT_COMPOSE_ALLOW_LIST
         from viva_api.simulation.db_startup import create_tables_if_enabled
-        from viva_core.api.routers.compose import set_compose_services
 
         await create_tables_if_enabled(engine, create_compose_db, enabled=get_settings().db_create_all, what="compose")
 
@@ -491,12 +508,16 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         # per-worker runner. Wired here rather than lazily so the relay's task
         # endpoints answer 503 with a reason on a deployment that has no compose
         # database, instead of failing at first use.
-        from viva_core.api.routers.env_worker import set_env_worker_task_service
-        from viva_core.env_worker.relay import TaskRunner, set_runner
+        from viva_core.env_worker.relay import TaskRunner
 
         task_db = compose_db.get_env_worker_task_db()
-        set_env_worker_task_service(task_db)
-        set_runner(TaskRunner(task_db, explain_exit=_explain_env_worker_exit))
+        set_env_worker_services(
+            dataclasses.replace(
+                get_env_worker_services(),
+                task_db=task_db,
+                runner=TaskRunner(task_db, explain_exit=_explain_env_worker_exit),
+            )
+        )
 
         # Per-backend compose service registry, mirroring _init_simulation_service: the
         # deployment default (COMPUTE_BACKEND) is what the compose router uses, and the Ray
@@ -548,13 +569,14 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         await compose_db.get_allow_list_db().seed_if_empty(DEFAULT_COMPOSE_ALLOW_LIST)
 
         set_compose_services(
-            db=compose_db,
-            sim=compose_sim,
-            monitor=compose_monitor,
-            default_allow_list=DEFAULT_COMPOSE_ALLOW_LIST,
-            files=get_file_service(),
+            ComposeServices(
+                db=compose_db,
+                sim=compose_sim,
+                monitor=compose_monitor,
+                files=get_file_service(),
+                default_allow_list=tuple(DEFAULT_COMPOSE_ALLOW_LIST),
+            )
         )
-        set_compose_job_monitor(compose_monitor)
 
         # Start compose job monitor polling
         await compose_monitor.start_polling(interval_seconds=30)
@@ -618,9 +640,7 @@ def _explain_env_worker_exit(job_name: str) -> str | None:
     router's global at call time instead, which is correct in every ordering
     and costs nothing on a path that only runs when a worker has already died.
     """
-    from viva_core.api.routers import env_worker as env_worker_router
-
-    service = env_worker_router._env_worker_service
+    service = get_env_worker_services().service
     if service is None:
         return None
     return service.explain_exit(job_name)
@@ -635,8 +655,6 @@ def _init_env_worker_service() -> None:
     than always-on: without both settings the router keeps answering 503, which
     says "not configured here" instead of pretending a 404.
     """
-    from viva_core.api.routers.env_worker import set_env_worker_service
-
     settings = get_settings()
     if not settings.k8s_job_namespace or not settings.env_worker_module_image:
         logger.info(
@@ -649,7 +667,7 @@ def _init_env_worker_service() -> None:
     try:
         from viva_api.compose.env_worker_service import EnvWorkerService
 
-        set_env_worker_service(EnvWorkerService())
+        set_env_worker_services(dataclasses.replace(get_env_worker_services(), service=EnvWorkerService()))
         logger.info(
             "✓ Env-worker service initialized (namespace=%s, module image=%s)",
             settings.k8s_job_namespace,
@@ -684,16 +702,17 @@ async def _shutdown_background_work() -> None:
             await compose_monitor.close()
         except Exception:
             logger.warning("ComposeJobMonitor did not stop cleanly", exc_info=True)
-        set_compose_job_monitor(None)
+        set_compose_services(None)
 
     from viva_core.env_worker import relay as env_worker_relay
 
-    if env_worker_relay.runner is not None:
+    runner = get_env_worker_services().runner
+    if runner is not None:
         try:
-            await env_worker_relay.runner.close()
+            await runner.close()
         except Exception:
             logger.warning("env-worker TaskRunner did not stop cleanly", exc_info=True)
-        env_worker_relay.set_runner(None)
+        set_env_worker_services(dataclasses.replace(get_env_worker_services(), runner=None))
     try:
         env_worker_relay.registry.close_all()
     except Exception:

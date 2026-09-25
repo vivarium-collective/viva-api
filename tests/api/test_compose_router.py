@@ -142,30 +142,44 @@ async def test_submit_simulation_document_rejects_bad_interval(fastapi_app: obje
     assert response.status_code == 400
 
 
+@pytest.fixture
+def compose_services(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Install a container whose compose services the test controls (P3e: the router asks the
+    container of the moment, not module globals). Returns a setter: ``set(sim=..., monitor=...)``."""
+    from viva_core import container as container_mod
+    from viva_core.container import ComposeServices, CoreContainer
+
+    held: dict[str, Any] = {}
+
+    def _set(**fields: Any) -> None:
+        base = {"db": MagicMock(), "sim": MagicMock(name="default_service"), "monitor": MagicMock()}
+        base.update(fields)
+        held["container"] = CoreContainer(settings=MagicMock(), compose=ComposeServices(**base))
+
+    _set()
+    monkeypatch.setattr(container_mod, "_provider", lambda: held["container"])
+    return _set
+
+
 # --- item 98: compute_backend -- per-request selection among the registered
 # ComposeSimulationService backends (_require_sim's own resolution logic) ---
 
 
-def test_require_sim_with_no_backend_returns_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_require_sim_with_no_backend_returns_the_default(compose_services: Any) -> None:
     """None (the vast majority of requests -- this field is optional) preserves
     today's exact behavior: the deployment's single default service, no registry
     lookup at all."""
     default = MagicMock(name="default_service")
-    monkeypatch.setattr(compose_router, "_compose_sim_service", default)
+    compose_services(sim=default)
     assert compose_router._require_sim(None) is default
 
 
 def test_require_sim_resolves_the_explicitly_requested_registered_backend(
-    monkeypatch: pytest.MonkeyPatch,
+    compose_services: Any,
 ) -> None:
     default = MagicMock(name="default_service")
     ray_service = MagicMock(name="ray_service")
-    monkeypatch.setattr(compose_router, "_compose_sim_service", default)
-    monkeypatch.setattr(
-        compose_router,
-        "_compose_job_monitor",
-        types.SimpleNamespace(sim_registry={ComputeBackend.RAY: ray_service}),
-    )
+    compose_services(sim=default, monitor=types.SimpleNamespace(sim_registry={ComputeBackend.RAY: ray_service}))
     # Explicitly asking for RAY must return the RAY service, not the default --
     # even when RAY also happens to BE the default, this proves the registry
     # path was actually taken rather than the None-shortcut above.
@@ -174,32 +188,26 @@ def test_require_sim_resolves_the_explicitly_requested_registered_backend(
 
 
 def test_require_sim_fails_loud_when_requested_backend_is_not_registered(
-    monkeypatch: pytest.MonkeyPatch,
+    compose_services: Any,
 ) -> None:
     """Regression target, named directly in the source comment: a caller who
     explicitly asks for a backend must never silently get a different one back
     (viva-api#353's own "looked successful, ran the wrong thing" class of bug)."""
     from fastapi import HTTPException
 
-    monkeypatch.setattr(compose_router, "_compose_sim_service", MagicMock())
-    monkeypatch.setattr(
-        compose_router,
-        "_compose_job_monitor",
-        types.SimpleNamespace(sim_registry={ComputeBackend.RAY: MagicMock()}),
-    )
+    compose_services(monitor=types.SimpleNamespace(sim_registry={ComputeBackend.RAY: MagicMock()}))
     with pytest.raises(HTTPException) as exc_info:
         compose_router._require_sim(ComputeBackend.SLURM)
     assert exc_info.value.status_code == 400
     assert "slurm" in str(exc_info.value.detail)
 
 
-def test_require_sim_fails_loud_with_no_monitor_at_all(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_require_sim_fails_loud_with_no_monitor_at_all(compose_services: Any) -> None:
     """Same fail-loud contract when the monitor itself was never initialized --
     an empty registry, not a crash or a silent default substitution."""
     from fastapi import HTTPException
 
-    monkeypatch.setattr(compose_router, "_compose_sim_service", MagicMock())
-    monkeypatch.setattr(compose_router, "_compose_job_monitor", None)
+    compose_services(monitor=types.SimpleNamespace(sim_registry={}))
     with pytest.raises(HTTPException) as exc_info:
         compose_router._require_sim(ComputeBackend.RAY)
     assert exc_info.value.status_code == 400
@@ -443,9 +451,16 @@ async def test_get_results_ray_backend_streams_s3_tar_gz(fastapi_app: object) ->
 
     saved_file_service = get_file_service()
     set_file_service(_FakeFileService())
-    # The router is HANDED its file service (P3d-4d-2); the test hands it the same fake.
-    saved_router_files = compose_router._files
-    compose_router._files = _FakeFileService()
+    # The router's file service is the container's (P3e); the test provides one with the same fake.
+    from viva_core import container as container_mod
+    from viva_core.container import ComposeServices, CoreContainer
+
+    held = CoreContainer(
+        settings=MagicMock(),
+        compose=ComposeServices(db=MagicMock(), sim=MagicMock(), monitor=MagicMock(), files=_FakeFileService()),
+    )
+    saved_provider = container_mod._provider
+    container_mod._provider = lambda: held
 
     fake_db = MagicMock()
     fake_hpc_run = ComposeHpcRun(
@@ -467,7 +482,7 @@ async def test_get_results_ray_backend_streams_s3_tar_gz(fastapi_app: object) ->
                 response = await client.get("/compose/v1/simulation/99/results")
     finally:
         set_file_service(saved_file_service)
-        compose_router._files = saved_router_files
+        container_mod._provider = saved_provider
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/gzip"

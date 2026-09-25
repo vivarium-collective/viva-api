@@ -435,15 +435,6 @@ class TaskRunner:
             d.cancel()
 
 
-#: Process-wide runner, wired to a database service at startup.
-runner: TaskRunner | None = None
-
-
-def set_runner(value: TaskRunner | None) -> None:
-    global runner
-    runner = value
-
-
 def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
     buf = bytearray()
     while len(buf) < n:
