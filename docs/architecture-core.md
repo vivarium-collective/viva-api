@@ -433,7 +433,8 @@ viva_core/
               routers/{jobs,environments,tasks,composites,workers,datasets,events,capabilities}
   services/   job_service, job_monitor, task_service, compose_service,
               dataset_service, environment_service, hooks
-  backends/   base (JobBackend), batch, k8s, slurm, local, nextflow, build
+  backends/   base (JobBackend, JobSpec, JobHandle, BackendStatus), batch_backend, slurm_backend  (U2g: in place -- the Protocol and its
+              first two implementations; consumers arrive with the strategies, plan §6 step 3), k8s, local, nextflow, build
   db/         orm (CoreBase, schema "core"), stores, reconcile, migrations/
   events/     events_env, ingest, chrome_trace
   env_worker/ service, relay, schemas          (P3d-4a/b-3: in place)
@@ -466,12 +467,20 @@ class JobBackend(Protocol):
     async def submit(self, spec: JobSpec) -> JobHandle: ...
     async def status(self, handles: Sequence[JobHandle]) -> dict[str, BackendStatus]: ...
     async def cancel(self, handle: JobHandle) -> None: ...
-    def logs(self, handle: JobHandle, *, tail: int | None) -> AsyncIterator[str]: ...
+    async def logs(self, handle: JobHandle, *, tail: int | None = None) -> list[str]: ...
 ```
 
-`JobSpec` carries image, command, env, resources, stage-in/out, trace env, labels and an
-`OwnerRef`. A Nextflow head is a `k8s` submission composed by `backends/nextflow.py`. The
-SMS strain arguments become an opaque `extra_env`. SLURM is a supported core backend.
+`JobSpec` carries image, command, env, resources, labels and what the job waits on (handles of
+the same backend); stage-in/out, trace env and the `OwnerRef` are the strategy's to add (plan §6
+step 3), because Batch stages through its entrypoint's env and SLURM through a shared filesystem.
+**In place since U2g (2026-09-25)** in `viva_core/backends/base.py`, with `batch_backend.py`
+(container-type jobs over the engine; resources are the job definition's until the engine exposes
+an override; logs from CloudWatch through a handed-in client) and `slurm_backend.py` (an sbatch
+script from the spec over SSH; `squeue` + `scontrol`; `scancel`; the output file), the latter proven
+against a real scheduler. `logs` answers a list of lines rather than a stream: what both schedulers
+give cheaply, and what every caller today wants. A Nextflow head is a `k8s` submission composed by
+`backends/nextflow.py`. The SMS strain arguments become an opaque `extra_env`. SLURM is a supported
+core backend.
 
 **Environments: select or build, then run (decision D10).** The application this core is for
 accepts a **composite** and either selects a known compatible environment or builds one from
@@ -692,7 +701,7 @@ Status: `planned` → `in progress` → `done (PR, version)`. Phases refer to `p
 | 1 | Import boundary | none enforced | import-linter: core ↛ viva_api, app | P0 / P1 | in progress — seven contracts; **enforced:** `core-is-standalone` (P1a, transitive) and env workers + relay (#680); report-only: 3 contracts / **4** edges as of 2026-09-25 (3d-4d-2b; the routers contract is kept) (was 6 at 3d-4b, **12** direct edges as of 2026-09-20: compose 3, `dependencies.py` → routers 4, server → `app` 3, `config` 1, `local_task_service` 1; a ratchet — the count never rises) |
 | 2 | Generic modules | under `viva_api/common`, `api/` | `viva_core/{infra,storage,backends,events,api}` + aliasing shim | P1 | in progress — P1a: `models`, `infra/messaging`, `events/events_env`, `backends/{job_service,k8s_job_service,models,nextflow_weblog}` moved; old paths are self-replacing stubs. P1b: `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved |
 | 3 | Batch engine | private methods of `SimulationServiceRay` | `viva_core/backends/batch.py` (`BatchJobClient`, composed) | P2.1 | in progress — cut 2: the engine exists in core, settings-free, with its own tests (`tests/core/test_batch_backend.py`); `SimulationServiceRay` delegates through `_batch_jobs()`; `compose` still reaches it via the service's private methods (→ P2.3); not yet behind the `JobBackend` Protocol |
-| 4 | Backends | three unrelated shapes in `viva_core/backends/` (`batch.py`, `k8s_job_service.py`, `slurm_service.py`) sharing only `JobStatus` / `JobId` | `JobBackend` adapters: batch, k8s, slurm, local | P5 (was P2.3) | planned — **deferred with a trigger**: a core Protocol with one implementation would quietly be Batch-shaped, so it waits for its second consumer (`compose` on the core seam) and is not final before a second backend implements it |
+| 4 | Backends | `viva_core/backends/base.py`: the `JobBackend` Protocol (`submit` / `status` / `cancel` / `logs` over `JobSpec` / `JobHandle` / `BackendStatus`) with `batch_backend.py` and `slurm_backend.py` behind it; `k8s_job_service.py` still its own shape | `k8s` and `local` adapters; the strategies (plan §6 step 3) as the consumers; staging on the spec | U2g done 2026-09-25; k8s / local at P5 | **Protocol + two adapters in place** — declared only once a second backend implemented it, as the trigger required; nothing consumes it yet (the compose services keep their ABC until the strategies land) |
 | 5 | Image resolution | ~~`<ecr>/v2ecoli:<commit>`, derived four separate times from the same settings~~ one place: `viva_core/environments/site.py` (moved from `viva_api/common/site_environments.py`, P3d-4a) builds core's `RegistryEnvironmentResolver` from the settings it is handed, and the Batch layer, compose, the env-worker service and the K8s analysis Job ask it | one `EnvironmentResolver`; the *select* half of D10 (§2.3) | P2.3 | **done for the select half** (2.3a the model, 2.3b the rewiring; a guard fails on a fifth hand-rolled derivation). Still by hand, knowingly: the upstream vEcoli path of `SimulationServiceK8s` (another repository, `-amd64-submit`; out of scope until P5). Open: refuse an unset ECR account by name (deferred list); the runtime image (2.3c) |
 | 6 | Settings | one flat `Settings` | `CoreSettings` + `SmsSettings`, same env names | P1b / P3 | in progress — P1b: `viva_core.settings.CoreSettings` holds the storage + path-prefix fields; `Settings` inherits them; the application registers a provider so core reads its object. P3d-2: the 14 settings compose and env-worker read (Batch / K8s path) are `CoreSettings` fields too, two of them with an application-supplied default; `slurm_log_base_path` waits on an import cycle. The rest moves with its consumer |
 | 7 | Wiring | module globals, router setters, one `init_standalone` | `CoreContainer` + `SmsContainer`, `create_core_app()` | P3 | in progress — 3a: `CoreContainer` and `create_core_app()` exist and boot alone; SMS provides the container (`viva_api/core_wiring.py`); the globals and setters are all still there, because nothing they wire has moved yet |
