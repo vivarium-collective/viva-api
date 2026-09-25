@@ -3751,7 +3751,7 @@ paths:
     post:
       tags:
       - Env Worker Documents
-      summary: Translate a vEcoli-style config into a composite document
+      summary: Translate a simulator config document into a composite document
       description: '501 where the workspace ships no translator -- the worker''s
 
         `__unavailable__`, which is a property of the workspace and not of the request.'

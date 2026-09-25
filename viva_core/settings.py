@@ -44,6 +44,20 @@ class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, n
     s3_work_bucket: str = ""
     s3_output_prefix: str = ""
 
+    # Identity (P3d-4d-2b): an OIDC bearer token, verified against the issuer's keys, and/or an
+    # identity header a proxy in front of the deployment sets. ``viva_core.api.auth`` reads these;
+    # empty is the default and a legitimate steady state.
+    oidc_issuer: str = ""
+    oidc_audience: str = ""  # REQUIRED whenever oidc_issuer is set, and deliberately has no default
+    oidc_algorithms: str = "RS256"
+    oidc_jwks_cache_seconds: int = 300
+    oidc_leeway_seconds: int = 30
+    oidc_fetch_timeout_seconds: float = 5.0
+    identity_header: str = ""
+    # This process's ROLE in the deployment: a stable name, not a pod name. Env-worker tasks are
+    # stamped with it and the boot sweep settles only its own role's.
+    owner_instance: str = "api"
+
     # AWS S3
     storage_s3_bucket: str = ""
     storage_s3_region: str = "us-east-1"

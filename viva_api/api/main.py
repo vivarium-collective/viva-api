@@ -182,7 +182,7 @@ except ImportError:
 # unconditionally; the endpoints answer 503 until dependencies.py wires the
 # service, so a deployment without K8s job support fails clearly rather than 404.
 try:
-    from viva_api.api.routers.env_worker import router as env_worker_router
+    from viva_core.api.routers.env_worker import router as env_worker_router
 
     app.include_router(env_worker_router, prefix="/env-worker/v1")
     logger.info("Env-worker router registered at /env-worker/v1")

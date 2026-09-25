@@ -491,7 +491,7 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
         # per-worker runner. Wired here rather than lazily so the relay's task
         # endpoints answer 503 with a reason on a deployment that has no compose
         # database, instead of failing at first use.
-        from viva_api.api.routers.env_worker import set_env_worker_task_service
+        from viva_core.api.routers.env_worker import set_env_worker_task_service
         from viva_core.env_worker.relay import TaskRunner, set_runner
 
         task_db = compose_db.get_env_worker_task_db()
@@ -618,7 +618,7 @@ def _explain_env_worker_exit(job_name: str) -> str | None:
     router's global at call time instead, which is correct in every ordering
     and costs nothing on a path that only runs when a worker has already died.
     """
-    from viva_api.api.routers import env_worker as env_worker_router
+    from viva_core.api.routers import env_worker as env_worker_router
 
     service = env_worker_router._env_worker_service
     if service is None:
@@ -635,7 +635,7 @@ def _init_env_worker_service() -> None:
     than always-on: without both settings the router keeps answering 503, which
     says "not configured here" instead of pretending a 404.
     """
-    from viva_api.api.routers.env_worker import set_env_worker_service
+    from viva_core.api.routers.env_worker import set_env_worker_service
 
     settings = get_settings()
     if not settings.k8s_job_namespace or not settings.env_worker_module_image:

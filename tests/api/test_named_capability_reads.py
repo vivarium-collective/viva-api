@@ -18,8 +18,8 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
-from viva_api.api.routers import env_worker as ew
 from viva_api.compose.env_worker_schemas import RelayCallRequest
+from viva_core.api.routers import env_worker as ew
 
 
 @pytest.fixture
