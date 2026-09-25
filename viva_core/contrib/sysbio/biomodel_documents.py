@@ -14,7 +14,7 @@ from viva_core.contrib.sysbio.biomodels_service import UniformTimeCourseSpec
 # Type registry (ported from biomodels-regression/__init__.py)
 # ---------------------------------------------------------------------------
 
-TYPES_DICT: dict[str, dict[str, str]] = {
+TYPES_DICT: dict[str, str | dict[str, str]] = {
     "numeric_result": {
         "time": "list[float]",
         "columns": "list[string]",
@@ -58,10 +58,11 @@ class UtcStep(TypedDict):
 
 
 class BiomodelDocument(TypedDict):
-    """A process-bigraph document for one BioModel: its schema and its state."""
+    """A process-bigraph document: its schema and its state. For one BioModel the state holds its
+    steps and three empty maps; a combined document holds one such state per model id."""
 
     schema: dict[str, object]
-    state: dict[str, UtcStep | dict[str, object]]
+    state: dict[str, object]
 
 
 def make_utc_step_state(
@@ -111,7 +112,7 @@ def make_biomodel_document(
         Dict with ``"schema"`` and ``"state"`` keys, serialisable to a ``.pbg``
         JSON file inside an OMEX archive.
     """
-    state: dict[str, UtcStep | dict[str, object]] = {
+    state: dict[str, object] = {
         "species_concentrations": {},
         "species_counts": {},
         "results": {},

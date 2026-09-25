@@ -62,7 +62,7 @@ class TestFindFirstSedml:
         files = [self._make_file("model.sbml"), self._make_file("sim.sedml")]
         found = _find_first_sedml(files)
         assert found is not None
-        assert found.name == "sim.sedml"
+        assert getattr(found, "name", None) == "sim.sedml"
 
     def test_returns_none_if_absent(self) -> None:
         files = [self._make_file("model.sbml")]
@@ -79,7 +79,7 @@ class TestFindFirstSbml:
         files = [self._make_file("sim.sedml"), self._make_file("model.sbml")]
         found = _find_first_sbml(files)
         assert found is not None
-        assert found.name == "model.sbml"
+        assert getattr(found, "name", None) == "model.sbml"
 
     def test_skips_sedml(self) -> None:
         files = [self._make_file("only.sedml")]

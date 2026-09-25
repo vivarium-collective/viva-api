@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -54,7 +54,7 @@ def _file_name(obj: object) -> str:
     return getattr(obj, "name", str(obj))
 
 
-def _iter_entry_files(entry: object) -> list[object]:
+def _iter_entry_files(entry: object) -> Sequence[object]:
     if entry is None:
         return []
     if isinstance(entry, list | tuple):
@@ -70,14 +70,14 @@ def _iter_entry_files(entry: object) -> list[object]:
     return []
 
 
-def _find_first_sedml(entry_files: list[object]) -> object | None:
+def _find_first_sedml(entry_files: Sequence[object]) -> object | None:
     for f in entry_files:
         if _SEDML_RE.search(_file_name(f)):
             return f
     return None
 
 
-def _find_first_sbml(entry_files: list[object]) -> object | None:
+def _find_first_sbml(entry_files: Sequence[object]) -> object | None:
     candidates = []
     for f in entry_files:
         name = _file_name(f)
