@@ -1,0 +1,3208 @@
+{
+  "what": "response shapes of the read-only operations external callers depend on (app/contract.py)",
+  "recorded_from": "http://localhost:8080",
+  "server_version": "0.9.156",
+  "recorded_at": "2026-09-25T15:35:51+00:00",
+  "operations": {
+    "analyses-for-experiment": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "array"
+        ],
+        "items": {
+          "t": [
+            "object"
+          ],
+          "keys": {
+            "backend": {
+              "t": [
+                "string"
+              ]
+            },
+            "config": {
+              "t": [
+                "object"
+              ],
+              "keys": {
+                "analysis_options": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "experiment_id": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "string"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": []
+                }
+              },
+              "optional": []
+            },
+            "database_id": {
+              "t": [
+                "integer"
+              ]
+            },
+            "error_message": {
+              "t": [
+                "null"
+              ]
+            },
+            "experiment_id": {
+              "t": [
+                "string"
+              ]
+            },
+            "job_id": {
+              "t": [
+                "null"
+              ]
+            },
+            "job_id_ext": {
+              "t": [
+                "null",
+                "string"
+              ]
+            },
+            "job_name": {
+              "t": [
+                "null"
+              ]
+            },
+            "last_updated": {
+              "t": [
+                "string"
+              ]
+            },
+            "n_datasets": {
+              "t": [
+                "null"
+              ]
+            },
+            "n_tp": {
+              "t": [
+                "null"
+              ]
+            },
+            "name": {
+              "t": [
+                "string"
+              ]
+            },
+            "result_uri": {
+              "t": [
+                "string"
+              ]
+            },
+            "simulation_id": {
+              "t": [
+                "integer"
+              ]
+            },
+            "source": {
+              "t": [
+                "null"
+              ]
+            },
+            "status": {
+              "t": [
+                "string"
+              ]
+            },
+            "tags": {
+              "t": [
+                "array"
+              ],
+              "items": null
+            }
+          },
+          "optional": []
+        }
+      }
+    },
+    "analysis": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "object"
+        ],
+        "keys": {
+          "database_id": {
+            "t": [
+              "integer"
+            ]
+          },
+          "name": {
+            "t": [
+              "string"
+            ]
+          },
+          "config": {
+            "t": [
+              "object"
+            ],
+            "keys": {
+              "analysis_options": {
+                "t": [
+                  "object"
+                ],
+                "keys": {
+                  "experiment_id": {
+                    "t": [
+                      "array"
+                    ],
+                    "items": {
+                      "t": [
+                        "string"
+                      ]
+                    }
+                  }
+                },
+                "optional": []
+              }
+            },
+            "optional": []
+          },
+          "last_updated": {
+            "t": [
+              "string"
+            ]
+          },
+          "job_name": {
+            "t": [
+              "null"
+            ]
+          },
+          "job_id": {
+            "t": [
+              "null"
+            ]
+          },
+          "experiment_id": {
+            "t": [
+              "string"
+            ]
+          },
+          "n_tp": {
+            "t": [
+              "null"
+            ]
+          },
+          "status": {
+            "t": [
+              "string"
+            ]
+          },
+          "result_uri": {
+            "t": [
+              "string"
+            ]
+          },
+          "simulation_id": {
+            "t": [
+              "integer"
+            ]
+          },
+          "backend": {
+            "t": [
+              "string"
+            ]
+          },
+          "error_message": {
+            "t": [
+              "null"
+            ]
+          },
+          "job_id_ext": {
+            "t": [
+              "string"
+            ]
+          },
+          "source": {
+            "t": [
+              "null"
+            ]
+          },
+          "tags": {
+            "t": [
+              "array"
+            ],
+            "items": null
+          },
+          "n_datasets": {
+            "t": [
+              "integer"
+            ]
+          }
+        },
+        "optional": []
+      }
+    },
+    "analysis-data": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "array"
+        ],
+        "items": {
+          "t": [
+            "object"
+          ],
+          "keys": {
+            "agent_id": {
+              "t": [
+                "string"
+              ]
+            },
+            "content": {
+              "t": [
+                "string"
+              ]
+            },
+            "filename": {
+              "t": [
+                "string"
+              ]
+            },
+            "generation": {
+              "t": [
+                "integer"
+              ]
+            },
+            "lineage_seed": {
+              "t": [
+                "integer"
+              ]
+            },
+            "path": {
+              "t": [
+                "string"
+              ]
+            },
+            "variant": {
+              "t": [
+                "integer"
+              ]
+            }
+          },
+          "optional": [
+            "agent_id",
+            "generation"
+          ]
+        }
+      }
+    },
+    "analysis-status": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "object"
+        ],
+        "keys": {
+          "id": {
+            "t": [
+              "integer"
+            ]
+          },
+          "status": {
+            "t": [
+              "string"
+            ]
+          },
+          "job_id": {
+            "t": [
+              "null"
+            ]
+          },
+          "error_log": {
+            "t": [
+              "null"
+            ]
+          }
+        },
+        "optional": []
+      }
+    },
+    "capabilities": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "object"
+        ],
+        "keys": {
+          "version": {
+            "t": [
+              "string"
+            ]
+          },
+          "capabilities": {
+            "t": [
+              "array"
+            ],
+            "items": {
+              "t": [
+                "string"
+              ]
+            }
+          }
+        },
+        "optional": []
+      }
+    },
+    "compose-processes": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "array"
+        ],
+        "items": null
+      }
+    },
+    "compose-simulators": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "object"
+        ],
+        "keys": {
+          "versions": {
+            "t": [
+              "array"
+            ],
+            "items": {
+              "t": [
+                "object"
+              ],
+              "keys": {
+                "created_at": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "database_id": {
+                  "t": [
+                    "integer"
+                  ]
+                },
+                "packages": {
+                  "t": [
+                    "null"
+                  ]
+                },
+                "singularity_def": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "containerization_engine": {
+                      "t": [
+                        "integer"
+                      ]
+                    },
+                    "representation": {
+                      "t": [
+                        "string"
+                      ]
+                    }
+                  },
+                  "optional": []
+                },
+                "singularity_def_hash": {
+                  "t": [
+                    "string"
+                  ]
+                }
+              },
+              "optional": []
+            }
+          },
+          "timestamp": {
+            "t": [
+              "string"
+            ]
+          }
+        },
+        "optional": []
+      }
+    },
+    "core-capabilities": {
+      "status": 404,
+      "shape": {
+        "t": [
+          "object"
+        ],
+        "keys": {
+          "detail": {
+            "t": [
+              "string"
+            ]
+          }
+        },
+        "optional": []
+      }
+    },
+    "core-health": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "object"
+        ],
+        "keys": {
+          "status": {
+            "t": [
+              "string"
+            ]
+          },
+          "services": {
+            "t": [
+              "object"
+            ],
+            "keys": {
+              "environments": {
+                "t": [
+                  "boolean"
+                ]
+              }
+            },
+            "optional": []
+          }
+        },
+        "optional": []
+      }
+    },
+    "dataset-attributes": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "object"
+        ],
+        "keys": {
+          "agent": {
+            "t": [
+              "array"
+            ],
+            "items": {
+              "t": [
+                "string"
+              ]
+            }
+          },
+          "analysis_dir": {
+            "t": [
+              "array"
+            ],
+            "items": {
+              "t": [
+                "string"
+              ]
+            }
+          },
+          "generation": {
+            "t": [
+              "array"
+            ],
+            "items": {
+              "t": [
+                "integer"
+              ]
+            }
+          },
+          "name": {
+            "t": [
+              "array"
+            ],
+            "items": {
+              "t": [
+                "string"
+              ]
+            }
+          },
+          "origin": {
+            "t": [
+              "array"
+            ],
+            "items": {
+              "t": [
+                "string"
+              ]
+            }
+          },
+          "protocol": {
+            "t": [
+              "array"
+            ],
+            "items": {
+              "t": [
+                "string"
+              ]
+            }
+          },
+          "seed": {
+            "t": [
+              "array"
+            ],
+            "items": {
+              "t": [
+                "integer"
+              ]
+            }
+          },
+          "variant": {
+            "t": [
+              "array"
+            ],
+            "items": {
+              "t": [
+                "integer"
+              ]
+            }
+          }
+        },
+        "optional": []
+      }
+    },
+    "dataset-tags": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "map"
+        ],
+        "values": {
+          "t": [
+            "integer"
+          ]
+        }
+      }
+    },
+    "datasets": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "object"
+        ],
+        "keys": {
+          "datasets": {
+            "t": [
+              "array"
+            ],
+            "items": {
+              "t": [
+                "object"
+              ],
+              "keys": {
+                "analysis_id": {
+                  "t": [
+                    "integer"
+                  ]
+                },
+                "attributes": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "agent": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "analysis_dir": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "generation": {
+                      "t": [
+                        "integer"
+                      ]
+                    },
+                    "name": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "origin": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "protocol": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "seed": {
+                      "t": [
+                        "integer"
+                      ]
+                    },
+                    "variant": {
+                      "t": [
+                        "integer"
+                      ]
+                    }
+                  },
+                  "optional": []
+                },
+                "available": {
+                  "t": [
+                    "boolean"
+                  ]
+                },
+                "created_at": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "database_id": {
+                  "t": [
+                    "integer"
+                  ]
+                },
+                "display_name": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "kind": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "parca_dataset_id": {
+                  "t": [
+                    "null"
+                  ]
+                },
+                "sha256": {
+                  "t": [
+                    "null"
+                  ]
+                },
+                "simulation_id": {
+                  "t": [
+                    "null"
+                  ]
+                },
+                "size_bytes": {
+                  "t": [
+                    "integer"
+                  ]
+                },
+                "source": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "coordinate": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "kind": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "ref": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "resolved_id": {
+                      "t": [
+                        "integer"
+                      ]
+                    }
+                  },
+                  "optional": []
+                },
+                "tags": {
+                  "t": [
+                    "array"
+                  ],
+                  "items": {
+                    "t": [
+                      "string"
+                    ]
+                  }
+                },
+                "updated_at": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "uri": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "view": {
+                  "t": [
+                    "string"
+                  ]
+                }
+              },
+              "optional": []
+            }
+          },
+          "limit": {
+            "t": [
+              "integer"
+            ]
+          },
+          "offset": {
+            "t": [
+              "integer"
+            ]
+          },
+          "next_offset": {
+            "t": [
+              "integer"
+            ]
+          },
+          "total": {
+            "t": [
+              "integer"
+            ]
+          }
+        },
+        "optional": []
+      }
+    },
+    "health": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "object"
+        ],
+        "keys": {
+          "docs": {
+            "t": [
+              "string"
+            ]
+          },
+          "version": {
+            "t": [
+              "string"
+            ]
+          },
+          "deployment_namespace": {
+            "t": [
+              "string"
+            ]
+          },
+          "compute_backend": {
+            "t": [
+              "string"
+            ]
+          },
+          "db_revision": {
+            "t": [
+              "string"
+            ]
+          },
+          "db_head": {
+            "t": [
+              "string"
+            ]
+          },
+          "db_at_head": {
+            "t": [
+              "string"
+            ]
+          },
+          "db_create_all": {
+            "t": [
+              "string"
+            ]
+          }
+        },
+        "optional": []
+      }
+    },
+    "simulation": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "object"
+        ],
+        "keys": {
+          "database_id": {
+            "t": [
+              "integer"
+            ]
+          },
+          "simulator_id": {
+            "t": [
+              "integer"
+            ]
+          },
+          "parca_dataset_id": {
+            "t": [
+              "integer"
+            ]
+          },
+          "config": {
+            "t": [
+              "object"
+            ],
+            "keys": {
+              "experiment_id": {
+                "t": [
+                  "string"
+                ]
+              },
+              "parca_options": {
+                "t": [
+                  "object"
+                ],
+                "keys": {
+                  "cpus": {
+                    "t": [
+                      "integer"
+                    ]
+                  },
+                  "outdir": {
+                    "t": [
+                      "string"
+                    ]
+                  },
+                  "operons": {
+                    "t": [
+                      "boolean"
+                    ]
+                  },
+                  "ribosome_fitting": {
+                    "t": [
+                      "boolean"
+                    ]
+                  },
+                  "rnapoly_fitting": {
+                    "t": [
+                      "boolean"
+                    ]
+                  },
+                  "remove_rrna_operons": {
+                    "t": [
+                      "boolean"
+                    ]
+                  },
+                  "remove_rrff": {
+                    "t": [
+                      "boolean"
+                    ]
+                  },
+                  "stable_rrna": {
+                    "t": [
+                      "boolean"
+                    ]
+                  },
+                  "new_genes": {
+                    "t": [
+                      "string"
+                    ]
+                  },
+                  "require_clean_chain": {
+                    "t": [
+                      "boolean"
+                    ]
+                  },
+                  "build_combined_bundle_manifest": {
+                    "t": [
+                      "boolean"
+                    ]
+                  },
+                  "include_violacein_bundle": {
+                    "t": [
+                      "boolean"
+                    ]
+                  },
+                  "deterministic_hash_seed": {
+                    "t": [
+                      "boolean"
+                    ]
+                  },
+                  "debug_parca": {
+                    "t": [
+                      "boolean"
+                    ]
+                  },
+                  "save_intermediates": {
+                    "t": [
+                      "boolean"
+                    ]
+                  },
+                  "intermediates_directory": {
+                    "t": [
+                      "string"
+                    ]
+                  },
+                  "variable_elongation_transcription": {
+                    "t": [
+                      "boolean"
+                    ]
+                  },
+                  "variable_elongation_translation": {
+                    "t": [
+                      "boolean"
+                    ]
+                  }
+                },
+                "optional": []
+              },
+              "analysis_options": {
+                "t": [
+                  "object"
+                ],
+                "keys": {
+                  "multiseed": {
+                    "t": [
+                      "object"
+                    ],
+                    "keys": {},
+                    "optional": []
+                  }
+                },
+                "optional": []
+              },
+              "ecoli_sources_uri": {
+                "t": [
+                  "null"
+                ]
+              },
+              "ecoli_sources_overlays": {
+                "t": [
+                  "null"
+                ]
+              },
+              "generations": {
+                "t": [
+                  "integer"
+                ]
+              },
+              "emitter": {
+                "t": [
+                  "string"
+                ]
+              },
+              "out_dir": {
+                "t": [
+                  "string"
+                ]
+              },
+              "variants": {
+                "t": [
+                  "object"
+                ],
+                "keys": {},
+                "optional": []
+              },
+              "cache_dir": {
+                "t": [
+                  "string"
+                ]
+              },
+              "time_step": {
+                "t": [
+                  "number"
+                ]
+              },
+              "description": {
+                "t": [
+                  "string"
+                ]
+              },
+              "emitter_arg": {
+                "t": [
+                  "object"
+                ],
+                "keys": {
+                  "out_uri": {
+                    "t": [
+                      "string"
+                    ]
+                  }
+                },
+                "optional": []
+              },
+              "n_init_sims": {
+                "t": [
+                  "integer"
+                ]
+              },
+              "suffix_time": {
+                "t": [
+                  "boolean"
+                ]
+              },
+              "lineage_seed": {
+                "t": [
+                  "integer"
+                ]
+              },
+              "skip_baseline": {
+                "t": [
+                  "boolean"
+                ]
+              },
+              "single_daughters": {
+                "t": [
+                  "boolean"
+                ]
+              },
+              "nextflow_dispatch": {
+                "t": [
+                  "object"
+                ],
+                "keys": {
+                  "launch": {
+                    "t": [
+                      "boolean"
+                    ]
+                  },
+                  "params": {
+                    "t": [
+                      "object"
+                    ],
+                    "keys": {
+                      "n_seeds": {
+                        "t": [
+                          "integer"
+                        ]
+                      },
+                      "n_generations": {
+                        "t": [
+                          "integer"
+                        ]
+                      }
+                    },
+                    "optional": []
+                  },
+                  "executor": {
+                    "t": [
+                      "string"
+                    ]
+                  },
+                  "composite_id": {
+                    "t": [
+                      "string"
+                    ]
+                  }
+                },
+                "optional": []
+              },
+              "max_duration_per_gen": {
+                "t": [
+                  "number"
+                ]
+              },
+              "engine_process_reports": {
+                "t": [
+                  "array"
+                ],
+                "items": {
+                  "t": [
+                    "array"
+                  ],
+                  "items": {
+                    "t": [
+                      "string"
+                    ]
+                  }
+                }
+              },
+              "different_seeds_per_variant": {
+                "t": [
+                  "boolean"
+                ]
+              }
+            },
+            "optional": []
+          },
+          "simulation_config_filename": {
+            "t": [
+              "string"
+            ]
+          },
+          "experiment_id": {
+            "t": [
+              "string"
+            ]
+          },
+          "last_updated": {
+            "t": [
+              "string"
+            ]
+          },
+          "job_id": {
+            "t": [
+              "null"
+            ]
+          },
+          "num_seeds": {
+            "t": [
+              "integer"
+            ]
+          },
+          "tags": {
+            "t": [
+              "array"
+            ],
+            "items": {
+              "t": [
+                "string"
+              ]
+            }
+          }
+        },
+        "optional": []
+      }
+    },
+    "simulation-analyses": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "array"
+        ],
+        "items": null
+      }
+    },
+    "simulation-chain-progress": {
+      "status": 409,
+      "shape": {
+        "t": [
+          "object"
+        ],
+        "keys": {
+          "detail": {
+            "t": [
+              "string"
+            ]
+          }
+        },
+        "optional": []
+      }
+    },
+    "simulation-datasets": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "object"
+        ],
+        "keys": {
+          "datasets": {
+            "t": [
+              "array"
+            ],
+            "items": null
+          },
+          "limit": {
+            "t": [
+              "integer"
+            ]
+          },
+          "offset": {
+            "t": [
+              "integer"
+            ]
+          },
+          "next_offset": {
+            "t": [
+              "null"
+            ]
+          },
+          "total": {
+            "t": [
+              "integer"
+            ]
+          }
+        },
+        "optional": []
+      }
+    },
+    "simulation-status": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "object"
+        ],
+        "keys": {
+          "id": {
+            "t": [
+              "integer"
+            ]
+          },
+          "status": {
+            "t": [
+              "string"
+            ]
+          },
+          "error_message": {
+            "t": [
+              "null"
+            ]
+          },
+          "stage": {
+            "t": [
+              "null"
+            ]
+          },
+          "generation": {
+            "t": [
+              "null"
+            ]
+          },
+          "last_event_at": {
+            "t": [
+              "null"
+            ]
+          },
+          "attempt": {
+            "t": [
+              "null"
+            ]
+          },
+          "exit_code": {
+            "t": [
+              "null"
+            ]
+          },
+          "error_source": {
+            "t": [
+              "null"
+            ]
+          },
+          "trace_id": {
+            "t": [
+              "string"
+            ]
+          },
+          "open_spans": {
+            "t": [
+              "null"
+            ]
+          }
+        },
+        "optional": []
+      }
+    },
+    "simulations": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "array"
+        ],
+        "items": {
+          "t": [
+            "object"
+          ],
+          "keys": {
+            "config": {
+              "t": [
+                "object"
+              ],
+              "keys": {
+                "HQ_CORES": {
+                  "t": [
+                    "integer"
+                  ]
+                },
+                "HYPERQUEUE": {
+                  "t": [
+                    "boolean"
+                  ]
+                },
+                "SIM_CPUS": {
+                  "t": [
+                    "integer"
+                  ]
+                },
+                "SIM_MEM": {
+                  "t": [
+                    "integer"
+                  ]
+                },
+                "_analyses_note": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "_cache_note": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "_emitter_note": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "_note": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "_provenance": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "NEEDS_REVIEW": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "biology_source": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "confound_to_state_rather_than_hide": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "derived_from": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "dhps_inhibition_wiring": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "do_not_re_apply_expression": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "exchange_flux_is_a_dispatch_flag": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "experiment_id_ABSENT_on_purpose": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "k4_pathway_facts_from_data_ingestion": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "note_noswap": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "pattern": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "pg_policy_ignore": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "shape": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "single_daughters_note": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "stripped_and_why": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "stripped_and_why_CAVEAT": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "swap_exclude_decision": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "validator": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "what": {
+                      "t": [
+                        "string"
+                      ]
+                    }
+                  },
+                  "optional": [
+                    "NEEDS_REVIEW",
+                    "biology_source",
+                    "confound_to_state_rather_than_hide",
+                    "dhps_inhibition_wiring",
+                    "do_not_re_apply_expression",
+                    "exchange_flux_is_a_dispatch_flag",
+                    "experiment_id_ABSENT_on_purpose",
+                    "k4_pathway_facts_from_data_ingestion",
+                    "note_noswap",
+                    "pattern",
+                    "pg_policy_ignore",
+                    "shape",
+                    "single_daughters_note",
+                    "stripped_and_why_CAVEAT",
+                    "swap_exclude_decision",
+                    "validator"
+                  ]
+                },
+                "_scope_note": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "add_processes": {
+                  "t": [
+                    "array"
+                  ],
+                  "items": {
+                    "t": [
+                      "string"
+                    ]
+                  }
+                },
+                "amp_lysis": {
+                  "t": [
+                    "boolean"
+                  ]
+                },
+                "analysis_options": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "memory_gb": {
+                      "t": [
+                        "integer"
+                      ]
+                    },
+                    "multiseed": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    }
+                  },
+                  "optional": [
+                    "memory_gb"
+                  ]
+                },
+                "aws": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "batch_queue": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "build_image": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "container_image": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "region": {
+                      "t": [
+                        "string"
+                      ]
+                    }
+                  },
+                  "optional": []
+                },
+                "cache_dir": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "cache_variant": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "carina": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "build_image": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "container_image": {
+                      "t": [
+                        "string"
+                      ]
+                    }
+                  },
+                  "optional": []
+                },
+                "composite": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "composite_id": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "condition": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "config_overrides": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "ecoli-metabolism.added_kinetic_targets": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "object"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": []
+                },
+                "description": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "different_seeds_per_variant": {
+                  "t": [
+                    "boolean"
+                  ]
+                },
+                "e2e_verification_marker": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "value": {
+                      "t": [
+                        "integer"
+                      ]
+                    },
+                    "nested": {
+                      "t": [
+                        "boolean"
+                      ]
+                    }
+                  },
+                  "optional": []
+                },
+                "ecoli_sources_overlays": {
+                  "t": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "ecoli_sources_uri": {
+                  "t": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "emit_paths": {
+                  "t": [
+                    "array"
+                  ],
+                  "items": {
+                    "t": [
+                      "array"
+                    ],
+                    "items": {
+                      "t": [
+                        "string"
+                      ]
+                    }
+                  }
+                },
+                "emitter": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "emitter_arg": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "out_uri": {
+                      "t": [
+                        "string"
+                      ]
+                    }
+                  },
+                  "optional": []
+                },
+                "engine": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "engine_process_reports": {
+                  "t": [
+                    "array"
+                  ],
+                  "items": {
+                    "t": [
+                      "array"
+                    ],
+                    "items": {
+                      "t": [
+                        "string"
+                      ]
+                    }
+                  }
+                },
+                "exchange_flux_basis": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "exchange_fluxes": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "glucose_exchange": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "violacein_exchange": {
+                      "t": [
+                        "string"
+                      ]
+                    }
+                  },
+                  "optional": []
+                },
+                "exclude_processes": {
+                  "t": [
+                    "array"
+                  ],
+                  "items": {
+                    "t": [
+                      "string"
+                    ]
+                  }
+                },
+                "experiment_id": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "extra_bulk_species": {
+                  "t": [
+                    "array"
+                  ],
+                  "items": {
+                    "t": [
+                      "string"
+                    ]
+                  }
+                },
+                "fail_at_max_duration": {
+                  "t": [
+                    "boolean"
+                  ]
+                },
+                "fixed_media": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "flow": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "RNA_counts_listener": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "array"
+                        ],
+                        "items": {
+                          "t": [
+                            "string"
+                          ]
+                        }
+                      }
+                    },
+                    "concentrations_deriver": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "array"
+                        ],
+                        "items": {
+                          "t": [
+                            "string"
+                          ]
+                        }
+                      }
+                    },
+                    "dna_supercoiling_listener": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "array"
+                        ],
+                        "items": {
+                          "t": [
+                            "string"
+                          ]
+                        }
+                      }
+                    },
+                    "ecoli-mass-listener": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "array"
+                        ],
+                        "items": {
+                          "t": [
+                            "string"
+                          ]
+                        }
+                      }
+                    },
+                    "ecoli-metabolism": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "array"
+                        ],
+                        "items": {
+                          "t": [
+                            "string"
+                          ]
+                        }
+                      }
+                    },
+                    "ecoli-metabolism-redux": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "array"
+                        ],
+                        "items": {
+                          "t": [
+                            "string"
+                          ]
+                        }
+                      }
+                    },
+                    "ecoli-shape": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "array"
+                        ],
+                        "items": {
+                          "t": [
+                            "string"
+                          ]
+                        }
+                      }
+                    },
+                    "monomer_counts_listener": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "array"
+                        ],
+                        "items": {
+                          "t": [
+                            "string"
+                          ]
+                        }
+                      }
+                    },
+                    "permeability": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "array"
+                        ],
+                        "items": {
+                          "t": [
+                            "string"
+                          ]
+                        }
+                      }
+                    },
+                    "replication_data_listener": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "array"
+                        ],
+                        "items": {
+                          "t": [
+                            "string"
+                          ]
+                        }
+                      }
+                    },
+                    "ribosome_data_listener": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "array"
+                        ],
+                        "items": {
+                          "t": [
+                            "string"
+                          ]
+                        }
+                      }
+                    },
+                    "rna_synth_prob_listener": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "array"
+                        ],
+                        "items": {
+                          "t": [
+                            "string"
+                          ]
+                        }
+                      }
+                    },
+                    "rnap_data_listener": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "array"
+                        ],
+                        "items": {
+                          "t": [
+                            "string"
+                          ]
+                        }
+                      }
+                    },
+                    "sulfadiazine-dhps-inhibition": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "array"
+                        ],
+                        "items": {
+                          "t": [
+                            "string"
+                          ]
+                        }
+                      }
+                    },
+                    "unique_molecule_counts": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "array"
+                        ],
+                        "items": {
+                          "t": [
+                            "string"
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "optional": [
+                    "RNA_counts_listener",
+                    "concentrations_deriver",
+                    "dna_supercoiling_listener",
+                    "ecoli-mass-listener",
+                    "ecoli-metabolism",
+                    "ecoli-metabolism-redux",
+                    "ecoli-shape",
+                    "monomer_counts_listener",
+                    "permeability",
+                    "replication_data_listener",
+                    "ribosome_data_listener",
+                    "rna_synth_prob_listener",
+                    "rnap_data_listener",
+                    "sulfadiazine-dhps-inhibition",
+                    "unique_molecule_counts"
+                  ]
+                },
+                "generations": {
+                  "t": [
+                    "integer"
+                  ]
+                },
+                "inherit_from": {
+                  "t": [
+                    "array"
+                  ],
+                  "items": {
+                    "t": [
+                      "string"
+                    ]
+                  }
+                },
+                "initial_global_time": {
+                  "t": [
+                    "number"
+                  ]
+                },
+                "injected_processes": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "add_processes": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "string"
+                        ]
+                      }
+                    },
+                    "cache_dir": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "exclude_processes": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "string"
+                        ]
+                      }
+                    },
+                    "extra_bulk_species": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "string"
+                        ]
+                      }
+                    },
+                    "fork_repo": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "fork_sim_data": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "process_configs": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "requires_features": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "string"
+                        ]
+                      }
+                    },
+                    "seed_bulk_species": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "object"
+                        ],
+                        "keys": {},
+                        "optional": []
+                      }
+                    },
+                    "strip_pint_ports": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "swap_processes": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "time_step": {
+                      "t": [
+                        "number"
+                      ]
+                    }
+                  },
+                  "optional": [
+                    "add_processes",
+                    "cache_dir",
+                    "exclude_processes",
+                    "extra_bulk_species",
+                    "fork_repo",
+                    "fork_sim_data",
+                    "process_configs",
+                    "requires_features",
+                    "seed_bulk_species",
+                    "strip_pint_ports",
+                    "swap_processes",
+                    "time_step"
+                  ]
+                },
+                "lineage_debug_division": {
+                  "t": [
+                    "boolean"
+                  ]
+                },
+                "lineage_seed": {
+                  "t": [
+                    "integer"
+                  ]
+                },
+                "mar_regulon": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "max_duration": {
+                  "t": [
+                    "number"
+                  ]
+                },
+                "max_duration_per_gen": {
+                  "t": [
+                    "number"
+                  ]
+                },
+                "max_generations": {
+                  "t": [
+                    "integer"
+                  ]
+                },
+                "mbp_dispatch": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "aeration_schedule": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "cache_variant": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "cells_per_agent": {
+                      "t": [
+                        "integer",
+                        "number"
+                      ]
+                    },
+                    "chunk": {
+                      "t": [
+                        "integer"
+                      ]
+                    },
+                    "duration_sec": {
+                      "t": [
+                        "integer"
+                      ]
+                    },
+                    "emitter": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "initial_ammonium_mM": {
+                      "t": [
+                        "number"
+                      ]
+                    },
+                    "initial_glucose_mM": {
+                      "t": [
+                        "integer"
+                      ]
+                    },
+                    "injected_processes": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "max_generations": {
+                      "t": [
+                        "integer"
+                      ]
+                    },
+                    "reactor_config": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "seed": {
+                      "t": [
+                        "integer"
+                      ]
+                    },
+                    "single_daughters": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "task_env": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "variant": {
+                      "t": [
+                        "string"
+                      ]
+                    }
+                  },
+                  "optional": [
+                    "aeration_schedule",
+                    "cache_variant",
+                    "cells_per_agent",
+                    "chunk",
+                    "duration_sec",
+                    "emitter",
+                    "initial_ammonium_mM",
+                    "initial_glucose_mM",
+                    "injected_processes",
+                    "reactor_config",
+                    "seed",
+                    "single_daughters",
+                    "task_env"
+                  ]
+                },
+                "mecillinam": {
+                  "t": [
+                    "boolean"
+                  ]
+                },
+                "multi_node_dispatch": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "cache_variant": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "composite_id": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "num_nodes": {
+                      "t": [
+                        "integer"
+                      ]
+                    },
+                    "params": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "steps": {
+                      "t": [
+                        "integer"
+                      ]
+                    },
+                    "task_env": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    }
+                  },
+                  "optional": [
+                    "cache_variant",
+                    "composite_id",
+                    "num_nodes",
+                    "params",
+                    "steps",
+                    "task_env"
+                  ]
+                },
+                "n_init_sims": {
+                  "t": [
+                    "integer"
+                  ]
+                },
+                "nextflow_dispatch": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "composite_id": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "executor": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "launch": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "nextflow_args": {
+                      "t": [
+                        "array"
+                      ],
+                      "items": {
+                        "t": [
+                          "string"
+                        ]
+                      }
+                    },
+                    "params": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "resources": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "resume": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "resume_from": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "task_env": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    }
+                  },
+                  "optional": [
+                    "nextflow_args",
+                    "resources",
+                    "resume",
+                    "resume_from",
+                    "task_env"
+                  ]
+                },
+                "observable_bulk_ids": {
+                  "t": [
+                    "array"
+                  ],
+                  "items": {
+                    "t": [
+                      "string"
+                    ]
+                  }
+                },
+                "out_dir": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "parca_options": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "build_combined_bundle_manifest": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "bundle_overrides": {
+                      "t": [
+                        "array",
+                        "string"
+                      ],
+                      "items": {
+                        "t": [
+                          "string"
+                        ]
+                      }
+                    },
+                    "cpus": {
+                      "t": [
+                        "integer"
+                      ]
+                    },
+                    "debug_parca": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "deterministic_hash_seed": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "include_violacein_bundle": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "include_violacein_reactions": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "intermediates_directory": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "new_genes": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "operons": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "outdir": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "remove_rrff": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "remove_rrna_operons": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "require_clean_chain": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "ribosome_fitting": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "rnapoly_fitting": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "rnaseq_source": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "save_intermediates": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "stable_rrna": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "variable_elongation_transcription": {
+                      "t": [
+                        "boolean"
+                      ]
+                    },
+                    "variable_elongation_translation": {
+                      "t": [
+                        "boolean"
+                      ]
+                    }
+                  },
+                  "optional": [
+                    "bundle_overrides",
+                    "include_violacein_reactions",
+                    "rnaseq_source"
+                  ]
+                },
+                "parca_variants": {
+                  "t": [
+                    "array"
+                  ],
+                  "items": {
+                    "t": [
+                      "object"
+                    ],
+                    "keys": {},
+                    "optional": []
+                  }
+                },
+                "process_configs": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "antibiotic-transport-odeint": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "conc_to_counts": {
+                      "t": [
+                        "object"
+                      ]
+                    },
+                    "concentrations_deriver": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "ecoli-shape": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "field_timeline": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "gillespie": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "permeability": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    }
+                  },
+                  "optional": [
+                    "antibiotic-transport-odeint",
+                    "conc_to_counts",
+                    "concentrations_deriver",
+                    "ecoli-shape",
+                    "field_timeline",
+                    "gillespie",
+                    "permeability"
+                  ]
+                },
+                "progress_bar": {
+                  "t": [
+                    "boolean"
+                  ]
+                },
+                "shape_seed_literal": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "boundary.external.mecillinam": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "kinetic_parameters.mecillinam.charge": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "kinetic_parameters.mecillinam.decay_kr": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "periplasm.global.potential": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    }
+                  },
+                  "optional": []
+                },
+                "shape_seed_param_store": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "kinetic_parameters.mecillinam.decay_kf": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "kinetic_parameters.mecillinam.export_kcat": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "kinetic_parameters.mecillinam.export_km": {
+                      "t": [
+                        "string"
+                      ]
+                    },
+                    "kinetic_parameters.mecillinam.export_n": {
+                      "t": [
+                        "string"
+                      ]
+                    }
+                  },
+                  "optional": []
+                },
+                "sim_data_path": {
+                  "t": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "single_daughters": {
+                  "t": [
+                    "boolean"
+                  ]
+                },
+                "skip_baseline": {
+                  "t": [
+                    "boolean"
+                  ]
+                },
+                "spatial_environment": {
+                  "t": [
+                    "boolean"
+                  ]
+                },
+                "spatial_environment_config": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "field_timeline": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "field_timeline_topology": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "multibody": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "reaction_diffusion": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    }
+                  },
+                  "optional": [
+                    "field_timeline",
+                    "field_timeline_topology"
+                  ]
+                },
+                "suffix_time": {
+                  "t": [
+                    "boolean"
+                  ]
+                },
+                "swap_processes": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "ecoli-metabolism": {
+                      "t": [
+                        "string"
+                      ]
+                    }
+                  },
+                  "optional": []
+                },
+                "time_step": {
+                  "t": [
+                    "number"
+                  ]
+                },
+                "topology": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "antibiotic-transport-odeint": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "conc_to_counts": {
+                      "t": [
+                        "object"
+                      ]
+                    },
+                    "concentrations_deriver": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "ecoli-shape": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "field_timeline": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "gillespie": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "permeability": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    }
+                  },
+                  "optional": [
+                    "antibiotic-transport-odeint",
+                    "conc_to_counts",
+                    "concentrations_deriver",
+                    "ecoli-shape",
+                    "field_timeline",
+                    "gillespie",
+                    "permeability"
+                  ]
+                },
+                "variants": {
+                  "t": [
+                    "object"
+                  ],
+                  "keys": {
+                    "mecillinam_timeline": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "new_gene_internal_shift_variable_strength": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    },
+                    "strain_design": {
+                      "t": [
+                        "object"
+                      ],
+                      "keys": {},
+                      "optional": []
+                    }
+                  },
+                  "optional": [
+                    "mecillinam_timeline",
+                    "new_gene_internal_shift_variable_strength",
+                    "strain_design"
+                  ]
+                }
+              },
+              "optional": [
+                "HQ_CORES",
+                "HYPERQUEUE",
+                "SIM_CPUS",
+                "SIM_MEM",
+                "_analyses_note",
+                "_cache_note",
+                "_emitter_note",
+                "_note",
+                "_provenance",
+                "_scope_note",
+                "add_processes",
+                "amp_lysis",
+                "aws",
+                "cache_dir",
+                "cache_variant",
+                "carina",
+                "composite",
+                "composite_id",
+                "condition",
+                "config_overrides",
+                "description",
+                "different_seeds_per_variant",
+                "e2e_verification_marker",
+                "emit_paths",
+                "engine",
+                "engine_process_reports",
+                "exchange_flux_basis",
+                "exchange_fluxes",
+                "exclude_processes",
+                "extra_bulk_species",
+                "fail_at_max_duration",
+                "fixed_media",
+                "flow",
+                "inherit_from",
+                "initial_global_time",
+                "injected_processes",
+                "lineage_debug_division",
+                "lineage_seed",
+                "mar_regulon",
+                "max_duration",
+                "max_duration_per_gen",
+                "max_generations",
+                "mbp_dispatch",
+                "mecillinam",
+                "multi_node_dispatch",
+                "nextflow_dispatch",
+                "observable_bulk_ids",
+                "out_dir",
+                "parca_variants",
+                "process_configs",
+                "progress_bar",
+                "shape_seed_literal",
+                "shape_seed_param_store",
+                "sim_data_path",
+                "skip_baseline",
+                "spatial_environment",
+                "spatial_environment_config",
+                "swap_processes",
+                "time_step",
+                "topology",
+                "variants"
+              ]
+            },
+            "database_id": {
+              "t": [
+                "integer"
+              ]
+            },
+            "experiment_id": {
+              "t": [
+                "string"
+              ]
+            },
+            "job_id": {
+              "t": [
+                "null"
+              ]
+            },
+            "last_updated": {
+              "t": [
+                "string"
+              ]
+            },
+            "num_seeds": {
+              "t": [
+                "integer"
+              ]
+            },
+            "parca_dataset_id": {
+              "t": [
+                "integer"
+              ]
+            },
+            "simulation_config_filename": {
+              "t": [
+                "string"
+              ]
+            },
+            "simulator_id": {
+              "t": [
+                "integer"
+              ]
+            },
+            "tags": {
+              "t": [
+                "array"
+              ],
+              "items": {
+                "t": [
+                  "string"
+                ]
+              }
+            }
+          },
+          "optional": []
+        }
+      }
+    },
+    "simulator-status": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "object"
+        ],
+        "keys": {
+          "database_id": {
+            "t": [
+              "integer"
+            ]
+          },
+          "correlation_id": {
+            "t": [
+              "string"
+            ]
+          },
+          "job_type": {
+            "t": [
+              "string"
+            ]
+          },
+          "ref_id": {
+            "t": [
+              "integer"
+            ]
+          },
+          "status": {
+            "t": [
+              "string"
+            ]
+          },
+          "start_time": {
+            "t": [
+              "string"
+            ]
+          },
+          "end_time": {
+            "t": [
+              "string"
+            ]
+          },
+          "error_message": {
+            "t": [
+              "null"
+            ]
+          },
+          "chain_n_generations": {
+            "t": [
+              "null"
+            ]
+          },
+          "chain_final_job_ids": {
+            "t": [
+              "null"
+            ]
+          },
+          "chain_current_job_ids": {
+            "t": [
+              "null"
+            ]
+          },
+          "chain_current_generation": {
+            "t": [
+              "null"
+            ]
+          },
+          "chain_parca_done": {
+            "t": [
+              "null"
+            ]
+          },
+          "multi_node_composite_id": {
+            "t": [
+              "null"
+            ]
+          },
+          "external_job_ids": {
+            "t": [
+              "array"
+            ],
+            "items": {
+              "t": [
+                "string"
+              ]
+            }
+          },
+          "exit_code": {
+            "t": [
+              "null"
+            ]
+          },
+          "attempt": {
+            "t": [
+              "null"
+            ]
+          },
+          "error_source": {
+            "t": [
+              "null"
+            ]
+          },
+          "trace_id": {
+            "t": [
+              "string"
+            ]
+          },
+          "campaign_span_id": {
+            "t": [
+              "string"
+            ]
+          },
+          "events_s3_prefix": {
+            "t": [
+              "null"
+            ]
+          },
+          "stage": {
+            "t": [
+              "null"
+            ]
+          },
+          "generation": {
+            "t": [
+              "null"
+            ]
+          },
+          "last_event_at": {
+            "t": [
+              "null"
+            ]
+          },
+          "job_id_ext": {
+            "t": [
+              "string"
+            ]
+          },
+          "job_backend": {
+            "t": [
+              "string"
+            ]
+          }
+        },
+        "optional": []
+      }
+    },
+    "simulator-versions": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "object"
+        ],
+        "keys": {
+          "versions": {
+            "t": [
+              "array"
+            ],
+            "items": {
+              "t": [
+                "object"
+              ],
+              "keys": {
+                "created_at": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "database_id": {
+                  "t": [
+                    "integer"
+                  ]
+                },
+                "git_branch": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "git_commit_hash": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "git_repo_url": {
+                  "t": [
+                    "string"
+                  ]
+                },
+                "image_tag": {
+                  "t": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "label": {
+                  "t": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "temporary": {
+                  "t": [
+                    "boolean"
+                  ]
+                }
+              },
+              "optional": []
+            }
+          },
+          "timestamp": {
+            "t": [
+              "string"
+            ]
+          }
+        },
+        "optional": []
+      }
+    },
+    "version": {
+      "status": 200,
+      "shape": {
+        "t": [
+          "string"
+        ]
+      }
+    }
+  }
+}

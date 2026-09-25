@@ -3113,6 +3113,11 @@ def smoke_run(
     timeout: float = Option(default=900.0, help="Seconds to wait for any one dispatched job."),
     sim_timeout: float = Option(default=7200.0, help="Seconds to wait for any one tier-2 simulation."),
     json_out: Path | None = Option(default=None, help="Write the full result, with evidence, as JSON."),
+    record_contract: Path | None = Option(
+        default=None,
+        help="`contract`: RECORD the deployment's response shapes to this file (the packaged baseline is "
+        "app/contract_shapes.json) instead of comparing against them. A deliberate act after a contract decision.",
+    ),
     url: str | None = Option(default=None, help="Any base URL (e.g. a port-forward); overrides --base-url."),
     base_url: ApiBaseUrl = Option(default=API_BASE_URL, help="API server base URL."),
 ) -> None:
@@ -3175,6 +3180,7 @@ def smoke_run(
         biomodel_id=biomodel,
         simulator_id=simulator_id,
         restart_command=restart_command,
+        record_contract_to=record_contract,
         timeout_seconds=timeout,
         simulation_timeout_seconds=sim_timeout,
     )
