@@ -114,12 +114,12 @@ Config filenames are also namespace-aware via `viva_api/common/simulator_default
 The API has three client entrypoints that implement the same EUTE workflow:
 - **CLI** (`app.cli`): `uv run atlantis <command>` — Typer + Rich, Memphis theme
 - **TUI** (`app.tui`): `uv run atlantis tui` — Textual app, animated logo banner
-- **GUI** (`app.gui`): `uv run atlantis gui` — Marimo notebook, Memphis CSS theme
+- **GUI** (`app.ui.dashboard`): `uv run atlantis gui` — Marimo notebook, Memphis CSS theme
 
 The Atlantis logo (E. coli capsule + flagella squigglies) is defined in:
 - `app/cli_theme.py` — CLI Rich markup
 - `app/tui.py` — TUI with animated green↔purple gradient (`_animated_banner()`)
-- `app/gui.py` — GUI with HTML/CSS + SVG flagella
+- `app/ui/dashboard.py` — GUI with HTML/CSS + SVG flagella (also served at `/ws/Dashboard`)
 
 #### Env workers, and the relay (`/env-worker`)
 

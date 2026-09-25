@@ -34,7 +34,7 @@ uv run pytest -s -m <marker>
 
 ## Architecture
 
-- **Entrypoints**: `viva_api/api/main.py` (FastAPI server), `app/cli.py` (Typer CLI, entry `atlantis`), `app/tui.py` (Textual TUI), `app/gui.py` (Marimo GUI)
+- **Entrypoints**: `viva_api/api/main.py` (FastAPI server), `app/cli.py` (Typer CLI, entry `atlantis`), `app/tui.py` (Textual TUI), `app/ui/dashboard.py` (Marimo GUI)
 - **All three clients** implement the same EUTE workflow calling REST endpoints. Prefer CLI for testing (`uv run atlantis <command>`).
 - **Backend dispatch**: `viva_api/config.py` — `compute_backend` setting. SLURM for `sms-api-rke*`, Batch for `sms-api-stanford*`.
 - **Services wired** in `viva_api/dependencies.py` via global singletons (SSH, DB, file, messaging, simulation).

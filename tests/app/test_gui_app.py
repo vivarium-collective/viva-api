@@ -1,4 +1,9 @@
-"""Tests for app.gui_app — the Marimo EUTE GUI.
+"""Tests for the Marimo EUTE GUI -- ``app/ui/dashboard.py``, the one notebook.
+
+It is what ``atlantis gui`` launches and what the server serves at ``/ws/Dashboard``. Until P3g
+(2026-09-25) a byte-identical copy lived at ``app/gui.py``; the EUTE rule ("CLI, TUI and GUI are
+implementations of the same thing") is easier to keep with one file than with two that must
+stay equal by hand.
 
 These tests validate that the marimo notebook parses correctly,
 all cells are well-formed, and the E2EDataService integration
@@ -16,14 +21,20 @@ import marimo
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-GUI_APP_PATH = Path(__file__).resolve().parents[2] / "app" / "gui.py"
+GUI_APP_PATH = Path(__file__).resolve().parents[2] / "app" / "ui" / "dashboard.py"
 
 
 def _import_gui_app() -> ModuleType:
-    """Import app.gui_app as a regular module (not via marimo run)."""
-    import app.gui as mod
+    """Import the notebook as a regular module (not via marimo run)."""
+    import app.ui.dashboard as mod
 
     return mod
+
+
+def test_there_is_one_gui_notebook() -> None:
+    """The copy at ``app/gui.py`` is gone and must not come back: two files that have to stay
+    byte-identical by hand are how the three clients drift apart."""
+    assert not (GUI_APP_PATH.parents[1] / "gui.py").exists(), "app/gui.py is a copy of app/ui/dashboard.py"
 
 
 # ── Module-level tests ───────────────────────────────────────────────────────

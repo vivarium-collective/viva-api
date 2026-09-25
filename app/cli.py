@@ -902,7 +902,9 @@ def launch_gui(
     ),
 ) -> None:
     try:
-        proc = subprocess.Popen(["uv", "run", "marimo", mode, "app/gui.py", "--no-token"])
+        # The one GUI notebook: the same file the server serves at /ws/Dashboard (P3g; app/gui.py
+        # was a byte-identical copy of it and is gone).
+        proc = subprocess.Popen(["uv", "run", "marimo", mode, "app/ui/dashboard.py", "--no-token"])
         proc.wait()
     except KeyboardInterrupt:
         proc.terminate()

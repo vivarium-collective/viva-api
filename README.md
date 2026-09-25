@@ -109,6 +109,6 @@ Three client applications connect to the server:
 
 - **CLI** (`app/cli.py`): Typer + Rich, Memphis design theme
 - **TUI** (`app/tui.py`): Textual terminal app with animated banner, auto-listing with status, file explorer
-- **GUI** (`app/gui.py`): Marimo reactive notebook with Memphis-styled cards
+- **GUI** (`app/ui/dashboard.py`): Marimo reactive notebook with Memphis-styled cards
 
 ---

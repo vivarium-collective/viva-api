@@ -22,7 +22,7 @@ def _():
 
 @app.cell
 def _(mo):
-    # Memphis DAW color palette (matches app/gui.py theme)
+    # Memphis DAW color palette (matches app/ui/dashboard.py theme)
     MAGENTA = "#ff3366"
     CYAN = "#00f0ff"
     YELLOW = "#ffaa00"
