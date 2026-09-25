@@ -14,8 +14,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from viva_api.compose.simulation_service import RunPlan
 from viva_core.compose.models import ComposeSimulation
+from viva_core.compose.simulation_service_hpc import RunPlan
 
 MODE = "v2ecoli"
 _PYTHON = "/micromamba_env/runtime_env/bin/python3.12"

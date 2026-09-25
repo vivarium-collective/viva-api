@@ -1,6 +1,7 @@
 """What a compose backend is: submit a composite run, build its container when the backend needs one,
-and say what became of a job. One implementation per way of running; the SLURM one stays in the
-application until a SLURM site can test it (``docs/plan-core.md`` P3d-4), the Batch one follows in 3d-4c.
+and say what became of a job. One implementation per way of running: ``simulation_service_ray``
+(AWS Batch, P3d-4c) and ``simulation_service_hpc`` (SLURM over SSH, §4b U2b-2 -- once a SLURM cluster
+could be run in Docker for its tests).
 """
 
 from abc import ABC, abstractmethod

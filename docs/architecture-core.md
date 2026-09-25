@@ -442,11 +442,13 @@ viva_core/
   api/routers/compose  (P3d-4d-2a: in place; served at /viva/v1/compose and, by SMS, at /compose/v1)
   api/routers/env_worker, api/auth, api/oidc  (P3d-4d-2b: in place; /viva/v1/env-worker and, by SMS, /env-worker/v1)
   api/openapi_spec.py, api/spec/  (P3f: core's own OpenAPI document; the application's stays the union)
+  Dockerfile-core, build-core.yml  (U2f: core as its own image, viva_core alone, served from the app factory; not deployed yet)
   contrib/sysbio/      biomodels_service, biomodel_documents  (P3d-4d-2a: in place)
   storage/s3_streaming (P3d-4d-2a)
               simulation_service_ray (the Batch service, P3d-4c-1); run_pbg, render_nf, runner_files (3d-4c-2);
+              simulation_service_hpc, hpc_paths (the SLURM service, U2b-2: its run command is the ContainerRun hook);
               the allow-list default and the runner HOOKS (runner_hooks.py, staged beside the runner) are the application's
-  storage/    …, layout (the two output-location primitives, pure; P3d-4c-1)
+  storage/    …, layout (the two output-location primitives, pure; P3d-4c-1); factory (the store `storage_backend` names; U2c)
   tasks/      snapshot, …
   datasets/   registry, walk
   storage/    file services, s3 helpers, CoreLayout

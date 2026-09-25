@@ -1,0 +1,69 @@
+# syntax=docker/dockerfile:1
+# ─────────────────────────────────────────────────────────────────────────────
+# The CORE SERVICE IMAGE (docs/plan-core.md §4b, U2f; decision D16).
+#
+# viva_core as an application of its own: `create_core_app()` served by uvicorn,
+# and nothing of the SMS application in the image -- no viva_api, no app, no
+# sms_api, no alembic tree, no assets. It is what runs BESIDE the SMS `api` pod
+# at UConn (D20: its own Deployment, its own database, `/viva` + `/env-worker`
+# on the ingress) and, later, what P9 rolls out at Stanford as core's own
+# Deployment. The image is versioned on core's line (viva_core/version.py),
+# not sms-api's; tags are write-once, like every built environment (D11).
+#
+# What it shares with Dockerfile-api: the Python base, uv, the lockfile. The
+# dependency set is the WHOLE project's until core is its own distribution
+# (P10) -- installed with --no-install-project, because the project wheel
+# would need the application packages this image deliberately lacks. That is
+# also why the CMD runs the venv's uvicorn directly rather than `uv run`,
+# which would try to install the project at container start.
+#
+#   docker build -f Dockerfile-core -t viva-core:dev .
+#   docker run --rm -p 8000:8000 viva-core:dev     # then GET /viva/v1/health
+# ─────────────────────────────────────────────────────────────────────────────
+FROM python:3.13-slim-bookworm
+
+ARG APP_UID=17163
+ARG APP_GID=10000
+
+# openssh-client: the SLURM backend submits over SSH (asyncssh needs no binary,
+# but an operator's `slurmshell` does, and known_hosts handling matches api's).
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends openssh-client ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONUTF8=1 \
+    OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    # Keep the dev/docs dependency groups out of the runtime image (see Dockerfile-api
+    # for why this must be an ENV and not only a flag).
+    UV_NO_DEFAULT_GROUPS=true
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+RUN groupadd -g $APP_GID appgroup && \
+    useradd -m -u $APP_UID -g $APP_GID appuser
+
+RUN echo '#!/bin/bash\nssh -i $SLURM_SUBMIT_KEY_PATH -o UserKnownHostsFile=$SLURM_SUBMIT_KNOWN_HOSTS ${SLURM_SUBMIT_USER}@${SLURM_SUBMIT_HOST} "$@"' > /usr/local/bin/slurmshell && \
+    chmod +x /usr/local/bin/slurmshell
+
+USER appuser
+WORKDIR /app
+
+# The dependencies, from the lockfile, and NOT the project: the wheel ships the
+# application packages, which this image does not carry.
+COPY --chown=appuser:appgroup uv.lock pyproject.toml /app/
+RUN uv sync --frozen --no-install-project --no-default-groups
+
+# Core, and only core. `tests/test_deploy_config.py` asserts no application package is copied.
+COPY --chown=appuser:appgroup viva_core /app/viva_core
+
+# Where the SLURM compose service keeps the results archives it fetches.
+RUN mkdir -p /app/.results_cache/compose
+
+VOLUME ["/app/scratch"]
+EXPOSE 8000
+
+# The app factory, from /app (uvicorn puts the working directory on sys.path).
+CMD ["/app/.venv/bin/uvicorn", "--factory", "viva_core.api.app:create_core_app", "--host", "0.0.0.0", "--port", "8000"]
