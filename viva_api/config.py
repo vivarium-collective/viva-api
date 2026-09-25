@@ -113,6 +113,7 @@ class Settings(CoreSettings):
     # owner_instance: inherited from CoreSettings (P3d-4d-2b)
 
     slurm_submit_host: str = ""
+    slurm_submit_port: int = 22  # a SLURM cluster in Docker publishes sshd on a port of Docker's choosing
     slurm_submit_user: str = ""  # "svc_vivarium"
     slurm_submit_key_path: str = ""  # "/Users/jimschaff/.ssh/id_rsa"
     slurm_submit_known_hosts: str | None = None

@@ -285,6 +285,11 @@ uv run pytest              # Run all tests
 uv run pytest -x           # Stop on first failure
 uv run pytest tests/path/test_file.py::TestClass::test_method -v -s  # Single test
 uv run pytest tests/integration/test_hpc_workflow.py -v              # Integration tests (need SSH)
+uv run pytest -m slurm                                # The SSH/SLURM tests against a SLURM cluster in DOCKER
+                                                      # (tests/fixtures/slurm_cluster; needs only Docker; ~1 min
+                                                      # after the first image pull). `--slurm-backend cluster`
+                                                      # runs the same bodies against Mantis (key + VPN); both
+                                                      # at once compare the two.
 ```
 
 ### After Making Significant Changes

@@ -274,3 +274,6 @@ debug/
 
 # Local SQLite scratch DBs (a stale sms.db was tracked at repo root until 2026-09).
 *.db
+
+# The SLURM cluster the tests bring up in Docker (tests/fixtures/slurm_cluster) is tracked on purpose.
+!tests/fixtures/slurm_cluster/docker-compose.yml

@@ -335,6 +335,7 @@ def _init_ssh_service(job_backend: str, settings: Settings) -> None:
         set_ssh_session_service(
             SSHSessionService(
                 hostname=settings.slurm_submit_host,
+                port=settings.slurm_submit_port,
                 username=settings.slurm_submit_user,
                 key_path=ssh_key_path,
                 known_hosts=Path(settings.slurm_submit_known_hosts) if settings.slurm_submit_known_hosts else None,

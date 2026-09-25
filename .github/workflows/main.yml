@@ -61,7 +61,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Run tests
-        run: uv run python -m pytest tests --cov --cov-config=pyproject.toml --cov-report=xml
+        # The `slurm` tests have their own job below: they bring up a SLURM cluster in Docker.
+        run: uv run python -m pytest tests -m "not slurm" --cov --cov-config=pyproject.toml --cov-report=xml
 
       - name: Check typing
         run: uv run mypy
@@ -71,6 +72,30 @@ jobs:
         if: ${{ matrix.python-version == '3.11' }}
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # The SSH layer and core's SlurmService against a real scheduler: a throwaway SLURM cluster in
+  # Docker (tests/fixtures/slurm_cluster, ported from compose-api). Its own job because it is the
+  # expensive one -- an image pull and a cluster start, minutes against about one for the job above
+  # -- and because cancelling a superseded pull-request run saves something here.
+  tests-slurm:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    concurrency:
+      group: tests-slurm-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Set up the environment
+        uses: ./.github/actions/setup-python-env
+        with:
+          python-version: "3.13"
+
+      - name: Run the tests that need a SLURM backend
+        run: uv run python -m pytest tests -m slurm --slurm-backend container
 
   check-docs:
     runs-on: ubuntu-latest

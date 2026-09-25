@@ -224,17 +224,22 @@ class SSHSessionService:
         key_path: Path,
         known_hosts: Path | None = None,
         keepalive_interval: int = 30,
+        port: int = 22,
     ) -> None:
         self.hostname = hostname
         self.username = username
         self.key_path = key_path
         self.known_hosts = str(known_hosts) if known_hosts else None
         self.keepalive_interval = keepalive_interval
+        # A real submit host listens on 22; a SLURM cluster in Docker publishes its sshd on whatever
+        # port Docker chose (tests/fixtures/slurm_cluster). The port is part of the address.
+        self.port = port
 
     async def _create_connection(self) -> asyncssh.SSHClientConnection:
         """Create a new SSH connection."""
         return await asyncssh.connect(
             host=self.hostname,
+            port=self.port,
             username=self.username,
             client_keys=[self.key_path],
             known_hosts=self.known_hosts,

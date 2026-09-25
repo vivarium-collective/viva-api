@@ -1,0 +1,7 @@
+# Mounted over /etc/subuid and /etc/subgid in the test cluster.
+#
+# `singularity build --fakeroot` maps the building user into a user namespace and needs a
+# subordinate id range to map into. The image ships neither file with a root entry, so a
+# fakeroot build fails with "no mapping entry found in /etc/subuid for root" -- which is
+# what the production build path uses. One range for root is all it needs.
+root:100000:65536
