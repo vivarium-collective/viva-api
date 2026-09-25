@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from viva_api.compose.job_monitor import ComposeJobMonitor
-from viva_api.compose.simulation_service import ComposeSimulationServiceHpc
 from viva_api.compose.simulation_service_ray import ComposeSimulationServiceRay, EnvironmentKeyOf
 from viva_api.simulation.compose_simulators import simulator_environment_key
+from viva_core.compose.simulation_service_hpc import ComposeSimulationServiceHpc
 
 COMPOSE = Path("viva_api/compose")
 
@@ -245,7 +245,7 @@ async def test_the_slurm_service_runs_the_hooks_plan_or_its_generic_command(tmp_
 
     with ExitStack() as stack:
         for name, value in paths.items():
-            stack.enter_context(patch(f"viva_api.compose.simulation_service.{name}", return_value=value))
+            stack.enter_context(patch(f"viva_core.compose.simulation_service_hpc.{name}", return_value=value))
 
         # the hook has a plan: its command, and its script placed beside the input
         uploads = await submit('{"mode": "v2ecoli", "cache_dir": "/out/cache", "seed": 3}', hook=True)
