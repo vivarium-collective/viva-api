@@ -1,39 +1,16 @@
-"""HPC path utilities for compose simulation subsystem."""
+"""Moved to :mod:`viva_core.compose.hpc_paths` (core split, ``docs/plan-core.md`` §4b, U2b-2).
 
-from pathlib import Path
+The remote paths the SLURM compose service writes to, derived from core's settings. This name
+stays importable, and at runtime it IS the new module -- the same object. New code should import
+from the new path.
+"""
 
-from viva_core.compose.ids import compose_correlation_id, compose_experiment_id
-from viva_core.settings import get_core_settings as get_settings
+import sys
+from typing import TYPE_CHECKING
 
+from viva_core.compose import hpc_paths as _moved
 
-def get_compose_slurm_log_file(slurm_job_name: str) -> Path:
-    return Path(str(get_settings().slurm_log_base_path)) / f"{slurm_job_name}.out"
+if TYPE_CHECKING:
+    from viva_core.compose.hpc_paths import *  # noqa: F403
 
-
-def get_compose_slurm_submit_file(slurm_job_name: str) -> Path:
-    return Path(str(get_settings().slurm_log_base_path)).parent / "sbatch" / f"{slurm_job_name}.sbatch"
-
-
-def get_compose_singularity_def_file(singularity_hash: str) -> Path:
-    return Path(get_settings().compose_image_base_path) / f"{singularity_hash}.def"
-
-
-def get_compose_singularity_container_file(singularity_hash: str) -> Path:
-    return Path(get_settings().compose_image_base_path) / f"{singularity_hash}.sif"
-
-
-def get_compose_experiment_dir(experiment_id: str) -> Path:
-    return Path(get_settings().compose_sim_base_path) / f"experiment-{experiment_id}"
-
-
-def get_compose_sim_input_path(experiment_id: str) -> Path:
-    return get_compose_experiment_dir(experiment_id) / f"{experiment_id}.omex"
-
-
-def get_compose_sim_results_path(experiment_id: str) -> Path:
-    return get_compose_experiment_dir(experiment_id) / "results.zip"
-
-
-# The two ids moved to ``viva_core.compose.ids`` (P3d-4d-1); these names stay for their importers.
-get_compose_correlation_id = compose_correlation_id
-get_compose_experiment_id = compose_experiment_id
+sys.modules[__name__] = _moved
