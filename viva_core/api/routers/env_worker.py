@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from viva_core.api.auth import require_caller, resolve_caller
 from viva_core.compose.models import ComposeJobStatus, EnvWorkerTask
+from viva_core.container import EnvWorkerServices, current_container
 from viva_core.env_worker import relay
 from viva_core.env_worker.schemas import (
     CompositeRef,
@@ -58,34 +59,17 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_env_worker_service: EnvWorkerService | None = None
 
-
-def set_env_worker_service(service: EnvWorkerService | None) -> None:
-    """Wired at app startup (dependencies.py), like the other routers."""
-    global _env_worker_service
-    _env_worker_service = service
-
-
-_task_db: "EnvWorkerTaskDatabaseService | None" = None
-
-
-def set_env_worker_task_service(db: "EnvWorkerTaskDatabaseService | None") -> None:
-    """Wired at app startup (dependencies.py), like set_env_worker_service above.
-
-    A module global rather than a FastAPI dependency because that is this
-    codebase's convention for subsystem services -- see set_compose_services in
-    routers/compose.py -- and a second convention would only make the wiring
-    harder to find.
-    """
-    global _task_db
-    _task_db = db
+def _env_worker() -> EnvWorkerServices:
+    """The env-worker services of the container of the moment (P3e); none at all reads as none configured."""
+    return current_container().env_worker or EnvWorkerServices()
 
 
 def _require_service() -> EnvWorkerService:
-    if _env_worker_service is None:
+    service = _env_worker().service
+    if service is None:
         raise HTTPException(503, "env-worker service is not configured on this deployment")
-    return _env_worker_service
+    return service
 
 
 @router.post(
@@ -298,9 +282,10 @@ async def stop_relayed_worker(request: Request, job_name: str) -> dict[str, obje
     """
     dropped = relay.registry.drop(job_name)
     settled: list[EnvWorkerTask] = []
-    if _task_db is not None:
+    task_db = _env_worker().task_db
+    if task_db is not None:
         by = resolve_caller(request)
-        settled = await _task_db.fail_unfinished_tasks(
+        settled = await task_db.fail_unfinished_tasks(
             f"worker {job_name} was stopped" + (f" by {by}" if by else ""),
             job_name=job_name,
         )
@@ -763,15 +748,17 @@ async def launch_analysis_viewer(job_name: str, body: ViewerLaunch) -> object:
 
 
 def _require_task_db() -> "EnvWorkerTaskDatabaseService":
-    if _task_db is None:
+    task_db = _env_worker().task_db
+    if task_db is None:
         raise HTTPException(503, "env-worker tasks are not configured on this deployment")
-    return _task_db
+    return task_db
 
 
 def _require_runner() -> relay.TaskRunner:
-    if relay.runner is None:
+    runner = _env_worker().runner
+    if runner is None:
         raise HTTPException(503, "env-worker task runner is not configured on this deployment")
-    return relay.runner
+    return runner
 
 
 def _to_status(task: EnvWorkerTask) -> TaskStatusResponse:

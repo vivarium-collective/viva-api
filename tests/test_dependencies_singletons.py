@@ -20,7 +20,8 @@ _PAIRS: list[tuple[str, str]] = [
     ("set_local_task_service", "get_local_task_service"),
     ("set_job_scheduler", "get_job_scheduler"),
     ("set_messaging_service", "get_messaging_service"),
-    ("set_compose_job_monitor", "get_compose_job_monitor"),
+    ("set_compose_services", "get_compose_services"),
+    ("set_env_worker_services", "get_env_worker_services"),
 ]
 
 

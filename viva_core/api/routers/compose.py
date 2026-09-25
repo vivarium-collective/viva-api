@@ -1,9 +1,9 @@
 """Compose (process-bigraph) simulation router.
 
-Core's (P3d-4d-2): ``create_core_app`` serves it under ``/viva/v1/compose``; SMS serves the same router at
-``/compose/v1``, unchanged for its callers. Its services arrive through ``set_compose_services`` from
-the composition root -- the setter shape every subsystem router here has, replaced by the container
-in P3e. The one route that was SMS's (``/curated/ecoli``) lives in ``viva_api/api/routers/compose_sms.py``.
+Core's (P3d-4d-2): ``create_core_app`` serves it under ``/viva/v1/compose``; SMS serves the same
+router at ``/compose/v1``, unchanged for its callers. Its services are the ``ComposeServices`` of
+the container of the moment (``viva_core.container``), which the composition root provides (P3e).
+The one route that was SMS's (``/curated/ecoli``) lives in ``viva_api/api/routers/compose_sms.py``.
 """
 
 import json
@@ -41,6 +41,7 @@ from viva_core.compose.models import (
     SimulationFileType,
 )
 from viva_core.compose.service import ComposeSimulationService
+from viva_core.container import ComposeServices, current_container
 from viva_core.environments import EnvironmentNotResolvable
 from viva_core.environments.site import NAMED_ENVIRONMENTS, named_environment_image
 from viva_core.models import ComputeBackend, JobBackend
@@ -63,59 +64,42 @@ router = APIRouter()
 MAX_INTERVAL_TIME: float = 100_000.0
 
 # ---------------------------------------------------------------------------
-# Dependency helpers (lazy — populated at app startup via dependencies.py)
+# Dependency helpers: the services come from the container of the moment (P3e). A deployment that
+# provides no compose services answers by name, the way it always has.
 # ---------------------------------------------------------------------------
 
-_compose_db_service: ComposeDatabaseService | None = None
-#: What the allow-list check falls back to when the table is empty. The APPLICATION's (SMS: its science
-#: stack, ``viva_api/simulation/compose_allow_list.py``), handed in with the services; core's default is
-#: nothing allowed beyond what the table says.
-_default_allow_list: list[str] = []
-_files: FileService | None = None
-_compose_sim_service: ComposeSimulationService | None = None
-_compose_job_monitor: ComposeJobMonitor | None = None
 
-
-def set_compose_services(
-    db: ComposeDatabaseService,
-    sim: ComposeSimulationService,
-    monitor: ComposeJobMonitor,
-    *,
-    default_allow_list: list[str] | None = None,
-    files: FileService | None = None,
-) -> None:
-    global _compose_db_service, _compose_sim_service, _compose_job_monitor, _default_allow_list, _files
-    _files = files
-    _compose_db_service = db
-    _compose_sim_service = sim
-    _compose_job_monitor = monitor
-    _default_allow_list = list(default_allow_list or [])
+def _compose() -> ComposeServices | None:
+    return current_container().compose
 
 
 def _require_files() -> FileService:
-    if _files is None:
+    services = _compose()
+    if services is None or services.files is None:
         raise HTTPException(500, "File service not initialized")
-    return _files
+    return services.files
 
 
 def _require_db() -> ComposeDatabaseService:
-    if _compose_db_service is None:
+    services = _compose()
+    if services is None:
         raise HTTPException(500, "Compose database service not initialized")
-    return _compose_db_service
+    return services.db
 
 
 def _require_sim(compute_backend: ComputeBackend | None = None) -> ComposeSimulationService:
-    if _compose_sim_service is None:
+    services = _compose()
+    if services is None:
         raise HTTPException(500, "Compose simulation service not initialized")
     if compute_backend is None:
-        return _compose_sim_service
+        return services.sim
     # Explicit per-request backend (item 98) -- fail loud when it isn't registered
     # rather than silently substitute the default, unlike the ensemble path's own
     # get_simulation_service_for_backend (an internal repo-inference helper, not a
     # caller-facing request param): a caller who explicitly asked for one backend
     # and silently got another is exactly the "looked successful, ran the wrong
     # thing" class of bug viva-api#353 flagged as costing real debugging time.
-    registry = _compose_job_monitor.sim_registry if _compose_job_monitor is not None else {}
+    registry = services.monitor.sim_registry
     service: ComposeSimulationService | None = registry.get(compute_backend)
     if service is None:
         raise HTTPException(
@@ -127,9 +111,15 @@ def _require_sim(compute_backend: ComputeBackend | None = None) -> ComposeSimula
 
 
 def _require_monitor() -> ComposeJobMonitor:
-    if _compose_job_monitor is None:
+    services = _compose()
+    if services is None:
         raise HTTPException(500, "Compose job monitor not initialized")
-    return _compose_job_monitor
+    return services.monitor
+
+
+def _default_allow_list() -> list[str]:
+    services = _compose()
+    return list(services.default_allow_list) if services is not None else []
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +212,7 @@ async def _dispatch_submission(
 ) -> ComposeSimulationExperiment:
     _check_environment(simulation_request)
     db = _require_db()
-    allow_list = await db.get_allow_list_db().list_allow_list() or _default_allow_list
+    allow_list = await db.get_allow_list_db().list_allow_list() or _default_allow_list()
     return await run_compose_simulation(
         simulation_request=simulation_request,
         database_service=db,
