@@ -1031,7 +1031,7 @@ split; each has an owner-less issue or a named moment.
 | P8b | removals M1 … M7 | | | | not started; each after its caller is on both sites |
 | P9a / b / c | | | | | not started (checkpoint N); rehearsed at UConn first (U3–U4) |
 | P10 | | | | | not started |
-| U0 … U5 | the UConn track (§4b) | | | | U1 merged (#796, rides 0.9.157); **U2 in progress**: U2a the SLURM settings onto `CoreSettings` (#798), U2b-1 the SLURM compose service's run command as a hook (#800; the v2ecoli mode was inside it; `ContainerRun`, `viva_api/simulation/compose_run_command.py`), U2d the registry naming and the env-worker Job settings (#801), **U2b-2 the service into core — `viva_core/compose/simulation_service_hpc.py` + `hpc_paths.py`, verbatim, shims at the old names; proven on the Docker cluster: build → run → results in 40 s** (`tests/compose/test_slurm_compose_service_on_a_cluster.py`, `slurm`-marked, 7/7 in the lane); **U2c the file-service factory** (`viva_core/storage/factory.py`: `file_service_for(backend)` exhaustive over `StorageBackend`, `file_service_from_settings()`; the composition root's if/elif is gone — a standalone core makes the same choice); next U2e the lifespan, U2g the `JobBackend` Protocol; **U2f `Dockerfile-core` + `build-core.yml`** (core served by uvicorn from the app factory, no application package in the image, image `ghcr.io/vivarium-collective/viva-core:<core tag>` on core's line, write-once; the workflow's gate is `tests/core` + an in-image boot check); core's overlay is a new directory, the SMS overlays untouched until U5 |
+| U0 … U5 | the UConn track (§4b) | | | | U1 merged (#796, rides 0.9.157); **U2 in progress**: U2a the SLURM settings onto `CoreSettings` (#798), U2b-1 the SLURM compose service's run command as a hook (#800; the v2ecoli mode was inside it; `ContainerRun`, `viva_api/simulation/compose_run_command.py`), U2d the registry naming and the env-worker Job settings (#801), **U2b-2 the service into core — `viva_core/compose/simulation_service_hpc.py` + `hpc_paths.py`, verbatim, shims at the old names; proven on the Docker cluster: build → run → results in 40 s** (`tests/compose/test_slurm_compose_service_on_a_cluster.py`, `slurm`-marked, 7/7 in the lane); **U2c the file-service factory** (`viva_core/storage/factory.py`: `file_service_for(backend)` exhaustive over `StorageBackend`, `file_service_from_settings()`; the composition root's if/elif is gone — a standalone core makes the same choice); next U2e the lifespan; **U2f `Dockerfile-core` + `build-core.yml`** (core served by uvicorn from the app factory, no application package in the image, image `ghcr.io/vivarium-collective/viva-core:<core tag>` on core's line, write-once; the workflow's gate is `tests/core` + an in-image boot check); **U2g the `JobBackend` Protocol** (`viva_core/backends/base.py` + `batch_backend.py` + `slurm_backend.py`; the SLURM one proven on the Docker cluster: container job, bare job, cancel, unknown handle; the Batch one on the engine with a fake client); core's overlay is a new directory, the SMS overlays untouched until U5 |
 | U1 | the local SLURM cluster: `tests/fixtures/slurm_cluster/` (compose-api's harness, verbatim) + `tests/fixtures/slurm_fixtures_backend.py` (the `slurm_backend` fixture: the container in CI, `--slurm-backend cluster` for Mantis); `port` on `SSHSessionService` and `slurm_submit_port`; `tests/common/test_slurm_backend.py` (SSH, and the conformance of `sbatch --parsable`, `squeue`, `scontrol` with core's parsers); CI job `tests-slurm` | 0.9.157 | 2026-09-25 (tests only) | — | **merged — #796** (`06d41b6d`; 6 tests green against the container, locally in 58 s and in CI); checkpoint UA's second half — green against Mantis with `--slurm-backend cluster` — still to run from a VPN laptop with the key |
 
 ## Decision log
@@ -1041,6 +1041,29 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-25** — **U2g: core's `JobBackend` Protocol is declared, with two implementations at once.**
+  `viva_core/backends/base.py`: `JobSpec` (name, command, image — `""` = bare on the host —, env,
+  resources, labels, `depends_on` handles of the same backend), `JobHandle` (backend kind + the
+  scheduler's id + the name), `BackendStatus` (status, exit code, the scheduler's reason, times,
+  attempt), and the Protocol: `submit`, `status` (keyed by id; a job the scheduler forgot is ABSENT,
+  never a status), `cancel` (a finished job is not an error), `logs` (a list of lines, the last
+  `tail` on request — not the stream §2.3 first sketched; both schedulers give lines cheaply and
+  every caller wants lines). `batch_backend.py` runs container-type jobs over the engine: the job
+  definition derived per image, the command as `CONTAINER_JOB_CMD`, env / tags / `dependsOn`;
+  resources are the job definition's until the engine exposes an override (a differing spec is
+  logged); logs from CloudWatch through a handed-in `logs` client, the stream from `describe_jobs`,
+  the group from the definition. `slurm_backend.py` renders an sbatch script (partition, QoS,
+  nodelist, `afterok`, cpus / mem / time, the env exported, `singularity exec <image> sh -c` or the
+  bare command), submits over SSH, answers from `squeue` + `scontrol`, cancels with `scancel`, reads
+  `%x-%j.out`. **Proof:** `tests/core/test_job_backend_slurm.py` on the Docker cluster — a job in a
+  pulled busybox image with its env and output, a bare job's exit code, cancel → CANCELLED, an
+  unknown handle absent (4/4, 45 s) — and `test_job_backend_batch.py` on the engine with a fake
+  client (9, incl. a structural check that both classes satisfy the Protocol). **Why now and not
+  at P5:** the 2026-09-20 audit deferred the Protocol until a second backend implemented it, so it
+  would not quietly be Batch-shaped; SLURM is that backend (§4b). **Deliberately not here:**
+  staging (Batch's entrypoint env vs SLURM's bind mounts — the strategy absorbs that, §6 step 3),
+  the `OwnerRef`, `k8s` / `local` adapters (P5), and any consumer: the compose services keep their
+  ABC until the strategies land. Nothing deployed changes.
 - **2026-09-25** — **U2f: core has a deployable artifact.** `Dockerfile-core` builds viva_core as its
   own service: the same Python base, uv and lockfile as `Dockerfile-api`, the dependencies installed
   with `--no-install-project` (the project wheel would need the application packages this image
