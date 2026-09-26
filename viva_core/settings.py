@@ -160,6 +160,23 @@ class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, n
     # An HPC path the SLURM compose service bind-mounts into a composite's container at /out/cache;
     # empty = nothing mounted. What goes there is the application's business (a staged input set).
     compose_cache_base_path: str = ""
+    # How the SLURM compose service BUILDS a composite's container (UConn track, 2026-09-26).
+    # "sbatch": on the HPC with `singularity build --fakeroot` -- needs a subuid entry for the service
+    # user on the nodes. "k8s": a Kubernetes Job in ``k8s_job_namespace`` from an Apptainer image: a
+    # PRIVILEGED init container builds into scratch (a definition's %post needs mount namespaces;
+    # nothing less worked on RKE2) and an unprivileged container running as the service user copies
+    # the image onto the shared filesystem the SLURM nodes read, mounted in the Job at the same
+    # path (``compose_build_pvc_*``).
+    compose_build_backend: Literal["sbatch", "k8s"] = "sbatch"
+    compose_build_image: str = "ghcr.io/apptainer/apptainer:1.3.6"
+    compose_build_pvc_claim: str = ""  # the PersistentVolumeClaim of the shared filesystem
+    compose_build_pvc_mount_path: str = ""  # where it is mounted in the Job: a prefix of compose_image_base_path
+    compose_build_pvc_sub_path: str = ""
+    # Who writes the image onto the filesystem (0 = root, on a filesystem that lets root write).
+    compose_build_run_as_uid: int = 0
+    compose_build_run_as_gid: int = 0
+    compose_build_supplemental_groups: str = ""  # comma-separated gids
+    compose_build_timeout_seconds: int = 1800
 
 
 _provider: Callable[[], CoreSettings] | None = None

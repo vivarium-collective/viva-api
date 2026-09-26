@@ -105,11 +105,17 @@ def _recording_db() -> MagicMock:
     whatever the service asked to insert, so the test can read the job id back."""
 
     async def insert_hpcrun(
-        slurmjobid: int, job_type: ComposeJobType, ref_id: int, correlation_id: str, backend: JobBackend | None = None
+        slurmjobid: int,
+        job_type: ComposeJobType,
+        ref_id: int,
+        correlation_id: str,
+        backend: JobBackend | None = None,
+        job_id_ext: str | None = None,
     ) -> ComposeHpcRun:
         return ComposeHpcRun(
             database_id=1,
             slurmjobid=slurmjobid,
+            job_id_ext=job_id_ext,
             correlation_id=correlation_id,
             job_type=job_type,
             sim_id=None,

@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from viva_core.backends.k8s_job_service import K8sJobService
+from viva_core.compose.build_k8s import K8sContainerBuild
 from viva_core.compose.job_monitor import ComposeJobMonitor
 from viva_core.container import ComposeServices, CoreContainer, EnvWorkerServices
 from viva_core.env_worker import relay as env_worker_relay
@@ -79,6 +81,24 @@ def _file_service(settings: CoreSettings) -> FileService | None:
     except Exception:
         logger.warning("file service (%s) could not be built; results streaming is off", settings.storage_backend)
         return None
+
+
+def _k8s_build_from_settings(settings: CoreSettings) -> tuple[K8sContainerBuild | None, K8sJobService | None]:
+    """The Kubernetes build Job and the client the monitor polls it with, when
+    ``compose_build_backend`` is ``k8s``; needs a namespace and in-cluster credentials."""
+    if settings.compose_build_backend != "k8s":
+        return None, None
+    if not settings.k8s_job_namespace:
+        logger.warning("compose_build_backend=k8s but k8s_job_namespace is unset; builds fall back to sbatch")
+        return None, None
+    try:
+        k8s = K8sJobService(namespace=settings.k8s_job_namespace)
+        build = K8sContainerBuild(k8s, settings)
+    except Exception:
+        logger.warning("Kubernetes build Job unavailable (non-fatal); builds fall back to sbatch", exc_info=True)
+        return None, None
+    logger.info("✓ container builds run as Kubernetes Jobs in %s", settings.k8s_job_namespace)
+    return build, k8s
 
 
 @dataclass
@@ -141,14 +161,18 @@ async def start_core(
         if slurm_ssh is not None:
             from viva_core.compose.simulation_service_hpc import ComposeSimulationServiceHpc
 
+            container_build, k8s_jobs = _k8s_build_from_settings(settings)
             slurm_compose = ComposeSimulationServiceHpc(
-                slurm_ssh=slurm_ssh, results_cache_dir=Path(settings.storage_local_cache_dir) / "compose"
+                slurm_ssh=slurm_ssh,
+                results_cache_dir=Path(settings.storage_local_cache_dir) / "compose",
+                container_build=container_build,
             )
             monitor = ComposeJobMonitor(
                 nats_client=None,
                 database_service=compose_db,
                 sim_registry={ComputeBackend.SLURM: slurm_compose},
                 slurm_ssh=slurm_ssh,
+                k8s_jobs=k8s_jobs,
             )
             compose = ComposeServices(db=compose_db, sim=slurm_compose, monitor=monitor, files=files)
             await monitor.start_polling(interval_seconds=COMPOSE_POLL_SECONDS)
