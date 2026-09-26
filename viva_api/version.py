@@ -1596,7 +1596,39 @@
 #            exists and /app/app/gui.py does not; `run-slurm-analysis` in /app/viva_api/api/routers/sms.py.
 #            SMOKE: Tier 0 (with `contract` and `core`) + Tier 1 with --require-aws; Tier 1 on the
 #            runtime image.
-__version__ = "0.9.157"
+#           0.9.158 -- core split, deploy checkpoint F3 (docs/plan-core.md section 8): the UConn track's
+#            core-on-SLURM work (U2 complete, U3 applied at UConn) and the atlantis surface resolver.
+#            CODE ONLY, no migration. Nothing SMS-facing on Stanford changes behaviour; F3 proves it.
+#            WHAT MOVED INTO CORE (shims keep every old import name; runtime objects are the same):
+#              #798 the SLURM/SSH settings, `storage_backend`, `compose_cache_base_path` are CoreSettings
+#                   fields (SMS's Settings inherits them; same variables, same defaults).
+#              #800 the SLURM compose service's v2ecoli run mode is a HOOK (ContainerRun) handed in by
+#                   dependencies.py (simulation/compose_run_command.py).
+#              #802 the SLURM compose service + hpc_utils -> viva_core/compose/{simulation_service_hpc,
+#                   hpc_paths}.py.  #803 the file service is chosen by viva_core/storage/factory.py
+#                   (dependencies.py's if/elif is gone).  #806 postgres_* and db_create_all are
+#                   CoreSettings fields; /viva/v1/health now reports `compose` and `workers` beside
+#                   `environments`.  #805 viva_core/backends/{base,batch_backend,slurm_backend}.py: the
+#                   JobBackend Protocol, not yet consumed.  #801 env-worker Jobs take app label /
+#                   service account / module path from settings (SMS supplies the same values).
+#            NEW CLIENT BEHAVIOUR:
+#              #811 atlantis addresses core's surfaces by CAPABILITY (app/surface.py): with
+#                   `viva-v1-surface` advertised (dev since 0.9.157) compose and env-worker calls go to
+#                   /viva/v1/compose and /viva/v1/env-worker (the interim mounts of #792); smoke's
+#                   probes, list reads and capabilities check follow. Prod (no capability) is unchanged.
+#            SLURM-ONLY FIXES (no effect on Stanford's Batch paths): #810 a SLURM build row is tagged
+#            slurm at insert; #813 a build keeps its .def; #814 builds may run as a Kubernetes Job
+#            (compose_build_backend, default sbatch); #815 a FAILED build no longer suppresses the next
+#            (#717); #816 the build Job's name is lowercase; #817 K8s times stored naive UTC.
+#            ALSO: #804 Dockerfile-core + build-core.yml (a separate viva-core image; this image is
+#            unchanged), #808/#809/#812 the UConn core overlay (not applied here), #807 a test fix.
+#            No migration; the -db-migration overlay tag is bumped to stay equal, the Job is not run.
+#            MARKERS: /app/viva_core/compose/simulation_service_hpc.py, /app/viva_core/storage/factory.py,
+#            /app/viva_core/lifespan.py, /app/viva_core/backends/base.py, /app/viva_core/compose/build_k8s.py
+#            and /app/app/surface.py exist; `self._url(` in /app/app/app_data_service.py;
+#            `postgres_user` is NOT declared in /app/viva_api/config.py (inherited).
+#            SMOKE: Tier 0 (with `contract`, `core`, `capabilities`) + Tier 1 with --require-aws.
+__version__ = "0.9.158"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in
