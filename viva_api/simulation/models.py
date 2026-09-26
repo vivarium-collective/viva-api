@@ -171,69 +171,13 @@ class SimulationRun(BaseModel):
     open_spans: list[str] | None = None
 
 
-class SimulationEvent(BaseModel):
-    """One structured event of a run (``hpcrun_event`` row; observability plan D1).
-
-    The identity block mirrors the engine's JSON-lines schema; infrastructure
-    identifiers (Batch job ids, log streams) live in ``tags``/``payload``, never
-    in the core fields.
-    """
-
-    cursor: int | None = None  # the stored row id; pass back as ``after`` to page forward across sources
-    seq: int
-    source: str
-    ts: str  # ISO 8601 UTC
-    component: str  # who emitted it: "process_bigraph", "v2ecoli.lineage", "viva_api.dispatch", ...
-    event: str
-    level: str = "info"
-    # Domain identity, promoted from the engine event's opaque ``baggage`` map
-    # (W3C baggage semantics): process-bigraph never names these keys itself;
-    # viva-api does, so its API and CLI present them first-class.
-    generation: int | None = None
-    variant: int | None = None
-    lineage_seed: int | None = None
-    baggage: dict[str, Any] | None = None  # the full baggage map as the task saw it (sim_id, experiment_id, ...)
-    global_time: float | None = None
-    wall_time: float | None = None
-    span_id: str | None = None
-    parent_span_id: str | None = None
-    payload: dict[str, Any] | None = None
-    tags: dict[str, Any] | None = None
-
-
-class SimulationSpan(BaseModel):
-    """A node of a run's trace tree (``hpcrun_span`` row), materialised from
-    ``span.start``/``span.end`` events. ``end_ts`` is ``None`` while open; a span
-    still open when the run goes terminal is closed as ``status='unknown'``."""
-
-    span_id: str
-    parent_span_id: str | None = None
-    name: str
-    attrs: dict[str, Any] | None = None
-    start_ts: str | None = None
-    end_ts: str | None = None
-    duration_s: float | None = None
-    status: str | None = None  # ok | error | unknown | None while open
-    error: str | None = None
-
-    @property
-    def label(self) -> str:
-        """``name[key=value,...]`` -- the human form used for ``stage`` and the tree."""
-        attrs = self.attrs or {}
-        shown = {k: v for k, v in attrs.items() if k in ("variant", "lineage_seed", "seed", "generation")}
-        if not shown:
-            return self.name
-        return f"{self.name}[{','.join(f'{k}={v}' for k, v in shown.items())}]"
-
-
-class SpanTree(BaseModel):
-    """``GET /simulations/{id}/events?tree=true``: the span tree with each span's
-    own events attached (events whose ``span_id`` matches; ``tick`` heartbeats are
-    never stored, so they never appear here)."""
-
-    span: SimulationSpan
-    events: list[SimulationEvent] = Field(default_factory=list)
-    children: list["SpanTree"] = Field(default_factory=list)
+# ``SimulationEvent`` (an ``hpcrun_event`` row), ``SimulationSpan`` (an ``hpcrun_span`` row) and
+# ``SpanTree`` (``GET /simulations/{id}/events?tree=true``) are core's since P4a-2 slice 4
+# (``viva_core.events.models``); they keep their names and their JSON schema, and this module
+# keeps exporting them, so the API documents and every importer are unchanged.
+from viva_core.events.models import SimulationEvent as SimulationEvent  # noqa: E402
+from viva_core.events.models import SimulationSpan as SimulationSpan  # noqa: E402
+from viva_core.events.models import SpanTree as SpanTree  # noqa: E402
 
 
 class SimulationEvents(BaseModel):

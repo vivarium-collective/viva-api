@@ -78,8 +78,8 @@ class ArtifactEvent:
     explicit ``attributes`` value does not override, and the run's label for display names."""
 
     seq: int
-    payload: JsonDict
-    baggage: JsonDict = field(default_factory=dict)
+    payload: dict[str, object]  # as read off the wire: every field is checked before use
+    baggage: dict[str, object] = field(default_factory=dict)
     span_id: str | None = None
     coordinate: JsonDict = field(default_factory=dict)
     label: str | None = None
@@ -137,7 +137,7 @@ def _str_or_none(value: object) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _validated(event: ArtifactEvent, kinds: Container[str]) -> tuple[str, str, JsonDict, JsonDict]:
+def _validated(event: ArtifactEvent, kinds: Container[str]) -> tuple[str, str, JsonDict, dict[str, object]]:
     """``(uri, kind, attributes copy, payload)``, or ``_Skip`` naming what is wrong."""
     payload = event.payload or {}
     uri = payload.get("uri")
