@@ -9,7 +9,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy.engine import make_url
 
 from tests.fixtures.slurm_fixtures_backend import SlurmBackend
-from viva_core import settings as core_settings
 from viva_core.api import CORE_PREFIX, create_core_app
 from viva_core.compose.simulation_service_hpc import ComposeSimulationServiceHpc
 from viva_core.container import current_container
@@ -61,28 +60,24 @@ def test_the_app_boots_with_slurm_settings_and_its_own_database(slurm_backend: S
         compose_image_base_path=base.compose_image_base_path,
         compose_sim_base_path=base.compose_sim_base_path,
     )
-    # Restore the provider that was registered (the application's, when viva_api is imported), not
-    # None: clearing it would leave every later test reading CoreSettings from the environment.
-    saved_provider = core_settings._provider
+    # The provider that was registered (the application's, when viva_api is imported) is put back
+    # by tests/core/conftest.py -- not cleared, which would leave later tests reading the environment.
     set_core_settings_provider(lambda: settings)
-    try:
-        with TestClient(create_core_app()) as client:
-            health = client.get(f"{CORE_PREFIX}/health").json()
-            assert health["services"] == {"environments": False, "compose": True, "workers": False}, health
-            held = current_container()
-            assert held.compose is not None and isinstance(held.compose.sim, ComposeSimulationServiceHpc)
-            assert held.compose.sim.backend is JobBackend.SLURM
-            assert held.compose.monitor.is_polling
-            # the compose schema exists in core's own database, and a read route answers from it
-            assert client.get(f"{CORE_PREFIX}/compose/simulations/status/batch", params={"ids": [1]}).json() == []
-            assert client.get(f"{CORE_PREFIX}/compose/simulation/1/status").status_code == 404
-            # the task tier is there (the relay's task routes need it), the worker service is not (no namespace)
-            workers = held.env_worker
-            assert workers is not None and workers.task_db is not None and workers.runner is not None
-            assert workers.service is None
-            monitor = held.compose.monitor
-        # after shutdown: the poller is stopped and the select-only container is back
-        assert not monitor.is_polling
-        assert current_container().compose is None
-    finally:
-        set_core_settings_provider(saved_provider)
+    with TestClient(create_core_app()) as client:
+        health = client.get(f"{CORE_PREFIX}/health").json()
+        assert health["services"] == {"environments": False, "compose": True, "workers": False}, health
+        held = current_container()
+        assert held.compose is not None and isinstance(held.compose.sim, ComposeSimulationServiceHpc)
+        assert held.compose.sim.backend is JobBackend.SLURM
+        assert held.compose.monitor.is_polling
+        # the compose schema exists in core's own database, and a read route answers from it
+        assert client.get(f"{CORE_PREFIX}/compose/simulations/status/batch", params={"ids": [1]}).json() == []
+        assert client.get(f"{CORE_PREFIX}/compose/simulation/1/status").status_code == 404
+        # the task tier is there (the relay's task routes need it), the worker service is not (no namespace)
+        workers = held.env_worker
+        assert workers is not None and workers.task_db is not None and workers.runner is not None
+        assert workers.service is None
+        monitor = held.compose.monitor
+    # after shutdown: the poller is stopped and the select-only container is back
+    assert not monitor.is_polling
+    assert current_container().compose is None
