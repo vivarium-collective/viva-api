@@ -179,20 +179,16 @@ def test_a_core_with_no_services_answers_by_name_and_nothing_is_wired_through_a_
     from viva_core.container import CoreContainer, current_container
     from viva_core.settings import CoreSettings
 
-    saved = container_mod._provider
-    try:
-        container_mod._provider = None
-        with pytest.raises(RuntimeError, match="no core container is registered"):
-            current_container()
-        app = create_core_app(CoreContainer(settings=CoreSettings()))
-        client = TestClient(app)
-        assert client.get("/viva/v1/health").status_code == 200
-        assert client.get("/viva/v1/compose/simulators").status_code == 500
-        assert "not initialized" in client.get("/viva/v1/compose/simulators").json()["detail"]
-        assert client.get("/viva/v1/env-worker/workers/nope").status_code == 503
-        assert client.get("/viva/v1/env-worker/tasks/1").status_code == 503
-    finally:
-        container_mod._provider = saved
+    container_mod._provider = None  # put back by tests/core/conftest.py
+    with pytest.raises(RuntimeError, match="no core container is registered"):
+        current_container()
+    app = create_core_app(CoreContainer(settings=CoreSettings()))
+    client = TestClient(app)
+    assert client.get("/viva/v1/health").status_code == 200
+    assert client.get("/viva/v1/compose/simulators").status_code == 500
+    assert "not initialized" in client.get("/viva/v1/compose/simulators").json()["detail"]
+    assert client.get("/viva/v1/env-worker/workers/nope").status_code == 503
+    assert client.get("/viva/v1/env-worker/tasks/1").status_code == 503
 
     for router in Path("viva_core/api/routers").glob("*.py"):
         tree = ast.parse(router.read_text(encoding="utf-8"))

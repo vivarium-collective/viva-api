@@ -1628,7 +1628,29 @@
 #            and /app/app/surface.py exist; `self._url(` in /app/app/app_data_service.py;
 #            `postgres_user` is NOT declared in /app/viva_api/config.py (inherited).
 #            SMOKE: Tier 0 (with `contract`, `core`, `capabilities`) + Tier 1 with --require-aws.
-__version__ = "0.9.158"
+#           0.9.159 -- core split, deploy checkpoint F (docs/plan-core.md section 8): P4a-1, the owner-ref
+#            expand -- THE FIRST MIGRATION SINCE 0.9.149 (f4c8a2e6d0b3). Plus P4a-2's three core slices.
+#            MIGRATION (#790, alembic revision a4b6c8d0e2f4, revises f4c8a2e6d0b3): additive, idempotent
+#            (IF NOT EXISTS), reversible. hpcrun gains owner_kind / owner_id (VARCHAR, indexed) and
+#            output_uri; dataset gains owner_kind / owner_id (indexed), producer_job_id (FK hpcrun,
+#            indexed) and trace_id. owner_kind is a VARCHAR, not an enum, so a new kind is a row.
+#            Backfilled from the foreign keys with the writer's own rule
+#            (viva_api/simulation/owner_ref.py); the foreign keys stay authoritative until P7.
+#            The reconciler's marker for it: `hpcrun.owner_kind column exists`.
+#            DEPLOY ORDER: the -db-migration Job (this tag) runs BEFORE the app rolls; the previous
+#            image tolerates the new columns (nullable, defaulted). /health reports db_at_head.
+#            ALSO (code only, no route or shape changes):
+#              #820 viva_core/datasets/{models,registry}.py -- the trace feeder behind OwnerResolver +
+#                   DatasetStore (P4a-2 slice 1).  #821 viva_core/datasets/walk.py -- the reconciliation
+#                   walk behind ArtifactClassifier + WalkSource (slice 2).  #822 viva_core/events/ingest.py
+#                   -- the ingest hook behind EventStore + ArtifactRegistrar, its fifteen Any retired
+#                   (slice 4).  #824/#825 lane-b log entries (F3, the P-jump runbook draft).
+#            MARKERS: /app/viva_api/simulation/owner_ref.py, /app/viva_core/datasets/walk.py and
+#            /app/viva_core/events/ingest.py exist; `_marker_hpcrun_owner_kind` in
+#            /app/viva_api/simulation/db_reconcile.py; `owner_kind` in /app/viva_api/simulation/tables_orm.py.
+#            SMOKE: Tier 0 (`database` at head a4b6c8d0e2f4, `contract`, `core`, `capabilities`) + Tier 1
+#            with --require-aws. `contract` may fail on simulation.config.* alone (#823): the sampling.
+__version__ = "0.9.159"
 #           0.9.101 -- _submit_mnp now sets RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
 #           on every node of every Ray MNP submission. Found: a single-node
 #           lineage_ray_batch diagnostic (database_id=344, 2026-09-05) died in

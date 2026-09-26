@@ -131,7 +131,9 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
         slurm_job_name: str,
         simulation: ComposeSimulation,
     ) -> RunPlan:
-        """The hook's plan when it has one; else the generic ``singularity run`` of the input file."""
+        """The hook's plan when it has one; else the generic ``singularity run`` of the input file.
+        ``-n`` is the runner's step COUNT (``run_pbg.py --steps``, an int); the request carries it as
+        a float, and ``-n 5.0`` was refused on Mantis (UConn UB #6)."""
         if self._run_command is not None:
             plan = self._run_command(override_command, bind_clause, singularity_container, slurm_job_name, simulation)
             if plan is not None:
@@ -146,7 +148,7 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
                 f"{indent}    /experiment/{slurm_job_name}."
                 f"{simulation.sim_request.simulation_file_type.get_files_suffix()} \\\n"
                 f'{indent}    -o "{self.env.compose_containers_output_dir}" \\\n'
-                f"{indent}    -n {simulation.sim_request.end_time_point}"
+                f"{indent}    -n {round(simulation.sim_request.end_time_point)}"
             )
         )
 
@@ -212,7 +214,11 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
             async with self._ssh_sessions().session() as ssh:
                 await ssh.run_command(f"mkdir -p {experiment_path}")
                 # Upload the simulation input file (OMEX/PBG/SBML)
-                remote_input = HPCFilePath(remote_path=get_compose_sim_input_path(experiment_id=slurm_job_name))
+                remote_input = HPCFilePath(
+                    remote_path=get_compose_sim_input_path(
+                        experiment_id=slurm_job_name, file_type=simulation.sim_request.simulation_file_type
+                    )
+                )
                 await ssh.scp_upload(local_file=simulation.sim_request.request_file_path, remote_path=remote_input)
                 for local_file, name in plan_files:
                     await ssh.scp_upload(

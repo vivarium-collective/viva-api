@@ -10,7 +10,7 @@ namespace: sms-api-rke-dev
 
 images:
   - name: ghcr.io/vivarium-collective/viva-core
-    newTag: 0.1.4 # core's own version line (D16); built by build-core.yml, write-once
+    newTag: 0.1.6 # core's own version line (D16); built by build-core.yml, write-once
 
 resources:
   - core.yaml
