@@ -41,6 +41,10 @@ def _recorder(payload: Any, status: int = 200) -> tuple[Any, list[httpx.Request]
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/capabilities"):
+            # the surface resolver's one probe per client (app/surface.py); this fake advertises
+            # nothing, so the calls under test keep the application's spelling
+            return httpx.Response(404, json={"detail": "no capabilities here"})
         seen.append(request)
         return httpx.Response(status, json=payload)
 
