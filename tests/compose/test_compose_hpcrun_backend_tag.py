@@ -97,3 +97,23 @@ async def test_a_placeholder_tagged_slurm_is_not_asked_of_squeue() -> None:
     monitor = ComposeJobMonitor(nats_client=None, database_service=db, sim_registry={}, slurm_ssh=lambda: ssh)
     await monitor._update_slurm_jobs([_run(3, -1, "slurm")])
     ssh.session.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_build_does_not_suppress_the_next_one(compose_db: ComposeDatabaseService) -> None:
+    """#717, seen again at UConn: the dispatch asks "is there a build for this simulator?" and a FAILED
+    one used to answer yes, so no run ever built again and every run died for lack of an image."""
+    hpc_db = compose_db.get_hpc_db()
+    simulator = await compose_db.get_simulator_db().insert_simulator(
+        ContainerizationFileRepr(representation="Bootstrap: docker\nFrom: busybox\n# retry\n")
+    )
+    failed = await hpc_db.insert_hpcrun(
+        slurmjobid=1, job_type=ComposeJobType.BUILD_CONTAINER, ref_id=simulator.database_id, correlation_id="f"
+    )
+    assert await hpc_db.get_hpcrun_id_by_simulator_id(simulator.database_id) == failed.database_id
+    await hpc_db.mark_hpcrun_failed(failed.database_id, "no mapping entry found in /etc/subuid")
+    assert await hpc_db.get_hpcrun_id_by_simulator_id(simulator.database_id) is None  # build again
+    again = await hpc_db.insert_hpcrun(
+        slurmjobid=2, job_type=ComposeJobType.BUILD_CONTAINER, ref_id=simulator.database_id, correlation_id="a"
+    )
+    assert await hpc_db.get_hpcrun_id_by_simulator_id(simulator.database_id) == again.database_id
