@@ -6,14 +6,12 @@ docs/plan-data-provenance.md §7. Everything here reads: rows are written by the
 """
 
 import datetime
-import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Unpack
+from typing import Unpack
 
 from fastapi import Query
-from pydantic import JsonValue
 
 from viva_api.analysis.models import (
     DATASET_KINDS,
@@ -32,6 +30,14 @@ from viva_api.common.storage.file_service import FileService
 from viva_api.simulation.database_service import DatabaseService
 from viva_api.simulation.dataset_walk import split_s3_uri
 from viva_api.simulation.models import HpcRun, JobType, SimulationSpan
+from viva_core.datasets.queries import AVAILABILITY, Availability
+
+# The routers (`datasets.py`, `sms.py`) reach these through this module: explicit re-exports.
+from viva_core.datasets.queries import DatasetQueryError as DatasetQueryError
+from viva_core.datasets.queries import naive_utc as naive_utc
+from viva_core.datasets.queries import parse_attribute_filters as parse_attribute_filters
+from viva_core.datasets.queries import parse_source_filter as _parse_source_filter
+from viva_core.datasets.queries import parse_tags as parse_tags
 
 #: Kinds whose ``uri`` names a store (a parquet prefix, a ParCa cache) rather than one object
 #: small enough to hand back through the API; read those from ``uri`` with storage credentials.
@@ -43,12 +49,7 @@ _SOURCE_KINDS = {"sim": "simulation", "simulation": "simulation", "analysis": "a
 #: Spans read to find the one a dataset was written in (the events tree's cap).
 _MAX_SPAN_ROWS = 5_000
 
-Availability = Literal["true", "false", "any"]
-_AVAILABILITY: dict[str, bool | None] = {"true": True, "false": False, "any": None}
-
-
-class DatasetQueryError(ValueError):
-    """A malformed dataset or analysis filter (400)."""
+_AVAILABILITY = AVAILABILITY
 
 
 class DatasetNotFoundError(LookupError):
@@ -60,70 +61,22 @@ class DatasetNotServableError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# query parsing
+# query parsing -- core's (viva_core.datasets.queries, P4a-2), plus this application's shorthands
 # ---------------------------------------------------------------------------
 
 
-def parse_tags(tag: str | None) -> list[str] | None:
-    """Comma-separated tags, blanks dropped; ``None`` when there are none."""
-    tags = [part.strip() for part in (tag or "").split(",") if part.strip()]
-    return tags or None
-
-
-def naive_utc(moment: datetime.datetime | None) -> datetime.datetime | None:
-    """``updated_at`` columns are naive UTC: convert an aware ``since``, take a naive one as UTC."""
-    if moment is None or moment.tzinfo is None:
-        return moment
-    return moment.astimezone(datetime.UTC).replace(tzinfo=None)
-
-
-def parse_attribute_value(raw: str) -> JsonValue:
-    """A filter value typed the way JSONB containment compares it.
-
-    A JSON scalar keeps its type (``0`` is an integer, ``true`` a boolean, ``"0"`` a string);
-    anything that is not JSON (``000``, ``ptools_rna``) is a string."""
-    try:
-        value = json.loads(raw)
-    except ValueError:
-        return raw
-    return value if isinstance(value, str | int | float | bool) else raw
-
-
-def parse_attribute_filters(pairs: list[str], query_items: list[tuple[str, str]]) -> JsonDict | None:
-    """``attr=<key>=<value>`` pairs plus ``attr.<key>=<value>`` parameters, as one containment filter."""
-    attributes: JsonDict = {}
-    for pair in pairs:
-        key, sep, raw = pair.partition("=")
-        if not sep or not key.strip():
-            raise DatasetQueryError(f"attr filter {pair!r} is not <key>=<value>")
-        attributes[key.strip()] = parse_attribute_value(raw)
-    for name, raw in query_items:
-        key = name.removeprefix("attr.")
-        if key != name and key:
-            attributes[key] = parse_attribute_value(raw)
-    return attributes or None
-
-
 def parse_source_filter(source: str | None) -> JsonDict | None:
-    """A ``source`` filter: ``sim:1002`` / ``analysis:7`` / ``task:3``, or a JSON ProvenanceRef fragment."""
+    """A ``source`` filter: ``sim:1002`` / ``analysis:7`` / ``task:3``, or a JSON ProvenanceRef fragment.
+    Core takes ``<kind>:<ref>`` as given; the abbreviations are this application's."""
     text = (source or "").strip()
-    if not text:
-        return None
-    if text.startswith("{"):
-        try:
-            value = json.loads(text)
-        except ValueError as e:
-            raise DatasetQueryError(f"source {source!r} is not valid JSON") from e
-        if not isinstance(value, dict):
-            raise DatasetQueryError(f"source {source!r} is not a JSON object")
-        return value
     prefix, sep, ref = text.partition(":")
-    kind = _SOURCE_KINDS.get(prefix.strip().lower())
-    if not sep or kind is None or not ref.strip():
-        raise DatasetQueryError(
-            f"source {source!r} is not <kind>:<id> (kind one of {', '.join(sorted(_SOURCE_KINDS))}) or a JSON object"
-        )
-    return {"kind": kind, "ref": ref.strip()}
+    if text and not text.startswith("{"):
+        kind = _SOURCE_KINDS.get(prefix.strip().lower())
+        if not sep or kind is None or not ref.strip():
+            kinds = ", ".join(sorted(_SOURCE_KINDS))
+            raise DatasetQueryError(f"source {source!r} is not <kind>:<id> (kind one of {kinds}) or a JSON object")
+        return {"kind": kind, "ref": ref.strip()}
+    return _parse_source_filter(source)
 
 
 def check_kind(kind: str | None) -> None:

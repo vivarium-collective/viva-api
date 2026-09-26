@@ -40,7 +40,7 @@ from viva_core.datasets.models import (
     DATASET_ORIGIN_WALK,
     DatasetFields,
     DatasetRecord,
-    DatasetStore,
+    DatasetWriter,
     JsonDict,
     OwnerRef,
 )
@@ -195,7 +195,7 @@ class WalkResult:
         self.skipped += other.skipped - len(other.reasons)
 
 
-async def _rows_under(store: DatasetStore, uri_prefix: str) -> dict[str, DatasetRecord]:
+async def _rows_under(store: DatasetWriter, uri_prefix: str) -> dict[str, DatasetRecord]:
     """Every registered row whose uri starts with ``uri_prefix``, available or not, by uri."""
     return {row.uri: row for row in await store.list_under(uri_prefix)}
 
@@ -206,7 +206,7 @@ async def _mark_vanished(
     bucket: str,
     keys: set[str],
     under: str,
-    store: DatasetStore,
+    store: DatasetWriter,
     result: WalkResult,
     skip: tuple[str, ...] = (),
 ) -> None:
@@ -216,7 +216,7 @@ async def _mark_vanished(
         if not row.available or not uri.startswith(under) or (skip and uri.startswith(skip)):
             continue
         if not _present(uri, bucket, keys):
-            await store.set_available(row.database_id, False)
+            await store.set_available(row.id, False)
             result.unavailable += 1
 
 
@@ -228,7 +228,7 @@ async def register_bundle(
     owner: OwnerRef,
     source: WalkSource,
     classifier: ArtifactClassifier,
-    store: DatasetStore,
+    store: DatasetWriter,
     tags: list[str] | None = None,
     existing: Mapping[str, DatasetRecord] | None = None,
 ) -> WalkResult:
@@ -265,7 +265,7 @@ async def register_bundle(
             continue
         if action == "skipped" and not record.available:
             # An event-sourced row the walk may not rewrite, whose object is back.
-            await store.set_available(record.database_id, True)
+            await store.set_available(record.id, True)
             action = "updated"
         result.registered += action in ("inserted", "updated")
         result.unchanged += action not in ("inserted", "updated")
@@ -289,7 +289,7 @@ async def reconcile(
     source: WalkSource,
     *,
     classifier: ArtifactClassifier,
-    store: DatasetStore,
+    store: DatasetWriter,
     file_service: FileService,
     storage_bucket: str | None,
 ) -> WalkResult:

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: viva-core
-  version: 0.1.0
+  version: 0.1.4
 paths:
   /viva/v1/health:
     get:
@@ -57,6 +57,348 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/EnvironmentModel'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/datasets:
+    get:
+      tags:
+      - Viva Core
+      - Datasets
+      summary: List registered datasets by kind, view, tags, attributes, owner or
+        source
+      description: 'Newest change first; ``next_offset`` pages. Unavailable datasets
+        (object gone) are
+
+        excluded unless ``available=false`` or ``available=any``.'
+      operationId: viva-list-datasets
+      parameters:
+      - name: attr
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+          description: 'Attribute filter <key>=<value>, repeatable (all must match).
+            A JSON scalar keeps its type: variant=0 matches the integer, variant="0"
+            the string; a non-JSON value such as agent=000 is a string. attr.<key>=<value>
+            parameters mean the same.'
+          default: []
+          title: Attr
+        description: 'Attribute filter <key>=<value>, repeatable (all must match).
+          A JSON scalar keeps its type: variant=0 matches the integer, variant="0"
+          the string; a non-JSON value such as agent=000 is a string. attr.<key>=<value>
+          parameters mean the same.'
+      - name: owner
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Whose it is: ''<owner_kind>:<owner_id>'', the owning record''s
+            kind and id.'
+          title: Owner
+        description: 'Whose it is: ''<owner_kind>:<owner_id>'', the owning record''s
+          kind and id.'
+      - name: source
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'What the data is OF: ''<kind>:<ref>'', or a JSON fragment
+            of the stored source.'
+          title: Source
+        description: 'What the data is OF: ''<kind>:<ref>'', or a JSON fragment of
+          the stored source.'
+      - name: kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Dataset kind (the deployment's vocabulary).
+          title: Kind
+        description: Dataset kind (the deployment's vocabulary).
+      - name: view
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Logical view the file is one instance of.
+          title: View
+        description: Logical view the file is one instance of.
+      - name: tag
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Comma-separated tags; a dataset must carry all of them.
+          title: Tag
+        description: Comma-separated tags; a dataset must carry all of them.
+      - name: available
+        in: query
+        required: false
+        schema:
+          enum:
+          - 'true'
+          - 'false'
+          - any
+          type: string
+          description: '''true'' (default): datasets whose object exists; ''false'':
+            those whose object is gone; ''any''.'
+          default: 'true'
+          title: Available
+        description: '''true'' (default): datasets whose object exists; ''false'':
+          those whose object is gone; ''any''.'
+      - name: since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Only datasets changed at or after this time.
+          title: Since
+        description: Only datasets changed at or after this time.
+      - name: uri_prefix
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Datasets whose uri starts with this (a bundle directory). Wildcards
+            are literal.
+          title: Uri Prefix
+        description: Datasets whose uri starts with this (a bundle directory). Wildcards
+          are literal.
+      - name: q
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Free text: a case-insensitive substring of the display name
+            or the uri.'
+          title: Q
+        description: 'Free text: a case-insensitive substring of the display name
+          or the uri.'
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          description: Page size.
+          default: 100
+          title: Limit
+        description: Page size.
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Rows to skip (pagination, with limit).
+          default: 0
+          title: Offset
+        description: Rows to skip (pagination, with limit).
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetPage'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/datasets/attributes:
+    get:
+      tags:
+      - Viva Core
+      - Datasets
+      summary: Distinct values of every dataset attribute (for building pickers)
+      operationId: viva-list-dataset-attributes
+      parameters:
+      - name: kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Only datasets of this kind.
+          title: Kind
+        description: Only datasets of this kind.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/JsonValue'
+                title: Response Viva-List-Dataset-Attributes
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/datasets/tags:
+    get:
+      tags:
+      - Viva Core
+      - Datasets
+      summary: Every tag present on datasets, with how many datasets carry it
+      operationId: viva-list-dataset-tags
+      parameters:
+      - name: kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Only datasets of this kind.
+          title: Kind
+        description: Only datasets of this kind.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: integer
+                title: Response Viva-List-Dataset-Tags
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/datasets/{id}:
+    get:
+      tags:
+      - Viva Core
+      - Datasets
+      summary: One registered dataset
+      operationId: viva-get-dataset
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Id of the dataset
+          title: Id
+        description: Id of the dataset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dataset'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/datasets/{id}/content:
+    get:
+      tags:
+      - Viva Core
+      - Datasets
+      summary: Stream one dataset's bytes through the API
+      description: 'Serves single objects without storage credentials. Store-like
+        kinds are refused with 409:
+
+        read those from the dataset''s ``uri``.'
+      operationId: viva-get-dataset-content
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Id of the dataset
+          title: Id
+        description: Id of the dataset
+      responses:
+        '200':
+          description: The dataset's bytes, streamed; the media type follows the file
+          content:
+            application/json:
+              schema: {}
+            text/plain: {}
+            text/html: {}
+            application/octet-stream: {}
+        '404':
+          description: Unknown dataset, or its object is gone
+        '409':
+          description: A store kind, a prefix, or an object outside the API's storage
+            bucket
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /viva/v1/datasets/{id}/tags:
+    post:
+      tags:
+      - Viva Core
+      - Datasets
+      summary: Attach one or more free-form tags to a dataset
+      operationId: viva-add-dataset-tags
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: Id of the dataset
+          title: Id
+        description: Id of the dataset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Body_viva-add-dataset-tags'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dataset'
         '422':
           description: Validation Error
           content:
@@ -1704,6 +2046,18 @@ components:
       required:
       - sbml
       title: Body_compose-run-tellurium
+    Body_viva-add-dataset-tags:
+      properties:
+        tags:
+          items:
+            type: string
+          type: array
+          title: Tags
+          description: Tags to add (union-merged with existing tags).
+      type: object
+      required:
+      - tags
+      title: Body_viva-add-dataset-tags
     ComposeDocumentSubmission:
       properties:
         document:
@@ -2056,6 +2410,144 @@ components:
       - version
       - services
       title: CoreHealth
+    Dataset:
+      properties:
+        id:
+          type: integer
+          title: Id
+        uri:
+          type: string
+          title: Uri
+        kind:
+          type: string
+          title: Kind
+        owner_kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Kind
+        owner_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Id
+        producer_job_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Producer Job Id
+        trace_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trace Id
+        view:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: View
+        display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Display Name
+        size_bytes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Size Bytes
+        sha256:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sha256
+        attributes:
+          additionalProperties:
+            $ref: '#/components/schemas/JsonValue'
+          type: object
+          title: Attributes
+        tags:
+          items:
+            type: string
+          type: array
+          title: Tags
+        source:
+          anyOf:
+          - additionalProperties:
+              $ref: '#/components/schemas/JsonValue'
+            type: object
+          - type: 'null'
+          title: Source
+        available:
+          type: boolean
+          title: Available
+          default: true
+        created_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created At
+        updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated At
+      type: object
+      required:
+      - id
+      - uri
+      - kind
+      title: Dataset
+      description: 'One consumable file set a run actually wrote, as core serves it
+        (``GET /viva/v1/datasets``).
+
+
+        Never pre-created: it exists only once a run''s trace was scraped or the walk
+        found the object.
+
+        ``owner_kind`` / ``owner_id`` say whose it is; ``producer_job_id`` / ``trace_id``
+        say which job
+
+        wrote it and under which trace (rows registered before those columns existed
+        carry ``None``, or
+
+        the older ``attributes["hpcrun_id"]``). ``available`` is false once the object
+        is gone; the row
+
+        itself is kept so provenance never dangles.'
+    DatasetPage:
+      properties:
+        datasets:
+          items:
+            $ref: '#/components/schemas/Dataset'
+          type: array
+          title: Datasets
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+        next_offset:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Next Offset
+        total:
+          type: integer
+          title: Total
+          default: 0
+      type: object
+      required:
+      - datasets
+      - limit
+      - offset
+      title: DatasetPage
+      description: 'A page of datasets, newest change first. ``next_offset`` is ``None``
+        on the last page;
+
+        ``total`` counts every row the same filters match, so a client can say "1-100
+        of 43,182".'
     DependencyModel:
       properties:
         name:
@@ -2214,6 +2706,7 @@ components:
         -- which
 
         is why this is a POST and not the GET the plan first assumed.'
+    JsonValue: {}
     PackageType:
       type: string
       enum:

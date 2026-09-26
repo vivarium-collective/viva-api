@@ -427,7 +427,7 @@ def key_from_events_uri(uri: str, storage_bucket: str | None) -> str | None:
 
 @dataclass
 class IngestResult:
-    hpcrun_id: int
+    run_id: int
     objects_listed: int = 0
     objects_read: int = 0
     events_parsed: int = 0
@@ -592,7 +592,7 @@ async def ingest_run_events(
     into the store. Safe to call every tick: idempotent inserts, size-based
     skip of unchanged objects, and every failure is logged, never raised past
     the row (a scheduler loop must not stall on one run's bad object)."""
-    result = IngestResult(hpcrun_id=run.run_id)
+    result = IngestResult(run_id=run.run_id)
     now = now or datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
     trace_id = run.trace_id
     if not trace_id:

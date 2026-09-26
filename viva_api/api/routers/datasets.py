@@ -1,6 +1,12 @@
 """
 /datasets: the files runs actually wrote (docs/plan-data-provenance.md §2a, §7).
 
+**A dated facade (plan-core D14, removed at M4).** Since P4a-2 the datasets family is core's,
+served at ``/viva/v1/datasets`` from the same table with core's record model (``owner_kind`` /
+``owner_id`` instead of the three producer ids) and advertised as ``viva-v1-datasets``. This
+router keeps the SMS shapes and its producer-id filters unchanged for the callers that have not
+switched; ``/{id}/provenance`` stays here until core has a job record (P4b).
+
 A dataset row is never pre-created. The scheduler's event ingester registers one when it
 scrapes an ``artifact.written`` event out of a run's trace, and the reconciliation walk
 registers what no event did and marks rows whose object is gone. Listings therefore lag the

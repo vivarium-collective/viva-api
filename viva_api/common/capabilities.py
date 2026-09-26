@@ -170,12 +170,22 @@ def _serves_viva_v1_surface() -> bool:
 
 
 #: (name, probe). Order here is irrelevant -- ``detect_capabilities`` sorts.
+def _serves_viva_v1_datasets() -> bool:
+    """``/viva/v1/datasets`` answers from this application's ``dataset`` table once the database
+    exists (plan P4a-2). The same probe core runs on its container, restated here so
+    ``/core/v1/capabilities`` and ``/viva/v1/capabilities`` agree."""
+    from viva_api.dependencies import get_database_service
+
+    return get_database_service() is not None
+
+
 CAPABILITY_REGISTRY: list[tuple[str, Callable[[], bool]]] = [
     (CAPABILITY_CHAIN_DISPATCH, _has_chain_dispatch),
     (CAPABILITY_CHAIN_PROGRESS, _has_chain_progress),
     (CAPABILITY_CONTAINER_JOBS, _has_container_jobs),
     (CAPABILITY_DUAL_ENGINE_COMPARISON, _has_dual_engine_comparison),
     ("viva-v1-surface", _serves_viva_v1_surface),
+    ("viva-v1-datasets", _serves_viva_v1_datasets),
 ]
 
 

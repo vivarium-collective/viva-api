@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI, HTTPException
 
-from viva_core.api.capabilities import CAPABILITY_VIVA_V1_SURFACE, detect, mark_served
+from viva_core.api.capabilities import CAPABILITY_VIVA_V1_DATASETS, CAPABILITY_VIVA_V1_SURFACE, detect, mark_served
 from viva_core.api.schemas import CoreCapabilities, CoreHealth, EnvironmentModel, ResolveEnvironmentRequest
 from viva_core.container import CoreContainer, set_container_provider
 from viva_core.environments import (
@@ -61,6 +61,7 @@ def build_core_router(container: Callable[[], CoreContainer], *, prefix: str = C
                 "environments": held.environments is not None,
                 "compose": held.compose is not None,
                 "workers": workers is not None and workers.service is not None,
+                "datasets": held.datasets is not None,
             },
         )
 
@@ -74,7 +75,11 @@ def build_core_router(container: Callable[[], CoreContainer], *, prefix: str = C
     def capabilities() -> CoreCapabilities:
         """Stable names a client tests for membership -- never a version comparison. Core's own
         (the surfaces mounted in this process) plus the application's probes, if it embeds core."""
-        return CoreCapabilities(version=__version__, capabilities=detect(container().capabilities))
+        held = container()
+        # Core's own service probes go beside the application's; a surface that is mounted but has
+        # no service behind it (datasets on a core with no store) is not advertised.
+        probes = (*held.capabilities, (CAPABILITY_VIVA_V1_DATASETS, lambda: held.datasets is not None))
+        return CoreCapabilities(version=__version__, capabilities=detect(probes))
 
     @router.post(
         "/environments/resolve",
@@ -97,6 +102,11 @@ def build_core_router(container: Callable[[], CoreContainer], *, prefix: str = C
             raise HTTPException(501, str(e)) from e
         return EnvironmentModel(image=found.image, spec_hash=found.spec_hash, image_digest=found.image_digest)
 
+    # The datasets family (P4a-2): served wherever this router is -- a standalone core and the
+    # application that includes it -- from the container's store, 503 by name where there is none.
+    from viva_core.api.routers.datasets import router as datasets_router
+
+    router.include_router(datasets_router, prefix="/datasets")
     return router
 
 

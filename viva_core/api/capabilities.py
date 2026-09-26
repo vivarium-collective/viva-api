@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 #: this switches its pure-prefix operations off ``/compose/v1`` and ``/env-worker/v1``.
 CAPABILITY_VIVA_V1_SURFACE = "viva-v1-surface"
 
+#: ``/viva/v1/datasets`` answers from a dataset store (plan P4a-2): a service capability, probed at
+#: request time -- the routes are always mounted, but a deployment with no store answers 503 on them.
+CAPABILITY_VIVA_V1_DATASETS = "viva-v1-datasets"
+
 #: (name, probe). A probe answers "can this deployment serve it right now?"; one that raises is
 #: reported as unsupported, never as an error -- capability reporting must not take the route down.
 Capability = tuple[str, Callable[[], bool]]
