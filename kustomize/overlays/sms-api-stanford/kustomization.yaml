@@ -131,7 +131,7 @@ images:
     # b4d7e9c02a15 -> a4b6c8d0e2f4, all additive; the -db-migration overlay (same tag) runs the
     # reconciler Job BEFORE this overlay is applied. The first apply of this overlay also sets
     # DB_CREATE_ALL=false (config/sms-api-stanford/api.env), which the live pod never had.
-    # The workbench overlay and ENV_WORKER_MODULE_IMAGE (shared.env, 0.3.78) are NOT moved here.
+    # The workbench moves in the same PR (0.3.78 -> 0.3.85, its own overlay + ENV_WORKER_MODULE_IMAGE).
     newTag: 0.9.159
   # ptools 0.5.9 -> 0.9.53, promoting to prod what has been running on
   # sms-api-stanford-test since 2026-08-24 (PR #266).
