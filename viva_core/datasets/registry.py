@@ -10,7 +10,8 @@ Contract (``docs/plan-data-provenance.md`` §3)::
     payload: uri         s3://bucket/key  (an object, or a prefix for multi-file kinds)
              kind        one of the application's dataset kinds
              name, view, bytes, sha256        optional
-             attributes  {} open map (variant, seed, generation, agent, protocol, n_tp, ...)
+             attributes  {} open map (variant, seed, generation, agent, protocol, n_tp, ...);
+                         ``lineage_seed`` is read as ``seed`` when ``seed`` is absent
              error       optional: the file was NOT produced, and why
 
 Rules:
@@ -55,6 +56,11 @@ ARTIFACT_READ = "artifact.read"
 #: Coordinate axes copied into ``source.coordinate``. ``seed`` / ``generation`` / ``variant``
 #: fall back to the axes the application promoted from the event's baggage.
 _COORDINATE_KEYS: tuple[str, ...] = ("variant", "seed", "generation", "agent", "protocol")
+
+#: Attribute spellings a producer may use for a coordinate axis, read only when the axis's own
+#: key is absent: history partitions name the seed ``lineage_seed`` (as the baggage does), and
+#: the registry records it as ``seed`` either way (P4d). The spelling itself stays in attributes.
+_COORDINATE_ALIASES: dict[str, str] = {"seed": "lineage_seed"}
 
 #: How many skip reasons to keep for the log line (the count is always exact).
 _MAX_REASONS = 5
@@ -154,11 +160,18 @@ def _validated(event: ArtifactEvent, kinds: Container[str]) -> tuple[str, str, J
 
 
 def _coordinate(attributes: JsonDict, event: ArtifactEvent) -> JsonDict:
-    """The event's coordinate: explicit attributes first, then the promoted baggage."""
+    """The event's coordinate: explicit attributes first (an axis's own key, then its alias),
+    then the promoted baggage."""
     fallback = event.coordinate
     coordinate: JsonDict = {}
     for key in _COORDINATE_KEYS:
-        value = attributes.get(key, fallback.get(key))
+        alias = _COORDINATE_ALIASES.get(key)
+        if key in attributes:
+            value = attributes[key]
+        elif alias is not None and alias in attributes:
+            value = attributes[alias]
+        else:
+            value = fallback.get(key)
         if value is not None:
             coordinate[key] = value
     return coordinate

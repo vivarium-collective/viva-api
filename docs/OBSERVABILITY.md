@@ -176,7 +176,7 @@ standalone analysis Job — gets a `PBG_*` block (`viva_api/common/events_env.py
 |---|---|
 | `PBG_EVENT_SINKS` | `stdout` always, plus `s3://…` when a prefix resolves |
 | `PBG_TRACEPARENT` | W3C `traceparent`, so spans nest across processes |
-| `PBG_TRACE_BAGGAGE` | `key=value,…` — `sim_id`, `experiment_id`, `variant`, `lineage_seed` |
+| `PBG_TRACE_BAGGAGE` | `key=value,…` — `sim_id` and `experiment_id` on every simulation dispatch; a standalone analysis adds `analysis_id` (the legacy K8s re-analysis names only `experiment_id`). `variant` / `lineage_seed` / `generation` are bound later, by the task itself |
 | `PBG_EVENT_TAGS` | opaque to the engine, copied verbatim into every event |
 | `PBG_EVENT_FLUSH_S` / `PBG_EVENT_HEARTBEAT_S` | cadence, from settings |
 
@@ -404,6 +404,7 @@ payload:  uri         s3://bucket/key   an object, or a prefix for multi-file ki
           bytes       optional -> size_bytes
           sha256      optional
           attributes  {} open map: variant, seed, generation, agent, protocol, n_tp, ...
+                      "lineage_seed" is read as "seed" when "seed" is absent
                       "tags": [...] adds tags; "display_name" overrides the generated one
           error       optional: the file was NOT produced, and why -> available = false
 baggage:  sim_id, experiment_id, variant, lineage_seed, generation, analysis_id
@@ -419,7 +420,10 @@ run's other files from registering.
 way back to the span, which `GET /api/v1/datasets/{id}/provenance` follows) and `error` when
 given. `tags` = the simulation's tags ∪ `attributes.tags`. `source` = the simulation plus the
 coordinate: `variant` / `seed` / `generation` / `agent` / `protocol` from `attributes`, with
-`variant`, `seed` (baggage `lineage_seed`) and `generation` falling back to the baggage.
+`variant`, `seed` (baggage `lineage_seed`) and `generation` falling back to the baggage. A
+producer may spell the seed `lineage_seed` in `attributes` too, as the history partitions do:
+the registry reads it as `seed` when `seed` itself is absent (`seed` wins when both are given),
+and keeps the producer's key alongside.
 
 **Producer resolution uses baggage and the run row, never span parentage** — worker spans
 can orphan to the trace root (§5):

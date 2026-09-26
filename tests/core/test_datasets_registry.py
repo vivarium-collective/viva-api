@@ -159,6 +159,41 @@ def test_explicit_attributes_win_over_the_promoted_coordinate() -> None:
     assert fields["attributes"]["seed"] == 5 and fields["attributes"]["variant"] == 2
 
 
+@pytest.mark.asyncio
+async def test_a_lineage_seed_attribute_registers_as_the_seed() -> None:
+    """History partitions spell the seed ``lineage_seed`` (P4d): the row's coordinate says ``seed``."""
+    store = _Store()
+    uri = "s3://b/out/history/variant=0/lineage_seed=3/generation=2/"
+    event = _event(
+        1,
+        {"uri": uri, "kind": "store", "attributes": {"variant": 0, "lineage_seed": 3, "generation": 2, "n_tp": 5}},
+    )
+
+    result = await register_datasets([event], run=RUN, owner_resolver=_Resolver(), store=store, kinds=KINDS)
+
+    assert (result.registered, result.skipped) == (1, 0)
+    write = store.rows[uri].write
+    assert write["source"] is not None
+    assert write["source"]["coordinate"] == {"variant": 0, "seed": 3, "generation": 2}
+    assert write["attributes"]["seed"] == 3
+    assert write["attributes"]["lineage_seed"] == 3  # the producer's own spelling is kept
+
+
+def test_seed_wins_over_lineage_seed_and_lineage_seed_over_the_baggage() -> None:
+    both = _event(1, {"uri": "s3://b/x", "kind": "table", "attributes": {"seed": 5, "lineage_seed": 9}})
+    fields = dataset_fields(both, run=RUN, kinds=KINDS)
+    assert fields["source"] is not None
+    assert fields["source"]["coordinate"] == {"seed": 5}
+    assert fields["attributes"]["seed"] == 5
+
+    over_baggage = _event(
+        2, {"uri": "s3://b/y", "kind": "table", "attributes": {"lineage_seed": 9}}, coordinate={"seed": 1}
+    )
+    fields = dataset_fields(over_baggage, run=RUN, kinds=KINDS)
+    assert fields["source"] is not None
+    assert fields["source"]["coordinate"] == {"seed": 9}
+
+
 def test_display_name_falls_back_to_the_event_label_then_to_the_kind() -> None:
     bare = RunContext(run_id=1)
     labelled = dataset_fields(_event(1, {"uri": "s3://b/x", "kind": "figure"}, label="exp-9"), run=bare, kinds=KINDS)
