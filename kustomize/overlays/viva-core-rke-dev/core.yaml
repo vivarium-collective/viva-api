@@ -130,8 +130,8 @@ spec:
         - name: results-cache
           emptyDir:
             sizeLimit: 8Gi
-      imagePullSecrets:
-        - name: ghcr-secret
+      # No imagePullSecrets: the image is PUBLIC, and the namespace's ghcr-secret holds a dead PAT
+      # (2026-09-26: presenting it made ghcr's token endpoint answer 403 and the pull fail).
 
 ---
 apiVersion: v1

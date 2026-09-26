@@ -19,7 +19,6 @@ namespace and this overlay must never redeclare (and so overwrite) them:
 | `shared-secrets` | SealedSecret | Postgres user / password / host / port (the database name is overridden to `viva_core`) |
 | `ssh-secret` | SealedSecret | the `svc_vivarium` key for Mantis |
 | `ssh-known-hosts` | ConfigMap | the submit host's key |
-| `ghcr-secret` | SealedSecret | image pulls |
 | `vivarium-home-pvc` | PVC (NFS) | the HPC filesystem at `/projects/SMS` |
 | `haproxy-ssh` | Service | the SSH round-robin to `mantis-sub-*` |
 
@@ -38,7 +37,8 @@ namespace and this overlay must never redeclare (and so overwrite) them:
    `secret-access-key` (`kustomize/scripts/sealed_secret_*.sh` pattern, controller
    `sealed-secrets-controller` in `kube-system`) and add it to `resources:`.
 4. **The image**: `ghcr.io/vivarium-collective/viva-core:0.1.0` must exist (built by
-   `build-core.yml`, write-once) and be pullable with `ghcr-secret`.
+   `build-core.yml`, write-once). It is public and pulled anonymously -- deliberately without
+   the namespace's `ghcr-secret`, whose PAT is dead (a pull presenting it gets 403 from ghcr).
 
 ## Read-only pass, 2026-09-26 (VPN)
 
