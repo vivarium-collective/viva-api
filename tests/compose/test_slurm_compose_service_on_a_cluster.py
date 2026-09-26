@@ -231,3 +231,33 @@ def test_the_generic_run_command_passes_the_step_count_as_an_int(tmp_path: Path)
     plan = service._run_plan(None, "--bind /e:/experiment", Path("/images/x.sif"), "job", simulation)
     assert plan.command.rstrip().endswith("-n 5"), plan.command
     assert "5.0" not in plan.command
+
+
+def test_the_input_is_uploaded_under_the_name_the_run_command_reads(tmp_path: Path) -> None:
+    """UB #7: the run command names the input by the request's suffix (``.pbg``) while the upload
+    was always ``.omex`` -- ``run_pbg.py`` died on "No such file" inside the freshly built image."""
+    from viva_core.compose.hpc_paths import get_compose_sim_input_path
+    from viva_core.settings import get_core_settings
+
+    settings = get_core_settings()
+    saved = settings.compose_sim_base_path
+    settings.compose_sim_base_path = str(tmp_path)
+    try:
+        for file_type in SimulationFileType:
+            request_file = tmp_path / f"input.{file_type.get_files_suffix()}"
+            request_file.write_text("{}")
+            simulation = ComposeSimulation(
+                database_id=1,
+                sim_request=ComposeSimulationRequest(
+                    request_file_path=request_file, simulation_file_type=file_type, is_batch=True
+                ),
+                simulator_version=_probe_definition(),
+            )
+            plan = ComposeSimulationServiceHpc(slurm_ssh=None)._run_plan(
+                None, "--bind /e:/experiment", Path("/images/x.sif"), "exp", simulation
+            )
+            uploaded = get_compose_sim_input_path("exp", file_type)
+            assert f"/experiment/{uploaded.name}" in plan.command, (file_type, plan.command, uploaded)
+        assert get_compose_sim_input_path("exp").name == "exp.omex"  # the historical default, for old callers
+    finally:
+        settings.compose_sim_base_path = saved
