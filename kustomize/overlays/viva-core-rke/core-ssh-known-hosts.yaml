@@ -1,0 +1,15 @@
+# Core's OWN known_hosts for the submit host -- the one object this overlay does not reuse from the
+# SMS namespace. Prod's `ssh-known-hosts` spells the host `[haproxy-ssh]:22`; asyncssh looks a
+# default-port host up by its bare name (`haproxy-ssh`) and never by `[host]:22`, so that entry
+# trusts nothing and the core pod failed with "Host key is not trusted for host haproxy-ssh"
+# (checkpoint UC, 2026-09-26). The SMS api pod never noticed because its SLURM_SUBMIT_KNOWN_HOSTS is
+# commented out. The key is the same ed25519 key dev's ConfigMap carries, spelled the way dev
+# spells it (kustomize/config/sms-api-rke-dev/ssh-known-hosts-configmap.yaml); the SMS overlay's
+# ConfigMap is frozen (D21) and untouched. tests/test_deploy_config.py guards the spelling.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: core-ssh-known-hosts
+data:
+  known_hosts: |
+    haproxy-ssh ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF/KyWhClcMVrc8Z/M01uf91xi82tkIrEsa+fvZ9f2vV

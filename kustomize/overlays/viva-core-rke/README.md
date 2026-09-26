@@ -19,10 +19,15 @@ does not contain `/projects/SMS`; the dev overlay (U3) reuses dev's claim, which
 |---|---|---|
 | `shared-secrets` | Secret | Postgres user / password / host / port (`sms` on `sms-postgres-cluster-rw`); the database name is overridden to `viva_core` |
 | `ssh-secret` | Secret | the `svc_vivarium` key for Mantis |
-| `ssh-known-hosts` | ConfigMap | the submit host's key |
 | `batch-submit` | ServiceAccount + Role | env-worker and build Jobs (prod HAS it; dev did not) |
 | `letsencrypt-prod-sms-api-tls` | Secret | the host's certificate |
 | `haproxy-ssh` | Service | the SSH round-robin to `mantis-sub-*` |
+
+**Not reused: `ssh-known-hosts`.** Prod's spells the host `[haproxy-ssh]:22`; asyncssh looks a
+default-port host up by its bare name and never by `[host]:22`, so the core pod's first build failed
+with `Host key is not trusted for host haproxy-ssh` (UC, 2026-09-26; the SMS pod never noticed — its
+`SLURM_SUBMIT_KNOWN_HOSTS` is commented out). Core mounts its own `core-ssh-known-hosts` (same key,
+bare spelling, `core-ssh-known-hosts.yaml`); the SMS ConfigMap is frozen (D21) and untouched.
 
 Read-only pass, 2026-09-26: all six present; `api-ingress` claims nothing under `/viva` or
 `/env-worker`; `sms-postgres-cluster` 3/3 healthy; the live api pod runs as 17163/10000 with
