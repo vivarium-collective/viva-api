@@ -1,0 +1,149 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: core
+  labels:
+    app: core
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: core
+  template:
+    metadata:
+      labels:
+        app: core
+    spec:
+      # The SMS overlay's ServiceAccount (Jobs, ConfigMaps, pod logs): env-worker Jobs need it.
+      serviceAccountName: batch-submit
+      nodeSelector:
+        vlan: internal
+      securityContext:
+        runAsUser: 17163
+        runAsGroup: 10000
+        fsGroup: 10000
+        # 10274=smsgroup, 10281=viva_api, 10269=vivarium -- the NFS tree's groups (as the api pod)
+        supplementalGroups:
+          - 10274
+          - 10281
+          - 10269
+      containers:
+        - name: core
+          image: ghcr.io/vivarium-collective/viva-core:0.1.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: core-config
+          env:
+            # The database (D19): core's OWN database on the CNPG cluster, owned by the SMS role --
+            # user / password / host / port from the namespace's shared-secrets, the DATABASE
+            # overridden here (`env` wins over `envFrom`). Created by
+            # kustomize/cluster/postgres-cluster/vxrails-dev/viva-core-database.yaml.
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: shared-secrets
+                  key: postgres-user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shared-secrets
+                  key: postgres-password
+            - name: POSTGRES_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: shared-secrets
+                  key: postgres-host
+            - name: POSTGRES_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: shared-secrets
+                  key: postgres-port
+            - name: POSTGRES_DATABASE
+              value: viva_core
+            # Qumulo S3 credentials: a sealed secret this overlay does not ship (see README.md).
+            # Optional, so the pod starts without it -- datasets / results streaming are then off.
+            - name: STORAGE_QUMULO_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: core-qumulo-secrets
+                  key: access-key-id
+                  optional: true
+            - name: STORAGE_QUMULO_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: core-qumulo-secrets
+                  key: secret-access-key
+                  optional: true
+            # The relay's on-switch: env workers dial THIS pod back (docs/DEPLOY.md, the relay).
+            - name: ENV_WORKER_RELAY_ADVERTISE_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          readinessProbe:
+            httpGet:
+              path: /viva/v1/health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /viva/v1/health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              ephemeral-storage: "2Gi"
+            limits:
+              ephemeral-storage: "8Gi"
+          volumeMounts:
+            # The HPC filesystem, as the api pod mounts it: sbatch scripts, images and runs go under
+            # /projects/SMS/viva_core/dev (core.env), a sibling of SMS's /projects/SMS/sms_api/dev.
+            - name: vivarium-home-pvc
+              mountPath: /projects/SMS
+              subPath: SMS
+            - name: slurm-submit-key-file
+              mountPath: /run/secrets/slurm_submit_key_file
+            - name: ssh-known-hosts
+              mountPath: /run/secrets/ssh-known-hosts
+              readOnly: true
+            # The results archives the SLURM compose service fetches (STORAGE_LOCAL_CACHE_DIR).
+            - name: results-cache
+              mountPath: /app/.results_cache
+      volumes:
+        - name: vivarium-home-pvc
+          persistentVolumeClaim:
+            claimName: vivarium-home-pvc
+        - name: slurm-submit-key-file
+          secret:
+            defaultMode: 256 # 0400
+            items:
+              - key: ssh-privatekey
+                path: ssh-privatekey
+            secretName: ssh-secret
+        - name: ssh-known-hosts
+          configMap:
+            name: ssh-known-hosts
+        - name: results-cache
+          emptyDir:
+            sizeLimit: 8Gi
+      # No imagePullSecrets: the image is PUBLIC, and the namespace's ghcr-secret holds a dead PAT
+      # (2026-09-26: presenting it made ghcr's token endpoint answer 403 and the pull fail).
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: core
+  name: core
+spec:
+  ports:
+    - name: "8000"
+      port: 8000
+      targetPort: 8000
+  selector:
+    app: core
