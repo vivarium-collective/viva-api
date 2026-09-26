@@ -8,15 +8,13 @@ Pure and fast: an in-memory store and a byte-map file service. The application's
 from __future__ import annotations
 
 import datetime
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 from pydantic import JsonValue
 
-import viva_core.container as container_mod
 from viva_core.api.app import CORE_PREFIX, create_core_app
 from viva_core.container import CoreContainer, DatasetServices
 from viva_core.datasets.models import (
@@ -33,20 +31,6 @@ from viva_core.storage.file_paths import S3FilePath
 from viva_core.storage.file_service import FileService, ListingItem
 
 BUCKET = "b"
-
-
-@pytest.fixture(autouse=True)
-def _keep_the_applications_container_provider() -> Iterator[None]:
-    """``create_core_app`` registers ITS container as the provider of the moment; put back whatever was
-    registered before (the application's, when its tests share the process) so a later test that
-    serves ``/viva/v1/datasets`` through the SMS app does not find a standalone core's empty one."""
-    saved = container_mod._provider
-    try:
-        yield
-    finally:
-        container_mod._provider = saved
-
-
 KINDS = ("table", "figure", "store")
 
 
