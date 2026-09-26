@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Core as its own Deployment beside an SMS `api` pod (plan-core §4b; D19 own database, D20 served
+# beside). What every site shares: the Deployment, its Service, the second Ingress. A site's overlay
+# adds its namespace, image tag, config, the shared filesystem's claim and the host (U3 dev, U4 prod).
+resources:
+  - core.yaml
+  - ingress.yaml

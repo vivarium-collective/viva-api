@@ -1,0 +1,15 @@
+# Core's OWN database on the PROD CNPG cluster (docs/plan-core.md §4b U4; decision D19): a separate
+# database, the existing `sms` role (its credentials are the namespace's shared-secrets; the core
+# pod overrides POSTGRES_DATABASE). Applied by hand, like the Cluster, BEFORE the core overlay:
+#   kubectl apply -f viva-core-database.yaml
+#   kubectl -n postgres-cluster get databases.postgresql.cnpg.io viva-core-prod   # Applied: True
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: viva-core-prod
+  namespace: postgres-cluster
+spec:
+  name: viva_core
+  owner: sms
+  cluster:
+    name: sms-postgres-cluster

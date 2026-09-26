@@ -1,0 +1,19 @@
+# Core's own claim on the /projects export -- the filesystem Mantis serves as /projects, where the
+# build Job writes images and the SLURM runs read them. Modelled on sms-api-rke-dev's
+# vivarium-home-dev-pv (same server, same path); a PV is cluster-scoped, so the name is core's own.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: viva-core-projects-pv
+spec:
+  capacity:
+    storage: 1000Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nfs-csi
+  nfs:
+    path: /projects
+    server: cfs15.cam.uchc.edu
+  mountOptions:
+    - nfsvers=3

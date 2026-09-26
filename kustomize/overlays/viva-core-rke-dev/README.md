@@ -8,8 +8,9 @@ VPN (`KUBECONFIG=~/.kube/kubeconfig_vxrails.yaml`) and an explicit go before `ap
 
 ## What this overlay declares — and what it only refers to
 
-Declared here: Deployment `core`, Service `core`, ConfigMap `core-config`
-(`kustomize/config/viva-core-rke-dev/core.env`), Ingress `core-ingress`.
+Declared here: ConfigMap `core-config` (`kustomize/config/viva-core-rke-dev/core.env`) and the
+`batch-submit` RBAC; the Deployment `core`, Service `core` and Ingress `core-ingress` come from
+`kustomize/base/viva-core/` (shared with the prod overlay `viva-core-rke`, U4).
 
 Referred to **by name**, because the live SMS overlay already provides them in the
 namespace and this overlay must never redeclare (and so overwrite) them:

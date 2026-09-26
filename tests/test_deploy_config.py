@@ -90,7 +90,7 @@ def test_api_image_excludes_dev_and_docs_dependency_groups() -> None:
 
 # --- no positional JSON patches in the supported overlays (core split, docs/plan-core.md P0) ---
 
-SUPPORTED_OVERLAYS = ("sms-api-stanford-test", "sms-api-stanford", "viva-core-rke-dev")
+SUPPORTED_OVERLAYS = ("sms-api-stanford-test", "sms-api-stanford", "viva-core-rke-dev", "viva-core-rke")
 
 
 def _json_patch_ops(overlay: str) -> list[dict[str, Any]]:

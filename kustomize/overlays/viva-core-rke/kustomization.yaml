@@ -1,0 +1,66 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Core as its own Deployment BESIDE the live SMS `api` pod (0.10.0-rc1) at UConn PROD, served at
+# https://sms.cam.uchc.edu/viva/v1 (plan-core §4b U4; D19 own database, D20 served beside, D21 the
+# SMS overlays frozen). Reuses, by name, what the namespace already has -- shared-secrets, ssh-secret,
+# ssh-known-hosts, batch-submit (unlike dev, prod HAS it), the TLS secret -- and never redeclares
+# them. See README.md; NOTHING here is applied without an explicit go.
+namespace: sms-api-rke
+
+images:
+  - name: ghcr.io/vivarium-collective/viva-core
+    newTag: 0.1.7 # core's own version line (D16); write-once
+
+resources:
+  - ../../base/viva-core
+  - ../../config/viva-core-rke
+  # The shared filesystem the SLURM nodes read, for the build Job: prod's own PV (`vivarium-home-pv`)
+  # is cfs09:/home/FCAM -- the home directory, which does not contain /projects/SMS -- so core gets its
+  # own claim on cfs15:/projects, the export dev's PV already uses and Mantis serves as /projects.
+  - viva-core-projects-pv.yaml
+  - viva-core-projects-pvc.yaml
+
+patches:
+  # the build Job's and the Deployment's mounts use core's own claim
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: core
+      spec:
+        template:
+          spec:
+            volumes:
+              - name: vivarium-home-pvc
+                persistentVolumeClaim:
+                  claimName: viva-core-projects-pvc
+  # the prod host; the TLS secret cert-manager keeps for it already exists in the namespace
+  - patch: |-
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: core-ingress
+      spec:
+        tls:
+          - hosts:
+              - sms.cam.uchc.edu
+            secretName: letsencrypt-prod-sms-api-tls
+        rules:
+          - host: sms.cam.uchc.edu
+            http:
+              paths:
+                - path: /viva
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: core
+                      port:
+                        number: 8000
+                - path: /env-worker
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: core
+                      port:
+                        number: 8000
