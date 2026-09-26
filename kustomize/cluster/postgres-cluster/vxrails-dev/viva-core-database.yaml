@@ -1,0 +1,20 @@
+# Core's OWN database on the dev CNPG cluster (docs/plan-core.md §4b U3; decision D19).
+#
+# A separate database, the EXISTING role: `sms-dev` already owns the SMS database on this cluster
+# and its credentials are the namespace's shared-secrets, so the core pod reuses those and
+# overrides POSTGRES_DATABASE (kustomize/overlays/viva-core-rke-dev/core.yaml). No new role, no
+# new sealed secret; a role of core's own can come with core's Alembic chain (P7).
+#
+# Applied by hand, like the Cluster itself (README-cnpg.md), BEFORE the core overlay:
+#   kubectl apply -f viva-core-database.yaml
+#   kubectl -n postgres-cluster get databases.postgresql.cnpg.io viva-core-dev   # Applied: True
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: viva-core-dev
+  namespace: postgres-cluster
+spec:
+  name: viva_core
+  owner: sms-dev
+  cluster:
+    name: sms-dev-postgres-cluster
