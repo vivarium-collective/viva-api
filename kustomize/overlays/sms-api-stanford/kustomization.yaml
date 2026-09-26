@@ -126,7 +126,13 @@ images:
   # RAY_CONTAINER_* (item 71 Phase 2). The 0.9.39 entry stays as written -- it
   # is an accurate record of what 0.9.39 did, not a live instruction.
   - name: ghcr.io/vivarium-collective/sms-api
-    newTag: 0.9.78
+    # 2026-09-26: 0.9.78 -> 0.9.159, the P-jump (docs/plan-core.md section 4/8; the runbook is
+    # docs/plan-core/log/2026-09-26-b-pjump-runbook.md). Ten Alembic revisions between the two,
+    # b4d7e9c02a15 -> a4b6c8d0e2f4, all additive; the -db-migration overlay (same tag) runs the
+    # reconciler Job BEFORE this overlay is applied. The first apply of this overlay also sets
+    # DB_CREATE_ALL=false (config/sms-api-stanford/api.env), which the live pod never had.
+    # The workbench overlay and ENV_WORKER_MODULE_IMAGE (shared.env, 0.3.78) are NOT moved here.
+    newTag: 0.9.159
   # ptools 0.5.9 -> 0.9.53, promoting to prod what has been running on
   # sms-api-stanford-test since 2026-08-24 (PR #266).
   #

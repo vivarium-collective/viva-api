@@ -39,7 +39,12 @@ images:
     # live (UndefinedColumnError spam in the api pod, confirmed via real logs)
     # by deploying the app first; fixed there, and this overlay updated first
     # here specifically to not repeat it in prod.
-    newTag: 0.9.78
+    # 2026-09-26: 0.9.78 -> 0.9.159, matching the app overlay (the P-jump). This Job runs the
+    # reconciler across ten revisions (b4d7e9c02a15 -> a4b6c8d0e2f4) and runs FIRST, with the
+    # 0.9.78 api pod still serving: every revision is additive and the old image reads none of
+    # the new columns. Pre-flight on 2026-09-26 (read-only, from the live pod): MANAGED at
+    # b4d7e9c02a15; the schema diff's every blocking item is supplied by one of the ten.
+    newTag: 0.9.159
 
 resources:
   - alembic-job.yaml
