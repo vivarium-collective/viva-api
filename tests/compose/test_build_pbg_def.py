@@ -31,3 +31,13 @@ def test_the_runner_is_handed_in_not_read_by_the_recipe() -> None:
         build_pbg_def("pbg")  # type: ignore[call-arg]
     assert runner_source() == (_res.files("viva_core.compose") / "run_pbg.py").read_text()
     assert "def _load_hooks(" in runner_source()
+
+
+def test_the_definition_installs_requests_which_process_bigraph_imports_undeclared() -> None:
+    """process_bigraph/protocols/rest.py imports `requests` without declaring it; the runtime image's
+    requirements.txt carries it for the same reason. A run without it died on Mantis (UConn UB #8)."""
+    from viva_core.compose.container_def import build_pbg_def
+
+    representation = build_pbg_def("pbg", runner_source="print('x')").representation
+    (pip_line,) = [line for line in representation.splitlines() if "pip install" in line and "process-bigraph" in line]
+    assert " requests" in pip_line
