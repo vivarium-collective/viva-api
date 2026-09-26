@@ -1019,7 +1019,7 @@ split; each has an owner-less issue or a named moment.
 | P3 | settings, DI, app factory. 3a `create_core_app()` boots alone; SMS includes core's router under `/viva/v1` | | | | **done, deployed (E2, 0.9.156)** — 3a, 3b, 3c deployed at D2 (0.9.153); **3d-1 … 3d-4d-1 deployed at E (0.9.154/0.9.155, tag `v0.9.155`)**; 3d-1 done (compose's ParCa staging is a hook); 3d-2 done (the 14 settings compose and env-worker read are `CoreSettings` fields); 3d-3 done (compose is handed its services; it imports nothing of `viva_api.dependencies`); 3d-4a done (the env-worker service and the site resolver are in `viva_core`); 3d-4b-1 done (five compose modules `Any`-free, the D12 ban on for them by name); 3d-4b-2 done (`models` and `container_def` are in `viva_core`; `ComputeBackend` too); 3d-4b-3 done (the five and the abstract service are in `viva_core`: 3,025 lines under `viva_core/compose/` + `env_worker/`); 3d-4c-1 done (the Batch compose service is in `viva_core`; the layout primitives too); 3d-4c-2 done (the runner and `render_nf` are core's; SMS's hooks are a staged sibling — every dispatch command changed, undeployed); 3d-4d-1 done (the compose handlers are core's); 3d-4d-2a done (the compose router is core's, served at `/viva/v1/compose` and, unchanged, at `/compose/v1`; BioModels in `contrib/sysbio`); 3d-4d-2b done (the env-worker router and identity are core's) — **3d-4 complete**; 3e done (containers replace the setters: the routers carry none, `current_container()` is the one seam); 3f done — **P3 complete and deployed: checkpoint E2 passed (0.9.156, tag `v0.9.156`)**; next P4. ~~**SLURM compose stays in SMS** until a SLURM site can test it~~ — it moved at U2b-2 (2026-09-25), once the Docker cluster could test it |
 | Strategy B | the docs PR: D14–D21, the order under B, P3g / P4c / P5b / P8b, §4b, checkpoints F2 … UE | — | — | — | **written 2026-09-25**; the replies on #742 and workbench#1150 go with it |
 | P3g | dual-surface scaffolding — #792 the interim `/viva/v1/{compose,env-worker}` mounts in the SMS app (served, not documented twice), `viva_core/version.py`, `GET /viva/v1/capabilities` + `viva-v1-surface` on both capability routes, `version` in core's health · #793 the duplicate `operationId` (`run-slurm-analysis`) · #794 one GUI notebook (`app/ui/dashboard.py` was a symlink to `app/gui.py`) · #795 the smoke `contract` check (`app/contract.py`, baseline recorded from dev 0.9.156, 22 operations) | 0.9.157 | **2026-09-25** (checkpoint F2, tag `v0.9.157`) | — | **done and deployed** — all four merged 2026-09-25 (`166f0e9e`, `7de22dd1`, `e29d373e`, `72a388b9`); caller release W1 is the workbench's next move |
-| P4a | P4a-1 owner-ref expand — #790 (`a4b6c8d0e2f4`: `hpcrun.{owner_kind,owner_id,output_uri}`, `dataset.{owner_kind,owner_id,producer_job_id,trace_id}`, backfilled, dual-written; `viva_api/simulation/owner_ref.py`) · P4a-2 the dataset code move + `/viva/v1/datasets` | | | | **P4a-1 written, #790 open** (checkpoint F: the migration Job, then the app); P4a-2 not started (checkpoint G) |
+| P4a | P4a-1 owner-ref expand — #790 (`a4b6c8d0e2f4`: `hpcrun.{owner_kind,owner_id,output_uri}`, `dataset.{owner_kind,owner_id,producer_job_id,trace_id}`, backfilled, dual-written; `viva_api/simulation/owner_ref.py`) · P4a-2 the dataset code move + `/viva/v1/datasets` | | | | **P4a complete on `main` (2026-09-26), not yet deployed.** P4a-1 merged — #790 (`99995eca`). P4a-2 merged in four slices, one concern each: #820 the trace feeder behind `OwnerResolver` + `DatasetWriter`; #821 the walk behind `ArtifactClassifier` + `WalkSource`; #822 the ingest hook behind `EventStore` + `ArtifactRegistrar` (its fifteen `Any` retired; the event and span models core's, schema unchanged); #829 the reads — `/viva/v1/datasets` served by core from `DatasetServices` with the record model on #790's columns, `viva-v1-datasets`, `/api/v1/datasets` a dated facade (D14, M4), provenance SMS's until P4b. Deploys as **checkpoint F**: the migration Job (`a4b6c8d0e2f4`), then the app — dev is at `f4c8a2e6d0b3` after F3 |
 | P4b | #776 reshaped per D15 + the SMS adapters; `/viva/v1/{tasks,jobs}`; `task_script` | | | | not started (checkpoint G) |
 | P-jump | Stanford prod 0.9.78 → F | | | | not started; right after F (Jim, 2026-09-25) |
 | P4c | templates + the record | | | | not started (checkpoints H1, H2) |
@@ -1045,6 +1045,392 @@ split; each has an owner-less issue or a named moment.
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-26** — **Checkpoint UB, the composite: a process-bigraph composite runs on Mantis through the standalone core at UConn dev, driven by `atlantis`.**
+  `atlantis smoke run --base-url https://sms-dev.cam.uchc.edu --only core --only relay --only compose`
+  → **3 passed, 0 failed**: `compose 9: level 1.61051 = 1.1^5` in 113 s. The path, end to end and
+  every step measured on the cluster: the resolver (#811) sends the client to `/viva/v1/compose`;
+  core (`viva-core:0.1.7`, its own database `viva_core` on `sms-dev-postgres-cluster`) records the
+  run and, because the definition is new, builds its container in a **Kubernetes Job**
+  (`singularity-build-5661a-7e3df`, 54 s: a privileged init container builds into scratch, the
+  unprivileged main container copies the image onto `/projects/SMS/viva_core/dev/compose/images`
+  as the service user); the monitor closes the build row over the Job's condition; the dispatch
+  submits the run as an sbatch on the `vcell` partition; the node runs the image, `run_pbg.py`
+  writes `emitter_history.json` + `final_state.json`, the job zips `results.zip`; the monitor
+  closes the run over `squeue`/`scontrol` (SLURM job 3394065 COMPLETED); the client downloads the
+  archive over SSH through core and checks the value. The SMS `api` pod beside it is untouched.
+  **What nine iterations found and fixed on the way** (each its own PR, each proven on the next
+  run): the build row untagged (#810), a stale/FAILED build suppressing every rebuild (#815, #717),
+  the Job name's case (#816), the Job's tz-aware times (#817), the runner's step count as a float
+  (#826), the input uploaded as `.omex` whatever its type (#828), `requests` missing from the
+  definition (#831) — and the site facts: no subuid for `svc_vivarium` on the nodes (hence the Job
+  build, #814), the QoS the account may use (#809 and its correction), a dead `ghcr-secret` PAT
+  (the image is public and pulled anonymously). Core went 0.1.0 → 0.1.7, one write-once tag per
+  fix. **Still open in UB:** the env worker from a laptop — the relay's `commit` is a git sha of
+  a science image, and UConn has no science image on ghcr; that is an environment-ref question
+  for P5 (D10), not a defect to fix here. Then U4: the same overlay at `sms.cam.uchc.edu`.
+- **2026-09-26** — **P4a-2, slice 3: `/viva/v1/datasets` is served by core, with core's record model on the P4a-1 columns; `/api/v1/datasets` is a dated facade.**
+  Jim's ruling (a): #790 first, then this. It is the last of the four slices and the one the
+  columns were for.
+  **The record.** `viva_core/datasets/models.py` gains `Dataset` — `id`, `uri`, `kind`, **`owner_kind`
+  / `owner_id`**, **`producer_job_id` / `trace_id`**, then the fields every row has had (`view`,
+  `display_name`, `size_bytes`, `sha256`, `attributes`, `tags`, `source`, `available`, the two
+  timestamps) — `DatasetPage` and `DatasetQuery`. Not one producer column: whose a dataset is, is
+  the owner-ref; the run that wrote it is a job id and a trace; the three foreign keys are the
+  application's storage of the same facts and do not appear on core's surface. **The store split in
+  two:** `DatasetWriter` (upsert, `list_under`, `set_available` — all the feeders need, and all
+  their in-memory doubles implement) and `DatasetStore(DatasetWriter)` adding `get`, `page`,
+  `count`, `add_tags`, `attribute_values`, `tag_counts`. (`page`, not `list`: a method named `list`
+  shadows the builtin inside its own class body and mypy stops resolving `list[...]` there.)
+  **The routes.** `viva_core/api/routers/datasets.py` — the six reads, verbatim from the
+  application's router and handlers bar the producer-id filters, which are `owner=<kind>:<id>` in
+  core; `source` is `<kind>:<ref>` or a JSON fragment, the `sim:` shorthand stays the application's.
+  Included by **`build_core_router`**, so a standalone core and the application that includes it
+  serve it alike and both OpenAPI documents carry it (the union test demanded that; the interim
+  compose / env-worker mounts are the exception, not the rule). The services come from a new
+  **`DatasetServices`** group on the container (store, the deployment's kind vocabulary, the file
+  service and its one bucket, the kinds never streamed); a core with none answers **503 by name**
+  on every route, `/health` says `datasets: false`, and **`viva-v1-datasets`** is a *service*
+  capability probed at request time — core's own probe on its container, restated in the
+  application's `CAPABILITY_REGISTRY` so `/core/v1/capabilities` and `/viva/v1/capabilities` agree
+  (a test pins that they do).
+  **The application's side.** `SmsDatasetStore` answers the reads over `DatabaseService`, and the
+  owner filter is two new clauses in `_dataset_filter_clauses` on the #790 columns — the SMS store
+  grows, core stays `Any`-free. `DatasetDTO` gains the four columns (additive; the smoke `contract`
+  reports an added key and accepts it). `/api/v1/datasets` is a **dated facade (D14, M4)** in its own
+  docstring: shapes and producer-id filters unchanged; `/{id}/provenance` stays there until core has
+  a job record (P4b). Core's query parsing (`viva_core/datasets/queries.py`) is the handler's,
+  moved; the handler imports it back and keeps only its shorthands.
+  **The deferred list, settled with the record.** (1) `attributes["hpcrun_id"]` — **gone from new
+  rows**: the trace feeder now writes `producer_job_id` (= the run row) and `trace_id` through
+  `DatasetWrite`, which `upsert_dataset` accepts; `span_id` stays in the attributes because a span
+  has no column. Existing rows keep their attribute, and `Dataset`'s docstring says which rows carry
+  which. (2) `IngestResult.hpcrun_id` → **`run_id`** in core (two test constructions in the
+  application changed with it). (3) `attributes["analysis_dir"]` — **kept**: it is the walk's
+  vocabulary as data (every walked row on dev carries it and the smoke `contract` recorded it), not
+  a construct the guard objects to; renaming it is a data
+  migration plus a contract change, and belongs with the kind vocabulary (P5b), not here.
+  **Both OpenAPI documents regenerated** (plain `make spec` in this worktree, which has no `.dev_env`):
+  the diff is the datasets routes and schemas, `version` (`main`'s 0.9.158) and the known-moving
+  `created_at` example — no paths leaked.
+  **Found while testing.** `create_core_app()` registers *its* container as the process-wide provider,
+  so a core test that boots one leaves a later application test finding a standalone core's empty
+  container (`/viva/v1/datasets` → 503). `tests/core/test_datasets_routes.py` saves and restores the
+  provider around each test, the way `test_core_app_boots` does for one of its own.
+  **Proof:** `tests/core/test_datasets_routes.py` (6: a page with its total under every filter,
+  malformed filters as the caller's, one row / pickers / tags, content streamed and the three
+  refusals, a core with and without a store); `tests/api/test_viva_datasets_routes.py` (1, Postgres:
+  the family served from the table with the owner-ref off the #790 columns and the producing job
+  on a traced row, the facade unchanged beside it with the four columns, provenance still SMS-only,
+  both capability routes advertising); the application's dataset tests unchanged bar the
+  `producer_job_id` assertion; the health dicts in five tests gain `datasets`. `make check` clean
+  twice (new files intent-to-added first); full suite green.
+- **2026-09-26** — **Checkpoint F3 passed on dev (0.9.158): the U2 core-on-SLURM work, U3's overlay
+  and the atlantis surface resolver deployed to Stanford, and nothing SMS-facing moved.** Dev ran
+  0.9.157 (F2, 2026-09-25); `main` was nineteen PRs ahead, #798–#817, every one from the UConn
+  track or a fix found by it. F3 is the proof that a Stanford site takes that batch unchanged:
+  code only, no migration, both stanford-test overlay tags bumped in lockstep (#819, tag
+  `v0.9.158`, release notes list every PR).
+
+  **Deployed:** `build-and-push.yml` on `main` at `d0a201bc` (the #819 merge); applied from a
+  worktree pinned to that commit; `kubectl rollout status` clean; the newest pod (by
+  `creationTimestamp`) is **`api-7659b99b85-rtc55`** on `sms-api:0.9.158`. The version block's
+  markers all hold on it: `/app/viva_core/compose/simulation_service_hpc.py`,
+  `/app/viva_core/storage/factory.py`, `/app/viva_core/lifespan.py`, `/app/viva_core/backends/base.py`,
+  `/app/viva_core/compose/build_k8s.py` and `/app/app/surface.py` exist; `self._url(` ×23 in
+  `app_data_service.py`; `postgres_user` is not declared in `viva_api/config.py` (inherited from
+  `CoreSettings`, #806). The apply also reported `deployment.apps/workbench configured`, but that
+  was metadata only — the workbench pod (`workbench-c8db54b46-6nc8l`, 2026-09-16) was not
+  recreated; its ReplicaSet generation stayed at 52. `/health` through the tunnel: 0.9.158,
+  `db_revision = db_head = f4c8a2e6d0b3`.
+
+  **Smoke** (`atlantis smoke run --tier 1 --require-aws`, Tier 0 + Tier 1 through the SSM tunnel):
+  **13 passed, 1 failed, 3 skipped.** Tier 0: `version`, `database` (at head), `routes` (103 of
+  103 spec operations served), `capabilities` (`chain-dispatch, chain-progress, container-jobs,
+  viva-v1-surface`), `relay` (JSON 404), `core` (services `compose, environments, workers` — the
+  #806 shape), `lists` (simulators 209, analyses 797, parca datasets 267, compose simulators 6),
+  `events`. Tier 1: `task` 60 (257.8 s, cold fleet), `task-fail` 61, `task-repo` 62, `worker`
+  (`env-worker-d67b0a7-smoke06b-…`: generators read, a task completed, stopped — this is the
+  first checkpoint where atlantis reached the env-worker surface **through `/viva/v1/env-worker`**,
+  the #811 resolver following `viva-v1-surface`), `compose` 28 (`level 1.61051 = 1.1^5`, 517.8 s in
+  the science image). Skipped: `build`, `analysis`, `biomodels` — opt-in by design.
+
+  **The one failure is the check, not the server.** `contract` compared all 22 recorded
+  operations and reported 8 changes, every one `simulation.config.<key>: removed`
+  (`out_dir, cache_dir, time_step, description, lineage_seed, nextflow_dispatch,
+  max_duration_per_gen, different_seeds_per_variant`). `resolve_context` samples the **newest**
+  simulation; the baseline (dev 0.9.156, 2026-09-25) was recorded from a Nextflow-dispatch run,
+  and the newest simulation on dev today is a CD2 campaign composite (1442,
+  `sim201-cd2-run4-armD-…`, `multi_node_dispatch` + `HYPERQUEUE` + `carina`). `config` is the
+  submitter's passthrough JSON, so the eight "removed" keys are exactly the baseline's config
+  keys that this submission does not carry; no server code that shapes `GET
+  /api/v1/simulations/{id}` changed between 0.9.157 (where `contract` passed) and 0.9.158.
+  Filed as **#823**: treat `config` (and the other passthrough objects) as opaque in the recorded
+  shape and re-record. Until that lands, a `contract` diff confined to `simulation.config.*` is
+  the sampling. Not fixed here: F3 is a checkpoint, and the check's contract is its own PR.
+
+  **What F3 proves and does not.** It proves the Stanford Batch site is indifferent to the
+  UConn track's moves (settings inheritance, the SLURM compose service in core, the storage
+  factory, the lifespan, the JobBackend Protocol, the K8s build option defaulting to `sbatch`) and
+  that the capability-addressed client works against a site advertising `viva-v1-surface`. It does
+  not exercise SLURM (UB/UC do), the `viva-core` image (#804 builds it; this image is unchanged),
+  or a build (`build` skipped). Prod is untouched at 0.9.78; the P-jump runbook draft is its own
+  entry (`2026-09-26-b-pjump-runbook.md`).
+- **2026-09-26** — **P-jump runbook, draft (Stanford prod 0.9.78 → 0.9.158+): read-only findings, the
+  revision list, the ALB gap, and the order of operations.** Prepared right after checkpoint F3
+  (dev on 0.9.158); nothing was applied to prod. Written so that the day it runs, the operator has
+  the facts and the gates and only fills in the version and the outcomes. The plan (§4, §8) puts the
+  P-jump right after checkpoint F, so the version this runbook deploys is **F's tag, not F3's**: the
+  steps hold, the revision list gains F's expand migration at the bottom.
+
+  **What prod is today (read-only, 2026-09-26, `KUBECONFIG=~/.kube/kubeconfig_stanford.yaml`,
+  `AWS_PROFILE=stanford-sso`):**
+  - Namespace `sms-api-stanford`: `api` = `sms-api:0.9.78` (pod `api-86bcfcb6f4-kx4hw`, running
+    since 2026-08-31T23:26Z, 26 days), `workbench` = `vivarium-workbench:0.3.78`, `ptools` =
+    `sms-ptools:0.9.53`, `redis`, `haproxy-ssh`. The checked-in overlays agree: app and
+    `-db-migration` both `0.9.78`, the workbench overlay `0.3.78` (prod splits the workbench into its
+    own overlay so an api-only apply cannot `Recreate` it).
+  - `db_reconcile --analyze`, run read-only inside the live pod: **state `managed`, current
+    revision `b4d7e9c02a15`**, all eleven of the 0.9.78 image's schema markers `[x]`. That image's
+    own head *is* `b4d7e9c02a15`, so the report says "nothing pending" — against the 0.9.158 chain
+    there are **nine** pending revisions (below).
+  - The live ConfigMaps carry **no `DB_CREATE_ALL`** — the 0.9.78 pod still bootstraps with
+    `create_all` at startup (the default). The checked-in `kustomize/config/sms-api-stanford/api.env`
+    sets `DB_CREATE_ALL=false`, so the first apply of a current overlay switches the net off:
+    from then on only the migration Job makes tables. **Hence the order below is not optional:
+    the Job runs before the app rolls.** (A new app started before the Job would not crash — it logs
+    an ERROR naming the remedy and reports `db_at_head=false` in `/health` — but every route that
+    touches a table only a pending revision creates would 500.)
+  - The live prod ConfigMaps carry no `CORE_RUNTIME_IMAGE` and neither does the checked-in prod
+    config; dev names `viva-core-runtime:0.1.0`. Prod keeps running tasks and compose in the science
+    image until it names one — the plan's P2.3 row says to repeat the one-job trial pull from prod's
+    VPC first. Not part of the jump.
+  - `ENV_WORKER_MODULE_IMAGE` = workbench `0.3.78` on prod, equal to its workbench tag, as required.
+    Dev is on `0.3.85`. Whether the workbench moves in the same window is Jim's call (own overlay,
+    own `Recreate`, own outage); the coupling rule holds either way: the two tags move together.
+
+  **The sms-cdk `/viva` gap, confirmed on the listeners (read-only `aws elbv2 describe-rules`):**
+  dev's internal ALB (`smsvpc-Inter-m3xXOriqxk2u`, port 80) routes `/api /bigraph-loom /compose
+  /core /docs /env-worker /health /home /openapi.json /version /viva /workbench /ws` to the api
+  target group; **prod's (`smscdk-Inter-5cwVdmerxIVL`) has every one of those except `/viva` and
+  `/viva/*`.** The rule is on sms-cdk `main` (`lib/internal-alb-stack.ts`, commit `972e256`, after
+  `c95d737` which added `/compose` and `/env-worker`); it was `cdk deploy`ed to `smsvpctest` and
+  never to `smscdk`. Without it a prod `GET /viva/v1/health` through the ALB falls through to
+  PTools and answers HTML — the failure `atlantis smoke`'s `core` check exists to catch. The
+  prod deploy is `DEPLOY_ENV=stanford … npx cdk deploy` of the internal-ALB stack; run `cdk diff`
+  first and read it whole, because the same `cdk deploy` carries whatever else drifted since the
+  last prod deploy (the 2026-09-09 lesson: a launch-template change replaces the four task
+  compute environments and kills running task-queue jobs — pick an idle window).
+
+  **Every revision prod's database will take** (the chain as of 0.9.158; `alembic history`, oldest
+  first; the tag is the first release carrying the file):
+
+  | # | revision | first in | what it does | reversible |
+  |---|---|---|---|---|
+  | — | `b4d7e9c02a15` | 0.9.79 line (prod's 0.9.78) | **prod is here** — `env_worker_task` | — |
+  | 1 | `c7d1f3a9b2e4` | v0.9.111 | `hpcrun.external_job_ids` (#414's fix shape) | yes |
+  | 2 | `f76e43d01841` | v0.9.111 | `compose_simulation.analysis_options` | yes |
+  | 3 | `d7e2f4a6c8b0` | v0.9.147 | the `task` table (in-region task-run verb, #631) | yes |
+  | 4 | `a3b5c7d9e1f2` | v0.9.139 | observability columns + the `hpcrun_event` / `hpcrun_span` tables | yes |
+  | 5 | `e3a9c1d70b62` | v0.9.147 | `hpcrun_event.layer` → `component` | yes |
+  | 6 | `b2f6d8e0a4c7` | v0.9.147 | enum `jobtypedb` + `'ANALYSIS'` | **no** (enum label; benign) |
+  | 7 | `c9a1e3f5b7d2` | v0.9.147 | the `dataset` table, `analysis.source/tags`, `hpcrun.jobref_analysis_id` | yes |
+  | 8 | `e7b3c9a1d5f2` | v0.9.149 | `env_worker_task.owner_instance` + index | yes, round-trip proven |
+  | 9 | `f4c8a2e6d0b3` | v0.9.149 | `simulator.temporary / label / image_tag` (D11) | yes, round-trip proven |
+  | F | *(P4a-1 owner-ref expand, #790)* | 0.9.159 | owner-ref columns on `hpcrun` / `dataset`, backfilled, dual-written | yes — old columns stay authoritative |
+
+  Two revisions on the chain sit **behind** prod's stamp and will therefore **not run** on prod:
+  `b9e1d5a3c7f2` (creates the nine tables only `create_all` ever created: the eight `compose_*`
+  tables and `analysis`) and `c3f7a1e5b9d4` (reshapes three baseline tables). That is by design
+  (#637: both are no-ops on a `create_all` database) and it is fine for prod **because those nine
+  tables already exist there** — `--analyze` finds `analysis.n_tp` and `compose_hpcrun.job_id_ext`,
+  and prod's compose tables were created on boot at the 0.9.20 deploy. What `upgrade head` cannot
+  see is a column that `create_all` never added to a table that existed before it; that is the
+  job of the read-only `scripts/db_schema_diff.py` pre-flight, which must say *no blocking drift*.
+
+  **The gated sequence** (each step read-only until step 5; stop at the first surprise):
+
+  1. **Pick the window and the version.** F's tag (0.9.159 if F lands as planned). Confirm the
+     prod overlays on `main` carry it: `kustomize/overlays/sms-api-stanford` (`sms-api` only —
+     ptools stays `0.9.53`), `sms-api-stanford-db-migration` **equal to it**, and
+     `config/sms-api-stanford/shared.env`'s `ENV_WORKER_MODULE_IMAGE` equal to the workbench
+     overlay's tag. Check prod for pod-local in-flight work before restarting anything (`hpcrun`
+     rows on the `local` backend, relay workers, unsettled `env_worker_task`): a restart drops those;
+     Batch jobs survive and polling resumes with the new pod.
+  2. **`secrets.sh`** in the prod overlay refreshes the sealed secrets and ARNs from the `smscdk-*`
+     stack outputs; diff what it regenerated; commit if anything moved. Verify the refreshed
+     `secret-shared` connects before relying on it (the 2026-07-14 lesson: the live ghcr PAT was
+     expired, and the refreshed sealed secret fixed it).
+  3. **RDS snapshot** of prod's instance, named for the jump (`pre-0-9-159-pjump-<date>`), and
+     wait for it to be `available`. It is the rollback for the enum revision and for everything the
+     plan marks one-way later; nothing in this jump is one-way except the enum label.
+  4. **Read-only pre-flight from a one-off pod of the NEW image** (not the old pod: its module set
+     is 0.9.78's) — `kubectl run` with the prod `api` pod's env and service account, or
+     `kubectl exec` once the new tag exists in the namespace as a Job pod:
+     `python -m viva_api.simulation.db_reconcile --analyze` must say `managed` at `b4d7e9c02a15`
+     with head `f4c8a2e6d0b3` (or F's revision) and list the pending nine (ten); then
+     `python scripts/db_schema_diff.py` must say *no blocking drift*. Record both outputs in the
+     log entry.
+  5. **The migration Job, first:** `kubectl delete job alembic-migrate -n sms-api-stanford
+     --ignore-not-found` → `kubectl apply -k kustomize/overlays/sms-api-stanford-db-migration` →
+     `kubectl wait --for=condition=complete job/alembic-migrate -n sms-api-stanford --timeout=600s`
+     → read the Job's log whole: the reconciler prints its reasoning, one line per marker, then
+     the upgrade. The 0.9.78 api pod keeps serving throughout: every revision is additive DDL
+     (new tables, nullable columns with defaults, an enum label) and none rewrites a row the old
+     image reads.
+  6. **Roll the app:** `kubectl kustomize kustomize/overlays/sms-api-stanford | kubectl apply -f -`
+     → `kubectl rollout status deployment/api -n sms-api-stanford` → marker grep on the **newest**
+     pod (by `creationTimestamp`, never `items[0]`) for the version block's markers → the tunnel
+     (`sms-proxy.sh -s smscdk`) → `/version` and `/health` (`db_at_head` true, `db_revision` = head).
+  7. **`cdk deploy` the `/viva` rule** (step above): `cdk diff` first, read it whole, deploy in the
+     same idle window. Then `GET /viva/v1/health` through the tunnel is JSON.
+  8. **Smoke, in this order:** `atlantis smoke run --tier 0` (with `database`, `contract`, `core`,
+     `capabilities` — note that `contract` compares against the newest simulation's own passthrough
+     `config`, #823, so a diff confined to `simulation.config.*` is the sampling, not the server);
+     Tier 1 with `--require-aws` (`task`, `task-fail`, `task-repo`, `worker`, `compose` — prod's
+     compose runs in the science image, budget ~8 min for the pull); Tier 2 **with the cancel
+     checks** (`sim-cancel`, `chain-cancel`, `nextflow-cancel` verify on Batch itself and stop at
+     startup without AWS access — that is what `--require-aws` is for). Tier 2 is tens of minutes
+     and dollars; it is the jump's proof that every dispatch path still runs on prod's queues.
+  9. **The workbench** (if Jim includes it): `kubectl apply -k kustomize/overlays/sms-api-stanford-workbench`,
+     a `Recreate` = a full workbench outage; `/workspace` and `/root/.pbg` are on the PVC (checked by
+     device number, 2026-08-31) so the registry survives. `ENV_WORKER_MODULE_IMAGE` moves with it.
+  10. **Record:** tag nothing (the tag is F's); a log entry `<date>-b-pjump.md` with the analyze
+      and schema-diff outputs, the Job log's upgrade lines, the pod name, the smoke counts per tier,
+      and the `cdk diff`; then the docs PR folds the ledger row (`P-jump` → done) and the
+      `deploy_stanford_prod` memory's live line (api / workbench / DB revision).
+
+  **Rollback**, per step: before 5, nothing to undo. After 5 and before 6, the old image runs
+  unchanged against the migrated schema (additive), so rolling forward is the only sensible move;
+  `alembic downgrade` to `b4d7e9c02a15` is real for 8 of the 9 (the enum label stays, harmless).
+  After 6, `kubectl rollout undo deployment/api` returns to 0.9.78 against the new schema, which it
+  tolerates. The snapshot is for the case nobody expects.
+
+  **Deliberately not in this draft:** no `cdk diff` was run (it is read-only but it is prod's
+  stack and the parent lane did not ask for it); no one-off pod was started on prod (step 4 is the
+  first thing the live runbook does); the workbench decision and the `CORE_RUNTIME_IMAGE` trial
+  are Jim's, listed above and not decided here.
+- **2026-09-26** — **P4a-2, slice 4: the ingest hook is core's, behind `EventStore` and `ArtifactRegistrar`; its fifteen `Any` retired.**
+  **Does it depend on slice 3?** No. The ingester reads runs, events and spans and never a dataset
+  record; its one dataset touch is slice 1's feeder, which it now reaches through
+  `ArtifactRegistrar`. Slice 3 (the record model, the reads) stays on hold for the #790 ruling.
+  **What moved.** `viva_core/events/ingest.py` is `event_ingest.py` verbatim: JSON-lines parsing
+  with the older top-level identity keys tolerated, span folding (a `span.end` without its start
+  still creates the span), the per-depth `stage` rendering, progress folding, the span tree, the
+  events-URI-to-key check against the one bucket the file service is bound to, and the per-tick
+  loop — size-skip of unchanged objects, the object cap, idempotent inserts, open spans closed as
+  `unknown` on a terminal run, and a failed registration withholding the cursor so the next tick
+  re-reads. `viva_core/events/models.py` is `SimulationEvent` / `SimulationSpan` / `SpanTree`
+  verbatim: the names are kept because they are schema components of the application's OpenAPI
+  documents, and the open maps are `dict[str, object]`, which pydantic renders exactly as
+  `dict[str, Any]` did (`additionalProperties: true`) — the SMS document is byte-unchanged, which
+  `tests/core/test_two_openapi_documents.py` pins. Three seams: **`IngestRun`** (id, trace, the
+  prefix the row recorded, the prefix the dispatcher would derive — the application knows the
+  template — and liveness: terminal / end time / last event), **`EventStore`** (`events_cursor`,
+  `list_spans`, `insert_events`, `upsert_spans`, `close_open_spans`, `update_progress`) and
+  **`ArtifactRegistrar.register(events)`**. `settings` is an `object` read with `getattr`, as
+  `events_env` already does — that alone retired most of the `Any`; the rest were `object` guards.
+  **What stayed.** `viva_api/simulation/event_ingest.py` keeps `ingest_run_events(hpc_run, simulation,
+  file_service, db, settings)` and `is_ingest_candidate(hpc_run, settings)` — what the scheduler and
+  the tests call — and hands core `ingest_run()` (the row view, with `events_s3_prefix(settings,
+  experiment_id)` as the default), `SmsEventStore` (over `DatabaseService`: `hpcrun_event`,
+  `hpcrun_span`, the progress columns of `hpcrun`) and `SmsArtifactRegistrar` (over
+  `dataset_registry.register_datasets`, looked up at call time so the existing patch point holds).
+  `DISPATCH_COMPONENT = "viva_api.dispatch"` stays here: it names the application. Every pure
+  function is re-exported, so the handlers, the CLI and the database service's own
+  `parse_timestamp` import are untouched; `viva_api/simulation/models.py` re-exports the three
+  models under their names. Adapter at the old name, not a `sys.modules` shim — the slice-1 reason.
+  **Ripple.** With `payload` / `baggage` no longer `Any`, one application test read
+  `baggage["experiment_id"].startswith(...)` on an `object` (now `str(...)`), and slice 1's
+  `ArtifactEvent.payload` / `.baggage` became `dict[str, object]` too — a payload as read off the
+  wire is open, and every field the registry uses was already `isinstance`-checked.
+  **Found, not changed.** `IngestResult.hpcrun_id` and the log lines' "run" wording: the field
+  name is the application's table inside core, same family as `attributes["hpcrun_id"]` (slice 1);
+  kept verbatim because `tests/simulation/test_scheduler.py` constructs it — deferred list. The
+  three promoted axes (`generation`, `variant`, `lineage_seed`) are model fields in core now; they
+  are the coordinate keys slice 1 already hard-codes, not domain terms by the guard.
+  **Proof:** `tests/core/test_events_ingest.py` (8: an in-memory store, an object-map file service
+  and a scripted registrar — a pass stores, folds, reports and hands artifacts on; an unchanged
+  object is skipped without a read and a rewritten one re-read; a failed registration withholds the
+  cursor and the retry lands; a terminal run closes its spans; the four skip reasons; the candidate
+  rule; parsing with an older stream); the application's ingest, registry, real-trace, scheduler,
+  handler and CLI tests unchanged bar the one `str(...)` (389 with `tests/core`). `make check` clean
+  twice; full suite green.
+- **2026-09-26** — **P4a-2, slice 2: the walk is core's, behind `ArtifactClassifier` and `WalkSource`.**
+  **What moved.** `viva_core/datasets/walk.py` is `dataset_walk.py` verbatim: the one listing per
+  source, bundles as the root's child directories, "nothing consumable is not a bundle", rows
+  registered from the listing alone (never an object opened, viva-api#673/#675), a walk never
+  downgrading an event row, an event row whose object is back flipped available, vanished objects
+  and vanished bundles marked, `WalkResult` and its merge, `split_s3_uri`. Two seams replace the
+  application's knowledge: **`ArtifactClassifier.classify(relative) -> Artifact | None`** — which
+  paths under a bundle are datasets, their kind, and the view / protocol / coordinate the name
+  encodes (an `Artifact` is what a classifier reads off a path; the display name and the
+  `source.coordinate` are built from it in core, unchanged) — and **`WalkSource`** — a `root_uri`,
+  an `owner` for bundles nobody claims, a `label`, `tags`, a `subject`, and `claimant(bundle_uri)`.
+  The old `_producer_for_bundle` is the claimant call plus the `unclaimed` count, in core.
+  `DatasetStore` gained `list_under(uri_prefix)` (every row under a prefix, available or not — the
+  application's store pages through `DATASET_LIST_MAX_LIMIT` behind it) and `set_available`.
+  **What stayed.** `viva_api/simulation/dataset_walk.py` keeps the naming convention — `PTOOLS_DIR`,
+  `VIZ_DIR`, `REPORT_NAME`, `SCALES`, `ArtifactName`, `parse_artifact_name`, `classify` (the three
+  domain terms the gate counted) — as `SmsArtifactClassifier`; `analyses_root_uri` (the emitter's
+  `out_uri`, else the Ray layout) and "the analysis run whose `result_uri` is the bundle directory
+  claims it" as `SimulationWalkSource`; and the two entry points, `reconcile_simulation(simulation,
+  db=, file_service=, storage_bucket=)` and `register_bundle(items, bucket=, bundle_key=, producer=,
+  simulation=, db=, tags=, existing=)`, with the signatures the scheduler's tick, `scripts/walk_*`,
+  the CD2 importer and the tests call. `dataset_store.owner_ref` is the inverse of slice 1's
+  `producer_ref`, for the importer that still speaks producer columns. Not a `sys.modules` shim,
+  for the slice-1 reason. `handlers/analyses.py` keeps importing `parse_artifact_name` from here.
+  **Found, not changed.** `attributes["analysis_dir"]` — the bundle directory's name under a key
+  that says what the application's bundles are. Kept verbatim (every walked row on dev carries it);
+  same deferred item as `hpcrun_id` (slice 1), for the record model in slice 3.
+  **Proof:** `tests/core/test_datasets_walk.py` (9: an in-memory store, a listing double, a one-rule
+  classifier and a scripted source — a bundle's datasets from the listing alone, a claimed bundle
+  and the move when a claim appears, twice changes nothing and an event row is never downgraded,
+  gone objects / gone bundles / a returning event row, another bucket skipped without a listing, tags
+  and a store refusal in `register_bundle`); the application's walk, scripts and router tests
+  unchanged (310 passed with `tests/core`). `make check` clean twice; full suite green.
+- **2026-09-26** — **P4a-2, slice 1: the trace feeder is core's, behind `OwnerResolver` and `DatasetStore`.**
+  **The sequence.** The dataset code was scored against the three gates core enforces (the
+  vocabulary guard's AST scan · a count of `Any` · imports of the application that are not shims):
+  `dataset_registry.py` 291 lines, 4 terms (all in `_producer`), 0 `Any`, 3 imports;
+  `dataset_walk.py` 400, 3 terms (all in `classify` and the bundle layout), 0, 4;
+  `handlers/datasets.py` 360, 6 terms, 0, 5; `routers/datasets.py` 202, 4 terms, 2, 6;
+  `event_ingest.py` 637, 0 terms, 15, 3. None passes today, and the blocker is the same in each: the
+  three producer foreign keys — the application's tables — which is exactly what the Protocols are
+  for. Four slices, one concern each: (1) the trace feeder behind `OwnerResolver` + `DatasetStore`
+  (this entry); (2) the walk behind `ArtifactClassifier` + `WalkSource` (`classify`,
+  `parse_artifact_name` and the analysis-claims-a-bundle lookup are the application's); (3) the reads
+  as `/viva/v1/datasets` with core's own record model and the `viva-v1-datasets` capability,
+  `/api/v1/datasets` a dated facade (D14); (4) the ingest hook into `viva_core/events/`. The plan's
+  kind vocabulary (`table | figure | store | log`) is not a code move — every row carries today's
+  kinds — and waits for the datasets-shaped `sms.js` (P5b).
+  **What moved.** `viva_core/datasets/registry.py` is `dataset_registry.py` verbatim: validation, the
+  coordinate, display names, tags, the subject, `available = not error`, the skip-and-count loop.
+  Three shapes replace the application's types: `ArtifactEvent` (payload, baggage, span, and the
+  coordinate axes and label the application promotes from baggage — the engine never names those
+  keys), `RunContext` (run id, label, tags, the subject the data is OF), and `DatasetStore.upsert`.
+  `viva_core/datasets/models.py` carries `OwnerRef = (owner_kind, owner_id)` — the P4a-1 rule spoken
+  by core from day one, the owner kinds being the owning tables' names as #790's `dataset_owner`
+  spells them — `DatasetWrite`, `UpsertAction`, and a structural `DatasetRecord` the application's
+  DTO already satisfies.
+  **What stayed, and why the old name is an adapter, not a shim.** `viva_api/simulation/dataset_registry.py`
+  keeps `register_datasets(events, hpc_run=, simulation=, db=)` — the signature the ingester and the
+  seven Postgres tests call — and hands core `SmsOwnerResolver` (the `_producer` body: a ParCa cache
+  belongs to the simulation's ParCa dataset, a baggage `analysis_id` that names a real analysis wins,
+  else the run's own reference), `SmsDatasetStore` (`viva_api/simulation/dataset_store.py`: owner
+  kind → producer column, the only place the translation lives) and `DATASET_KINDS`. A `sys.modules`
+  shim needs the old name's API to BE the new module's, and this one takes `HpcRun`, `Simulation`
+  and `DatabaseService`; the P3d-3 precedent (a hook module at the old name) applies.
+  **Found, not changed.** Rows record `attributes["hpcrun_id"]`; the key is the application's table
+  name inside a core string. Kept verbatim because every row on dev carries it; renaming it is a
+  data decision for the record model (slice 3) — deferred list.
+  **Contradiction with the plan's order.** P4a lists the owner-ref expand (P4a-1, #790) before the
+  move; #790 is open and checkpoint F has not run, so nothing here writes `owner_kind` /
+  `owner_id` columns. Core speaking the pair anyway is what makes that harmless: when #790 lands the
+  adapter dual-writes in one line, and nothing in core changes.
+  **Proof:** `tests/core/test_datasets_registry.py` (8: the rules on an in-memory store and a scripted
+  resolver, including "a store failure that is not a refusal propagates"); the application's seven
+  Postgres tests unchanged; the standalone gate, the vocabulary scan and the no-`Any` glob pass with
+  `viva_core/datasets/` inside. `make check` clean twice; full suite green.
 - **2026-09-26** — **A composite's container is built in a Kubernetes Job at UConn (Jim: "do the k8s job build").**
   The SLURM build could not run on the `vcell` nodes: SingularityCE 4.0.1, `/usr/bin/fakeroot`
   present, no `/etc/subuid` entry for `svc_vivarium`, `--ignore-subuid` not a CE-4.0 flag, and a
