@@ -232,7 +232,11 @@ images:
   # Workbench-only change -- no viva-api/scheduler/dispatch code touched.
   # Built via the same native-AMD64 Batch DinD infra as prior releases.
   - name: ghcr.io/vivarium-collective/vivarium-workbench
-    newTag: 0.3.78
+    # 2026-09-26: 0.3.78 -> 0.3.85, with the P-jump (Jim: "bump the workbench too"). The tag dev
+    # has run since 2026-09-16, read from dev's live Deployment. Moves TOGETHER with
+    # ENV_WORKER_MODULE_IMAGE in config/sms-api-stanford/shared.env (same tag, same PR): the one
+    # image is both the workbench that launches workers and the module a worker Job stages.
+    newTag: 0.3.85
 
 replicas:
   # Single writer: workbench holds a git working copy + SQLite on an RWO EBS volume.
