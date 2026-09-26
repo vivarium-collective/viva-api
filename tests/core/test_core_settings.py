@@ -17,12 +17,11 @@ from viva_core.storage.file_paths import HPCFilePath
 
 @pytest.fixture
 def standalone() -> Iterator[None]:
-    """No application provider, and a clean environment-built cache -- restored afterwards."""
-    saved = core_settings._provider
+    """No application provider (put back by tests/core/conftest.py), and a clean environment-built
+    cache -- cleared again afterwards."""
     set_core_settings_provider(None)
     core_settings._settings_from_environment.cache_clear()
     yield
-    set_core_settings_provider(saved)
     core_settings._settings_from_environment.cache_clear()
 
 
