@@ -47,29 +47,46 @@ def _must(value: Any) -> Any:
 # --------------------------------------------------------------------------- the Job
 
 
-def test_the_job_is_privileged_mounts_the_shared_filesystem_and_copies_as_the_service_user() -> None:
+def test_the_build_is_a_privileged_init_container_and_the_copy_an_unprivileged_one_as_the_service_user() -> None:
+    """Jim's shape: the privileged process mounts nothing but the emptyDir (and the shared filesystem
+    READ-ONLY, for the definition); the writer onto the shared filesystem IS the service user."""
     job = K8sContainerBuild(MagicMock(), _settings()).job("compose-build-abc", DEFINITION, CONTAINER)
     spec = _must(job.spec)
     pod = _must(_must(spec.template).spec)
-    (container,) = _must(pod.containers)
     assert _must(job.metadata).name == "compose-build-abc" and spec.backoff_limit == 0
     assert spec.active_deadline_seconds == 1800 and spec.ttl_seconds_after_finished == 86400
-    assert container.image == "ghcr.io/apptainer/apptainer:1.3.6"
-    assert _must(container.security_context).privileged is True  # a definition's %post needs mount namespaces
-    mounts = {m.name: m for m in _must(container.volume_mounts)}
-    assert mounts["shared"].mount_path == "/projects/SMS" and mounts["shared"].sub_path == "SMS"
+    (build,) = _must(pod.init_containers)
+    (copy,) = _must(pod.containers)
+    assert build.image == copy.image == "ghcr.io/apptainer/apptainer:1.3.6"
+    # the build: privileged (a definition's %post needs mount namespaces), root, the shared filesystem read-only
+    assert _must(build.security_context).privileged is True and _must(build.security_context).run_as_user == 0
+    build_mounts = {m.name: m for m in _must(build.volume_mounts)}
+    assert build_mounts["shared"].read_only is True and build_mounts["shared"].sub_path == "SMS"
+    assert build_mounts["work"].mount_path == "/work"
+    assert f'apptainer build /work/image.sif "{DEFINITION}"' in _must(build.command)[-1]
+    # the copy: unprivileged, the service user, the shared filesystem writable
+    sc = _must(copy.security_context)
+    assert sc.privileged is False and sc.run_as_user == 17163 and sc.run_as_group == 10000
+    assert sc.run_as_non_root is True and sc.allow_privilege_escalation is False
+    copy_mounts = {m.name: m for m in _must(copy.volume_mounts)}
+    assert copy_mounts["shared"].mount_path == "/projects/SMS" and not copy_mounts["shared"].read_only
+    script = _must(copy.command)[-1]
+    assert "setpriv" not in script and "apptainer build" not in script
+    assert f'cp /work/image.sif "{CONTAINER}.part" && mv "{CONTAINER}.part" "{CONTAINER}"' in script
+    # the pod's identity is the service user's groups, so the emptyDir and the tree are writable
+    pod_sc = _must(pod.security_context)
+    assert pod_sc.fs_group == 10000 and pod_sc.supplemental_groups == [10274, 10281, 10269]
     volumes = {v.name: v for v in _must(pod.volumes)}
     assert _must(volumes["shared"].persistent_volume_claim).claim_name == "vivarium-home-pvc"
-    script = _must(container.command)[-1]
-    assert f'apptainer build /work/image.sif "{DEFINITION}"' in script
-    # written beside the target and renamed, as the service user, never as root (squashed on NFS)
-    assert "setpriv --reuid=17163 --regid=10000 --groups=10274,10281,10269 cp /work/image.sif" in script
-    assert f'"{CONTAINER}.part" && setpriv' in script and f'mv "{CONTAINER}.part" "{CONTAINER}"' in script
 
 
-def test_root_copies_plainly_when_no_service_user_is_named() -> None:
-    script = K8sContainerBuild(MagicMock(), _settings(compose_build_run_as_uid=0)).script(DEFINITION, CONTAINER)
-    assert "setpriv" not in script and f'cp /work/image.sif "{CONTAINER}.part"' in script
+def test_root_copies_when_no_service_user_is_named() -> None:
+    job = K8sContainerBuild(MagicMock(), _settings(compose_build_run_as_uid=0, compose_build_run_as_gid=0)).job(
+        "j", DEFINITION, CONTAINER
+    )
+    (copy,) = _must(_must(_must(_must(job.spec).template).spec).containers)
+    sc = _must(copy.security_context)
+    assert sc.run_as_user == 0 and sc.run_as_non_root is False
 
 
 def test_the_build_needs_the_shared_filesystem_named() -> None:

@@ -6,12 +6,15 @@ The shape is vcell-fluxcd's ``vcell-sif-prepull-job`` with one difference that d
 our definitions have a ``%post`` (``pip install``), and running that needs mount namespaces, which
 an unprivileged container's root does not have -- ``CAP_SYS_ADMIN`` was not enough, proot is not
 used by Apptainer 1.3 for definition builds, and a root-mapped user namespace could not start. So
-the Job is **privileged**, builds into an ``emptyDir``, and copies the finished image onto the
-shared filesystem **as the service user** (``setpriv``): root is squashed on that filesystem and
-the SLURM nodes read the image as that user. Measured on ``sms-api-rke-dev``, 2026-09-26.
+the build runs in a **privileged init container** that mounts nothing but an ``emptyDir``, and the
+copy onto the shared filesystem is the **unprivileged main container's**, running as the service
+user with the filesystem mounted: the writer IS that user, so root squash is respected rather than
+worked around, and the privileged process never sees the filesystem the SLURM nodes read. Init
+containers run to completion in order, so a failed build fails the pod, and the Job, with no
+coordination. Measured on ``sms-api-rke-dev``, 2026-09-26 (Jim's shape).
 
 The definition file is already on the shared filesystem -- the service uploads it over SSH before
-asking for the build -- so the Job reads it from the same path the nodes would.
+asking for the build -- and the init container needs it too, so it gets the same mount READ-ONLY.
 """
 
 from __future__ import annotations
@@ -33,15 +36,25 @@ WORK_DIR = "/work"
 BUILD_LABEL = "compose-build"
 
 
-def _copy_as_service_user(settings: CoreSettings, source: str, target: Path) -> str:
-    """The copy onto the shared filesystem, as the user the SLURM nodes will read it as. Written
-    beside the target first and renamed, so a reader never sees a partial image."""
-    uid, gid = settings.compose_build_run_as_uid, settings.compose_build_run_as_gid
-    as_user = ""
-    if uid:
-        groups = settings.compose_build_supplemental_groups.replace(" ", "")
-        as_user = f"setpriv --reuid={uid} --regid={gid}" + (f" --groups={groups} " if groups else " ")
-    return f'{as_user}cp {source} "{target}.part" && {as_user}mv "{target}.part" "{target}"'
+def _build_script(definition: Path) -> str:
+    return dedent(f"""\
+        set -eu
+        apptainer --version
+        apptainer build {WORK_DIR}/image.sif "{definition}"
+        ls -la {WORK_DIR}/image.sif
+        """)
+
+
+def _copy_script(container: Path) -> str:
+    """The copy onto the shared filesystem, written beside the target and renamed so a reader never
+    sees a partial image."""
+    return dedent(f"""\
+        set -eu
+        id
+        cp {WORK_DIR}/image.sif "{container}.part" && mv "{container}.part" "{container}"
+        ls -la "{container}"
+        echo "Finished building container."
+        """)
 
 
 class K8sContainerBuild:
@@ -59,24 +72,18 @@ class K8sContainerBuild:
         self._k8s = k8s
         self._settings = settings
 
-    def script(self, definition: Path, container: Path) -> str:
-        return dedent(f"""\
-            set -eu
-            echo "Building {container} from {definition}"
-            apptainer --version
-            apptainer build {WORK_DIR}/image.sif "{definition}"
-            {_copy_as_service_user(self._settings, f"{WORK_DIR}/image.sif", container)}
-            ls -la "{container}"
-            echo "Finished building container."
-            """)
-
     def job(self, job_name: str, definition: Path, container: Path) -> k8s_client.V1Job:
         """The Job, as a value: what a test reads."""
         s = self._settings
         labels = {"app": BUILD_LABEL, "compose-build": job_name}
-        mount = k8s_client.V1VolumeMount(name="shared", mount_path=s.compose_build_pvc_mount_path)
+        shared = k8s_client.V1VolumeMount(name="shared", mount_path=s.compose_build_pvc_mount_path)
         if s.compose_build_pvc_sub_path:
-            mount.sub_path = s.compose_build_pvc_sub_path
+            shared.sub_path = s.compose_build_pvc_sub_path
+        shared_read_only = k8s_client.V1VolumeMount(
+            name="shared", mount_path=s.compose_build_pvc_mount_path, sub_path=shared.sub_path, read_only=True
+        )
+        work = k8s_client.V1VolumeMount(name="work", mount_path=WORK_DIR)
+        groups = [int(g) for g in s.compose_build_supplemental_groups.replace(" ", "").split(",") if g]
         return k8s_client.V1Job(
             metadata=k8s_client.V1ObjectMeta(name=job_name, labels=labels),
             spec=k8s_client.V1JobSpec(
@@ -87,17 +94,33 @@ class K8sContainerBuild:
                     metadata=k8s_client.V1ObjectMeta(labels=labels),
                     spec=k8s_client.V1PodSpec(
                         restart_policy="Never",
-                        node_selector={"vlan": "internal"} if s.compose_build_pvc_claim else None,
-                        containers=[
+                        node_selector={"vlan": "internal"},
+                        # the pod's identity is the SERVICE USER's; the init container alone escalates
+                        security_context=k8s_client.V1PodSecurityContext(
+                            fs_group=s.compose_build_run_as_gid or None, supplemental_groups=groups or None
+                        ),
+                        init_containers=[
                             k8s_client.V1Container(
                                 name="build",
                                 image=s.compose_build_image,
-                                command=["/bin/bash", "-c", self.script(definition, container)],
-                                security_context=k8s_client.V1SecurityContext(privileged=True),
-                                volume_mounts=[
-                                    mount,
-                                    k8s_client.V1VolumeMount(name="work", mount_path=WORK_DIR),
-                                ],
+                                command=["/bin/bash", "-c", _build_script(definition)],
+                                security_context=k8s_client.V1SecurityContext(privileged=True, run_as_user=0),
+                                volume_mounts=[shared_read_only, work],
+                            )
+                        ],
+                        containers=[
+                            k8s_client.V1Container(
+                                name="copy",
+                                image=s.compose_build_image,
+                                command=["/bin/bash", "-c", _copy_script(container)],
+                                security_context=k8s_client.V1SecurityContext(
+                                    privileged=False,
+                                    run_as_user=s.compose_build_run_as_uid,
+                                    run_as_group=s.compose_build_run_as_gid,
+                                    run_as_non_root=bool(s.compose_build_run_as_uid),
+                                    allow_privilege_escalation=False,
+                                ),
+                                volume_mounts=[shared, work],
                             )
                         ],
                         volumes=[

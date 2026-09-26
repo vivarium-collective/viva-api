@@ -1052,19 +1052,22 @@ split; each has an owner-less issue or a named moment.
   `sms-api-rke-dev`, one Job each:** an unprivileged container's root fails a definition's `%post`
   ("Failed to set mount propagation: Permission denied"); `CAP_SYS_ADMIN` alone the same; a
   root-mapped user namespace cannot start; Apptainer 1.3.6 does not use proot for definition builds;
-  **`privileged: true` builds** — and the copy onto NFS as root is refused (root squash), so the
-  copy runs as the service user (`setpriv --reuid=17163 …`), written beside the target and renamed.
-  That is the design: `viva_core/compose/build_k8s.py` (`K8sContainerBuild`: a privileged Job from
-  `compose_build_image`, the shared filesystem's PVC mounted at the path the SLURM nodes see, the
-  definition read from where the service already uploads it over SSH, the image copied as the
-  service user); `ContainerBuild`, a hook on `ComposeSimulationServiceHpc` beside `ContainerRun`;
+  **`privileged: true` builds** — and the copy onto NFS as root is refused (root squash). Jim's
+  shape, adopted: the build is a **privileged init container** that mounts only an `emptyDir` (and
+  the shared filesystem read-only, for the definition); the copy is the **unprivileged main
+  container's**, running as the service user with the filesystem mounted — the writer IS that user,
+  root squash is respected, the privileged process never sees what the nodes read, and init-before-
+  main is the sequencing for free. That is the design: `viva_core/compose/build_k8s.py`
+  (`K8sContainerBuild`: a Job from `compose_build_image`, the shared filesystem's PVC mounted at the
+  path the SLURM nodes see, the definition read from where the service already uploads it over SSH,
+  the image copied as the service user, written beside the target and renamed); `ContainerBuild`, a hook on `ComposeSimulationServiceHpc` beside `ContainerRun`;
   the row inserted tagged `k8s` with the Job's name in `job_id_ext`; `ComposeJobMonitor` gains a
   Kubernetes poll (COMPLETED → `update_hpcrun_result`, FAILED → the pod's own last word); and
   `_dispatch_compose_job` waits on the ROW id, not a SLURM id — a build with no SLURM id is waited on
   the same way (the SLURM poll notifies by row id too). Settings `compose_build_*` on `CoreSettings`,
   default `sbatch` (SMS unchanged); the UConn dev overlay sets `k8s` with the api pod's uid/groups.
-  **Security posture, stated:** a privileged pod in core's own namespace for the duration of a
-  build, because nothing less runs `%post` on RKE2; acceptable on dev, to be revisited when core's
+  **Security posture, stated:** a privileged init container in core's own namespace for the
+  duration of a build, with no mount but its scratch space, because nothing less runs `%post` on RKE2; acceptable on dev, to be revisited when core's
   environments are built by a proper builder (P5). Twelve tests (the Job as a value, the hook, the
   poll, the split); the sbatch path and the lifespan still pass on the Docker cluster. Core 0.1.2.
 - **2026-09-26** — **atlantis addresses core's surfaces by capability (§5.3 step 1's atlantis half), and

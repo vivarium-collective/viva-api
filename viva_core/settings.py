@@ -162,10 +162,11 @@ class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, n
     compose_cache_base_path: str = ""
     # How the SLURM compose service BUILDS a composite's container (UConn track, 2026-09-26).
     # "sbatch": on the HPC with `singularity build --fakeroot` -- needs a subuid entry for the service
-    # user on the nodes. "k8s": a Kubernetes Job in ``k8s_job_namespace`` from an Apptainer image,
-    # PRIVILEGED (a definition's %post needs mount namespaces; nothing less worked on RKE2), which
-    # then copies the image onto the shared filesystem as the service user -- the filesystem the
-    # SLURM nodes read it from, mounted in the Job at the same path (``compose_build_pvc_*``).
+    # user on the nodes. "k8s": a Kubernetes Job in ``k8s_job_namespace`` from an Apptainer image: a
+    # PRIVILEGED init container builds into scratch (a definition's %post needs mount namespaces;
+    # nothing less worked on RKE2) and an unprivileged container running as the service user copies
+    # the image onto the shared filesystem the SLURM nodes read, mounted in the Job at the same
+    # path (``compose_build_pvc_*``).
     compose_build_backend: Literal["sbatch", "k8s"] = "sbatch"
     compose_build_image: str = "ghcr.io/apptainer/apptainer:1.3.6"
     compose_build_pvc_claim: str = ""  # the PersistentVolumeClaim of the shared filesystem
