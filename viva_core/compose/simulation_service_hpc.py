@@ -245,10 +245,10 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
                 set -e
                 echo "Starting build for container {singularity_container}"
                 pushd /tmp
-                mv {singularity_def_file} /tmp/{singularity_def_file.name}
+                cp {singularity_def_file} /tmp/{singularity_def_file.name}
                 singularity build --fakeroot {singularity_container.name} {singularity_def_file.name}
                 mv {singularity_container.name} {singularity_container}
-                mv {singularity_def_file.name} {singularity_def_file}
+                rm -f {singularity_def_file.name}
                 popd
                 echo "Finished building container."
                 """)
