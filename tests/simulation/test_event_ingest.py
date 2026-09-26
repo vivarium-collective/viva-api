@@ -281,7 +281,7 @@ async def test_ingest_stores_events_spans_and_progress_and_skips_unchanged_objec
     assert all(e.event != "tick" for e in stored)
     gen_start = next(e for e in stored if e.event == "lineage.generation.start")
     assert gen_start.generation == 0 and gen_start.variant == 0 and gen_start.lineage_seed == 0
-    assert gen_start.baggage is not None and gen_start.baggage["experiment_id"].startswith("sim193")
+    assert gen_start.baggage is not None and str(gen_start.baggage["experiment_id"]).startswith("sim193")
     assert gen_start.tags == {"backend": "nextflow"}  # the baggage does not leak into the opaque tags on read
 
     spans = await database_service.list_hpcrun_spans(hpcrun.database_id)
