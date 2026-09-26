@@ -8,6 +8,7 @@ backfills -- and the application's store translates. Nothing here reaches a data
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Literal, Protocol, TypedDict
 
 from pydantic import JsonValue
@@ -78,6 +79,14 @@ class DatasetStore(Protocol):
     ``upsert`` is keyed on ``uri``: it inserts a new row, updates a changed one, reports an
     identical rewrite as ``unchanged``, and refuses -- ``skipped`` -- a walk's rewrite of an
     event-sourced row. It raises ``ValueError`` when the write itself is unacceptable (an unknown
-    kind, an owner kind the store has no column for): the registry counts that as a skip."""
+    kind, an owner kind the store has no column for): the registry counts that as a skip.
+
+    ``list_under`` is every row whose uri starts with a prefix, available or not (the walk
+    reconciles against it); ``set_available`` flips one row's availability and is a no-op for
+    an unknown id."""
 
     async def upsert(self, write: DatasetWrite, *, owner: OwnerRef) -> tuple[DatasetRecord, UpsertAction]: ...
+
+    async def list_under(self, uri_prefix: str) -> Sequence[DatasetRecord]: ...
+
+    async def set_available(self, dataset_id: int, available: bool) -> None: ...

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from viva_api.analysis.models import DATASET_LIST_MAX_LIMIT, ProducerRef
 from viva_core.datasets.models import DatasetWrite, OwnerRef, UpsertAction
 
 if TYPE_CHECKING:
@@ -24,6 +25,7 @@ PRODUCER_COLUMN_BY_OWNER_KIND: dict[str, str] = {
     "parca_dataset": "parca_dataset_id",
     "analysis": "analysis_id",
 }
+_OWNER_KIND_BY_PRODUCER_COLUMN = {column: kind for kind, column in PRODUCER_COLUMN_BY_OWNER_KIND.items()}
 
 
 def producer_ref(owner: OwnerRef) -> dict[str, int]:
@@ -38,6 +40,16 @@ def producer_ref(owner: OwnerRef) -> dict[str, int]:
         raise ValueError(f"owner id {owner['owner_id']!r} is not an integer id") from e
 
 
+def owner_ref(producer: ProducerRef) -> OwnerRef:
+    """The inverse: the ONE producer a ``ProducerRef`` names, as core's owner. The walk's callers
+    (the CD2 importer) still speak producer columns."""
+    named = [(column, value) for column, value in producer.items() if value is not None]
+    if len(named) != 1:
+        raise ValueError(f"a producer names exactly one column, got {sorted(producer)}")
+    column, value = named[0]
+    return {"owner_kind": _OWNER_KIND_BY_PRODUCER_COLUMN[column], "owner_id": str(value)}
+
+
 class SmsDatasetStore:
     """``DatasetStore`` over the application's :class:`DatabaseService`."""
 
@@ -46,3 +58,19 @@ class SmsDatasetStore:
 
     async def upsert(self, write: DatasetWrite, *, owner: OwnerRef) -> tuple[DatasetDTO, UpsertAction]:
         return await self._db.upsert_dataset(**write, **producer_ref(owner))
+
+    async def list_under(self, uri_prefix: str) -> list[DatasetDTO]:
+        """Every row under a prefix, available or not, paged through the listing's ceiling."""
+        rows: list[DatasetDTO] = []
+        offset = 0
+        while True:
+            page = await self._db.list_datasets(
+                uri_prefix=uri_prefix, available=None, limit=DATASET_LIST_MAX_LIMIT, offset=offset
+            )
+            rows.extend(page)
+            if len(page) < DATASET_LIST_MAX_LIMIT:
+                return rows
+            offset += len(page)
+
+    async def set_available(self, dataset_id: int, available: bool) -> None:
+        await self._db.set_dataset_available(dataset_id, available)
