@@ -57,6 +57,14 @@ class _Store:
         existing.write, existing.owner, existing.available = write, owner, write.get("available", True)
         return existing, "updated"
 
+    async def list_under(self, uri_prefix: str) -> list[_Row]:
+        return [row for uri, row in self.rows.items() if uri.startswith(uri_prefix)]
+
+    async def set_available(self, dataset_id: int, available: bool) -> None:
+        for row in self.rows.values():
+            if row.database_id == dataset_id:
+                row.available = available
+
 
 class _Resolver:
     """An ``OwnerResolver`` that answers ``OWNER`` unless the kind is in ``unresolved``."""
