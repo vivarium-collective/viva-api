@@ -1036,6 +1036,10 @@ split; each has an owner-less issue or a named moment.
 
 ## Decision log
 
+> **Since 2026-09-26 a new entry is a FILE in `docs/plan-core/log/`** (one per entry, per lane) and
+> this list is folded from them by a docs PR — see `docs/plan-core/log/README.md`. Entries below
+> this line up to that date were written here directly.
+
 > **Names.** `viva_api/simulation/ray/` became `viva_api/simulation/dispatch/` on 2026-09-21, and
 > `RayBatchLayer` / `RayParcaService` / `RayTaskService` / `RayImageBuilder` lost the prefix. Entries
 > dated before that are history and keep the names they were written with; everything above this
