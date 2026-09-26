@@ -104,6 +104,11 @@ class ComposeJobMonitor:
 
         await self.nats_client.subscribe(subject=subject, cb=message_handler)
 
+    @property
+    def is_polling(self) -> bool:
+        """Whether the poll loop is running now (a lifespan test asks; the routes never do)."""
+        return self._polling_task is not None and not self._polling_task.done()
+
     async def start_polling(self, interval_seconds: int = 30) -> None:
         if self._polling_task is not None and not self._polling_task.done():
             return

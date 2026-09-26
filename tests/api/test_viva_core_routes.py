@@ -32,7 +32,9 @@ def test_core_answers_what_the_application_itself_would_say() -> None:
     client = TestClient(app)
     with patch("viva_api.core_wiring.get_settings", _settings):
         health = client.get(f"{CORE_PREFIX}/health").json()
-        assert health == {"status": "ok", "version": core_version, "services": {"environments": True}}
+        # compose / workers are False here: the test app has no lifespan run, so SMS wired neither (U2e)
+        expected = {"environments": True, "compose": False, "workers": False}
+        assert health == {"status": "ok", "version": core_version, "services": expected}
         for key, variant in (("d67b0a7", ""), ("tmp-d67b0a7-0a1b2c", ""), ("d67b0a7", "submit")):
             request = {"kind": "explicit", "key": key, "variant": variant}
             found = client.post(f"{CORE_PREFIX}/environments/resolve", json=request).json()

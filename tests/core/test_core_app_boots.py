@@ -59,7 +59,11 @@ print(json.dumps({"health": health, "image": found["image"], "paths": paths, "le
     done = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True, check=False)  # noqa: S603
     assert done.returncode == 0, done.stderr[-2000:]
     seen = json.loads(done.stdout.strip().splitlines()[-1])
-    assert seen["health"] == {"status": "ok", "version": core_version, "services": {"environments": True}}
+    assert seen["health"] == {
+        "status": "ok",
+        "version": core_version,
+        "services": {"environments": True, "compose": False, "workers": False},
+    }
     assert seen["image"] == "registry.example.org/sim:abc1234"
     # Core's own two, plus the compose router at core's prefix (P3d-4d-2).
     assert "/viva/v1/environments/resolve" in seen["paths"] and "/viva/v1/health" in seen["paths"]
@@ -69,8 +73,16 @@ print(json.dumps({"health": health, "image": found["image"], "paths": paths, "le
 
 
 def test_health_says_which_services_this_deployment_provides() -> None:
-    assert _client().get(f"{CORE_PREFIX}/health").json()["services"] == {"environments": True}
-    assert _client(environments=False).get(f"{CORE_PREFIX}/health").json()["services"] == {"environments": False}
+    assert _client().get(f"{CORE_PREFIX}/health").json()["services"] == {
+        "environments": True,
+        "compose": False,
+        "workers": False,
+    }
+    assert _client(environments=False).get(f"{CORE_PREFIX}/health").json()["services"] == {
+        "environments": False,
+        "compose": False,
+        "workers": False,
+    }
 
 
 def test_health_and_capabilities_carry_cores_own_version_and_the_served_surface() -> None:
@@ -141,7 +153,11 @@ def test_an_application_includes_the_router_and_the_paths_are_the_same() -> None
     client = TestClient(application)
 
     held.append(CoreContainer(settings=CoreSettings()))  # built AFTER the router was included
-    assert client.get(f"{CORE_PREFIX}/health").json()["services"] == {"environments": False}
+    assert client.get(f"{CORE_PREFIX}/health").json()["services"] == {
+        "environments": False,
+        "compose": False,
+        "workers": False,
+    }
     assert f"{CORE_PREFIX}/environments/resolve" in client.get("/openapi.json").json()["paths"]
 
 

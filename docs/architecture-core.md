@@ -428,8 +428,8 @@ No domain terms in core identifiers — the same rule process-bigraph follows.
 
 ```
 viva_core/
-  settings.py  container.py  models.py
-  api/        app.py (create_core_app), auth.py, oidc.py,
+  settings.py  container.py  models.py  lifespan.py (U2e: start_core / RunningCore.stop -- what a standalone core builds from its settings)
+  api/        app.py (create_core_app; with no container handed in, its lifespan runs start_core -- U2e), auth.py, oidc.py,
               routers/{jobs,environments,tasks,composites,workers,datasets,events,capabilities}
   services/   job_service, job_monitor, task_service, compose_service,
               dataset_service, environment_service, hooks
@@ -452,7 +452,7 @@ viva_core/
   tasks/      snapshot, …
   datasets/   registry, walk
   storage/    file services, s3 helpers, CoreLayout
-  infra/      ssh, messaging
+  infra/      ssh, messaging, db (U2e: the engine from postgres_*; postgres_configured)
   client/     protocol (CoreClient), inprocess, http, generated/ (OpenAPI client from the core spec)
   cli/        the standalone core CLI, built only on client/generated
   contrib/sysbio/    BioModels + curated COPASI / Tellurium — in core for now, built as a consumer of

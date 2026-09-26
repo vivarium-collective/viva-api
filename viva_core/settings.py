@@ -80,9 +80,27 @@ class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, n
     # The root under which this site keeps its SLURM work (sbatch files, logs, images, runs).
     slurm_base_path: HPCFilePath = HPCFilePath(remote_path=Path(""))
 
-    # Which object store the file service talks to. The application's file-service factory reads
-    # it today; core's does from U2.
+    # Which object store the file service talks to (``viva_core.storage.factory``, U2c).
     storage_backend: StorageBackend = "s3"
+
+    # The database (U2e; decision D19: a standalone core has a database of its own). Moved here from
+    # the application's settings -- same names, same variables -- so core's own lifespan can open
+    # it. ``postgres_user`` keeps the application's placeholder default: a site that never set it
+    # has no database, and core says so rather than dialling ``<USER>@localhost``.
+    postgres_user: str = "<USER>"
+    postgres_password: str = ""
+    postgres_database: str = "sms"
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+    postgres_pool_size: int = 10  # number of connections in the pool
+    postgres_max_overflow: int = 5  # maximum number of connections that can be created beyond the pool size
+    postgres_pool_timeout: int = 30  # timeout for acquiring a connection from the pool in seconds
+    postgres_pool_recycle: int = 1800  # recycle connections every seconds
+    # Run create_all at startup. True suits a laptop or a test; a DEPLOYED site sets it false,
+    # because there the schema belongs to the migration Job alone (see the application's
+    # ``simulation/db_startup.py`` for why create_all is corrosive in production). Core's own
+    # Alembic chain arrives at P7; until then this is how core's own database is bootstrapped.
+    db_create_all: bool = True
 
     # AWS S3
     storage_s3_bucket: str = ""
