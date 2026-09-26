@@ -135,7 +135,9 @@ async def test_a_run_registers_what_it_wrote_with_its_coordinate_tags_and_subjec
 
 
 def test_explicit_attributes_win_over_the_promoted_coordinate() -> None:
-    event = _event(1, {"uri": "s3://b/x", "kind": "table", "attributes": {"seed": 5}}, coordinate={"seed": 1, "variant": 2})
+    event = _event(
+        1, {"uri": "s3://b/x", "kind": "table", "attributes": {"seed": 5}}, coordinate={"seed": 1, "variant": 2}
+    )
     fields = dataset_fields(event, run=RUN, kinds=KINDS)
     assert fields["source"] is not None
     assert fields["source"]["coordinate"] == {"variant": 2, "seed": 5}
@@ -149,7 +151,9 @@ def test_display_name_falls_back_to_the_event_label_then_to_the_kind() -> None:
     assert labelled["source"] is None and labelled["tags"] == []
     unlabelled = dataset_fields(_event(1, {"uri": "s3://b/x", "kind": "figure"}), run=bare, kinds=KINDS)
     assert unlabelled["display_name"] == "figure"
-    explicit = dataset_fields(_event(1, {"uri": "s3://b/x", "kind": "figure", "display_name": "Fig 1"}), run=RUN, kinds=KINDS)
+    explicit = dataset_fields(
+        _event(1, {"uri": "s3://b/x", "kind": "figure", "display_name": "Fig 1"}), run=RUN, kinds=KINDS
+    )
     assert explicit["display_name"] == "Fig 1"
 
 
