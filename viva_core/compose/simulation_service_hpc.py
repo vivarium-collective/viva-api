@@ -265,6 +265,8 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
                     remote_sbatch_file=remote_sbatch,
                 )
 
+            # Tagged SLURM at insert: the job is already submitted, and an untagged row carries the
+            # column's default (ray), which the monitor would never poll over SSH.
             hpc_run = await db_service.get_hpc_db().insert_hpcrun(
                 slurmjobid=slurm_jobid,
                 job_type=ComposeJobType.BUILD_CONTAINER,
@@ -272,5 +274,6 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
                 correlation_id=get_compose_correlation_id(
                     random_string=random_str, job_type=ComposeJobType.BUILD_CONTAINER
                 ),
+                backend=JobBackend.SLURM,
             )
             return hpc_run

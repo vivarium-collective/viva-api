@@ -282,9 +282,17 @@ async def _get_hpc_run_by_correlation(session: AsyncSession, correlation_id: str
 class HPCDatabaseService(ABC):
     @abstractmethod
     async def insert_hpcrun(
-        self, slurmjobid: int, job_type: ComposeJobType, ref_id: int, correlation_id: str
+        self,
+        slurmjobid: int,
+        job_type: ComposeJobType,
+        ref_id: int,
+        correlation_id: str,
+        backend: "JobBackend | None" = None,
     ) -> ComposeHpcRun:
-        pass
+        """``backend`` tags who owns the job from the start. The SLURM paths that submit BEFORE
+        inserting (a container build) must say so, or the row carries the column's default
+        (``ray``) and the monitor never polls it over SSH; a placeholder inserted before dispatch
+        leaves it unset and ``update_hpcrun_dispatch`` tags it."""
 
     @abstractmethod
     async def get_hpcrun_by_ref(self, ref_id: int, job_type: ComposeJobType) -> ComposeHpcRun | None:
@@ -344,7 +352,12 @@ class HPCORMExecutor(HPCDatabaseService):
 
     @override
     async def insert_hpcrun(
-        self, slurmjobid: int, job_type: ComposeJobType, ref_id: int, correlation_id: str
+        self,
+        slurmjobid: int,
+        job_type: ComposeJobType,
+        ref_id: int,
+        correlation_id: str,
+        backend: "JobBackend | None" = None,
     ) -> ComposeHpcRun:
         async with self.async_session_maker() as session, session.begin():
             simulation_key = ref_id if job_type == ComposeJobType.SIMULATION else None
@@ -358,6 +371,8 @@ class HPCORMExecutor(HPCDatabaseService):
                 start_time=datetime.datetime.now(),
                 correlation_id=correlation_id,
             )
+            if backend is not None:
+                orm.job_backend = backend.value
             session.add(orm)
             await session.flush()
             return orm.to_hpc_run()

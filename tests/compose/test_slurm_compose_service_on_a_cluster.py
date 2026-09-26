@@ -45,7 +45,7 @@ from viva_core.compose.models import (
     SimulationFileType,
 )
 from viva_core.compose.simulation_service_hpc import ComposeSimulationServiceHpc, RunPlan
-from viva_core.models import JobStatus
+from viva_core.models import JobBackend, JobStatus
 
 POLL_SECONDS = 2.0
 BUILD_TIMEOUT_SECONDS = 600.0  # a cold busybox pull through a slow mirror
@@ -105,7 +105,7 @@ def _recording_db() -> MagicMock:
     whatever the service asked to insert, so the test can read the job id back."""
 
     async def insert_hpcrun(
-        slurmjobid: int, job_type: ComposeJobType, ref_id: int, correlation_id: str
+        slurmjobid: int, job_type: ComposeJobType, ref_id: int, correlation_id: str, backend: JobBackend | None = None
     ) -> ComposeHpcRun:
         return ComposeHpcRun(
             database_id=1,
@@ -114,6 +114,7 @@ def _recording_db() -> MagicMock:
             job_type=job_type,
             sim_id=None,
             simulator_id=ref_id,
+            job_backend=backend.value if backend is not None else "ray",
         )
 
     db = MagicMock()
@@ -160,6 +161,8 @@ async def test_build_run_and_fetch_results_on_a_real_scheduler(slurm_backend: Sl
         random_str = "".join(random.choices(string.hexdigits, k=7))
         hpc_run = await service.build_container(simulator, random_str=random_str, db_service=_recording_db())
         assert hpc_run.job_type is ComposeJobType.BUILD_CONTAINER and hpc_run.simulator_id == simulator.database_id
+        # tagged SLURM at insert, so the monitor polls it over SSH (UConn UB: an untagged row stayed RUNNING forever)
+        assert hpc_run.job_backend == JobBackend.SLURM.value
         build = await _wait_terminal(slurm_backend, hpc_run.slurmjobid, BUILD_TIMEOUT_SECONDS)
         if build.get_job_status() is not JobStatus.COMPLETED:
             tail = await _log_tail(slurm_backend, f"singularity_build_{simulator.singularity_def_hash[:5]}_*")

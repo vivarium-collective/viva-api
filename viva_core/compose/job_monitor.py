@@ -172,7 +172,9 @@ class ComposeJobMonitor:
     async def _update_slurm_jobs(self, running_jobs: list[ComposeHpcRun]) -> None:
         if not running_jobs:
             return
-        job_ids = [job.slurmjobid for job in running_jobs if job.slurmjobid]
+        job_ids = [
+            job.slurmjobid for job in running_jobs if job.slurmjobid > 0
+        ]  # -1 = a placeholder not yet dispatched
         if not job_ids:
             return
 
