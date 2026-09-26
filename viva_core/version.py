@@ -10,4 +10,4 @@ The line starts where the runtime image's did (``viva-core-runtime:0.1.0``); a r
 tags ``core-v<version>``.
 """
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"

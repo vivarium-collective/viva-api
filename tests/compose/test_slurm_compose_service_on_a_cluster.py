@@ -207,3 +207,27 @@ async def test_build_run_and_fetch_results_on_a_real_scheduler(slurm_backend: Sl
         definition = get_compose_singularity_def_file(singularity_hash=simulator.singularity_def_hash)
         async with slurm_backend.ssh.session() as ssh:
             await ssh.run_command(f"rm -rf {sif} {definition} {experiment_dir}")
+
+
+# --------------------------------------------------------------------------- pure
+
+
+def test_the_generic_run_command_passes_the_step_count_as_an_int(tmp_path: Path) -> None:
+    """``run_pbg.py --steps`` is an int; the request's ``end_time_point`` is a float, and ``-n 5.0``
+    was refused on Mantis (UB #6) after the build had finally succeeded."""
+    service = ComposeSimulationServiceHpc(slurm_ssh=None)
+    request_file = tmp_path / "input.pbg"
+    request_file.write_text("{}")
+    simulation = ComposeSimulation(
+        database_id=1,
+        sim_request=ComposeSimulationRequest(
+            request_file_path=request_file,
+            simulation_file_type=SimulationFileType.PBG,
+            is_batch=True,
+            end_time_point=5.0,
+        ),
+        simulator_version=_probe_definition(),
+    )
+    plan = service._run_plan(None, "--bind /e:/experiment", Path("/images/x.sif"), "job", simulation)
+    assert plan.command.rstrip().endswith("-n 5"), plan.command
+    assert "5.0" not in plan.command
