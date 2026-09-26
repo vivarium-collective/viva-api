@@ -1,5 +1,7 @@
 # viva-api#655 — task provenance and tasks as HpcRuns — slice 2
 
+**Tracked in [`plan-core.md`](plan-core.md) since 2026-09-26 (one coordinated effort).** This slice is **P4b** there — built once, in core shape, on the `JobStore` seam (#776, reshaped per D15): a task is a job with `owner_kind = 'task'`, never `hpcrun.jobref_task_id` / `dataset.task_id`. The status paragraph below is as of 2026-09-15 and is history; the design sections (snapshot mode, inputs, record-at-submit, the importer) still hold and are what P4b implements.
+
 **Status (updated 2026-09-15): plan, not started. This is slice 2 of two.** Slice 1's plan is
 **merged to `main`** ([`plan-data-provenance.md`](plan-data-provenance.md), #657) and its
 implementation is **draft #661**: the `dataset` registry, the

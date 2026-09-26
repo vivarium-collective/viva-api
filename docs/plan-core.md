@@ -440,6 +440,23 @@ Rollback: previous image; a W1 workbench falls back on capability absence.
   `task_script`; the CD2 importer. It runs over the `JobStore` Protocol with an interim
   `HpcRunJobStore`, so P7 swaps only the store.
 
+- **P4d — the live feed** (folded from [`plan-data-provenance.md`](plan-data-provenance.md) §9
+  steps 3–4 on 2026-09-26). Today **no producer emits `artifact.written`**: every dataset row
+  on a live system comes from the S3 walk (`attributes.origin = "walk"`, `OBSERVABILITY.md`
+  §4). The emit side is cross-repo, in order: v2ecoli `workflow/events.py` gains
+  `artifact(uri, kind, **attrs)` (thin over the `emit` that v2ecoli#772 landed) and the call
+  sites emit it inside the span that wrote the file — `analysis_runner.py` per file (+ the
+  error event), `parquet_emitter.py` per partition at finalize, `run.py` for reports, the ParCa
+  cache bundle; sms-ecoli pins that v2ecoli; a simulator is built on the pin; dev deploys.
+  Proof is **checkpoint G2**: a Tier-2 `sim` on dev yields rows with `origin = "trace"` before
+  the walk tick runs, and the next walk registers nothing new for that run. The §3 contract on
+  #655 is the spec; core's ingest (#822) already accepts it. Not urgent on its own — it becomes
+  urgent when the ptools consumer needs coordinates the walk cannot supply.
+- **The consumer.** [`plan-ptools-datasets.md`](plan-ptools-datasets.md) is the PTools page
+  reading datasets instead of walking simulations → analyses → data. Its two API asks (§3
+  there) land with P4a-2's reads or P4b; the page + the hand-built `sms-ptools` image are
+  **D18's datasets-shaped `sms.js`**, written at P5b and rebuilt per site before M7.
+
 Deploy: app + migration Job. Rollback: columns are additive; the previous image works.
 
 **P4b, reshaped for D15 (2026-09-25):** `Job` carries `kind` (str), `owner_kind: str` +
@@ -742,11 +759,17 @@ everything needs VPN (the harness does not).
   moves (D9). New BioModels work should keep to the rule in P5 — no imports from SMS
   packages — so nothing has to be untangled at the move.
 
-- **#661 (datasets): merge as-is, first.** It is large, conflicting with `main`, and owned
-  by another session; reshaping it before merge costs more than relocating it after. P4a
-  generalises it additively; P7 moves it.
-- **#656 (task provenance): do not build it on `hpcrun.jobref_task_id`.** Build it once, in
-  core shape, in P4b. If it becomes urgent, P2.0–P2.1's Batch-engine and tasks cuts + P4 can run ahead of the rest of P2 and P3.
+- **The data-provenance track — one coordinated effort here since 2026-09-26 (Jim).** Its
+  own session is closed; this plan is the single tracker and the three provenance documents
+  keep their design content with status headers pointing here. Where it stands: slice 1
+  (#661) merged 2026-09-19 and deployed (checkpoint B, 0.9.147); P4a-1 (#790) generalised it
+  (checkpoint F); P4a-2 moved it into core (checkpoint G). Slice 2 (`plan-task-provenance.md`,
+  #656 merged 2026-09-23 as a plan) **is P4b**, built once in core shape on #776 — never on
+  `hpcrun.jobref_task_id`. What its PR map still had outside this plan is now inside it: the
+  emit side is **P4d** (checkpoint G2) and the ptools consumer rides D18 (P5b → M7). Known
+  defect carried with it: viva-api#780 — `analysis` rows written COMPUTING with a whole-root
+  `result_uri` never self-heal; fixed by SQL on dev 2026-09-24, none on prod; the P-jump
+  runbook checks for such rows.
 - **`plan-remove-slurm-fsx-stanford-test.md`** removes SLURM from a *site*; D4 keeps SLURM
   as a *core backend*. They do not conflict, but the SLURM code must survive that removal
   as `viva_core/backends/slurm.py`.
@@ -783,7 +806,7 @@ though later text had started to assume some of them.
 | 1 | Is `/viva/v1` the right public prefix for core? | P3 | yes, root prefix configurable |
 | 2 | May migrated compose rows get new job ids (old one kept in `legacy_compose_id`)? | P7 | yes; P7 and §7a already assume it |
 | 3 | ~~`/api/v1/tasks`: a permanent SMS facade, or deprecated in favour of `/viva/v1/tasks`?~~ **Decided (D14, 2026-09-25): a dated facade, removed at M4** | P4b | — |
-| 4 | How urgent is #656 — take the fast lane to P4? | P4b | not urgent until someone says so |
+| 4 | ~~How urgent is #656 — take the fast lane to P4?~~ **Folded 2026-09-26:** slice 2 = P4b, the emit side = P4d; one lane owns both after P4a deploys | P4b, P4d | not urgent until the ptools consumer (D18) needs trace coordinates |
 | 5 | Core's bus: Redis + the outbox (and delete the dead `compose_nats_*` settings), or NATS? | P5 | Redis + outbox |
 | 6 | Does the public hosted core get its own database? **At UConn, yes (D19, 2026-09-25)**; for a hosted public core, the same answer is the leaning | P9 | own database |
 | 7 | The core CLI's name (`viva`?), and whether `atlantis` delegates its generic verbs to it | P8 | `viva`; the generic groups delegate (P8) |
@@ -848,6 +871,7 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 | F | P4a-1 | the additive owner-ref migration with dual-write | a **database** deploy: the migration Job, then the app; SQL check that both column sets agree; `atlantis dataset` |
 | F2 ✅ 0.9.157, 2026-09-25 | P3g (+ U1) | code only — the interim `/viva/v1` mounts, core's capability route, the `contract` check | **passed, before F** (F waits on #790): Tier 0 9/9 with `contract` (22 unchanged, 2 additions: `core-health.version`, `core-capabilities` now served) and `core`; Tier 1 5/5 (`task` 370 s, `task-fail`, `task-repo`, `worker`, `compose` 507 s); the runtime image 14/0/3; both capability routes advertise `viva-v1-surface`; markers on `api-544b5f68db-ttvbp`. `vwb smoke` with a W1 workbench: W1 does not exist yet — the first thing the workbench does on the dated clock |
 | G | P4a-2, P4b | `/viva/v1/{datasets,tasks,jobs}`, the facades, `task_script` | `atlantis dataset` / `task` on both prefixes; `contract`; R |
+| G2 | P4d | the live feed: v2ecoli emits `artifact.written`, sms-ecoli pins it, a simulator carries it | a Tier-2 `sim` on dev yields `origin = "trace"` rows before the walk tick; the next walk adds nothing for that run; `OBSERVABILITY.md` §4's "no producer emits" note retired |
 | P-jump | prod (Stanford) | prod 0.9.78 → F, in scope since 2026-09-25 | the big-jump runbook: RDS snapshot; `--analyze`; the migration Job across every revision; Tier 0/1/2 with the cancels, `--require-aws`; the prod `cdk deploy` for `/viva` |
 | H1 | P4c, flag off | the driver, the port, the protocol objects present; dispatch path unchanged | Tier 2 unchanged; `artifact-golden` recorded here as the baseline |
 | H2 | P4c, flag on | campaigns run through the template driver | the same 2×2 both ways; `artifact-golden` equal; `chain-cancel --phase parca` and `--phase seeds`, `active_batch_jobs == []` on Batch; Tier 2 in full; R. Rollback: flag |
@@ -1020,7 +1044,8 @@ split; each has an owner-less issue or a named moment.
 | Strategy B | the docs PR: D14–D21, the order under B, P3g / P4c / P5b / P8b, §4b, checkpoints F2 … UE | — | — | — | **written 2026-09-25**; the replies on #742 and workbench#1150 go with it |
 | P3g | dual-surface scaffolding — #792 the interim `/viva/v1/{compose,env-worker}` mounts in the SMS app (served, not documented twice), `viva_core/version.py`, `GET /viva/v1/capabilities` + `viva-v1-surface` on both capability routes, `version` in core's health · #793 the duplicate `operationId` (`run-slurm-analysis`) · #794 one GUI notebook (`app/ui/dashboard.py` was a symlink to `app/gui.py`) · #795 the smoke `contract` check (`app/contract.py`, baseline recorded from dev 0.9.156, 22 operations) | 0.9.157 | **2026-09-25** (checkpoint F2, tag `v0.9.157`) | — | **done and deployed** — all four merged 2026-09-25 (`166f0e9e`, `7de22dd1`, `e29d373e`, `72a388b9`); caller release W1 is the workbench's next move |
 | P4a | P4a-1 owner-ref expand — #790 (`a4b6c8d0e2f4`: `hpcrun.{owner_kind,owner_id,output_uri}`, `dataset.{owner_kind,owner_id,producer_job_id,trace_id}`, backfilled, dual-written; `viva_api/simulation/owner_ref.py`) · P4a-2 the dataset code move + `/viva/v1/datasets` | | | | **P4a complete on `main` (2026-09-26), not yet deployed.** P4a-1 merged — #790 (`99995eca`). P4a-2 merged in four slices, one concern each: #820 the trace feeder behind `OwnerResolver` + `DatasetWriter`; #821 the walk behind `ArtifactClassifier` + `WalkSource`; #822 the ingest hook behind `EventStore` + `ArtifactRegistrar` (its fifteen `Any` retired; the event and span models core's, schema unchanged); #829 the reads — `/viva/v1/datasets` served by core from `DatasetServices` with the record model on #790's columns, `viva-v1-datasets`, `/api/v1/datasets` a dated facade (D14, M4), provenance SMS's until P4b. Deploys as **checkpoint F**: the migration Job (`a4b6c8d0e2f4`), then the app — dev is at `f4c8a2e6d0b3` after F3 |
-| P4b | #776 reshaped per D15 + the SMS adapters; `/viva/v1/{tasks,jobs}`; `task_script` | | | | not started (checkpoint G) |
+| P4b | #776 reshaped per D15 + the SMS adapters; `/viva/v1/{tasks,jobs}`; `task_script` | | | | not started (checkpoint G); = slice 2 of the data-provenance track (`plan-task-provenance.md`), folded 2026-09-26 |
+| P4d | the live feed — v2ecoli `artifact()` + call sites; sms-ecoli pin; simulator; the consumer's API asks | | | | not started (checkpoint G2); folded from `plan-data-provenance.md` §9 steps 3–4 on 2026-09-26 |
 | P-jump | Stanford prod 0.9.78 → F | | | | not started; right after F (Jim, 2026-09-25) |
 | P4c | templates + the record | | | | not started (checkpoints H1, H2) |
 | P5 | environments, the build half, the `simulator` copy | | | | not started (checkpoints I1, I2); caller release W2 |

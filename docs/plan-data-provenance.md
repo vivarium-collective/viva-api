@@ -1,5 +1,7 @@
 # Data provenance across composites, analysis jobs and task jobs — slice 1
 
+**Tracked in [`plan-core.md`](plan-core.md) since 2026-09-26 (one coordinated effort).** Slice 1 (#661) merged 2026-09-19 and deployed; P4a-1 (#790) generalised the record, P4a-2 moved the registry, the walk and the ingest into `viva_core` (`/viva/v1/datasets`); the emit side (§9 steps 3–4) is **P4d**, checkpoint **G2**; the consumer rides D18. The status paragraph below is as of 2026-09-15 and is history; the design sections still hold.
+
 **Status (2026-09-15): implemented in draft viva-api#661, not merged, not deployed.** This
 is **slice 1 of two**. It delivers the provenance model and the `dataset` registry for every
 producer that is *already* a traced run — process-bigraph composites (simulation runs),
