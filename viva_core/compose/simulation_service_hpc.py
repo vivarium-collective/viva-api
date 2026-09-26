@@ -214,7 +214,11 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
             async with self._ssh_sessions().session() as ssh:
                 await ssh.run_command(f"mkdir -p {experiment_path}")
                 # Upload the simulation input file (OMEX/PBG/SBML)
-                remote_input = HPCFilePath(remote_path=get_compose_sim_input_path(experiment_id=slurm_job_name))
+                remote_input = HPCFilePath(
+                    remote_path=get_compose_sim_input_path(
+                        experiment_id=slurm_job_name, file_type=simulation.sim_request.simulation_file_type
+                    )
+                )
                 await ssh.scp_upload(local_file=simulation.sim_request.request_file_path, remote_path=remote_input)
                 for local_file, name in plan_files:
                     await ssh.scp_upload(
