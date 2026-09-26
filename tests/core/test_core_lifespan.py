@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.engine import make_url
 
 from tests.fixtures.slurm_fixtures_backend import SlurmBackend
+from viva_core import settings as core_settings
 from viva_core.api import CORE_PREFIX, create_core_app
 from viva_core.compose.simulation_service_hpc import ComposeSimulationServiceHpc
 from viva_core.container import current_container
@@ -60,6 +61,9 @@ def test_the_app_boots_with_slurm_settings_and_its_own_database(slurm_backend: S
         compose_image_base_path=base.compose_image_base_path,
         compose_sim_base_path=base.compose_sim_base_path,
     )
+    # Restore the provider that was registered (the application's, when viva_api is imported), not
+    # None: clearing it would leave every later test reading CoreSettings from the environment.
+    saved_provider = core_settings._provider
     set_core_settings_provider(lambda: settings)
     try:
         with TestClient(create_core_app()) as client:
@@ -81,4 +85,4 @@ def test_the_app_boots_with_slurm_settings_and_its_own_database(slurm_backend: S
         assert not monitor.is_polling
         assert current_container().compose is None
     finally:
-        set_core_settings_provider(None)
+        set_core_settings_provider(saved_provider)
