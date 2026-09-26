@@ -175,3 +175,23 @@ def test_hand_built_dispatch_envs_still_inject_the_identity(module_path: str) ->
             f"{module_path}:{fn.lineno} {fn.name}() builds a dispatch environment by hand "
             "and never adds the PBG_* identity, so its jobs emit nothing"
         )
+
+
+#: The modules whose ``with_events_env`` calls dispatch a SIMULATION run (every strategy of the
+#: dispatch package, and the scheduler's chain lineages). Standalone analyses and tasks build
+#: their identity elsewhere and name their own owner (``analysis_id``); they are not in scope.
+SIMULATION_DISPATCH_MODULES = [m for m in DISPATCH_MODULES if "/simulation/dispatch/" in m or "job_scheduler" in m]
+
+
+@pytest.mark.parametrize("module_path", SIMULATION_DISPATCH_MODULES)
+def test_every_simulation_dispatch_names_its_sim_id_in_the_baggage(module_path: str) -> None:
+    """P4d step 1 (G2): the engine never binds ``sim_id`` itself -- only the dispatcher's
+    ``PBG_TRACE_BAGGAGE`` supplies it, and core's ingest promotes it from there. A simulation
+    dispatch that drops ``sim_id=`` still emits events, attributed only by falling back to the
+    run row, so nothing fails; pin the keyword instead of finding out from a dataset row."""
+    offenders: list[str] = []
+    for call in _calls_named(ast.parse(pathlib.Path(module_path).read_text()), "with_events_env"):
+        sim_id = next((kw.value for kw in call.keywords if kw.arg == "sim_id"), None)
+        if sim_id is None or (isinstance(sim_id, ast.Constant) and sim_id.value is None):
+            offenders.append(f"{module_path}:{call.lineno}")
+    assert not offenders, "simulation dispatches whose baggage carries no sim_id:\n  " + "\n  ".join(offenders)
