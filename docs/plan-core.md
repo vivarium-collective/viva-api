@@ -448,7 +448,7 @@ Rollback: previous image; a W1 workbench falls back on capability absence.
   sites emit it inside the span that wrote the file — `analysis_runner.py` per file (+ the
   error event), `parquet_emitter.py` per partition at finalize, `run.py` for reports, the ParCa
   cache bundle; sms-ecoli pins that v2ecoli; a simulator is built on the pin; dev deploys.
-  Proof is **checkpoint G2**: a Tier-2 `sim` on dev yields rows with `origin = "trace"` before
+  Proof is **checkpoint G2**: a Tier-2 `sim` on dev yields rows with `origin = "event"` before
   the walk tick runs, and the next walk registers nothing new for that run. The §3 contract on
   #655 is the spec; core's ingest (#822) already accepts it. Not urgent on its own — it becomes
   urgent when the ptools consumer needs coordinates the walk cannot supply.
@@ -871,7 +871,7 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 | F | P4a-1 | the additive owner-ref migration with dual-write | a **database** deploy: the migration Job, then the app; SQL check that both column sets agree; `atlantis dataset` |
 | F2 ✅ 0.9.157, 2026-09-25 | P3g (+ U1) | code only — the interim `/viva/v1` mounts, core's capability route, the `contract` check | **passed, before F** (F waits on #790): Tier 0 9/9 with `contract` (22 unchanged, 2 additions: `core-health.version`, `core-capabilities` now served) and `core`; Tier 1 5/5 (`task` 370 s, `task-fail`, `task-repo`, `worker`, `compose` 507 s); the runtime image 14/0/3; both capability routes advertise `viva-v1-surface`; markers on `api-544b5f68db-ttvbp`. `vwb smoke` with a W1 workbench: W1 does not exist yet — the first thing the workbench does on the dated clock |
 | G | P4a-2, P4b | `/viva/v1/{datasets,tasks,jobs}`, the facades, `task_script` | `atlantis dataset` / `task` on both prefixes; `contract`; R |
-| G2 | P4d | the live feed: v2ecoli emits `artifact.written`, sms-ecoli pins it, a simulator carries it | a Tier-2 `sim` on dev yields `origin = "trace"` rows before the walk tick; the next walk adds nothing for that run; `OBSERVABILITY.md` §4's "no producer emits" note retired |
+| G2 | P4d | the live feed: v2ecoli emits `artifact.written`, sms-ecoli pins it, a simulator carries it | a Tier-2 `sim` on dev yields `origin = "event"` rows before the walk tick; the next walk adds nothing for that run; `OBSERVABILITY.md` §4's "no producer emits" note retired |
 | P-jump | prod (Stanford) | prod 0.9.78 → F, in scope since 2026-09-25 | the big-jump runbook: RDS snapshot; `--analyze`; the migration Job across every revision; Tier 0/1/2 with the cancels, `--require-aws`; the prod `cdk deploy` for `/viva` |
 | H1 | P4c, flag off | the driver, the port, the protocol objects present; dispatch path unchanged | Tier 2 unchanged; `artifact-golden` recorded here as the baseline |
 | H2 | P4c, flag on | campaigns run through the template driver | the same 2×2 both ways; `artifact-golden` equal; `chain-cancel --phase parca` and `--phase seeds`, `active_batch_jobs == []` on Batch; Tier 2 in full; R. Rollback: flag |
