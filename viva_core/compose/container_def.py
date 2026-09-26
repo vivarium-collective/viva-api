@@ -49,7 +49,11 @@ def build_pbg_def(
     representation = (
         "Bootstrap: docker\nFrom: python:3.12-slim-bookworm\n\n"
         "%post\n    set -eux\n"
-        "    pip install --no-cache-dir process-bigraph bigraph-schema pbg-emitters"
+        # `requests`: process-bigraph imports it (process_bigraph/protocols/rest.py) without declaring
+        # it -- the runtime image's requirements.txt carries the same note; a run without it died on
+        # Mantis at `import requests` (UConn UB #8). Adding it changes every definition's hash: the
+        # next run of any registered simulator builds once more, which is what write-once wants.
+        "    pip install --no-cache-dir process-bigraph bigraph-schema pbg-emitters requests"
         f"{post_extra}\n"
         "    mkdir -p /opt\n"
         "    cat > /opt/run_pbg.py <<'PBG_RUNNER_EOF'\n"
