@@ -158,3 +158,59 @@ def test_core_image_carries_core_and_nothing_of_the_application() -> None:
     assert "ENV UV_NO_DEFAULT_GROUPS=true" in dockerfile or "UV_NO_DEFAULT_GROUPS=true" in dockerfile
     assert 'uvicorn", "--factory", "viva_core.api.app:create_core_app"' in dockerfile
     assert '"uv", "run"' not in dockerfile, "`uv run` would try to install the project at container start"
+
+
+# --- the core overlays' known_hosts must name the submit host the way asyncssh looks it up ---
+
+CORE_OVERLAYS = tuple(o for o in SUPPORTED_OVERLAYS if o.startswith("viva-core-"))
+
+
+def _yaml_docs(path: Path) -> list[dict[str, Any]]:
+    return [d for d in yaml.safe_load_all(path.read_text(encoding="utf-8")) if isinstance(d, dict)]
+
+
+def _core_known_hosts(overlay: str) -> tuple[str, str, list[str]]:
+    """(submit host, ConfigMap name, its known_hosts lines) as the rendered core Deployment sees them."""
+    overlay_dir = REPO_ROOT / "kustomize" / "overlays" / overlay
+    kustomization = yaml.safe_load((overlay_dir / "kustomization.yaml").read_text(encoding="utf-8"))
+    namespace = kustomization["namespace"]
+    env_text = (REPO_ROOT / "kustomize" / "config" / overlay / "core.env").read_text(encoding="utf-8")
+    hosts = [line.split("=", 1)[1].strip() for line in env_text.splitlines() if line.startswith("SLURM_SUBMIT_HOST=")]
+    assert len(hosts) == 1, f"{overlay}: expected exactly one SLURM_SUBMIT_HOST, found {hosts}"
+
+    configmap_name = "ssh-known-hosts"  # kustomize/base/viva-core/core.yaml's default
+    for entry in kustomization.get("patches", []):
+        body = yaml.safe_load(entry.get("patch", "")) if "patch" in entry else None
+        if not isinstance(body, dict) or body.get("kind") != "Deployment":
+            continue
+        for volume in body.get("spec", {}).get("template", {}).get("spec", {}).get("volumes", []):
+            if volume.get("name") == "ssh-known-hosts" and "configMap" in volume:
+                configmap_name = volume["configMap"]["name"]
+
+    candidates = [
+        *overlay_dir.glob("*.yaml"),
+        REPO_ROOT / "kustomize" / "config" / namespace / "ssh-known-hosts-configmap.yaml",
+    ]
+    for path in candidates:
+        if not path.is_file() or path.name == "kustomization.yaml":
+            continue
+        for doc in _yaml_docs(path):
+            if doc.get("kind") == "ConfigMap" and doc.get("metadata", {}).get("name") == configmap_name:
+                return hosts[0], configmap_name, doc["data"]["known_hosts"].splitlines()
+    raise AssertionError(f"{overlay}: no ConfigMap {configmap_name!r} found among {[str(p) for p in candidates]}")
+
+
+def test_core_overlays_known_hosts_name_the_submit_host_bare() -> None:
+    """asyncssh matches a default-port host by its bare name (``haproxy-ssh``); it looks up
+    ``[host]:port`` only for a non-default port. Prod's SMS ``ssh-known-hosts`` spells the entry
+    ``[haproxy-ssh]:22`` and so trusts nothing -- unnoticed there because the SMS pod leaves
+    ``SLURM_SUBMIT_KNOWN_HOSTS`` unset, but fatal for core (checkpoint UC, 2026-09-26: every SSH
+    session failed with ``Host key is not trusted for host haproxy-ssh``). Each core overlay's
+    known_hosts must carry a line whose host field is exactly ``SLURM_SUBMIT_HOST``."""
+    for overlay in CORE_OVERLAYS:
+        host, configmap_name, lines = _core_known_hosts(overlay)
+        bare = [line for line in lines if line.strip() and host in line.split()[0].split(",")]
+        assert bare, (
+            f"{overlay}: ConfigMap {configmap_name!r} has no known_hosts line for bare host {host!r} "
+            f"(asyncssh never matches `[{host}]:22` on port 22); lines: {lines}"
+        )
