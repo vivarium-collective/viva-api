@@ -126,7 +126,9 @@ async def test_a_simulation_run_registers_what_it_wrote(database_service: Databa
     assert parquet.kind == "parquet"
     assert parquet.attributes["variant"] == 0 and parquet.attributes["generation"] == 1
     assert parquet.attributes["origin"] == "event"
-    assert parquet.attributes["hpcrun_id"] == run.database_id
+    # The job and trace that wrote it are columns (P4a-1); ``hpcrun_id`` no longer rides in the attributes.
+    assert parquet.producer_job_id == run.database_id and parquet.trace_id == run.trace_id
+    assert "hpcrun_id" not in parquet.attributes
     assert parquet.attributes["span_id"] == "aaaabbbbccccdddd"
     assert parquet.source == {
         "kind": "simulation",

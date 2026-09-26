@@ -62,7 +62,7 @@ print(json.dumps({"health": health, "image": found["image"], "paths": paths, "le
     assert seen["health"] == {
         "status": "ok",
         "version": core_version,
-        "services": {"environments": True, "compose": False, "workers": False},
+        "services": {"environments": True, "compose": False, "workers": False, "datasets": False},
     }
     assert seen["image"] == "registry.example.org/sim:abc1234"
     # Core's own two, plus the compose router at core's prefix (P3d-4d-2).
@@ -77,11 +77,13 @@ def test_health_says_which_services_this_deployment_provides() -> None:
         "environments": True,
         "compose": False,
         "workers": False,
+        "datasets": False,
     }
     assert _client(environments=False).get(f"{CORE_PREFIX}/health").json()["services"] == {
         "environments": False,
         "compose": False,
         "workers": False,
+        "datasets": False,
     }
 
 
@@ -157,6 +159,7 @@ def test_an_application_includes_the_router_and_the_paths_are_the_same() -> None
         "environments": False,
         "compose": False,
         "workers": False,
+        "datasets": False,
     }
     assert f"{CORE_PREFIX}/environments/resolve" in client.get("/openapi.json").json()["paths"]
 

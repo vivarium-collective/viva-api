@@ -481,6 +481,8 @@ class DatasetScope(TypedDict, total=False):
     simulation_id: int | None
     analysis_id: int | None
     parca_dataset_id: int | None
+    owner_kind: str | None
+    owner_id: str | None
 
 
 class DatasetDTO(BaseModel):
@@ -497,6 +499,13 @@ class DatasetDTO(BaseModel):
     simulation_id: int | None = None
     parca_dataset_id: int | None = None
     analysis_id: int | None = None
+    # The owner-ref and the producing job (P4a-1 columns, read from P4a-2): the owning table's
+    # name and id, the run row that wrote it, and the trace it was recorded under. ``None`` on rows
+    # written before the columns existed and not yet backfilled.
+    owner_kind: str | None = None
+    owner_id: str | None = None
+    producer_job_id: int | None = None
+    trace_id: str | None = None
     view: str | None = None
     display_name: str | None = None
     size_bytes: int | None = None

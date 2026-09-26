@@ -33,7 +33,7 @@ def test_core_answers_what_the_application_itself_would_say() -> None:
     with patch("viva_api.core_wiring.get_settings", _settings):
         health = client.get(f"{CORE_PREFIX}/health").json()
         # compose / workers are False here: the test app has no lifespan run, so SMS wired neither (U2e)
-        expected = {"environments": True, "compose": False, "workers": False}
+        expected = {"environments": True, "compose": False, "workers": False, "datasets": False}
         assert health == {"status": "ok", "version": core_version, "services": expected}
         for key, variant in (("d67b0a7", ""), ("tmp-d67b0a7-0a1b2c", ""), ("d67b0a7", "submit")):
             request = {"kind": "explicit", "key": key, "variant": variant}
@@ -52,9 +52,20 @@ def test_a_site_that_names_no_runtime_image_says_so_through_core_too() -> None:
 def test_cores_routes_are_in_the_applications_openapi_document_under_their_own_prefix() -> None:
     paths = TestClient(app).get("/openapi.json").json()["paths"]
     core = sorted(p for p in paths if p.startswith(CORE_PREFIX))
-    # Core's own three. The interim `/viva/v1/{compose,env-worker}` mounts (P3g) are served but
-    # documented only in core's own document -- see tests/core/test_two_openapi_documents.py.
-    assert core == [f"{CORE_PREFIX}/capabilities", f"{CORE_PREFIX}/environments/resolve", f"{CORE_PREFIX}/health"]
+    # Core's own three plus the datasets family (P4a-2). The interim `/viva/v1/{compose,env-worker}`
+    # mounts (P3g) are served but documented only in core's own document -- see
+    # tests/core/test_two_openapi_documents.py.
+    assert core == [
+        f"{CORE_PREFIX}/capabilities",
+        f"{CORE_PREFIX}/datasets",
+        f"{CORE_PREFIX}/datasets/attributes",
+        f"{CORE_PREFIX}/datasets/tags",
+        f"{CORE_PREFIX}/datasets/{{id}}",
+        f"{CORE_PREFIX}/datasets/{{id}}/content",
+        f"{CORE_PREFIX}/datasets/{{id}}/tags",
+        f"{CORE_PREFIX}/environments/resolve",
+        f"{CORE_PREFIX}/health",
+    ]
     assert "/core/v1/simulator/latest" in paths  # SMS's own, older `core` router: a different thing, untouched
 
 

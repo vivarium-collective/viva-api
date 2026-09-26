@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from viva_core.compose.database_service import ComposeDatabaseService, EnvWorkerTaskDatabaseService
     from viva_core.compose.job_monitor import ComposeJobMonitor
     from viva_core.compose.service import ComposeSimulationService
+    from viva_core.datasets.models import DatasetStore
     from viva_core.env_worker.relay import TaskRunner
     from viva_core.env_worker.service import EnvWorkerService
     from viva_core.storage.file_service import FileService
@@ -53,11 +54,25 @@ class EnvWorkerServices:
 
 
 @dataclass(frozen=True, slots=True)
+class DatasetServices:
+    """What the dataset routes reach (P4a-2): the store, the deployment's kind vocabulary, the file
+    service ``/{id}/content`` streams from with the one bucket it is bound to, and the kinds whose
+    ``uri`` names a store rather than an object (never streamed)."""
+
+    store: "DatasetStore"
+    kinds: tuple[str, ...]
+    files: "FileService | None" = None
+    storage_bucket: str | None = None
+    unserved_kinds: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class CoreContainer:
     settings: CoreSettings
     environments: EnvironmentResolver | None = None
     compose: ComposeServices | None = None
     env_worker: EnvWorkerServices | None = None
+    datasets: DatasetServices | None = None
     #: The application's own capability probes, advertised beside core's by ``GET /viva/v1/capabilities``
     #: (``viva_core.api.capabilities``). A standalone core has none beyond what it marks itself.
     capabilities: tuple["Capability", ...] = ()

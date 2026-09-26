@@ -83,9 +83,10 @@ def run_context(hpc_run: HpcRun, simulation: Simulation | None) -> RunContext:
     """The run as core needs it: its id, and -- when it has one -- the simulation the data is OF,
     whose experiment id labels display names and whose tags every row inherits."""
     if simulation is None:
-        return RunContext(run_id=hpc_run.database_id)
+        return RunContext(run_id=hpc_run.database_id, trace_id=hpc_run.trace_id)
     return RunContext(
         run_id=hpc_run.database_id,
+        trace_id=hpc_run.trace_id,
         label=simulation.experiment_id,
         tags=list(simulation.tags),
         subject={"kind": "simulation", "ref": str(simulation.database_id), "resolved_id": simulation.database_id},

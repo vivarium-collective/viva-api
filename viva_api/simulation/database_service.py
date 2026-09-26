@@ -115,6 +115,8 @@ def _dataset_filter_clauses(
     uri_prefix: str | None = None,
     q: str | None = None,
     experiment_id: str | None = None,
+    owner_kind: str | None = None,
+    owner_id: str | None = None,
 ) -> list[ColumnElement[bool]]:
     """WHERE clauses shared by ``list_datasets`` and ``count_datasets``.
 
@@ -156,6 +158,8 @@ def _dataset_filter_clauses(
         ORMDataset.simulation_id == simulation_id if simulation_id is not None else None,
         ORMDataset.parca_dataset_id == parca_dataset_id if parca_dataset_id is not None else None,
         ORMDataset.analysis_id == analysis_id if analysis_id is not None else None,
+        ORMDataset.owner_kind == owner_kind if owner_kind is not None else None,
+        ORMDataset.owner_id == owner_id if owner_id is not None else None,
         ORMDataset.available.is_(available) if available is not None else None,
         ORMDataset.updated_at >= since if since is not None else None,
         ORMDataset.source.contains(dict(source)) if source else None,
@@ -344,6 +348,8 @@ class DatabaseService(ABC):
         attributes: dict[str, Any] | None = None,
         tags: list[str] | None = None,
         source: dict[str, Any] | None = None,
+        producer_job_id: int | None = None,
+        trace_id: str | None = None,
         available: bool = True,
     ) -> tuple[DatasetDTO, DatasetUpsertAction]:
         """Register a file set a run wrote, keyed on ``uri``.
@@ -382,6 +388,8 @@ class DatabaseService(ABC):
         uri_prefix: str | None = None,
         q: str | None = None,
         experiment_id: str | None = None,
+        owner_kind: str | None = None,
+        owner_id: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[DatasetDTO]:
@@ -413,6 +421,8 @@ class DatabaseService(ABC):
         uri_prefix: str | None = None,
         q: str | None = None,
         experiment_id: str | None = None,
+        owner_kind: str | None = None,
+        owner_id: str | None = None,
     ) -> int:
         """How many datasets match, for a listing's ``total``.
 
@@ -1149,6 +1159,8 @@ class DatabaseServiceSQL(DatabaseService):
         attributes: dict[str, Any] | None = None,
         tags: list[str] | None = None,
         source: dict[str, Any] | None = None,
+        producer_job_id: int | None = None,
+        trace_id: str | None = None,
         available: bool = True,
     ) -> tuple[DatasetDTO, DatasetUpsertAction]:
         _validate_dataset_write(uri, kind, origin)
@@ -1163,6 +1175,9 @@ class DatabaseServiceSQL(DatabaseService):
             "display_name": display_name,
             "size_bytes": size_bytes,
             "sha256": sha256,
+            # The run that wrote it and its trace (P4a-1 columns): set by the trace feeder, never by a walk.
+            "producer_job_id": producer_job_id,
+            "trace_id": trace_id,
         }
 
         for attempt in (1, 2):
@@ -1241,6 +1256,8 @@ class DatabaseServiceSQL(DatabaseService):
         uri_prefix: str | None = None,
         q: str | None = None,
         experiment_id: str | None = None,
+        owner_kind: str | None = None,
+        owner_id: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[DatasetDTO]:
@@ -1258,6 +1275,8 @@ class DatabaseServiceSQL(DatabaseService):
             uri_prefix=uri_prefix,
             q=q,
             experiment_id=experiment_id,
+            owner_kind=owner_kind,
+            owner_id=owner_id,
         )
         stmt = select(ORMDataset)
         if clauses:
@@ -1287,6 +1306,8 @@ class DatabaseServiceSQL(DatabaseService):
         uri_prefix: str | None = None,
         q: str | None = None,
         experiment_id: str | None = None,
+        owner_kind: str | None = None,
+        owner_id: str | None = None,
     ) -> int:
         clauses = _dataset_filter_clauses(
             kind=kind,
@@ -1302,6 +1323,8 @@ class DatabaseServiceSQL(DatabaseService):
             uri_prefix=uri_prefix,
             q=q,
             experiment_id=experiment_id,
+            owner_kind=owner_kind,
+            owner_id=owner_id,
         )
         stmt = select(func.count(ORMDataset.id))
         if clauses:

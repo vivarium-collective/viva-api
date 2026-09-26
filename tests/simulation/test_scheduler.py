@@ -2226,7 +2226,7 @@ class TestUpdateNextflowHeads:
             seen.append(hpc_run.database_id)
             if hpc_run.database_id == 2:
                 raise RuntimeError("unreadable events object")
-            return event_ingest.IngestResult(hpcrun_id=hpc_run.database_id)
+            return event_ingest.IngestResult(run_id=hpc_run.database_id)
 
         settings = MagicMock(
             events_ingest_enabled=True,

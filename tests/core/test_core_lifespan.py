@@ -68,7 +68,12 @@ def test_the_app_boots_with_slurm_settings_and_its_own_database(slurm_backend: S
     try:
         with TestClient(create_core_app()) as client:
             health = client.get(f"{CORE_PREFIX}/health").json()
-            assert health["services"] == {"environments": False, "compose": True, "workers": False}, health
+            assert health["services"] == {
+                "environments": False,
+                "compose": True,
+                "workers": False,
+                "datasets": False,
+            }, health
             held = current_container()
             assert held.compose is not None and isinstance(held.compose.sim, ComposeSimulationServiceHpc)
             assert held.compose.sim.backend is JobBackend.SLURM

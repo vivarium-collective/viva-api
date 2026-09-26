@@ -87,7 +87,7 @@ async def test_the_ingest_tick_hands_an_analysis_run_the_simulation_it_read(
 
     async def _fake_ingest(hpc_run: HpcRun, sim: Simulation | None, *_args: Any, **_kwargs: Any) -> IngestResult:
         seen[hpc_run.database_id] = sim
-        return IngestResult(hpcrun_id=hpc_run.database_id)
+        return IngestResult(run_id=hpc_run.database_id)
 
     with (
         patch("viva_api.dependencies.get_file_service", return_value=MagicMock()),

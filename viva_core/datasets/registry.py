@@ -29,7 +29,7 @@ Rules:
 
 This is the application's ``dataset_registry`` moved verbatim (P4a-2), with the run, the event
 and the store as core's own shapes: :class:`RunContext`, :class:`ArtifactEvent` and
-:class:`~viva_core.datasets.models.DatasetStore`.
+:class:`~viva_core.datasets.models.DatasetWriter`.
 """
 
 from __future__ import annotations
@@ -41,8 +41,8 @@ from typing import Protocol
 
 from viva_core.datasets.models import (
     DATASET_ORIGIN_EVENT,
-    DatasetStore,
     DatasetWrite,
+    DatasetWriter,
     JsonDict,
     OwnerRef,
 )
@@ -93,6 +93,7 @@ class RunContext:
     event's) -- ``None`` when the run has no subject the application wants recorded."""
 
     run_id: int
+    trace_id: str | None = None
     label: str | None = None
     tags: Sequence[str] = ()
     subject: JsonDict | None = None
@@ -202,8 +203,8 @@ def dataset_fields(event: ArtifactEvent, *, run: RunContext, kinds: Container[st
     for key in ("variant", "seed", "generation"):
         if key in coordinate:
             attributes.setdefault(key, coordinate[key])
-    # Where in the trace this file was recorded: enough to walk back to the span.
-    attributes["hpcrun_id"] = run.run_id
+    # Where in the trace this file was recorded: the job and trace are columns (P4a-1); the span,
+    # which has no column, rides in the attributes -- enough to walk back to it.
     if event.span_id:
         attributes["span_id"] = event.span_id
     error = payload.get("error")
@@ -228,6 +229,8 @@ def dataset_fields(event: ArtifactEvent, *, run: RunContext, kinds: Container[st
         "attributes": attributes,
         "tags": _tags(run, extra_tags),
         "source": _source(run, coordinate),
+        "producer_job_id": run.run_id,
+        "trace_id": run.trace_id,
         "available": not error,
     }
 
@@ -242,7 +245,7 @@ async def register_datasets(
     *,
     run: RunContext,
     owner_resolver: OwnerResolver,
-    store: DatasetStore,
+    store: DatasetWriter,
     kinds: Container[str],
 ) -> RegistrationResult:
     """Upsert one dataset row per ``artifact.written`` event, in stream order.

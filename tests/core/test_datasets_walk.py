@@ -1,5 +1,5 @@
 """The reconciliation walk in core: bundles under a source's root become dataset rows through the
-``ArtifactClassifier``, ``WalkSource`` and ``DatasetStore`` Protocols (plan P4a-2, slice 2).
+``ArtifactClassifier``, ``WalkSource`` and ``DatasetWriter`` Protocols (plan P4a-2, slice 2).
 
 Pure and fast: an in-memory store, a listing double for the file service, a one-rule classifier
 and a scripted source. The application's own tests (``tests/simulation/test_dataset_walk.py``)
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from viva_core.datasets.models import DatasetRecord, DatasetStore, DatasetWrite, JsonDict, OwnerRef, UpsertAction
+from viva_core.datasets.models import DatasetRecord, DatasetWrite, DatasetWriter, JsonDict, OwnerRef, UpsertAction
 from viva_core.datasets.walk import Artifact, ArtifactClassifier, WalkSource, reconcile, register_bundle, split_s3_uri
 from viva_core.storage.file_paths import S3FilePath
 from viva_core.storage.file_service import FileService, ListingItem
@@ -28,7 +28,7 @@ SUBJECT: JsonDict = {"kind": "run", "ref": "12", "resolved_id": 12}
 
 @dataclass
 class _Row:
-    database_id: int
+    id: int
     uri: str
     available: bool
     write: DatasetWrite
@@ -37,7 +37,7 @@ class _Row:
 
 @dataclass
 class _Store:
-    """A ``DatasetStore`` keyed on uri. A ``walk`` write never rewrites an ``event`` row (``skipped``);
+    """A ``DatasetWriter`` keyed on uri. A ``walk`` write never rewrites an ``event`` row (``skipped``);
     an identical rewrite is ``unchanged``."""
 
     rows: dict[str, _Row] = field(default_factory=dict)
@@ -69,7 +69,7 @@ class _Store:
     async def set_available(self, dataset_id: int, available: bool) -> None:
         self.availability_changes.append((dataset_id, available))
         for row in self.rows.values():
-            if row.database_id == dataset_id:
+            if row.id == dataset_id:
                 row.available = available
 
 
@@ -156,7 +156,7 @@ async def _walk(store: _Store, keys: dict[str, int], source: _Source | None = No
 
 
 def test_the_protocols_are_satisfied_structurally() -> None:
-    store: DatasetStore = _Store()
+    store: DatasetWriter = _Store()
     classifier: ArtifactClassifier = _Classifier()
     source: WalkSource = _Source()
     assert store is not None and classifier is not None and source is not None
@@ -256,9 +256,9 @@ async def test_gone_objects_and_gone_bundles_are_marked_unavailable_and_a_return
 
     assert (result.registered, result.unchanged, result.unavailable) == (2, 0, 2)
     assert store.availability_changes == [
-        (returned.database_id, True),
-        (gone_file.database_id, False),
-        (gone_bundle.database_id, False),
+        (returned.id, True),
+        (gone_file.id, False),
+        (gone_bundle.id, False),
     ]
     assert already.available is False and returned.available is True
 

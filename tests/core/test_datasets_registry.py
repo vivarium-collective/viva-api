@@ -1,5 +1,5 @@
 """The trace feeder in core: ``artifact.written`` events become dataset rows through the
-``OwnerResolver`` and ``DatasetStore`` Protocols (plan P4a-2, slice 1).
+``OwnerResolver`` and ``DatasetWriter`` Protocols (plan P4a-2, slice 1).
 
 Pure and fast: an in-memory store and a scripted resolver stand in for the application. The
 application's own tests (``tests/simulation/test_dataset_registry.py``) run the same rules end to
@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from viva_core.datasets.models import DatasetRecord, DatasetStore, DatasetWrite, JsonDict, OwnerRef, UpsertAction
+from viva_core.datasets.models import DatasetRecord, DatasetWrite, DatasetWriter, JsonDict, OwnerRef, UpsertAction
 from viva_core.datasets.registry import (
     ArtifactEvent,
     OwnerResolver,
@@ -28,7 +28,7 @@ OWNER: OwnerRef = {"owner_kind": "run", "owner_id": "7"}
 
 @dataclass
 class _Row:
-    database_id: int
+    id: int
     uri: str
     available: bool
     write: DatasetWrite
@@ -37,7 +37,7 @@ class _Row:
 
 @dataclass
 class _Store:
-    """A ``DatasetStore`` keyed on uri; an identical rewrite is ``unchanged``; ``refuse`` names
+    """A ``DatasetWriter`` keyed on uri; an identical rewrite is ``unchanged``; ``refuse`` names
     uris the store rejects with ``ValueError``."""
 
     rows: dict[str, _Row] = field(default_factory=dict)
@@ -62,7 +62,7 @@ class _Store:
 
     async def set_available(self, dataset_id: int, available: bool) -> None:
         for row in self.rows.values():
-            if row.database_id == dataset_id:
+            if row.id == dataset_id:
                 row.available = available
 
 
@@ -86,11 +86,17 @@ def _event(seq: int, payload: JsonDict, **overrides: object) -> ArtifactEvent:
     return ArtifactEvent(**kwargs)  # type: ignore[arg-type]
 
 
-RUN = RunContext(run_id=42, label="exp-1", tags=["cd2"], subject={"kind": "subject", "ref": "12", "resolved_id": 12})
+RUN = RunContext(
+    run_id=42,
+    trace_id="trace-42",
+    label="exp-1",
+    tags=["cd2"],
+    subject={"kind": "subject", "ref": "12", "resolved_id": 12},
+)
 
 
 def test_the_protocols_are_satisfied_structurally() -> None:
-    store: DatasetStore = _Store()
+    store: DatasetWriter = _Store()
     resolver: OwnerResolver = _Resolver()
     assert store is not None and resolver is not None
 
@@ -126,7 +132,8 @@ async def test_a_run_registers_what_it_wrote_with_its_coordinate_tags_and_subjec
     assert first.write["kind"] == "store" and first.write["origin"] == "event"
     attributes = first.write["attributes"]
     assert attributes["variant"] == 0 and attributes["generation"] == 1
-    assert attributes["hpcrun_id"] == 42 and attributes["span_id"] == "aaaabbbbccccdddd"
+    assert first.write["producer_job_id"] == 42 and first.write["trace_id"] == "trace-42"
+    assert "hpcrun_id" not in attributes and attributes["span_id"] == "aaaabbbbccccdddd"
     assert first.write["source"] == {
         "kind": "subject",
         "ref": "12",
