@@ -349,6 +349,17 @@ class HPCDatabaseService(ABC):
         pass
 
 
+def _naive_utc(iso: str) -> datetime.datetime:
+    """An ISO timestamp as the column stores it: ``TIMESTAMP WITHOUT TIME ZONE``, in UTC. A
+    Kubernetes Job reports ``…+00:00`` (asyncpg refuses a tz-aware value for that column -- found at
+    UConn, where the first completed build Job could not be recorded); SLURM reports naive local
+    time, which is taken as is."""
+    parsed = datetime.datetime.fromisoformat(iso)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(datetime.UTC).replace(tzinfo=None)
+    return parsed
+
+
 class HPCORMExecutor(HPCDatabaseService):
     async_session_maker: async_sessionmaker[AsyncSession]
 
@@ -540,9 +551,9 @@ class HPCORMExecutor(HPCDatabaseService):
                 raise RuntimeError(f"ComposeHpcRun {hpcrun_id} not found")
             orm.status = ComposeJobStatusDB(status.value)
             if start_time is not None:
-                orm.start_time = datetime.datetime.fromisoformat(start_time)
+                orm.start_time = _naive_utc(start_time)
             if end_time is not None:
-                orm.end_time = datetime.datetime.fromisoformat(end_time)
+                orm.end_time = _naive_utc(end_time)
             await session.flush()
 
     @override

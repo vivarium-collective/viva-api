@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from viva_core.compose.container_def import ContainerizationFileRepr
 from viva_core.compose.database_service import ComposeDatabaseService
 from viva_core.compose.job_monitor import ComposeJobMonitor
-from viva_core.compose.models import ComposeHpcRun, ComposeJobType
+from viva_core.compose.models import ComposeHpcRun, ComposeJobStatus, ComposeJobType
 from viva_core.compose.tables_orm import create_compose_db
 from viva_core.models import JobBackend
 
@@ -117,3 +117,30 @@ async def test_a_failed_build_does_not_suppress_the_next_one(compose_db: Compose
         slurmjobid=2, job_type=ComposeJobType.BUILD_CONTAINER, ref_id=simulator.database_id, correlation_id="a"
     )
     assert await hpc_db.get_hpcrun_id_by_simulator_id(simulator.database_id) == again.database_id
+
+
+@pytest.mark.asyncio
+async def test_a_kubernetes_jobs_tz_aware_times_are_stored_as_naive_utc(compose_db: ComposeDatabaseService) -> None:
+    """The first completed build Job at UConn could not be recorded: its times carry +00:00 and the
+    column is TIMESTAMP WITHOUT TIME ZONE, which asyncpg refuses a tz-aware value for."""
+    hpc_db = compose_db.get_hpc_db()
+    simulator = await compose_db.get_simulator_db().insert_simulator(
+        ContainerizationFileRepr(representation="Bootstrap: docker\nFrom: busybox\n# tz\n")
+    )
+    build = await hpc_db.insert_hpcrun(
+        slurmjobid=-1,
+        job_type=ComposeJobType.BUILD_CONTAINER,
+        ref_id=simulator.database_id,
+        correlation_id="k",
+        backend=JobBackend.K8S,
+        job_id_ext="singularity-build-abc12-00000",
+    )
+    await hpc_db.update_hpcrun_result(
+        build.database_id,
+        ComposeJobStatus.COMPLETED,
+        start_time="2026-09-26T14:23:28+00:00",
+        end_time="2026-09-26T16:24:26+02:00",  # any offset lands as UTC
+    )
+    stored = await hpc_db.get_hpcrun(build.database_id)
+    assert stored is not None and stored.status is ComposeJobStatus.COMPLETED
+    assert stored.start_time == "2026-09-26 14:23:28" and stored.end_time == "2026-09-26 14:24:26"
