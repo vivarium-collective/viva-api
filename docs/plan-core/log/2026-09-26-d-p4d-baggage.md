@@ -17,8 +17,8 @@
   `lineage_seed`, as the baggage does. `viva_core/datasets/registry.py::_coordinate` now reads an
   axis's own key, then its alias (`seed` ← `lineage_seed`), then the promoted baggage — presence, not
   truthiness, so an explicit `null` still suppresses the fallback exactly as before. The producer's
-  key stays in `attributes` beside `seed`; the baggage path is unchanged. Q-P2 (rename in the helper
-  or alias in the registry) is answered: the registry aliases.
+  key stays in `attributes` beside `seed`; the baggage path is unchanged. This is #655's proposal for
+  Q-P2, still open with Eran; if the helper renames instead, nothing here breaks (`seed` is read first).
   **Proof:** `tests/core/test_datasets_registry.py` (+2: a `lineage_seed` event registers with
   `seed` set; `seed` beats `lineage_seed`, which beats baggage), `tests/simulation/test_dispatch_events_identity.py`
   (+18, one per simulation dispatch module). `docs/OBSERVABILITY.md` §2 and §4 say what the dispatcher injects and the alias.
