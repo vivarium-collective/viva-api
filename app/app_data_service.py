@@ -15,6 +15,7 @@ from httpx import AsyncClient
 from pydantic import JsonValue
 from tqdm import tqdm
 
+from app.surface import Surface
 from viva_api.analysis.models import (
     AnalysisRun,
     DatasetDTO,
@@ -201,6 +202,14 @@ class E2EDataService:
             timeout=timeout,
             headers=_identity_headers(identity, identity_header),
         )
+        # Which spelling of core's surfaces this server serves, decided by capability once per
+        # client (app/surface.py). Reads ``self.client`` at call time: a test may swap it.
+        self.surface = Surface(lambda: self.client)
+
+    def _url(self, path: str) -> str:
+        """A compose / env-worker path, written here in the application's spelling, as the
+        server serves it: ``/viva/v1/…`` when it advertises ``viva-v1-surface``."""
+        return self.surface.rewrite(path)
 
     # -- Simulator --
 
@@ -1164,17 +1173,17 @@ class E2EDataService:
     # -- Compose (process-bigraph) --
 
     def compose_list_simulators(self) -> dict:  # type: ignore[type-arg]
-        resp = self.client.get("/compose/v1/simulators")
+        resp = self.client.get(self._url("/compose/v1/simulators"))
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
     def compose_list_processes(self) -> list[dict]:  # type: ignore[type-arg]
-        resp = self.client.get("/compose/v1/processes")
+        resp = self.client.get(self._url("/compose/v1/processes"))
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
     def compose_list_steps(self) -> list[dict]:  # type: ignore[type-arg]
-        resp = self.client.get("/compose/v1/steps")
+        resp = self.client.get(self._url("/compose/v1/steps"))
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
@@ -1186,7 +1195,7 @@ class E2EDataService:
             params["environment"] = environment
         with open(file_path, "rb") as f:
             resp = self.client.post(
-                "/compose/v1/simulation/run", files={"uploaded_file": (file_path.name, f)}, params=params
+                self._url("/compose/v1/simulation/run"), files={"uploaded_file": (file_path.name, f)}, params=params
             )
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
@@ -1200,7 +1209,7 @@ class E2EDataService:
         where it stops being fine, which is why viva-api grew this and why the
         workbench's job layer polls through it rather than looping.
         """
-        resp = self.client.get("/compose/v1/simulations/status/batch", params={"ids": simulation_ids})
+        resp = self.client.get(self._url("/compose/v1/simulations/status/batch"), params={"ids": simulation_ids})
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
@@ -1240,7 +1249,7 @@ class E2EDataService:
         # Outlive the server's own accept window rather than racing it: timing
         # out here would abandon a worker the server is still holding open for.
         client_timeout = (accept_timeout or 300.0) + 60.0
-        resp = self.client.post("/env-worker/v1/relay/workers", json=body, timeout=client_timeout)
+        resp = self.client.post(self._url("/env-worker/v1/relay/workers"), json=body, timeout=client_timeout)
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
@@ -1253,13 +1262,15 @@ class E2EDataService:
     ) -> dict:  # type: ignore[type-arg]
         """Forward one JSON-RPC call to a relayed worker."""
         body = {"method": method, "params": params or {}, "timeout": timeout}
-        resp = self.client.post(f"/env-worker/v1/relay/workers/{job_name}/call", json=body, timeout=timeout + 60.0)
+        resp = self.client.post(
+            self._url(f"/env-worker/v1/relay/workers/{job_name}/call"), json=body, timeout=timeout + 60.0
+        )
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
     def worker_stop(self, job_name: str) -> dict:  # type: ignore[type-arg]
         """Drop the connection and delete the Job. Idempotent server-side."""
-        resp = self.client.delete(f"/env-worker/v1/relay/workers/{job_name}")
+        resp = self.client.delete(self._url(f"/env-worker/v1/relay/workers/{job_name}"))
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
@@ -1282,13 +1293,13 @@ class E2EDataService:
         never 404 on a task it just accepted.
         """
         body = {"job_name": job_name, "method": method, "params": params or {}}
-        resp = self.client.post("/env-worker/v1/tasks", json=body)
+        resp = self.client.post(self._url("/env-worker/v1/tasks"), json=body)
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
     def worker_task(self, task_id: int) -> dict:  # type: ignore[type-arg]
         """One task: status, and its result or error once it settles."""
-        resp = self.client.get(f"/env-worker/v1/tasks/{task_id}")
+        resp = self.client.get(self._url(f"/env-worker/v1/tasks/{task_id}"))
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
@@ -1300,7 +1311,7 @@ class E2EDataService:
         poll loop would re-download all of it every few seconds.
         """
         params: list[tuple[str, str | int | float | bool | None]] = [("ids", str(i)) for i in task_ids]
-        resp = self.client.get("/env-worker/v1/tasks/status/batch", params=params)
+        resp = self.client.get(self._url("/env-worker/v1/tasks/status/batch"), params=params)
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
@@ -1308,7 +1319,7 @@ class E2EDataService:
         """Cancel a task. The one authorization rule in the API lives here: you
         cannot cancel a task you did not start, so this is the single place an
         identity is REQUIRED rather than merely recorded."""
-        resp = self.client.delete(f"/env-worker/v1/tasks/{task_id}")
+        resp = self.client.delete(self._url(f"/env-worker/v1/tasks/{task_id}"))
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
@@ -1330,17 +1341,17 @@ class E2EDataService:
         if capability not in READ_CAPABILITIES:
             known = ", ".join(READ_CAPABILITIES)
             raise ValueError(f"unknown worker capability {capability!r}; expected one of {known}")
-        resp = self.client.get(f"/env-worker/v1/relay/workers/{job_name}/{capability}", params=params or {})
+        resp = self.client.get(self._url(f"/env-worker/v1/relay/workers/{job_name}/{capability}"), params=params or {})
         resp.raise_for_status()
         return resp.json()
 
     def compose_get_simulation_status(self, simulation_id: int) -> dict:  # type: ignore[type-arg]
-        resp = self.client.get(f"/compose/v1/simulation/{simulation_id}/status")
+        resp = self.client.get(self._url(f"/compose/v1/simulation/{simulation_id}/status"))
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
     def compose_get_simulation_results(self, simulation_id: int, dest: Path) -> Path:
-        resp = self.client.get(f"/compose/v1/simulation/{simulation_id}/results")
+        resp = self.client.get(self._url(f"/compose/v1/simulation/{simulation_id}/results"))
         resp.raise_for_status()
         dest.mkdir(parents=True, exist_ok=True)
         # Name the file for what it IS. The Ray path streams a gzipped tar and the SLURM path
@@ -1351,12 +1362,12 @@ class E2EDataService:
         return out_file
 
     def compose_get_simulation_document(self, simulation_id: int) -> dict:  # type: ignore[type-arg]
-        resp = self.client.get(f"/compose/v1/simulation/{simulation_id}/document")
+        resp = self.client.get(self._url(f"/compose/v1/simulation/{simulation_id}/document"))
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
     def compose_get_build_status(self, simulator_id: int) -> dict:  # type: ignore[type-arg]
-        resp = self.client.get(f"/compose/v1/simulator/{simulator_id}/build/status")
+        resp = self.client.get(self._url(f"/compose/v1/simulator/{simulator_id}/build/status"))
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
@@ -1369,7 +1380,7 @@ class E2EDataService:
         cache_dir: str = "out/cache",
     ) -> dict:  # type: ignore[type-arg]
         resp = self.client.post(
-            "/compose/v1/curated/ecoli",
+            self._url("/compose/v1/curated/ecoli"),
             params={
                 "duration": duration,
                 "seed": seed,
@@ -1384,7 +1395,7 @@ class E2EDataService:
     def compose_run_copasi(self, sbml_path: Path, start_time: float, duration: float, num_data_points: float) -> dict:  # type: ignore[type-arg]
         with open(sbml_path, "rb") as f:
             resp = self.client.post(
-                "/compose/v1/curated/copasi",
+                self._url("/compose/v1/curated/copasi"),
                 files={"sbml": (sbml_path.name, f)},
                 params={"start_time": start_time, "duration": duration, "num_data_points": num_data_points},
             )
@@ -1392,12 +1403,12 @@ class E2EDataService:
         return resp.json()  # type: ignore[no-any-return]
 
     def compose_biomodels_identifiers(self, n: int = 20) -> list[str]:
-        resp = self.client.get("/compose/v1/biomodels/identifiers", params={"n": n})
+        resp = self.client.get(self._url("/compose/v1/biomodels/identifiers"), params={"n": n})
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
     def compose_biomodels_metadata(self, biomodel_id: str) -> dict:  # type: ignore[type-arg]
-        resp = self.client.get(f"/compose/v1/biomodels/{biomodel_id}/metadata")
+        resp = self.client.get(self._url(f"/compose/v1/biomodels/{biomodel_id}/metadata"))
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
@@ -1421,7 +1432,7 @@ class E2EDataService:
             payload["n_models"] = n_models
         if simulators is not None:
             payload["simulators"] = simulators
-        resp = self.client.post("/compose/v1/biomodels/run", json=payload)
+        resp = self.client.post(self._url("/compose/v1/biomodels/run"), json=payload)
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
@@ -1430,7 +1441,7 @@ class E2EDataService:
     ) -> dict:  # type: ignore[type-arg]
         with open(sbml_path, "rb") as f:
             resp = self.client.post(
-                "/compose/v1/curated/tellurium",
+                self._url("/compose/v1/curated/tellurium"),
                 files={"sbml": (sbml_path.name, f)},
                 params={"start_time": start_time, "end_time": end_time, "num_data_points": num_data_points},
             )

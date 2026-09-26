@@ -60,6 +60,8 @@ from typing import Any, Protocol
 import httpx
 import yaml
 
+from app.surface import Surface
+
 HTTP_METHODS = ("get", "post", "put", "delete", "patch")
 
 #: The composite the compose check runs: a level that grows 10% per step, five steps.
@@ -245,7 +247,20 @@ class Check:
 # --------------------------------------------------------------------------- helpers
 
 
+_SURFACES: dict[int, Surface] = {}
+
+
+def _surface(svc: SmokeService) -> Surface:
+    """The server's spelling of core's surfaces, asked once per client (app/surface.py): the checks
+    write the application's spelling and are rewritten to what the deployment advertises."""
+    key = id(svc.client)
+    if key not in _SURFACES:
+        _SURFACES[key] = Surface(lambda: svc.client)
+    return _SURFACES[key]
+
+
 def _get_json(svc: SmokeService, path: str, **params: Any) -> Any:
+    path = _surface(svc).rewrite(path)
     resp = svc.client.get(path, params=params or None)
     if resp.status_code != 200:
         raise CheckFailed(f"GET {path} -> {resp.status_code}: {resp.text[:200]}")
@@ -488,7 +503,9 @@ def check_routes(svc: SmokeService, _: SmokeOptions) -> tuple[str, dict[str, Any
 
 
 def check_capabilities(svc: SmokeService, _: SmokeOptions) -> tuple[str, dict[str, Any]]:
-    body = _get_json(svc, "/core/v1/capabilities")
+    # core's route first (the application serves it since P3g; a standalone core serves only it)
+    resp = svc.client.get("/viva/v1/capabilities")
+    body = resp.json() if resp.status_code == 200 else _get_json(svc, "/core/v1/capabilities")
     capabilities = body.get("capabilities")
     if not isinstance(capabilities, list) or not capabilities:
         raise CheckFailed(f"no capabilities advertised: {body!r}")
@@ -545,7 +562,8 @@ def check_relay(svc: SmokeService, _: SmokeOptions) -> tuple[str, dict[str, Any]
     """A call to a worker that does not exist: a JSON 404 means the relay is live and the
     path reaches this API; 503 means the relay is switched off; an HTML 404 means the
     gateway sent ``/env-worker`` somewhere else entirely."""
-    resp = svc.client.post("/env-worker/v1/relay/workers/smoke-no-such-worker/call", json={"method": "ping"})
+    probe_path = _surface(svc).rewrite("/env-worker/v1/relay/workers/smoke-no-such-worker/call")
+    resp = svc.client.post(probe_path, json={"method": "ping"})
     kind = resp.headers.get("content-type", "")
     evidence = {"status": resp.status_code, "content_type": kind}
     if resp.status_code == 503:
@@ -819,7 +837,8 @@ def check_worker(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, 
     """Start a relayed env worker (a real K8s Job), read from it, run one task on its task
     tier, stop it. Covers the Job, the dial-back, the held socket, the named read route,
     the durable task record and the runner."""
-    probe = svc.client.post("/env-worker/v1/relay/workers/smoke-no-such-worker/call", json={"method": "ping"})
+    probe_path = _surface(svc).rewrite("/env-worker/v1/relay/workers/smoke-no-such-worker/call")
+    probe = svc.client.post(probe_path, json={"method": "ping"})
     if probe.status_code == 503:
         raise SkipCheck("relay is off on this deployment (503)")
     commit = _resolve_commit(svc, opts)
