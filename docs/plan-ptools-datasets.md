@@ -1,5 +1,7 @@
 # ptools datasets: integrating `dataset` records into the Pathway Tools page
 
+**Tracked in [`plan-core.md`](plan-core.md) since 2026-09-26 (one coordinated effort).** The API this consumer needs is served by core since P4a-2 (`/viva/v1/datasets`; `/api/v1/datasets` a dated facade); the page change is **D18's datasets-shaped `sms.js`** (P5b), rebuilt into `sms-ptools` per site before removal M7. The status line below is as of 2026-09-14 and is history.
+
 **Status (2026-09-14): plan, not started.** Follow-up to
 [`plan-task-provenance.md`](plan-task-provenance.md) (viva-api PR #656 / issue #655), which
 is slice 2; and, first, to [`plan-data-provenance.md`](plan-data-provenance.md), **slice 1**,
