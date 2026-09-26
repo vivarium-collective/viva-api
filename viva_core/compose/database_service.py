@@ -288,8 +288,10 @@ class HPCDatabaseService(ABC):
         ref_id: int,
         correlation_id: str,
         backend: "JobBackend | None" = None,
+        job_id_ext: str | None = None,
     ) -> ComposeHpcRun:
-        """``backend`` tags who owns the job from the start. The SLURM paths that submit BEFORE
+        """``backend`` tags who owns the job from the start; ``job_id_ext`` is its handle on a backend
+        whose ids are not SLURM's ints (a Kubernetes Job's name). The SLURM paths that submit BEFORE
         inserting (a container build) must say so, or the row carries the column's default
         (``ray``) and the monitor never polls it over SSH; a placeholder inserted before dispatch
         leaves it unset and ``update_hpcrun_dispatch`` tags it."""
@@ -304,6 +306,10 @@ class HPCDatabaseService(ABC):
 
     @abstractmethod
     async def get_hpcrun_by_slurmjobid(self, slurmjobid: int) -> ComposeHpcRun | None:
+        pass
+
+    @abstractmethod
+    async def get_hpcrun(self, hpcrun_id: int) -> ComposeHpcRun | None:
         pass
 
     @abstractmethod
@@ -333,6 +339,12 @@ class HPCDatabaseService(ABC):
         """Flip a placeholder/in-flight row to FAILED (e.g. a background dispatch throw)."""
 
     @abstractmethod
+    async def update_hpcrun_result(
+        self, hpcrun_id: int, status: ComposeJobStatus, start_time: str | None = None, end_time: str | None = None
+    ) -> None:
+        """What a backend other than SLURM reported (a Kubernetes Job's condition and times)."""
+
+    @abstractmethod
     async def insert_worker_event(self, worker_event: ComposeWorkerEvent, hpcrun_id: int) -> ComposeWorkerEvent:
         pass
 
@@ -358,6 +370,7 @@ class HPCORMExecutor(HPCDatabaseService):
         ref_id: int,
         correlation_id: str,
         backend: "JobBackend | None" = None,
+        job_id_ext: str | None = None,
     ) -> ComposeHpcRun:
         async with self.async_session_maker() as session, session.begin():
             simulation_key = ref_id if job_type == ComposeJobType.SIMULATION else None
@@ -373,6 +386,8 @@ class HPCORMExecutor(HPCDatabaseService):
             )
             if backend is not None:
                 orm.job_backend = backend.value
+            if job_id_ext is not None:
+                orm.job_id_ext = job_id_ext
             session.add(orm)
             await session.flush()
             return orm.to_hpc_run()
@@ -400,6 +415,16 @@ class HPCORMExecutor(HPCDatabaseService):
                         select(ORMComposeHpcRun).where(ORMComposeHpcRun.slurmjobid == slurmjobid).limit(1)
                     )
                 )
+                .scalars()
+                .first()
+            )
+            return orm.to_hpc_run() if orm else None
+
+    @override
+    async def get_hpcrun(self, hpcrun_id: int) -> ComposeHpcRun | None:
+        async with self.async_session_maker() as session:
+            orm = (
+                (await session.execute(select(ORMComposeHpcRun).where(ORMComposeHpcRun.id == hpcrun_id)))
                 .scalars()
                 .first()
             )
@@ -489,6 +514,25 @@ class HPCORMExecutor(HPCDatabaseService):
             orm.status = ComposeJobStatusDB.FAILED
             orm.error_message = error_message[:2000]
             orm.end_time = datetime.datetime.now()
+            await session.flush()
+
+    @override
+    async def update_hpcrun_result(
+        self, hpcrun_id: int, status: ComposeJobStatus, start_time: str | None = None, end_time: str | None = None
+    ) -> None:
+        async with self.async_session_maker() as session, session.begin():
+            orm = (
+                (await session.execute(select(ORMComposeHpcRun).where(ORMComposeHpcRun.id == hpcrun_id)))
+                .scalars()
+                .first()
+            )
+            if orm is None:
+                raise RuntimeError(f"ComposeHpcRun {hpcrun_id} not found")
+            orm.status = ComposeJobStatusDB(status.value)
+            if start_time is not None:
+                orm.start_time = datetime.datetime.fromisoformat(start_time)
+            if end_time is not None:
+                orm.end_time = datetime.datetime.fromisoformat(end_time)
             await session.flush()
 
     @override

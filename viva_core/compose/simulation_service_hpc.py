@@ -73,6 +73,17 @@ class ContainerRun(Protocol):
     ) -> RunPlan | None: ...
 
 
+class ContainerBuild(Protocol):
+    """A way of building a composite's container OTHER than an sbatch on the HPC (U-track,
+    2026-09-26: a Kubernetes Job, ``viva_core.compose.build_k8s``). Given the job name, the
+    definition file and the image path -- both on the filesystem the SLURM nodes read -- submit the
+    build and answer with the backend's handle for it. ``backend`` says who the monitor should ask."""
+
+    backend: JobBackend
+
+    async def __call__(self, job_name: str, definition: Path, container: Path) -> str: ...
+
+
 class ComposeSimulationServiceHpc(ComposeSimulationService):
     env: CoreSettings
     backend = JobBackend.SLURM
@@ -84,6 +95,7 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
         slurm_ssh: Callable[[], SSHSessionService] | None = None,
         run_command: ContainerRun | None = None,
         results_cache_dir: Path = DEFAULT_RESULTS_CACHE_DIR,
+        container_build: ContainerBuild | None = None,
     ) -> None:
         self.env = env or get_core_settings()
         # The SSH sessions jobs are submitted over, HANDED IN as a provider (P3d-3).
@@ -91,6 +103,8 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
         # The application's run command for its own images, if any (U2b-1).
         self._run_command = run_command
         self._results_cache_dir = results_cache_dir
+        # How containers are built when not by an sbatch on the HPC (a Kubernetes Job, at UConn).
+        self._container_build = container_build
 
     def _ssh_sessions(self) -> SSHSessionService:
         if self._slurm_ssh is None:
@@ -255,18 +269,27 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
             local_submit_file.write_text(script_content)
 
             async with self._ssh_sessions().session() as ssh:
-                slurm_service = SlurmService()
+                # The definition goes onto the shared filesystem either way: the sbatch reads it there,
+                # and so does a build Job (it mounts the same filesystem at the same path).
                 remote_def = HPCFilePath(remote_path=singularity_def_file)
                 await ssh.scp_upload(local_file=local_singularity_file, remote_path=remote_def)
-                remote_sbatch = HPCFilePath(remote_path=get_compose_slurm_submit_file(slurm_job_name=slurm_job_name))
-                slurm_jobid = await slurm_service.submit_job(
-                    ssh,
-                    local_sbatch_file=local_submit_file,
-                    remote_sbatch_file=remote_sbatch,
-                )
+                if self._container_build is not None:
+                    backend = self._container_build.backend
+                    job_id_ext: str | None = await self._container_build(
+                        slurm_job_name.replace("_", "-"), singularity_def_file, singularity_container
+                    )
+                    slurm_jobid = -1
+                else:
+                    backend, job_id_ext = JobBackend.SLURM, None
+                    remote_sbatch = HPCFilePath(
+                        remote_path=get_compose_slurm_submit_file(slurm_job_name=slurm_job_name)
+                    )
+                    slurm_jobid = await SlurmService().submit_job(
+                        ssh, local_sbatch_file=local_submit_file, remote_sbatch_file=remote_sbatch
+                    )
 
-            # Tagged SLURM at insert: the job is already submitted, and an untagged row carries the
-            # column's default (ray), which the monitor would never poll over SSH.
+            # Tagged at insert with whoever owns the job: an untagged row carries the column's default
+            # (ray), which the monitor would never poll (found at UConn UB).
             hpc_run = await db_service.get_hpc_db().insert_hpcrun(
                 slurmjobid=slurm_jobid,
                 job_type=ComposeJobType.BUILD_CONTAINER,
@@ -274,6 +297,7 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
                 correlation_id=get_compose_correlation_id(
                     random_string=random_str, job_type=ComposeJobType.BUILD_CONTAINER
                 ),
-                backend=JobBackend.SLURM,
+                backend=backend,
+                job_id_ext=job_id_ext,
             )
             return hpc_run

@@ -208,7 +208,7 @@ async def _dispatch_compose_job(
             simulator_version=simulator_version, random_str=random_string, db_service=database_service
         )
         job_queue: asyncio.Queue[ComposeHpcRun] = asyncio.Queue()
-        job_monitor.internal_subscribe(job_queue, hpc_run.slurmjobid)
+        job_monitor.internal_subscribe(job_queue, hpc_run.database_id)
         wait_time = 0
         current_status = hpc_run.status
         while current_status != ComposeJobStatus.COMPLETED:
@@ -216,7 +216,7 @@ async def _dispatch_compose_job(
             try:
                 current_status = (await asyncio.wait_for(job_queue.get(), timeout=60)).status
             except TimeoutError:
-                latest = await hpc_db.get_hpcrun_by_slurmjobid(hpc_run.slurmjobid)
+                latest = await hpc_db.get_hpcrun(hpc_run.database_id)
                 if latest is None:
                     raise RuntimeError(
                         f"Can't get HPC Run for container build {simulator_version.singularity_def_hash}"
@@ -226,7 +226,7 @@ async def _dispatch_compose_job(
                 raise RuntimeError(f"Building container for simulator {simulator_version.database_id} failed.")
             elif wait_time == 30:
                 raise RuntimeError(f"Container build for simulator {simulator_version.database_id} timed out.")
-        job_monitor.internal_unsubscribe(hpc_run.slurmjobid)
+        job_monitor.internal_unsubscribe(hpc_run.database_id)
 
     sim_job_id_ext = await simulation_service.submit_simulation_job(
         simulation=simulation, experiment_id=experiment_id, override_command=override_command
