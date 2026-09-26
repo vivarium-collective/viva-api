@@ -900,9 +900,12 @@ async def get_simulation_observables(
 
 @config.router.post(
     path="/analyses",
-    operation_id="run-ecoli-simulation-analysis",
+    # Until 2026-09-25 this carried the same operation id as `POST /simulations/{id}/analysis`
+    # (`run-ecoli-simulation-analysis`) -- invalid OpenAPI, and the generated client kept only one
+    # of the two. This is the legacy, SLURM-only entry point; its id says so (plan-core P3g).
+    operation_id="run-slurm-analysis",
     tags=["Analyses"],
-    summary="Run an analysis",
+    summary="Run an analysis (legacy, SLURM sites only)",
     dependencies=[
         Depends(get_database_service),
     ],

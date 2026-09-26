@@ -28,7 +28,9 @@ from viva_core.environments import (
 
 
 class RegistrySettings(Protocol):
-    """The three settings that say where this site's environments live."""
+    """The settings that say where this site's environments live: an ECR account and region (an AWS
+    site), or any registry named in full (``environment_registry`` + ``environment_repository``:
+    ``ghcr.io/vivarium-collective`` + ``viva-core`` on an on-premises site, U2d)."""
 
     @property
     def ecr_account_id(self) -> str: ...
@@ -38,8 +40,18 @@ class RegistrySettings(Protocol):
     def ray_ecr_repository(self) -> str: ...
 
 
-#: Named in the refusal, so whoever reads it knows what to set.
-ACCOUNT_UNSET = "ecr_account_id is unset (ECR_ACCOUNT_ID): cannot say where this site's environment images live"
+#: Named in the refusal, so whoever reads it knows what to set -- either way.
+ACCOUNT_UNSET = (
+    "ecr_account_id is unset (ECR_ACCOUNT_ID) and no registry is named (ENVIRONMENT_REGISTRY + "
+    "ENVIRONMENT_REPOSITORY): cannot say where this site's environment images live"
+)
+
+
+def _named(settings: object, name: str) -> str:
+    """An optional str setting, read with ``getattr``: the settings handed in are often a test double
+    that names only what its test is about, and a MagicMock answers every attribute with a Mock."""
+    value = getattr(settings, name, "")
+    return value if isinstance(value, str) else ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,16 +82,19 @@ def site_resolver(settings: RegistrySettings) -> EnvironmentResolver:
     """``CORE_RUNTIME_IMAGE``, when the site sets it, is registered as the environment for a composite
     that needs nothing beyond the built-ins. Read with ``getattr``: it is optional, and the settings
     handed in here are often a test double that names only what its test is about."""
-    named = getattr(settings, "core_runtime_image", "")
-    # a str, and not empty: a MagicMock settings double answers every attribute with a Mock
-    runtime_image = named if isinstance(named, str) and named else None
-    if not settings.ecr_account_id:
-        return _RegistryNotConfigured(runtime_image=runtime_image)
-    return RegistryEnvironmentResolver(
-        registry=ecr_registry(account_id=settings.ecr_account_id, region=settings.batch_region),
-        repository=settings.ray_ecr_repository,
-        runtime_image=runtime_image,
-    )
+    runtime_image = _named(settings, "core_runtime_image") or None
+    if settings.ecr_account_id:
+        return RegistryEnvironmentResolver(
+            registry=ecr_registry(account_id=settings.ecr_account_id, region=settings.batch_region),
+            repository=settings.ray_ecr_repository,
+            runtime_image=runtime_image,
+        )
+    # No ECR account: a site that names its registry in full (a standalone core on RKE2 pulling
+    # from ghcr, U2d) resolves the same way; a site that names neither is refused by name.
+    registry, repository = _named(settings, "environment_registry"), _named(settings, "environment_repository")
+    if registry and repository:
+        return RegistryEnvironmentResolver(registry=registry, repository=repository, runtime_image=runtime_image)
+    return _RegistryNotConfigured(runtime_image=runtime_image)
 
 
 def environment_image(settings: RegistrySettings, key: str, *, variant: str = "") -> str:

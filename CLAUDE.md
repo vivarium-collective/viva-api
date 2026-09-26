@@ -65,38 +65,42 @@ API requests hit FastAPI routers (`viva_api/api/routers/`) which depend on servi
 
 ### Compute Backend Dispatch
 
-Backend selection is determined by `deployment_namespace` in `viva_api/config.py`:
-- **SLURM** (default): `sms-api-rke`, `sms-api-rke-dev` — UCONN CCAM on-prem HPC
-  — **UNSUPPORTED from this repo; see below**
+Backend selection is by **`COMPUTE_BACKEND`** (`Settings.compute_backend`, no default) plus the
+per-service settings `dependencies.py` checks at startup (`k8s_job_namespace` for Batch,
+`ray_mnp_queue` for Ray, `slurm_submit_host` + key for SLURM's SSH). `deployment_namespace` is
+**dead config** — declared, set in the RKE ConfigMaps, read by nothing (corrected 2026-09-25;
+it used to say the namespace selected the backend):
+- **SLURM**: `sms-api-rke`, `sms-api-rke-dev` — UConn CCAM on-prem RKE2 + Mantis HPC
+  — **the SMS overlays are frozen; core has its own track; see below**
 - **K8s + AWS Batch**: `sms-api-stanford`, `sms-api-stanford-test` — GovCloud
 
-> #### ⚠️ `sms-api-rke` / `sms-api-rke-dev` are currently UNSUPPORTED
+> #### ⚠️ UConn (`sms-api-rke` / `sms-api-rke-dev`): SMS overlays FROZEN; core is a live target
 >
-> **Do not deploy to them from this repo.** They are not a maintained target;
-> the SLURM code paths remain in the tree and the Stanford namespaces are the
-> supported ones.
+> **Do not apply `kustomize/overlays/sms-api-rke*` from this repo** (plan-core D21). The
+> RKE SMS service is **live** — `https://sms.cam.uchc.edu/version` answers `"0.10.0-rc1"`
+> (still, 2026-09-25) — but it is **not deployed from these overlays, and 0.10.0-rc1 is
+> not on `main`**: it is `36849f0b` on the unmerged branch `feat/ptools-latency-mitigation`
+> (Alex, 2026-06-02, 4 commits ahead of a May merge-base). The checked-in overlays pin
+> `sms-api-rke: 0.9.4` and `sms-api-rke-dev: 0.9.1`, so `kubectl apply -k
+> kustomize/overlays/sms-api-rke` would **roll a live deployment BACKWARDS**. Their
+> `*-db-migration` overlays (`0.4.9-dev` / `0.4.6-dev`) predate `db_reconcile.py` and run
+> bare `alembic upgrade head`; the live database carries **3** Alembic revisions against
+> 22 on `main`. `.github/workflows/ptools-verification.yml` targets UConn prod and is
+> disabled.
 >
-> The RKE service is **live** — `https://sms.cam.uchc.edu/version` answered
-> `"0.10.0-rc1"` on 2026-08-28 — but it is **not deployed from these overlays,
-> and 0.10.0-rc1 is not on `main`.** That version comes from `36849f0b`
-> ("bump version to 0.10.0-rc1 for pre-merge test image", 2026-06-02) on the
-> unmerged branch `feat/ptools-latency-mitigation`.
+> **Core is different** (Jim, 2026-09-25): core must run **standalone** at UConn — RKE2 +
+> SLURM, served at `sms.cam.uchc.edu/viva/v1` — as an end goal; SMS running there again is
+> a follow-on. That work is plan-core **§4b** (steps U0–U5, checkpoints UA–UE): a **new**
+> overlay `kustomize/overlays/viva-core-rke{-dev}/` (core as its own Deployment beside the
+> rc1 `api` pod, its **own database** on the CNPG cluster, additive nginx ingress paths
+> `/viva` + `/env-worker`), a local SLURM cluster in Docker for tests (ported from
+> `../compose-api/tests/fixtures/slurm_cluster/`), and the SLURM compose service moving
+> into core. Live facts and the ranked gaps are in §4b.
 >
-> **The danger is concrete:** the checked-in overlays read as authoritative and
-> are not. They pin `sms-api-rke: 0.9.4` and `sms-api-rke-dev: 0.9.1`, so
-> `kubectl apply -k kustomize/overlays/sms-api-rke` would **roll a live
-> deployment BACKWARDS** from 0.10.0-rc1 to 0.9.4.
->
-> Their `*-db-migration` overlays are staler still — `0.4.9-dev` / `0.4.6-dev`,
-> untouched since Feb/Mar 2026 — and predate `db_reconcile.py` (added in
-> 0.9.19), so they still run bare `alembic upgrade head`. That is exactly the
-> failure the reconciler exists to prevent (see "Database migrations"). They
-> are inert only because nobody applies them.
->
-> The cluster API (`155.37.250.221:6443`) is unreachable off-campus, so the
-> public `/version` is the only check available from a laptop. Before touching
-> anything RKE, find out who owns that deployment now and how it is actually
-> deployed — the answer is not in this repo.
+> **Access:** the cluster API (`155.37.250.221:6443`) is reachable **on VPN** with
+> `KUBECONFIG=~/.kube/kubeconfig_vxrails.yaml` (read-only is fine; nothing is applied
+> without an explicit go); off VPN only the public hosts answer. SSH to the HPC goes through
+> the in-cluster `haproxy-ssh` Service (round-robin to `mantis-sub-3…10.cam.uchc.edu`).
 
 The dispatch happens in `dependencies.py` at startup: `SimulationServiceHpc` for SLURM, `SimulationServiceK8s` for K8s.
 
@@ -110,12 +114,12 @@ Config filenames are also namespace-aware via `viva_api/common/simulator_default
 The API has three client entrypoints that implement the same EUTE workflow:
 - **CLI** (`app.cli`): `uv run atlantis <command>` — Typer + Rich, Memphis theme
 - **TUI** (`app.tui`): `uv run atlantis tui` — Textual app, animated logo banner
-- **GUI** (`app.gui`): `uv run atlantis gui` — Marimo notebook, Memphis CSS theme
+- **GUI** (`app.ui.dashboard`): `uv run atlantis gui` — Marimo notebook, Memphis CSS theme
 
 The Atlantis logo (E. coli capsule + flagella squigglies) is defined in:
 - `app/cli_theme.py` — CLI Rich markup
 - `app/tui.py` — TUI with animated green↔purple gradient (`_animated_banner()`)
-- `app/gui.py` — GUI with HTML/CSS + SVG flagella
+- `app/ui/dashboard.py` — GUI with HTML/CSS + SVG flagella (also served at `/ws/Dashboard`)
 
 #### Env workers, and the relay (`/env-worker`)
 
@@ -285,6 +289,11 @@ uv run pytest              # Run all tests
 uv run pytest -x           # Stop on first failure
 uv run pytest tests/path/test_file.py::TestClass::test_method -v -s  # Single test
 uv run pytest tests/integration/test_hpc_workflow.py -v              # Integration tests (need SSH)
+uv run pytest -m slurm                                # The SSH/SLURM tests against a SLURM cluster in DOCKER
+                                                      # (tests/fixtures/slurm_cluster; needs only Docker; ~1 min
+                                                      # after the first image pull). `--slurm-backend cluster`
+                                                      # runs the same bodies against Mantis (key + VPN); both
+                                                      # at once compare the two.
 ```
 
 ### After Making Significant Changes

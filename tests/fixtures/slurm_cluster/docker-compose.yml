@@ -1,0 +1,159 @@
+# A minimal SLURM cluster for tests, derived from giovtorres/slurm-docker-cluster.
+#
+# Differences from upstream, all deliberate:
+#   * the published multi-arch image is used directly, so there is no `build:` section
+#     and no compiling SLURM from source on first run;
+#   * no `container_name:` anywhere, so two runs on one host do not collide;
+#   * slurmrestd, the GPU worker and the Open OnDemand portal are omitted;
+#   * SSH is on by default, because driving sbatch/squeue/sacct over SSH with a key is
+#     the whole point here. SSH_AUTHORIZED_KEYS must be set to a readable file.
+#
+# Publishing container port 22 on host port 0 lets Docker choose a free port, which is
+# what makes concurrent test runs and CI safe. Read it back with `docker compose port`.
+services:
+  mysql:
+    image: mariadb:12
+    hostname: mysql
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+      MYSQL_DATABASE: slurm_acct_db
+      MYSQL_USER: slurm
+      MYSQL_PASSWORD: password
+    volumes:
+      - var_lib_mysql:/var/lib/mysql
+    networks: [slurm-network]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  slurmdbd:
+    image: giovtorres/slurm-docker-cluster:${SLURM_VERSION:-26.05.2}
+    init: true
+    command: ["slurmdbd"]
+    hostname: slurmdbd
+    environment:
+      MYSQL_USER: slurm
+      MYSQL_PASSWORD: password
+    volumes:
+      - etc_munge:/etc/munge
+      - etc_slurm:/etc/slurm
+      - var_log_slurm:/var/log/slurm
+    expose: ["6819"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks: [slurm-network]
+    healthcheck:
+      test: ["CMD-SHELL", "pidof slurmdbd"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  slurmctld:
+    image: giovtorres/slurm-docker-cluster:${SLURM_VERSION:-26.05.2}
+    init: true
+    command: ["slurmctld"]
+    hostname: slurmctld
+    privileged: true
+    working_dir: /data
+    environment:
+      SSH_ENABLE: "true"
+    volumes:
+      - etc_munge:/etc/munge:z
+      - etc_slurm:/etc/slurm:z
+      - slurm_jobdir:/data:z
+      - var_log_slurm:/var/log/slurm:z
+      - ${SSH_AUTHORIZED_KEYS:?set SSH_AUTHORIZED_KEYS to an authorized_keys file}:/tmp/authorized_keys_host:ro,z
+      # see the file itself: without this, sshd's PAM account stage denies root on some
+      # hosts and drops the connection before a key is ever offered
+      - ./sshd_test.conf:/etc/ssh/sshd_config.d/01-tests.conf:ro
+      # see the file itself: without a subordinate id range, `singularity build --fakeroot`
+      # cannot create its user namespace, and the production build path uses --fakeroot
+      - ./subid:/etc/subuid:ro
+      - ./subid:/etc/subgid:ro
+    ports:
+      - "0:22"
+    expose: ["6817"]
+    depends_on:
+      slurmdbd:
+        condition: service_healthy
+    networks: [slurm-network]
+    healthcheck:
+      test: ["CMD-SHELL", "scontrol ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  cpu-worker:
+    image: giovtorres/slurm-docker-cluster:${SLURM_VERSION:-26.05.2}
+    init: true
+    command: ["slurmd-cpu"]
+    working_dir: /data
+    privileged: true
+    environment:
+      # Compose names every container it creates "<project>-<service>-<index>" and
+      # registers that name in the network's DNS. A container cannot discover its own
+      # project name -- that is a host-side concept -- so it has to be handed in.
+      #
+      # The upstream entrypoint needs it to work out which replica it is: it asks DNS for
+      # "<project>-cpu-worker-1", "-2", ... and compares each answer to its own address,
+      # then names itself c1, c2 accordingly. Drop this line and the lookup becomes
+      # "-cpu-worker-1", which resolves to nothing; the helper then takes its fallback
+      # path and returns non-zero, and because the entrypoint runs under `set -e` the
+      # container dies before slurmd ever starts.
+      #
+      # No guard here on purpose. Compose substitutes the *effective* project name, so
+      # this always matches reality: the directory name by default, or whatever `-p` or
+      # the COMPOSE_PROJECT_NAME environment variable set. It cannot drift, and a `:?`
+      # guard would assert something that can never be false. The test fixture sets a
+      # random project name per session so concurrent runs get separate containers,
+      # networks and volumes.
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME}
+    volumes:
+      - etc_munge:/etc/munge
+      - etc_slurm:/etc/slurm
+      - slurm_jobdir:/data
+      - var_log_slurm:/var/log/slurm
+      # see the file itself: without a subordinate id range, `singularity build --fakeroot`
+      # cannot create its user namespace, and the production build path uses --fakeroot
+      - ./subid:/etc/subuid:ro
+      - ./subid:/etc/subgid:ro
+    expose: ["6818"]
+    depends_on:
+      slurmctld:
+        condition: service_healthy
+    networks: [slurm-network]
+    healthcheck:
+      test: ["CMD-SHELL", "pidof slurmd"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    deploy:
+      # One worker, deliberately. The upstream entrypoint derives a worker's node name
+      # from its Compose replica index by resolving `${COMPOSE_PROJECT_NAME}-cpu-worker-N`
+      # over Docker DNS, walking N upward from 1. Replica 2 therefore depends on replica
+      # 1 already being resolvable, and when it is not the helper takes its fallback path
+      # and `return 1` -- under the entrypoint's `set -e`, that kills the container before
+      # slurmd ever starts, as `cpu-worker-2 exited (1)`. Compose starts replicas
+      # concurrently and offers no ordering between them, so the race is unavoidable at
+      # two or more. A single replica resolves only its own name and cannot lose it.
+      #
+      # Nothing here needs a second compute node; jobs simply queue. Raising this means
+      # fixing the upstream race first.
+      replicas: 1
+
+volumes:
+  etc_munge:
+  etc_slurm:
+  slurm_jobdir:
+  var_lib_mysql:
+  var_log_slurm:
+
+networks:
+  slurm-network:

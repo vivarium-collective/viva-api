@@ -7,6 +7,7 @@ from asyncio import Queue
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Protocol
 
+from viva_core.backends.k8s_job_service import K8sJobService
 from viva_core.backends.slurm_service import SlurmService
 from viva_core.compose.database_service import ComposeDatabaseService
 from viva_core.compose.models import (
@@ -17,7 +18,7 @@ from viva_core.compose.models import (
 )
 from viva_core.compose.service import ComposeSimulationService
 from viva_core.infra.ssh.ssh_service import SSHSessionService
-from viva_core.models import ComputeBackend, JobBackend
+from viva_core.models import ComputeBackend, JobBackend, JobStatus
 from viva_core.settings import get_core_settings as get_settings
 
 logger = logging.getLogger(__name__)
@@ -53,9 +54,13 @@ class ComposeJobMonitor:
         database_service: ComposeDatabaseService,
         sim_registry: Mapping[ComputeBackend, ComposeSimulationService] | None = None,
         slurm_ssh: Callable[[], SSHSessionService] | None = None,
+        k8s_jobs: K8sJobService | None = None,
     ) -> None:
         self.nats_client = nats_client
         self.database_service = database_service
+        # The namespace's Job client, when container builds run as Kubernetes Jobs (build_k8s):
+        # rows tagged ``k8s`` are asked of it, by the Job's name in ``job_id_ext``.
+        self._k8s_jobs = k8s_jobs
         # The registry of compose services, by backend -- the router reads it too, to honour a
         # per-request ``compute_backend``. Here it is what lets non-SLURM (Ray/Batch) running jobs be
         # polled via their own get_job_status (describe_jobs) instead of squeue.
@@ -104,6 +109,11 @@ class ComposeJobMonitor:
 
         await self.nats_client.subscribe(subject=subject, cb=message_handler)
 
+    @property
+    def is_polling(self) -> bool:
+        """Whether the poll loop is running now (a lifespan test asks; the routes never do)."""
+        return self._polling_task is not None and not self._polling_task.done()
+
     async def start_polling(self, interval_seconds: int = 30) -> None:
         if self._polling_task is not None and not self._polling_task.done():
             return
@@ -137,9 +147,49 @@ class ComposeJobMonitor:
         # polled via their own service's get_job_status (describe_jobs) — no SSH needed
         # (and none available on Stanford).
         slurm_runs = [j for j in running_jobs if j.job_backend == JobBackend.SLURM.value]
-        backend_runs = [j for j in running_jobs if j.job_backend != JobBackend.SLURM.value]
+        k8s_runs = [j for j in running_jobs if j.job_backend == JobBackend.K8S.value]
+        backend_runs = [j for j in running_jobs if j.job_backend not in (JobBackend.SLURM.value, JobBackend.K8S.value)]
         await self._update_backend_jobs(backend_runs)
+        await self._update_k8s_jobs(k8s_runs)
         await self._update_slurm_jobs(slurm_runs)
+
+    async def _update_k8s_jobs(self, running_jobs: list[ComposeHpcRun]) -> None:
+        """Container builds running as Kubernetes Jobs: the Job's terminal condition ends the row,
+        and a FAILED one carries the pod's own last word (an OOM kill, the build's exit) rather than
+        Kubernetes' generic "backoff limit" text."""
+        if not running_jobs:
+            return
+        if self._k8s_jobs is None:
+            logger.warning("%d compose run(s) tagged k8s but no Kubernetes Job client was handed in", len(running_jobs))
+            return
+        for hpc_run in running_jobs:
+            if not hpc_run.job_id_ext:
+                continue
+            try:
+                info = await asyncio.to_thread(self._k8s_jobs.get_job_status, hpc_run.job_id_ext)
+            except Exception:
+                logger.exception(
+                    "Error polling Kubernetes Job %s for ComposeHpcRun %s", hpc_run.job_id_ext, hpc_run.database_id
+                )
+                continue
+            if info is None or not info.status.is_terminal:
+                continue
+            hpc_db = self.database_service.get_hpc_db()
+            if info.status == JobStatus.COMPLETED:
+                await hpc_db.update_hpcrun_result(
+                    hpc_run.database_id, ComposeJobStatus.COMPLETED, start_time=info.start_time, end_time=info.end_time
+                )
+            else:
+                termination = await asyncio.to_thread(self._k8s_jobs.get_pod_termination, hpc_run.job_id_ext)
+                await hpc_db.mark_hpcrun_failed(
+                    hpc_run.database_id,
+                    termination or info.error_message or f"Kubernetes Job {hpc_run.job_id_ext} failed",
+                )
+            self._notify(hpc_run.database_id, await hpc_db.get_hpcrun(hpc_run.database_id) or hpc_run)
+
+    def _notify(self, hpcrun_id: int, hpc_run: ComposeHpcRun) -> None:
+        if hpcrun_id in self.internal_listeners:
+            self.internal_listeners[hpcrun_id].put_nowait(hpc_run)
 
     async def _update_backend_jobs(self, running_jobs: list[ComposeHpcRun]) -> None:
         for hpc_run in running_jobs:
@@ -167,7 +217,9 @@ class ComposeJobMonitor:
     async def _update_slurm_jobs(self, running_jobs: list[ComposeHpcRun]) -> None:
         if not running_jobs:
             return
-        job_ids = [job.slurmjobid for job in running_jobs if job.slurmjobid]
+        job_ids = [
+            job.slurmjobid for job in running_jobs if job.slurmjobid > 0
+        ]  # -1 = a placeholder not yet dispatched
         if not job_ids:
             return
 
@@ -194,14 +246,15 @@ class ComposeJobMonitor:
             except ValueError:
                 logger.exception(f"Error updating ComposeHpcRun {hpc_run.database_id}")
 
-            if slurm_job.job_id in self.internal_listeners:
-                self.internal_listeners[slurm_job.job_id].put_nowait(hpc_run)
+            self._notify(hpc_run.database_id, hpc_run)
 
-    def internal_subscribe(self, queue: Queue[ComposeHpcRun], job_id: int) -> None:
-        self.internal_listeners[job_id] = queue
+    def internal_subscribe(self, queue: Queue[ComposeHpcRun], hpcrun_id: int) -> None:
+        """Be told when the row ``hpcrun_id`` changes -- keyed by the ROW, not a scheduler's id, so a
+        build that runs as a Kubernetes Job (no SLURM id) is waited on the same way."""
+        self.internal_listeners[hpcrun_id] = queue
 
-    def internal_unsubscribe(self, job_id: int) -> None:
-        self.internal_listeners.pop(job_id, None)
+    def internal_unsubscribe(self, hpcrun_id: int) -> None:
+        self.internal_listeners.pop(hpcrun_id, None)
 
     async def close(self) -> None:
         await self.stop_polling()

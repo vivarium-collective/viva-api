@@ -1,0 +1,38 @@
+# A SECOND Ingress on the SMS dev host, carrying only core's prefixes (D20: core is served
+# BESIDE the SMS api pod; the frozen `api-ingress` is untouched). ingress-nginx merges the rules of
+# every Ingress for one host, so /viva and /env-worker reach `core` while everything else keeps
+# reaching `api` and PTools. TLS reuses the certificate cert-manager already keeps for the host.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: core-ingress
+  labels:
+    app: core-ingress
+  annotations:
+    # The relay holds a worker's connection across many calls; a composite run can be long.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - sms-dev.cam.uchc.edu
+      secretName: letsencrypt-prod-sms-api-tls
+  rules:
+    - host: sms-dev.cam.uchc.edu
+      http:
+        paths:
+          - path: /viva
+            pathType: Prefix
+            backend:
+              service:
+                name: core
+                port:
+                  number: 8000
+          - path: /env-worker
+            pathType: Prefix
+            backend:
+              service:
+                name: core
+                port:
+                  number: 8000

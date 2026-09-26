@@ -1,0 +1,48 @@
+# A COPY of kustomize/base/rbac-jobs.yaml (kustomize refuses a file outside the overlay). The live dev
+# namespace predates the base's version of it (checked 2026-09-26: only `default` exists), so core
+# declares the same objects the SMS overlay would -- identical names and rules, no conflict.
+# RBAC for K8s Job management — allows the API pod (via batch-submit ServiceAccount)
+# to create, monitor, and cancel Nextflow workflow Jobs and their associated resources.
+#
+# Used by SimulationServiceK8s to:
+# - Create/delete K8s Jobs (Nextflow head + init container)
+# - Create/delete ConfigMaps (workflow config injection)
+# - Read pod logs (for simulation log endpoint)
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: batch-submit
+  # In Stanford deployments, this SA will be annotated with an IRSA role ARN
+  # via kustomize overlay: eks.amazonaws.com/role-arn: arn:...
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: batch-submit-role
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs", "jobs/status"]
+    verbs: ["create", "get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "get", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list"]
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: batch-submit-binding
+subjects:
+  - kind: ServiceAccount
+    name: batch-submit
+roleRef:
+  kind: Role
+  name: batch-submit-role
+  apiGroup: rbac.authorization.k8s.io

@@ -282,9 +282,19 @@ async def _get_hpc_run_by_correlation(session: AsyncSession, correlation_id: str
 class HPCDatabaseService(ABC):
     @abstractmethod
     async def insert_hpcrun(
-        self, slurmjobid: int, job_type: ComposeJobType, ref_id: int, correlation_id: str
+        self,
+        slurmjobid: int,
+        job_type: ComposeJobType,
+        ref_id: int,
+        correlation_id: str,
+        backend: "JobBackend | None" = None,
+        job_id_ext: str | None = None,
     ) -> ComposeHpcRun:
-        pass
+        """``backend`` tags who owns the job from the start; ``job_id_ext`` is its handle on a backend
+        whose ids are not SLURM's ints (a Kubernetes Job's name). The SLURM paths that submit BEFORE
+        inserting (a container build) must say so, or the row carries the column's default
+        (``ray``) and the monitor never polls it over SSH; a placeholder inserted before dispatch
+        leaves it unset and ``update_hpcrun_dispatch`` tags it."""
 
     @abstractmethod
     async def get_hpcrun_by_ref(self, ref_id: int, job_type: ComposeJobType) -> ComposeHpcRun | None:
@@ -296,6 +306,10 @@ class HPCDatabaseService(ABC):
 
     @abstractmethod
     async def get_hpcrun_by_slurmjobid(self, slurmjobid: int) -> ComposeHpcRun | None:
+        pass
+
+    @abstractmethod
+    async def get_hpcrun(self, hpcrun_id: int) -> ComposeHpcRun | None:
         pass
 
     @abstractmethod
@@ -325,8 +339,25 @@ class HPCDatabaseService(ABC):
         """Flip a placeholder/in-flight row to FAILED (e.g. a background dispatch throw)."""
 
     @abstractmethod
+    async def update_hpcrun_result(
+        self, hpcrun_id: int, status: ComposeJobStatus, start_time: str | None = None, end_time: str | None = None
+    ) -> None:
+        """What a backend other than SLURM reported (a Kubernetes Job's condition and times)."""
+
+    @abstractmethod
     async def insert_worker_event(self, worker_event: ComposeWorkerEvent, hpcrun_id: int) -> ComposeWorkerEvent:
         pass
+
+
+def _naive_utc(iso: str) -> datetime.datetime:
+    """An ISO timestamp as the column stores it: ``TIMESTAMP WITHOUT TIME ZONE``, in UTC. A
+    Kubernetes Job reports ``…+00:00`` (asyncpg refuses a tz-aware value for that column -- found at
+    UConn, where the first completed build Job could not be recorded); SLURM reports naive local
+    time, which is taken as is."""
+    parsed = datetime.datetime.fromisoformat(iso)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(datetime.UTC).replace(tzinfo=None)
+    return parsed
 
 
 class HPCORMExecutor(HPCDatabaseService):
@@ -344,7 +375,13 @@ class HPCORMExecutor(HPCDatabaseService):
 
     @override
     async def insert_hpcrun(
-        self, slurmjobid: int, job_type: ComposeJobType, ref_id: int, correlation_id: str
+        self,
+        slurmjobid: int,
+        job_type: ComposeJobType,
+        ref_id: int,
+        correlation_id: str,
+        backend: "JobBackend | None" = None,
+        job_id_ext: str | None = None,
     ) -> ComposeHpcRun:
         async with self.async_session_maker() as session, session.begin():
             simulation_key = ref_id if job_type == ComposeJobType.SIMULATION else None
@@ -358,6 +395,10 @@ class HPCORMExecutor(HPCDatabaseService):
                 start_time=datetime.datetime.now(),
                 correlation_id=correlation_id,
             )
+            if backend is not None:
+                orm.job_backend = backend.value
+            if job_id_ext is not None:
+                orm.job_id_ext = job_id_ext
             session.add(orm)
             await session.flush()
             return orm.to_hpc_run()
@@ -391,6 +432,16 @@ class HPCORMExecutor(HPCDatabaseService):
             return orm.to_hpc_run() if orm else None
 
     @override
+    async def get_hpcrun(self, hpcrun_id: int) -> ComposeHpcRun | None:
+        async with self.async_session_maker() as session:
+            orm = (
+                (await session.execute(select(ORMComposeHpcRun).where(ORMComposeHpcRun.id == hpcrun_id)))
+                .scalars()
+                .first()
+            )
+            return orm.to_hpc_run() if orm else None
+
+    @override
     async def get_hpcrun_id_by_correlation_id(self, correlation_id: str) -> int | None:
         async with self.async_session_maker() as session:
             return (
@@ -401,10 +452,20 @@ class HPCORMExecutor(HPCDatabaseService):
 
     @override
     async def get_hpcrun_id_by_simulator_id(self, simulator_id: int) -> int | None:
+        """The build that made (or is making) this simulator's container -- never a FAILED one: a
+        failed build used to suppress every rebuild (#717; seen again at UConn, 2026-09-26, where the
+        first build failed on the nodes and every later run skipped the build and died for lack of
+        an image). A failed build is simply built again by the next run."""
         async with self.async_session_maker() as session:
             return (
                 await session.execute(
-                    select(ORMComposeHpcRun.id).where(ORMComposeHpcRun.simulator_id == simulator_id).limit(1)
+                    select(ORMComposeHpcRun.id)
+                    .where(
+                        ORMComposeHpcRun.simulator_id == simulator_id,
+                        ORMComposeHpcRun.status != ComposeJobStatusDB.FAILED,
+                    )
+                    .order_by(ORMComposeHpcRun.id.desc())
+                    .limit(1)
                 )
             ).scalar_one_or_none()
 
@@ -474,6 +535,25 @@ class HPCORMExecutor(HPCDatabaseService):
             orm.status = ComposeJobStatusDB.FAILED
             orm.error_message = error_message[:2000]
             orm.end_time = datetime.datetime.now()
+            await session.flush()
+
+    @override
+    async def update_hpcrun_result(
+        self, hpcrun_id: int, status: ComposeJobStatus, start_time: str | None = None, end_time: str | None = None
+    ) -> None:
+        async with self.async_session_maker() as session, session.begin():
+            orm = (
+                (await session.execute(select(ORMComposeHpcRun).where(ORMComposeHpcRun.id == hpcrun_id)))
+                .scalars()
+                .first()
+            )
+            if orm is None:
+                raise RuntimeError(f"ComposeHpcRun {hpcrun_id} not found")
+            orm.status = ComposeJobStatusDB(status.value)
+            if start_time is not None:
+                orm.start_time = _naive_utc(start_time)
+            if end_time is not None:
+                orm.end_time = _naive_utc(end_time)
             await session.flush()
 
     @override

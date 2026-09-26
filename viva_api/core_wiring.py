@@ -10,6 +10,7 @@ see, like everything else here. The provider is registered at import, so core's 
 the container before the lifespan has run and get one with no services yet.
 """
 
+from viva_api.common.capabilities import CAPABILITY_REGISTRY
 from viva_api.common.site_environments import site_resolver
 from viva_api.config import get_settings
 from viva_api.dependencies import get_compose_services, get_env_worker_services
@@ -23,6 +24,8 @@ def core_container() -> CoreContainer:
         environments=site_resolver(settings),
         compose=get_compose_services(),
         env_worker=get_env_worker_services(),
+        # This application's probes, so `/viva/v1/capabilities` and `/core/v1/capabilities` agree (P3g).
+        capabilities=tuple(CAPABILITY_REGISTRY),
     )
 
 

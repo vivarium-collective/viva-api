@@ -428,28 +428,33 @@ No domain terms in core identifiers — the same rule process-bigraph follows.
 
 ```
 viva_core/
-  settings.py  container.py  models.py
-  api/        app.py (create_core_app), auth.py, oidc.py,
+  settings.py  container.py  models.py  lifespan.py (U2e: start_core / RunningCore.stop -- what a standalone core builds from its settings)
+  api/        app.py (create_core_app; with no container handed in, its lifespan runs start_core -- U2e), auth.py, oidc.py,
               routers/{jobs,environments,tasks,composites,workers,datasets,events,capabilities}
   services/   job_service, job_monitor, task_service, compose_service,
               dataset_service, environment_service, hooks
-  backends/   base (JobBackend), batch, k8s, slurm, local, nextflow, build
+  backends/   base (JobBackend, JobSpec, JobHandle, BackendStatus), batch_backend, slurm_backend  (U2g: in place -- the Protocol and its
+              first two implementations; consumers arrive with the strategies, plan §6 step 3), k8s, local, nextflow, build
   db/         orm (CoreBase, schema "core"), stores, reconcile, migrations/
-  events/     events_env, ingest, chrome_trace
+  events/     events_env, models, ingest  (P4a-2 slice 4: in place -- the ingester behind EventStore + ArtifactRegistrar); chrome_trace
   env_worker/ service, relay, schemas          (P3d-4a/b-3: in place)
   compose/    models, container_def, database_service, tables_orm, job_monitor, service  (P3d-4b: in place)
   api/routers/compose  (P3d-4d-2a: in place; served at /viva/v1/compose and, by SMS, at /compose/v1)
   api/routers/env_worker, api/auth, api/oidc  (P3d-4d-2b: in place; /viva/v1/env-worker and, by SMS, /env-worker/v1)
   api/openapi_spec.py, api/spec/  (P3f: core's own OpenAPI document; the application's stays the union)
+  Dockerfile-core, build-core.yml  (U2f: core as its own image, viva_core alone, served from the app factory; not deployed yet)
   contrib/sysbio/      biomodels_service, biomodel_documents  (P3d-4d-2a: in place)
   storage/s3_streaming (P3d-4d-2a)
               simulation_service_ray (the Batch service, P3d-4c-1); run_pbg, render_nf, runner_files (3d-4c-2);
+              simulation_service_hpc, hpc_paths (the SLURM service, U2b-2: its run command is the ContainerRun hook);
+              build_k8s (a container built in a privileged Kubernetes Job -- the ContainerBuild hook, UConn 2026-09-26);
               the allow-list default and the runner HOOKS (runner_hooks.py, staged beside the runner) are the application's
-  storage/    …, layout (the two output-location primitives, pure; P3d-4c-1)
+  storage/    …, layout (the two output-location primitives, pure; P3d-4c-1); factory (the store `storage_backend` names; U2c)
   tasks/      snapshot, …
-  datasets/   registry, walk
+  datasets/   models, registry, walk  (P4a-2 slices 1-2: in place -- the trace feeder behind OwnerResolver + DatasetStore,
+              the walk behind ArtifactClassifier + WalkSource)
   storage/    file services, s3 helpers, CoreLayout
-  infra/      ssh, messaging
+  infra/      ssh, messaging, db (U2e: the engine from postgres_*; postgres_configured)
   client/     protocol (CoreClient), inprocess, http, generated/ (OpenAPI client from the core spec)
   cli/        the standalone core CLI, built only on client/generated
   contrib/sysbio/    BioModels + curated COPASI / Tellurium — in core for now, built as a consumer of
@@ -466,12 +471,20 @@ class JobBackend(Protocol):
     async def submit(self, spec: JobSpec) -> JobHandle: ...
     async def status(self, handles: Sequence[JobHandle]) -> dict[str, BackendStatus]: ...
     async def cancel(self, handle: JobHandle) -> None: ...
-    def logs(self, handle: JobHandle, *, tail: int | None) -> AsyncIterator[str]: ...
+    async def logs(self, handle: JobHandle, *, tail: int | None = None) -> list[str]: ...
 ```
 
-`JobSpec` carries image, command, env, resources, stage-in/out, trace env, labels and an
-`OwnerRef`. A Nextflow head is a `k8s` submission composed by `backends/nextflow.py`. The
-SMS strain arguments become an opaque `extra_env`. SLURM is a supported core backend.
+`JobSpec` carries image, command, env, resources, labels and what the job waits on (handles of
+the same backend); stage-in/out, trace env and the `OwnerRef` are the strategy's to add (plan §6
+step 3), because Batch stages through its entrypoint's env and SLURM through a shared filesystem.
+**In place since U2g (2026-09-25)** in `viva_core/backends/base.py`, with `batch_backend.py`
+(container-type jobs over the engine; resources are the job definition's until the engine exposes
+an override; logs from CloudWatch through a handed-in client) and `slurm_backend.py` (an sbatch
+script from the spec over SSH; `squeue` + `scontrol`; `scancel`; the output file), the latter proven
+against a real scheduler. `logs` answers a list of lines rather than a stream: what both schedulers
+give cheaply, and what every caller today wants. A Nextflow head is a `k8s` submission composed by
+`backends/nextflow.py`. The SMS strain arguments become an opaque `extra_env`. SLURM is a supported
+core backend.
 
 **Environments: select or build, then run (decision D10).** The application this core is for
 accepts a **composite** and either selects a known compatible environment or builds one from
@@ -594,12 +607,22 @@ only through it and the hook registries.
 
 ## 2.4 URLs
 
-| Prefix | Owner | Note |
+Under Strategy B (plan-core D14, 2026-09-25) `/viva/v1` is **the** surface and every SMS-shaped
+prefix is dated: it keeps answering until its successor is served on both Stanford sites and
+every caller has shipped a release that switches on capability membership, then it is removed,
+one surface per release (plan-core P8b, M1–M7). Until 2026-09-25 this table said "permanent
+aliases"; that word overstated the intent.
+
+| Prefix | Owner | Status |
 |---|---|---|
-| `/viva/v1/{jobs,environments,tasks,composites,workers,datasets,events}` | core | new canonical surface; root prefix configurable |
-| `/compose/v1`, `/env-worker/v1` | core | permanent aliases on the same routers |
-| `/api/v1/tasks`, `/api/v1/datasets`, `/simulations/{id}/datasets`, `/analyses/{id}/datasets` | SMS facade | inject SMS defaults, call `CoreClient` |
-| `/api/v1/*` (the rest), `/core/v1/*`, `/ws` | SMS | unchanged |
+| `/viva/v1/{environments,composites,jobs,tasks,workers,datasets,events,capabilities,health}` | core | the canonical surface, spelled by resource family (D17); root prefix configurable |
+| `/viva/v1/compose`, `/viva/v1/env-worker` | core | the code's spelling, mounted in the SMS application as a **dated interim** (P3g) so pure-prefix callers can switch early; removed at M5 |
+| `/compose/v1`, `/env-worker/v1` | core | aliases on the same routers; dated — M2, M1 |
+| `/core/v1/simulator/*`, `/core/v1/simulation/parca*`, `/core/v1/capabilities` | SMS facade | over `/viva/v1/environments`, a run of the parca composite, `/viva/v1/capabilities`; dated — M3 |
+| `/api/v1/tasks`, `/api/v1/datasets`, `/simulations/{id}/datasets`, `/analyses/{id}/datasets` | SMS facade | inject SMS defaults, call `CoreClient`; dated — M4 |
+| `/api/v1/simulations*` (mutations and reads), `/api/v1/analyses*`, `/api/v1/parca/*` | SMS facade | over `/viva/v1/composites` and `/viva/v1/datasets` from P5b; dated — M6 |
+| `GET /api/v1/simulations`, `GET /api/v1/analyses?experiment_id=`, `GET /api/v1/analyses/{id}/data` | SMS facade (the PTools trio, D18) | re-implemented over datasets, shapes unchanged; the **last** removal — M7, after every site's `sms-ptools` is rebuilt |
+| `/`, `/home`, `/health`, `/version`, `/docs`, `/openapi.json`, `/ws` | the deployment | stay |
 
 ## 2.5 Database
 
@@ -614,8 +637,17 @@ Same database, new **`core` schema**, its own Alembic chain and version table.
   (`observables`, nullable), `core.task`, `core.task_script`, `core.env_worker_task`,
   `core.environment`, the compose registry, `core.dataset`.
 - **`public.hpcrun` remains, as the SMS extension row** — primary key = foreign key to
-  `core.job.id`. Ids are preserved, the `jobref_*` and `chain_*` query shapes survive, and
-  the link lives on the SMS side. It becomes a soft reference before the second Deployment.
+  `core.job.id`. Ids are preserved, the `jobref_*` query shapes survive, and the link lives on
+  the SMS side. It becomes a soft reference before the second Deployment. **The `chain_*`
+  columns do not survive** (D15, 2026-09-25): the campaign driver retires the chain state
+  machine at P4c, before P7 moves the table, so the extension row carries no campaign state —
+  live handles and companions are `core.job` rows with `owner_kind="campaign"`.
+- **`core.environment`** (P5; in `public` until P7): `id`, `spec_hash` (unique with `variant`),
+  `kind`, `recipe`, `repo_url`, `commit`, `key`, `variant`, `image`, `image_digest`, `status`,
+  `build_job_id`, `provides`, `temporary`, `label`, `created_at`, `created_by`,
+  **`legacy_simulator_id`**. Every `simulator` row is copied in once (D11 makes the copy
+  complete); `simulator` stays, read-only, and is never dropped.
+- **At UConn, core has its own database** (D19) rather than a schema in the SMS database.
 - `core.dataset` is the #661 table without the three SMS producer foreign keys: producer is
   `producer_job_id` and/or an opaque `(owner_kind, owner_id)`. The SMS facade derives
   `simulation_id` / `analysis_id` / `parca_dataset_id` for its DTO. No foreign key points
@@ -630,6 +662,15 @@ through `InProcessCoreClient` — URLs unchanged, no ALB work. Then the same ima
 as a second Deployment (`uvicorn viva_core.api.app:app`): core owns the pollers, the relay
 (single replica, or connection affinity) and its prefixes; SMS switches to `HttpCoreClient`,
 first proxying the core prefixes, then handing them to the ALB.
+
+**Two sites, and UConn first for the second Deployment** (plan-core §4b, D19–D20): at UConn
+(RKE2 + SLURM, nginx ingress) core runs as its own Deployment beside the existing SMS pod, with
+its own database, reached through additive `/viva` and `/env-worker` ingress paths — the P9(a)
+shape, rehearsed on the simpler stack. **At P10** core is its own repository, image and PyPI
+distribution; SMS consumes it two ways at once — as a **pinned dependency** for what it imports
+(the `CoreClient` Protocol and DTOs, `JobStore`/`Job`, template and environment types, the hook
+interfaces) and **over HTTP** for what core does — never as a git submodule (D16). Both modes
+stay behind `CoreClient`: in-process for a laptop or a small site, remote for production.
 
 ## 2.7 A standalone core CLI
 
@@ -664,12 +705,12 @@ Status: `planned` → `in progress` → `done (PR, version)`. Phases refer to `p
 | 1 | Import boundary | none enforced | import-linter: core ↛ viva_api, app | P0 / P1 | in progress — seven contracts; **enforced:** `core-is-standalone` (P1a, transitive) and env workers + relay (#680); report-only: 3 contracts / **4** edges as of 2026-09-25 (3d-4d-2b; the routers contract is kept) (was 6 at 3d-4b, **12** direct edges as of 2026-09-20: compose 3, `dependencies.py` → routers 4, server → `app` 3, `config` 1, `local_task_service` 1; a ratchet — the count never rises) |
 | 2 | Generic modules | under `viva_api/common`, `api/` | `viva_core/{infra,storage,backends,events,api}` + aliasing shim | P1 | in progress — P1a: `models`, `infra/messaging`, `events/events_env`, `backends/{job_service,k8s_job_service,models,nextflow_weblog}` moved; old paths are self-replacing stubs. P1b: `storage/*`, `infra/ssh`, `backends/{slurm_service,nextflow_trace}` moved |
 | 3 | Batch engine | private methods of `SimulationServiceRay` | `viva_core/backends/batch.py` (`BatchJobClient`, composed) | P2.1 | in progress — cut 2: the engine exists in core, settings-free, with its own tests (`tests/core/test_batch_backend.py`); `SimulationServiceRay` delegates through `_batch_jobs()`; `compose` still reaches it via the service's private methods (→ P2.3); not yet behind the `JobBackend` Protocol |
-| 4 | Backends | three unrelated shapes in `viva_core/backends/` (`batch.py`, `k8s_job_service.py`, `slurm_service.py`) sharing only `JobStatus` / `JobId` | `JobBackend` adapters: batch, k8s, slurm, local | P5 (was P2.3) | planned — **deferred with a trigger**: a core Protocol with one implementation would quietly be Batch-shaped, so it waits for its second consumer (`compose` on the core seam) and is not final before a second backend implements it |
+| 4 | Backends | `viva_core/backends/base.py`: the `JobBackend` Protocol (`submit` / `status` / `cancel` / `logs` over `JobSpec` / `JobHandle` / `BackendStatus`) with `batch_backend.py` and `slurm_backend.py` behind it; `k8s_job_service.py` still its own shape | `k8s` and `local` adapters; the strategies (plan §6 step 3) as the consumers; staging on the spec | U2g done 2026-09-25; k8s / local at P5 | **Protocol + two adapters in place** — declared only once a second backend implemented it, as the trigger required; nothing consumes it yet (the compose services keep their ABC until the strategies land) |
 | 5 | Image resolution | ~~`<ecr>/v2ecoli:<commit>`, derived four separate times from the same settings~~ one place: `viva_core/environments/site.py` (moved from `viva_api/common/site_environments.py`, P3d-4a) builds core's `RegistryEnvironmentResolver` from the settings it is handed, and the Batch layer, compose, the env-worker service and the K8s analysis Job ask it | one `EnvironmentResolver`; the *select* half of D10 (§2.3) | P2.3 | **done for the select half** (2.3a the model, 2.3b the rewiring; a guard fails on a fifth hand-rolled derivation). Still by hand, knowingly: the upstream vEcoli path of `SimulationServiceK8s` (another repository, `-amd64-submit`; out of scope until P5). Open: refuse an unset ECR account by name (deferred list); the runtime image (2.3c) |
 | 6 | Settings | one flat `Settings` | `CoreSettings` + `SmsSettings`, same env names | P1b / P3 | in progress — P1b: `viva_core.settings.CoreSettings` holds the storage + path-prefix fields; `Settings` inherits them; the application registers a provider so core reads its object. P3d-2: the 14 settings compose and env-worker read (Batch / K8s path) are `CoreSettings` fields too, two of them with an application-supplied default; `slurm_log_base_path` waits on an import cycle. The rest moves with its consumer |
 | 7 | Wiring | module globals, router setters, one `init_standalone` | `CoreContainer` + `SmsContainer`, `create_core_app()` | P3 | in progress — 3a: `CoreContainer` and `create_core_app()` exist and boot alone; SMS provides the container (`viva_api/core_wiring.py`); the globals and setters are all still there, because nothing they wire has moved yet |
 | 8 | OpenAPI | one spec | core spec + SMS spec (SMS = union until P8) | P3 / P8 | planned |
-| 9 | Datasets | #661, SMS-shaped, three producer FKs | `viva_core/datasets`, owner refs, SMS facade | P4a | planned |
+| 9 | Datasets | #661, SMS-shaped, three producer FKs | `viva_core/datasets`, owner refs, SMS facade | P4a | in progress — P4a-2 slice 1: the trace feeder is core's (`viva_core/datasets/registry.py`, verbatim rules) and registers through two Protocols, `OwnerResolver` and `DatasetStore` (`viva_core/datasets/models.py`), speaking `(owner_kind, owner_id)` from day one; the application's resolver and store adapter (`viva_api/simulation/dataset_registry.py`, `dataset_store.py`) translate to the three FKs, so the P4a-1 columns (#790) arrive as one more line in the adapter. Slice 2: the walk is core's (`viva_core/datasets/walk.py`, verbatim) behind `ArtifactClassifier` (which files under a bundle are datasets, and the view / protocol / coordinate their name encodes) and `WalkSource` (a root, an owner, a label, tags, a subject, and who claims a bundle); `DatasetStore` gained `list_under` + `set_available`; the application's naming convention and its "an analysis claims the bundle its `result_uri` names" lookup stay in `viva_api/simulation/dataset_walk.py`. Slice 4: the ingest hook is core's (`viva_core/events/ingest.py`, verbatim, its fifteen `Any` retired) behind `EventStore` (events, spans, cursor, progress columns) and `ArtifactRegistrar` (slice 1's feeder), handed the run as an `IngestRun`; the event and span models are `viva_core/events/models.py` under their old names and schema (`dict[str, object]` renders as `dict[str, Any]` did); the application's row view, store and feeder stay in `viva_api/simulation/event_ingest.py`. Still SMS: the reads and routes (slice 3), the kind vocabulary (P5b) |
 | 10 | Task provenance | not implemented (#656) | built in core shape: task = core job | P4b | planned |
 | 11 | Environments and builds | select-or-build exists three times, each partial (§2.3a): SMS `simulator` (repo + commit, the repo's own recipe), `compose_simulator` (hash of a synthesized definition), `compose-api` / `pbest` (derivation written, unwired) | `core.environment` with two identities (spec hash, image digest) and `provides`; `BuildRecipe` registry (`repo-recipe`, `python-deps`); build jobs; the spec **derived from the composite**; one enforced allow-list; FAILED builds retried | P5 | planned |
 | 12 | Compose → SMS reach-ins | simulator table, `analysis` rows, ParCa staging | SMS post-completion hook | P5 | in progress — P3c: the chained science analysis (the `analysis` rows) is out of compose, behind an `AfterSubmit` hook the composition root fills (`viva_api/simulation/compose_analysis.py`); `compose-is-domain-free` is enforced. Still in compose: the simulator lookup and ParCa staging |

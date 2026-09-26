@@ -21,10 +21,14 @@ field, its default and its environment variable name.
 from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from viva_core.storage.file_paths import HPCFilePath
+
+#: The object stores a file service can be built for (``viva_core.storage``).
+StorageBackend = Literal["gcs", "s3", "qumulo"]
 
 
 class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, not ours (D12)
@@ -62,6 +66,41 @@ class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, n
 
     # Where a SLURM job's log lands, as an HPC path (the SLURM backend writes ``<base>/<job>.out``).
     slurm_log_base_path: HPCFilePath = HPCFilePath(remote_path=Path(""))
+    # The SLURM backend (decision D4; UConn track U2): the submit host reached over SSH, and the
+    # scheduler's partition / QoS / node list every sbatch template names. Moved here from the
+    # application's settings (same names, same variables) so the SLURM compose service can be core's.
+    slurm_submit_host: str = ""
+    slurm_submit_port: int = 22  # a SLURM cluster in Docker publishes sshd on a port of Docker's choosing
+    slurm_submit_user: str = ""
+    slurm_submit_key_path: str = ""
+    slurm_submit_known_hosts: str | None = None
+    slurm_partition: str = ""
+    slurm_node_list: str = ""  # comma-separated, e.g. "node1,node2"; empty = the scheduler's choice
+    slurm_qos: str = ""
+    # The root under which this site keeps its SLURM work (sbatch files, logs, images, runs).
+    slurm_base_path: HPCFilePath = HPCFilePath(remote_path=Path(""))
+
+    # Which object store the file service talks to (``viva_core.storage.factory``, U2c).
+    storage_backend: StorageBackend = "s3"
+
+    # The database (U2e; decision D19: a standalone core has a database of its own). Moved here from
+    # the application's settings -- same names, same variables -- so core's own lifespan can open
+    # it. ``postgres_user`` keeps the application's placeholder default: a site that never set it
+    # has no database, and core says so rather than dialling ``<USER>@localhost``.
+    postgres_user: str = "<USER>"
+    postgres_password: str = ""
+    postgres_database: str = "sms"
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+    postgres_pool_size: int = 10  # number of connections in the pool
+    postgres_max_overflow: int = 5  # maximum number of connections that can be created beyond the pool size
+    postgres_pool_timeout: int = 30  # timeout for acquiring a connection from the pool in seconds
+    postgres_pool_recycle: int = 1800  # recycle connections every seconds
+    # Run create_all at startup. True suits a laptop or a test; a DEPLOYED site sets it false,
+    # because there the schema belongs to the migration Job alone (see the application's
+    # ``simulation/db_startup.py`` for why create_all is corrosive in production). Core's own
+    # Alembic chain arrives at P7; until then this is how core's own database is bootstrapped.
+    db_create_all: bool = True
 
     # AWS S3
     storage_s3_bucket: str = ""
@@ -104,6 +143,13 @@ class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, n
     env_worker_workspace_path: str = ""  # the application supplies its own default
     env_worker_memory_request: str = "512Mi"
     env_worker_memory_limit: str = "8Gi"
+    # What an env-worker Job is labelled, runs as, and where its module is inside the module image
+    # (U2d; until then these named one deployment inside core). The application supplies each
+    # default; a standalone core with none labels nothing, uses the namespace's default service
+    # account, and refuses to stage a module from nowhere.
+    env_worker_app_label: str = ""
+    env_worker_service_account: str = ""
+    env_worker_module_path: str = ""
     ray_ecr_repository: str = ""  # the application supplies its own default
     compose_image_base_path: str = ""
     compose_sim_base_path: str = ""
@@ -111,6 +157,26 @@ class CoreSettings(BaseSettings):  # type: ignore[explicit-any]  # pydantic's, n
     compose_pbg_core_builder: str = ""
     compose_nats_worker_event_subject: str = "compose.worker.events"
     compose_containers_output_dir: str = "/output"  # where a composite's container writes its outputs
+    # An HPC path the SLURM compose service bind-mounts into a composite's container at /out/cache;
+    # empty = nothing mounted. What goes there is the application's business (a staged input set).
+    compose_cache_base_path: str = ""
+    # How the SLURM compose service BUILDS a composite's container (UConn track, 2026-09-26).
+    # "sbatch": on the HPC with `singularity build --fakeroot` -- needs a subuid entry for the service
+    # user on the nodes. "k8s": a Kubernetes Job in ``k8s_job_namespace`` from an Apptainer image: a
+    # PRIVILEGED init container builds into scratch (a definition's %post needs mount namespaces;
+    # nothing less worked on RKE2) and an unprivileged container running as the service user copies
+    # the image onto the shared filesystem the SLURM nodes read, mounted in the Job at the same
+    # path (``compose_build_pvc_*``).
+    compose_build_backend: Literal["sbatch", "k8s"] = "sbatch"
+    compose_build_image: str = "ghcr.io/apptainer/apptainer:1.3.6"
+    compose_build_pvc_claim: str = ""  # the PersistentVolumeClaim of the shared filesystem
+    compose_build_pvc_mount_path: str = ""  # where it is mounted in the Job: a prefix of compose_image_base_path
+    compose_build_pvc_sub_path: str = ""
+    # Who writes the image onto the filesystem (0 = root, on a filesystem that lets root write).
+    compose_build_run_as_uid: int = 0
+    compose_build_run_as_gid: int = 0
+    compose_build_supplemental_groups: str = ""  # comma-separated gids
+    compose_build_timeout_seconds: int = 1800
 
 
 _provider: Callable[[], CoreSettings] | None = None

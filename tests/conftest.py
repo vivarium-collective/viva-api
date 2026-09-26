@@ -62,6 +62,44 @@ def pytest_collection_modifyitems(items):  # type: ignore[no-untyped-def]
 
 import pytest_asyncio  # noqa: F401
 
+
+def pytest_addoption(parser):  # type: ignore[no-untyped-def]
+    parser.addoption(
+        "--slurm-backend",
+        action="append",
+        default=[],
+        choices=["container", "cluster"],
+        help=(
+            "Which SLURM backend(s) to run the `slurm`-marked tests against. Repeatable. Defaults to "
+            "'container' (a throwaway cluster in Docker, tests/fixtures/slurm_cluster) when Docker is up, "
+            "otherwise nothing. 'cluster' is the real submit host (needs a key and the VPN)."
+        ),
+    )
+
+
+def pytest_generate_tests(metafunc):  # type: ignore[no-untyped-def]
+    """Parameterise any test that asks for ``slurm_backend`` over the selected backends: one test body,
+    one parameter, so the container and the cluster cannot drift. A test left with no backend is
+    skipped with a reason that says what to do, never silently passed."""
+    if "slurm_backend" not in metafunc.fixturenames:
+        return
+    import pytest
+
+    from tests.fixtures.slurm_fixtures_backend import docker_available
+
+    chosen: list[str] = list(metafunc.config.getoption("--slurm-backend"))
+    if not chosen:
+        chosen = ["container"] if docker_available() else []
+    if any(mark.name == "cluster_only" for mark in metafunc.definition.iter_markers()):
+        # the container has no science images; these need the real submit host and only run when asked
+        chosen = [kind for kind in chosen if kind == "cluster"]
+        reason = "needs the real SLURM cluster: rerun with --slurm-backend cluster"
+    else:
+        reason = "no SLURM backend selected: start Docker, or pass --slurm-backend"
+    params: list[object] = list(chosen) or [pytest.param(None, marks=pytest.mark.skip(reason=reason), id="unavailable")]
+    metafunc.parametrize("slurm_backend", params, indirect=True, scope="session")
+
+
 from tests.fixtures.api_fixtures import (  # noqa: F401
     SimulatorRepoInfo,
     analysis_config_path,
@@ -146,6 +184,7 @@ from tests.fixtures.slurm_fixtures import (  # noqa: F401
     slurm_template_with_storage,
     ssh_session_service,
 )
+from tests.fixtures.slurm_fixtures_backend import _container_cluster, slurm_backend  # noqa: F401
 from tests.fixtures.workflow_fixtures import (  # noqa: F401
     slurm_template_workflow,
     workflow_inputs_dir,

@@ -24,8 +24,17 @@ Two services out of one:
 2. **SMS service** — every existing viva-api endpoint for sms-ecoli, v2ecoli and vEcoli,
    and, through the core, selected third-party simulators wrapped in process-bigraph.
 
-Every phase is independently shippable, keeps all existing URLs and database ids stable,
-and has a rollback. There is no big-bang step.
+Every phase is independently shippable, keeps database ids stable, and has a rollback. There
+is no big-bang step. Existing URLs are stable **until their dated removal** (D14, 2026-09-25):
+every SMS-shaped surface keeps answering until its `/viva/v1` successor is served on both
+Stanford sites and every caller has shipped a release that switches on capability membership;
+then it is removed, one surface per release. Until 2026-09-25 this sentence read "keeps all
+existing URLs … stable" — that was Strategy A; B was adopted (see the decision log).
+
+**The end goal has two sites.** Stanford (`sms-api-stanford-test`, `sms-api-stanford`: K8s +
+AWS Batch) is where every phase is proven first. **UConn (RKE2 + SLURM, `sms.cam.uchc.edu`) is
+where core must run standalone** (Jim, 2026-09-25); SMS running there again is a follow-on.
+The UConn work is its own track, §4b, beside the phases below.
 
 ## 2. Decisions
 
@@ -44,6 +53,14 @@ and has a rollback. There is no big-bang step.
 | D11 | **Simulators are write-once provenance; a marked-temporary simulator is the only exception.** A simulator record, its container image and its image tag are the provenance of every simulation that ran on them. With one exception, **all of them are write-once, immutable and never deleted** — on every site, not only those that predate this work. The exception is a simulator that says so about itself: `temporary`, with a `label` naming who or what made it and its **own marked image tag** (`tmp-<commit>-<nonce>`, never `<commit>`). A temporary simulator may be overwritten or removed, and it is **marked back to the end user** — in the API, in the CLI, TUI and GUI lists, and left out of every "latest" or default choice — so nobody takes it for an authoritative one. A standing rule of the final design, not only of the migration. | 2026-09-20 | Jim |
 | D12 | **`viva_core` carries no `Any`.** `disallow_any_explicit` and `disallow_any_unimported` are on for `viva_core.*` as a mypy per-module override, on top of `strict`. JSON-shaped values are a `JsonValue` alias or a `TypedDict`; an untyped third-party client is wrapped behind a typed Protocol or given stubs. Because the override is a **package glob**, every module that moves into `viva_core` in P3 / P4 / P5 comes under it the day it moves, so code arrives in core `Any`-free or does not arrive. The same ban covers `viva_api.simulation.dispatch` — by module now, as `ray.*` once the strategies have landed. The rest of the repository is ratcheted by count, not banned. | 2026-09-20 | Jim ("I especially want viva_core.* with strong mypy coverage within this initiative") |
 | D13 | **ptools is SMS's, and private.** Pathway Tools and its PGDBs are licensed material (Jim, 2026-09-21: "ptools is a private repo due to licensing concerns and belongs to the sms-api not viva-core"). Everything of it — `Dockerfile-ptools`, `assets/ptools/`, the ptools analyses, the `sms-ptools` image and Deployment, the PTools page — stays on the **SMS** side of the split and **stays private**. Core is meant to be public, with public images, so this boundary is a legal one, not only an architectural one: nothing of ptools enters `viva_core/`, the core runtime image, or any package that is or may become public; and **before anything is made public, what it contains is listed first**. Guards: `ptools` is a forbidden term in core's constructs (`tests/core/test_core_is_standalone.py`); the public runtime image may `COPY` only from `viva_core/runtime/` (`tests/core/test_runtime_entrypoint.py`) |
+| D14 | **Every SMS-shaped surface is dated** (Strategy B, [`strategy-core-direct.md`](strategy-core-direct.md), adopted with the modifications in the 2026-09-25 log entry). `/api/v1/*`, `/core/v1/*`, `/compose/v1`, `/env-worker/v1`, the `/api/v1/{tasks,datasets}` facades and the 36 `sys.modules` shims are migration scaffolding with a removal milestone: **the release after the last caller has shipped a release that switches on capability membership, deployed on both Stanford sites.** One removal PR per surface (§4 P8b), ALB rules deleted last. The PTools trio — `GET /api/v1/simulations`, `GET /api/v1/analyses?experiment_id=`, `GET /api/v1/analyses/{id}/data` — is the **last** facade, gated on every site's `sms-ptools` being rebuilt with a datasets-shaped `sms.js` (D18). A new `/viva/v1` route never gets an alias. Root routes (`/`, `/home`, `/health`, `/version`, `/docs`, `/openapi.json`, `/ws`) are the deployment's, not SMS's, and stay. viva-api#742 is the proposal this answers; it was assessed proposal by proposal, not adopted whole (Jim: "a proposal which will inform design after discussion rather than … a decision"). | 2026-09-25 | Jim, with Eran |
+| D15 | **Templates / Sites are the campaign primitive, as a typed core-native port.** `viva_core/campaigns/templates.py` re-implements the five `process_bigraph.templates` operations (`study_members`, `study_ancestors`, `study_address`, `trigger`, `prune_open_regions`) under D12, with a parity test against `process_bigraph.templates` under a dev extra, reviewed by Eran. Why a port and not a dependency: `process-bigraph` is not a dependency of the API pod (absent from `uv.lock`; only the staged runner scripts and the runtime image's requirements name it) and it is untyped. The **record's shape lands before the table**: the campaign driver runs on the `JobStore` Protocol + SMS adapters (P4b) over the P4a-1 columns; the chain state machine retires against that; **then** P7 moves a table with no chain columns. Invariants from the #742 thread: a Site is present-or-absent; live handles + companions live on `core.job` rows (`owner_kind="campaign"`, `owner_id=member`); **the campaign's own ParCa is a member with a job record**, never a container around the seeds (#709); cancel is a fold over `by_owner`, companions first (#710); the oracle is `atlantis smoke chain-cancel` in **both** phases on real Batch. | 2026-09-25 | Jim, with Eran |
+| D16 | **Same repository until P10; core gets its own version line now.** `viva_core/version.py` and a `core-v0.x.y` tag series; extraction to its own repository + PyPI + image stays P10, as a lift. Not a separate repository now (every seam change would become a two-repository lock-step before P7's second Alembic chain, the deploy pipeline and `make spec` exist twice) and not a fork. `viva_core/` **is** the place where things are broken and fixed: standalone, typed, own spec, own app, enforced import boundary — a core change and its SMS adaptation land in one PR under one smoke run. At P10, SMS consumes core two ways at once: as a **pinned PyPI dependency** for what it imports (the `CoreClient` Protocol and DTOs, `JobStore`/`Job`, template and environment types, the hook interfaces) and **at arm's length over HTTP** for what core does; never a git submodule. | 2026-09-25 | Jim |
+| D17 | **`/viva/v1` is spelled by resource family** — `environments`, `composites`, `jobs`, `tasks`, `workers`, `datasets`, `events`, `capabilities`, `health` — as §2.4 of the architecture promises. The code's spelling (`/viva/v1/compose`, `/viva/v1/env-worker`, served today only by `create_core_app()`) is **mounted in the SMS application as a dated interim** so the workbench's 14 pure-prefix operations and atlantis can switch on `viva-v1-surface` before the families exist; it is removed at P8b (M5). The env-worker reads that collide with the run surface (`/composites`) nest under `/workers/{job}/…`. | 2026-09-25 (recommended; Eran's call whether the workbench takes the interim or waits for the families) | Jim |
+| D18 | **The PTools trio is the last facade, re-implemented over datasets.** `GET /api/v1/simulations`, `GET /api/v1/analyses?experiment_id=` (datasets by `owner_kind=analysis` grouped per analysis, `n_tp` from attributes) and `GET /api/v1/analyses/{id}/data` (the analysis's `.tsv` datasets by coordinate filter — what `AnalysisFileSelection` does today) keep their shapes so the page never notices. The page's `/api/v1/` prefix lives in `kustomize/config/<site>/ptools.env` (`SMS_API_PATH`, rendered into `env.js` at runtime), so a prefix move is a ConfigMap edit; a shape change is a new `assets/ptools/overrides/htdocs/sms/sms.js` and a hand-built `sms-ptools` per site. **There is no hidden dependency**: `displayMassFractionSummary` (`sms.js:490`) is an unwired SRI stub — called by nothing, no server-side handler (the dev PTools pod answers its generic HTML 404 to `/sms/fetchMassFractionSummary`; sms-api has never served `/sms/*`). The datasets-shaped `sms.js` (which also fixes the `n_tps` bug at `sms.js:474`) is written at P5b and rebuilt per site when convenient; the trio is removed at M7. | 2026-09-25 | Jim |
+| D19 | **Core's database at UConn is its own** (`viva_core` on the CNPG cluster), not the SMS database's `core` schema. The UConn SMS database is 3 Alembic revisions old, predates the reconciler and is owned by an unmerged image; sharing before P7 would mean two applications bootstrapping `public`. This also answers open question 6 for a hosted core: yes. On Stanford, D3 stands (same database, `core` schema). | 2026-09-25 | Jim |
+| D20 | **Core is served beside the existing UConn SMS pod**, as its own Deployment + Service in the same namespace, reached through additive nginx ingress paths (`/viva`, `/env-worker`) on the existing hosts; the `0.10.0-rc1` `api` pod and PTools are untouched. This is P9(a) — core running as its own Deployment — rehearsed at UConn first, on a simpler stack than Stanford's (nginx, no ALB, no CDK, no IRSA). | 2026-09-25 | Jim |
+| D21 | **UConn SMS overlays are frozen until the SMS follow-on (§4b U5)**; nothing in `kustomize/overlays/sms-api-rke*` is applied from this repository before then (the checked-in tags would roll the live `0.10.0-rc1` back to 0.9.4). The fate of the four unmerged `feat/ptools-latency-mitigation` commits is decided with Alex at U0 — leave running until U5, then fold or retire. `.github/workflows/ptools-verification.yml`, which POSTs `/api/v1/analyses` against UConn prod, is disabled until then. | 2026-09-25 | Jim |
 
 ## 3. The issues, in one page
 
@@ -322,6 +339,9 @@ P2.0a guard caught. So:
   quietly be Batch-shaped, so it is not declared final before then. Before any promotion, the
   four E. coli keywords on `_submit_container` (`expect_new_genes`, `expect_bundle_overrides`,
   `require_clean_chain`, `lineage_debug_division`) fold into a generic env contribution.
+  **The trigger fired on 2026-09-25**: a SLURM site is now an end goal (UConn, §4b) and a SLURM
+  cluster can be run in Docker (compose-api's harness), so the SLURM compose service moves into
+  core at U2 and the SLURM adapter is the Protocol's second implementation.
 
 SLURM: contract tests on recorded sbatch / squeue fixtures, labelled *unverified live*;
 location changes, behaviour does not. Deploy: app only. Verify: `pytest tests/simulation
@@ -369,6 +389,45 @@ its code is read — that is how 2.3c and 2.3d-3 turned out different from their
 
 Deploy: app only. Risk: medium.
 
+### The order from here, under Strategy B (2026-09-25)
+
+The phases below keep their numbers and their contents; B changes the **order** and adds four
+small phases (P3g, P4c, P5b, P8b) and one parallel track (§4b). Each row is one deploy
+checkpoint or one caller release; every PR is one concern and needs Jim's go.
+
+| Step | Phase | Content | Caller release it needs | Checkpoint |
+|---|---|---|---|---|
+| 0 | docs | D14–D21 recorded; this order; §2.4 of the architecture corrected; replies on #742 and workbench#1150 | — | — |
+| 1 | **P3g** | dual-surface scaffolding: the interim `/viva/v1/{compose,env-worker}` mounts in the SMS app (two lines in `viva_api/api/main.py`); `viva_core/version.py`; a typed capability registry in core + `GET /viva/v1/capabilities`; `viva-v1-surface` advertised; the duplicate `operationId` fixed; smoke **`contract`** (response shapes recorded for the 33 workbench + 3 PTools operations); one GUI notebook (`app/ui/dashboard.py` was a symlink to `app/gui.py`; the real file now lives where the server serves it) | **W1** (workbench: capability probe wired, `_path()` resolver, the 14 pure-prefix operations, the 3 dead/broken ones removed or fixed) | **F2** |
+| 2 | P4a, P4b | as written below; `/viva/v1/{datasets,tasks,jobs}`; the `/api/v1/{datasets,tasks}` facades; #776 reshaped | none (atlantis switches by capability) | **F**, **G** |
+| 2b | prod | **the Stanford prod big-jump, right after F** (Jim): snapshot, `--analyze`, the migration Job across 0.9.78 → F, Tier 0/1/2 with the cancels, the prod `cdk deploy` for the `/viva` ALB rule | — | **P-jump** |
+| 3 | **P4c** | templates + the record: the typed port, the campaign driver, the protocol objects, the SMS ecoli study, `SMS_CAMPAIGN_DRIVER` flag, cutover; the chain machine and `ensemble.py` deleted | none (`/api/v1/simulations` routes to the driver) | **H1**, **H2** |
+| 4 | P5 | environments — the build half, **plus the `simulator` → `environment` copy** (`legacy_simulator_id`), `/viva/v1/environments`, `/core/v1/simulator/*` as a facade | **W2** | **I1**, **I2** |
+| 5 | **P5b** | `POST /viva/v1/composites` as the run surface; `/api/v1/simulations` a facade over it; the datasets-shaped `sms.js`; the final `workers` spelling | **W3**; harness scripts; atlantis SMS verbs | **J** |
+| 6 | P6 | scheduler split | none | **K** |
+| 7 | P7 | the physical table move — a table with no chain columns | none | **L** |
+| 8 | P8 | clients: `make core_client`, `viva_core/cli`, atlantis split | — | — |
+| 9 | **P8b** | removals, one surface per release: M1 `/env-worker/v1` → M2 `/compose/v1` → M3 `/core/v1/*` → M4 `/api/v1/{tasks,datasets}` → M5 the interim `/viva/v1/{compose,env-worker}` → M6 `/api/v1/simulations*` + non-trio reads → M7 the PTools trio → the ALB rules 84, 82, 60, 50 | each: its caller on **both** sites | **M1–M7** |
+| 10 | P9, P10 | second Deployment (rehearsed at UConn first, D20), public readiness, extraction | — | **N** |
+
+Why P4c before P5, and P7 after both: the driver needs a job record with owner-refs, which P4b's
+`JobStore` and the SMS adapters give over the P4a-1 columns — not the `core.job` table. Retiring
+the chain machine first means P7 later moves a smaller table with fewer live readers. P5's
+environment table is a prerequisite for the run surface's environment reference and for builds as
+jobs, so it precedes P5b. §4b's U1–U2 slot after step 1 (different files) and U3–U4 need only U2.
+
+### P3g — Dual-surface scaffolding
+
+The interim mounts (D17); `viva_core/version.py` and `version` in `CoreHealth` (the workbench's
+`ping()` keeps `/version`, a root route); `viva_core/api/capabilities.py` — a typed registry the
+application appends to — serving `GET /viva/v1/capabilities` (the SMS `/core/v1/capabilities`
+keeps answering until M3); `viva-v1-surface` advertised when the mounts are included and
+`current_container().compose` is set; the duplicate `operationId` `run-ecoli-simulation-analysis`
+(`sms.py:584` and `:903`) renamed on the legacy `POST /analyses` op (zero `app/` consumers); the
+smoke `contract` check with recorded shapes under `tests/fixtures/contract/` (`--record`
+refreshes; runs on both prefixes while both exist). Deploy: **F2**, code only, may ride F's image.
+Rollback: previous image; a W1 workbench falls back on capability absence.
+
 ### P4 — Provenance, in core shape
 
 - **P4a.** One additive "owner-ref expand" revision on the SMS chain: `hpcrun.owner_kind`,
@@ -382,6 +441,39 @@ Deploy: app only. Risk: medium.
   `HpcRunJobStore`, so P7 swaps only the store.
 
 Deploy: app + migration Job. Rollback: columns are additive; the previous image works.
+
+**P4b, reshaped for D15 (2026-09-25):** `Job` carries `kind` (str), `owner_kind: str` +
+`owner_id: str` (the P4a-1 rule: the owning table's name, so #776's enum becomes `str`),
+`external_job_ids` (live handles) and `companion_job_ids` (what must die with it, #710);
+`JobStore` gains `by_owner` and `by_kind_status` (the scheduler's tick query). Adapters:
+`HpcRunJobStore` and `TaskJobStore` on the SMS side, `EnvWorkerTaskJobStore` in core, each run
+against the conformance oracle on the Postgres testcontainer (the `InMemoryJobStore` is a
+reference, fenced to tests). `/viva/v1/jobs` reads land here too.
+
+### P4c — Templates and the record (Eran's #3 + #4, one move; D15)
+
+`viva_core/campaigns/templates.py` (the typed port + parity test under a dev extra) and
+`viva_core/campaigns/driver.py`: `CampaignDriver(store, protocols)` — `start(study)` fills,
+submits the ready Sites through `protocol.submit(member) -> handles` and records a `Job` per
+member (the campaign's ParCa included); `tick()` reads `by_owner`, `protocol.poll(handles)`,
+records, triggers the next Sites; `cancel()` folds over `by_owner`, companions first, and asserts
+the backend reports nothing active. Protocol objects over the submitters that exist:
+`container` (`ContainerSubmitter`), `mnp` (`MnpSubmitter`), `k8s-job`, `local`, and **`nextflow`
+as a protocol** (a foreign engine that owns its tasks; the reaper is its). Operators: `single`
+and `template` (`tensor` is a degenerate template). Chain stays app-level gating — no Batch
+`dependsOn`, which is the real law today; `dependsOn` is a `container`-protocol option for the
+other shapes. The SMS ecoli study (`parca` → `seed[i]/generation[g]` → `analysis` Sites) reuses
+`chain.py`'s pure command builders. A site flag `SMS_CAMPAIGN_DRIVER=chain|templates`; the
+scheduler tick `advance_campaigns`; smoke `chain-cancel --phase parca|seeds` and the opt-in
+**`artifact-golden`** (a 2×2 campaign's S3 manifest + per-file hashes against a recorded golden,
+tolerance list explicit — the Nextflow act-2 harness pattern). **Cutover:** the flag's default
+flips; `update_chain_campaigns` + `_advance_*`, `chain.py`'s submit loop and `ensemble.py` are
+deleted (the ensemble path cannot be wrapped — `ensemble.py:163` hard-codes its composite id with
+no override — so a `tensor` template serves `sim-default` and the two-engine comparison, and
+`dual-engine-comparison` is served by the template); `chain_*` is no longer written. Deploy:
+**H1** (flag off: code present, path unchanged) then **H2** (flag on): the same 2×2 both ways,
+`artifact-golden` equal, `chain-cancel` in both phases with `active_batch_jobs == []`, Tier 2 in
+full, R. Rollback at H2: the flag back to `chain`.
 
 ### P5 — Environments, builds, compose decoupling, durable dispatch
 
@@ -437,6 +529,41 @@ reproducible-biology hosted-services application, after P10) a lift rather than 
 **Standalone gate:** from here `tests/core/` covers every core service with no hooks
 registered. Risk: medium.
 
+**Added under B (2026-09-25): the `simulator` table is copied into `environment`.** The record:
+`id`, `spec_hash` (unique with `variant`), `kind ∈ {explicit, derived}`, `recipe`, `repo_url`,
+`commit`, `key` (the registry tag), `variant` (`""`, `submit` — the `-submit` head image is a
+second row sharing `spec_hash`), `image`, `image_digest` (recorded from the registry after the
+push), `status`, `build_job_id` → the build job (`kind=build`, owner-ref `(environment, id)`),
+`provides`, `temporary`, `label`, `created_at`, `created_by`, **`legacy_simulator_id`** (nullable,
+unique). D11 makes the copy easy: rows are write-once, so a one-time copy is complete forever;
+`simulator` is never dropped, becomes read-only, and new registrations dual-write during the
+facade window. The 17 `environment_key` readers, the FK `hpcrun.jobref_simulator_id` and every
+`simulator_id` parameter go through one `environment_for_legacy_id()`. Upload's ecoli flags
+(`stage_private_fork`, `vecoli_private_commit`, `include_submit_image`) become `repo-recipe`
+options + `variant`, declared by the SMS package. `/viva/v1/environments` (+ `/{id}/source`,
+`/{id}/manifest` via a package hook); `/core/v1/simulator/*` becomes a dated facade (M3).
+Deploy: **I1** (the migration Job alone: `simulator` count == legacy rows; registry tags intact)
+then **I2** (code): Tier 1 `--build` on a temporary environment, Tier 2, `contract`, and the
+kill-the-pod-mid-dispatch check. Caller release: **W2** and the two harness-script PRs
+(v2ecoli, sms-ecoli).
+
+### P5b — The run surface
+
+`POST /viva/v1/composites` per delta row 26 (an environment reference + exactly one of
+`document` / `composite{id, params}`; execution is a field), with `GET /composites`, `/{id}`,
+`/{id}/status`, `/{id}/progress` (members by kind × status — the successor of `chain-progress`),
+`DELETE /{id}`, `/{id}/{jobs,datasets,events,log}`. `/compose/v1/simulation/*` become aliases of
+the same handlers; `/api/v1/simulations` is **re-implemented as a facade** (parameters →
+composite id + study + environment + hooks; the `simulation` row still written); the
+`/simulations/{id}/*` reads go over composites and datasets; `/core/v1/simulation/parca*` is a
+run of the parca composite; the env-worker router gets its final `workers` spelling with the
+reads nested under `/workers/{job}/…`; the interim mounts are dated; the datasets-shaped
+`sms.js` is written (D18); `V2ECOLI_BATCH_BASELINE_COMPOSITE_ID` is single-sourced in v2ecoli
+(today it is written twice — `runner_env.py:49`, `runner_hooks.py:26` — and the second cannot
+import the first). Deploy: **J** — Tier 2 through `/viva/v1/composites` **and** through the
+facade, `contract`, `artifact-golden`, `vwb smoke` with W3. Caller release: **W3**, the harness
+scripts, atlantis's SMS verbs, `pbg-superpowers/skills/viva-remote-run/SKILL.md`.
+
 ### P6 — Scheduler split
 
 `viva_core/services/job_monitor.py` takes the generic passes and folds in
@@ -483,10 +610,32 @@ Deploy: migration Job each step, RDS snapshot before each. **Risk: high.**
   jobs and events. It is part of `tests/core/` (run against the hook-less core app) and
   ships in core's own distribution at extraction. `atlantis`'s generic verb groups may then
   delegate to it. Can start any time after P3; must exist by P9.
+- **The atlantis split (B).** 69 commands: the generic groups `compose`, `worker`, `dataset`,
+  `task`, `composite` (37) delegate to the core CLI; the SMS groups `simulation`, `analysis`,
+  `simulator` → `environment`, `parca`, `demo`, `compose ecoli` (28) move to `app/sms/` against
+  `/viva/v1` + the package's composite ids; the TUI's domains split the same way; `E2EDataService`
+  gets a `_path()` resolver keyed on the same capability names as the workbench so the EUTE
+  rule holds through the dual period. First: fix the duplicate `operationId` (P3g) and delete
+  `app/gui.py`.
+
+### P8b — Removals, one surface per release (D14)
+
+Order by caller count — M1 `/env-worker/v1` (its only caller is the workbench, on W1) → M2
+`/compose/v1` (`/curated/ecoli` → composites with an id) → M3 `/core/v1/*` (W2 + the harness
+scripts) → M4 `/api/v1/tasks`, `/api/v1/datasets` (atlantis) → M5 the interim
+`/viva/v1/{compose,env-worker}` → M6 `/api/v1/simulations*` mutations and the non-trio reads (W3
++ harness + atlantis) → M7 the PTools trio (every site's `sms-ptools` rebuilt) → the sms-cdk
+listener rules 84 `/env-worker`, 82 `/compose`, 60 `/core`, 50 `/api` deleted, dev then prod,
+each with an explicit go. Each removal: the caller release is already deployed on **both**
+Stanford sites; Tier 0 `routes` shows exactly the removed set gone; `contract` passes for what
+remains; the caller's own smoke passes against the removal image before it is deployed; the ALB
+deletion is verified through the front door (JSON, not PTools' HTML). Rollback: re-add the router
+(one line). The SMS OpenAPI document and generated client are regenerated per removal.
 
 ### P9 — Second Deployment
 
-Same image, `uvicorn viva_core.api.app:app`.
+Same image, `uvicorn viva_core.api.app:app`. **Rehearsed at UConn first** (D20, §4b U3–U4): core
+as its own Deployment beside the SMS pod, on nginx rather than the ALB.
 
 | Step | Action |
 |---|---|
@@ -511,11 +660,80 @@ repo and PyPI distribution, with the core CLI.
   `repo-recipe` in P5, which is what removes the duplication; `scripts/qualification_test.sh`
   stays its check, and `atlantis smoke` does not cover it. (Decided 2026-09-20. Before the
   audit the plan did not mention it at all.)
-- **Production.** Prod is on **0.9.78**; dev is at 0.9.150. A catch-up is *not part of this
-  work* (Jim, 2026-09-20): the plan only records the gap and what closing it needs — an RDS
-  snapshot, `db_reconcile --analyze` against prod, the migration Job across every revision in
-  between (section 7a, risk 3), then smoke Tier 0 + 1 and Tier 2 including the cancel checks.
-  Prod still has #709 (a cancelled run leaves its ParCa job running).
+- ~~**Production.** Prod is on **0.9.78**; dev is at 0.9.150. A catch-up is *not part of this
+  work* (Jim, 2026-09-20)~~ **In scope since 2026-09-25 (Strategy B): the big-jump runs right
+  after checkpoint F** (Jim) — an RDS snapshot, `db_reconcile --analyze` against prod, the
+  migration Job across every revision 0.9.78 → F (section 7a, risk 3), smoke Tier 0 + 1 and
+  Tier 2 including the cancel checks with `--require-aws`, and the prod `cdk deploy` for the
+  `/viva` ALB rule (prod's stack does not have it). Then prod follows dev on every **database**
+  checkpoint (G, I1, L) after a soak. A capability-gated caller release is safe against old prod;
+  it is a *removal* (P8b) that needs prod on the successor surface. Prod still has #709 until then.
+
+## 4b. The UConn track — core standalone on RKE2 + SLURM (Jim, 2026-09-25)
+
+**The end goal is core running standalone at `sms.cam.uchc.edu`; SMS running there again is a
+follow-on, not time-critical.** Facts from the live cluster (`KUBECONFIG=~/.kube/kubeconfig_vxrails.yaml`,
+reachable on VPN; read-only) and the two public hosts, 2026-09-25:
+
+| | `sms-api-rke` (sms.cam.uchc.edu) | `sms-api-rke-dev` (sms-dev.cam.uchc.edu) |
+|---|---|---|
+| api | `ghcr.io/…/sms-api:0.10.0-rc1` — `36849f0b` on the **unmerged** `feat/ptools-latency-mitigation` (4 commits: SSE streaming, eager artifact materialization, `n_tp` decoupled from SLURM); the overlay pins **0.9.4** | `sms-api:0.4.9-dev`; the overlay pins 0.9.1 |
+| ptools | `sms-ptools:0.5.9` | `0.4.5` |
+| served | 43 ops on `/api`, `/core`, `/compose`; no `/viva`, `/env-worker`, `/core/v1/capabilities` | 22 ops; no `/compose` |
+| ingress | nginx, one path per prefix, cert-manager TLS; `/` → ptools; **`/viva` and `/env-worker` not routed** (they fall to PTools' HTML 404 — the ALB's defect, again) | same, minus `/compose` |
+| compute | `COMPUTE_BACKEND=slurm`; SSH through an in-cluster `haproxy-ssh` round-robin to `mantis-sub-3…10.cam.uchc.edu:22` as `svc_vivarium`; partition `vcell`, QoS `vcell-services`; paths under `/projects/SMS/sms_api/prod/…` on a 1000 Gi NFS PVC | partition `vivarium`, pinned to `mantis-039` |
+| database | CNPG `sms-postgres-cluster` (healthy); the rc1 image carries **3** Alembic revisions (`main`: 22), no `db_reconcile.py`, no `create_all` guard | `sms-dev-postgres-cluster`: one instance crash-looping (759 restarts) |
+| storage | no Qumulo, no S3 configured: `storage_backend` defaults to `s3` with no bucket, so every object-store route is broken by construction; compose results work because the SLURM path SCPs `results.zip` | same |
+| also | `sms-api-rke-temp`: api + ptools in `ImagePullBackOff` for 97 days — abandoned; `kustomize/base`'s RBAC (`batch-submit`, Jobs/pods/configmaps) is portable; `deployment_namespace` is **dead config** — `COMPUTE_BACKEND` selects | dev's `shared.env` lacks the `COMPOSE_*` block; `known_hosts` spelled differently from prod; two positional JSON patches outside the deploy-config guard |
+
+Qumulo's coordinates exist only in a test docstring (`tests/common/storage/test_qumulo_s3.py`:
+`https://cfs15.cam.uchc.edu:9000`, bucket `sms-vivarium`, `VERIFY_SSL=false`).
+
+**What core lacks for standalone there** (ranked; sizes S/M/L): (1) `create_core_app()` has
+**no lifespan** — no DB engine, no file service, no `ComposeJobMonitor.start_polling`; its
+container has `compose=None`, so 46 of 48 routes answer 500/503 — **L**; (2) no deployable
+artifact: no `Dockerfile-core`, no uvicorn CMD, no overlay, one distribution — **M**; (3)
+`ComposeSimulationServiceHpc` is SMS's, though it reads only four non-core settings and one
+hardcoded cache path, and `ComposeJobMonitor` already polls SLURM — **M**; (4) the SLURM/SSH
+settings are not on `CoreSettings` (`slurm_submit_*`, `slurm_partition/qos/node_list`,
+`compose_cache_base_path`, `storage_backend`) — **S**; (5) no file-service factory in core (the
+`storage_backend → FileServiceQumuloS3` selector lives in `viva_api/dependencies.py`) — **S**;
+(6) `site_resolver` hard-codes ECR and ignores `environment_registry` (the standalone path
+already yields `ghcr.io/…:<tag>`) — **S–M**; (7) env workers are gated on `ecr_account_id` and
+hardcode `serviceAccountName="batch-submit"` — **S**; (8) ingress paths and the relay advertise
+host — **S**; (9) site configuration (Qumulo secret, `ENVIRONMENT_REGISTRY=ghcr.io/vivarium-collective`,
+`CORE_RUNTIME_IMAGE`, `K8S_JOB_NAMESPACE`, `ENV_WORKER_MODULE_IMAGE`) — **S**; (10) datasets on
+Qumulo (the router reads `storage_s3_bucket`; core's at P4a-2) — **M**; (11) no live SLURM test
+lane — **M**; (12) `SSHSessionService` has no `port` argument — **S**.
+
+**The local SLURM harness.** compose-api's `tests/fixtures/slurm_cluster/` (Jim, 2026-09-11/12)
+is project-agnostic: mariadb + `slurmdbd` + `slurmctld` (sshd on a Docker-chosen port) + one
+`cpu-worker` on `giovtorres/slurm-docker-cluster:26.05.2` (multi-arch, native on Apple
+silicon), **Apptainer inside and `--fakeroot` builds work**, per-session keys and project name,
+~20 s to start, a real def built in ~70 s, a 6-minute CI job. Only its `slurm_fixtures_backend.py`
+needs edits (imports, the settings names in one `override_settings(...)` call, `remote_base`).
+Our preconditions: the SSH `port` (12); settings overridable at use time — already true through
+`set_core_settings_provider`. It proves `SlurmService` against a real scheduler, the conformance
+drift alarm (also runnable against Mantis from a VPN laptop), the SLURM compose path end to end
+and `ComposeJobMonitor._update_slurm_jobs`; not the science images, which stay `cluster_only`.
+
+| Step | Content | Checkpoint — proof |
+|---|---|---|
+| **U0** | archaeology + docs: who owns the live `0.10.0-rc1` and the fate of its four commits (Alex/Jim, D21); D19–D21 recorded; `CLAUDE.md` corrected; the RKE **core** overlay added to the deploy-config guard | — |
+| **U1** | the harness: `port` on `SSHSessionService`; `tests/fixtures/slurm_cluster/` + the backend fixture ported; a `slurm` marker; CI job `tests-slurm`; the conformance test; the SLURM compose service exercised on the container (build + run + results) | **UA**: the lane green in CI; the same tests green with `--slurm-backend cluster` against Mantis from VPN |
+| **U2** | core on SLURM: settings onto `CoreSettings`; `ComposeSimulationServiceHpc` + `hpc_utils` into core; a file-service factory; `site_resolver` honours `environment_registry` when `ecr_account_id` is unset; the env-worker gates become settings; **a lifespan and a `container_from_settings` that builds `ComposeServices` for SLURM**; `Dockerfile-core` + `uvicorn viva_core.api.app:app` + a `viva-core` image on ghcr; the core `JobBackend` Protocol declared with SLURM as its second implementation | `tests/core/` boots the app with SLURM settings against the container cluster; the SMS app unchanged |
+| **U3** | core dark on rke-dev: a new overlay `kustomize/overlays/viva-core-rke-dev/` — Deployment `core` (SA `batch-submit`, the SSH secret + known_hosts, the NFS `/projects` mount, Downward-API relay host), Service `core:8000`, **its own database** on the CNPG cluster (D19), a Qumulo sealed secret, `/viva` + `/env-worker` ingress paths on `sms-dev.cam.uchc.edu`; the SMS `api` pod untouched | **UB**: `/viva/v1/health` JSON through nginx; `atlantis compose run --base-url https://sms-dev.cam.uchc.edu/viva/v1` runs a composite as an sbatch job on Mantis and downloads its results; `atlantis worker start/call/stop` (an RKE Job); Tier 0 `core` + `contract` for the `/viva` families; a marker on the pod |
+| **U4** | the same overlay for `sms-api-rke`: `core` beside the rc1 `api`, the two paths added to the prod ingress (additive) | **UC**: UB's proof on `sms.cam.uchc.edu`; `vwb smoke` from a workbench pointed at `/viva/v1` |
+| **U5** | SMS follow-on (not time-critical): resolve rc1 (D21); re-pin the SMS overlays; the db-migration Job runs the **reconciler** — `LEGACY` at revision 3 — rehearsed first on a `pg_dump` of `sms-postgres-cluster` restored into a scratch database; rke-dev's drift reconciled and its crash-looping Postgres instance fixed; `STORAGE_BACKEND=qumulo`; the **current** SMS (end-state shape, no facades) to rke-dev, then prod; `sms-ptools` rebuilt for UConn; Apptainer + `APPTAINER_TMPDIR` on the `vcell`/`vivarium` nodes confirmed | **UD** (rke-dev), **UE** (prod): EUTE via `atlantis` on SLURM; Tier 0/1 + a SLURM Tier-2 `sim` preset; the reconciler's `--analyze` report before each Job |
+
+Order against the phases: U1–U2 after step 1 (P3g), before P4c; U3–U4 need only U2 and may
+precede the Stanford P-jump; U5 waits for the removals to settle so UConn SMS deploys the end
+state once — UConn never needs the facades. Risks: applying a checked-in SMS overlay rolls prod
+back to 0.9.4 (the core overlay is a new directory; nothing SMS-owned is touched before U5); the
+UConn SMS database is LEGACY with drift and the reconciler has never run this far back (rehearse
+on a restored dump; `--analyze` before every Job; a CNPG backup first); NFS permissions and
+Apptainer on the partition nodes (the sbatch already probes; UB's compose run is the test);
+everything needs VPN (the harness does not).
 
 ## 5. Sequencing against in-flight work
 
@@ -549,6 +767,11 @@ repo and PyPI distribution, with the core CLI.
 | 10 | Kustomize patch conversion silently changes env | diff of rendered manifests |
 | 11 | Fingerprint drift across two chains | `create_all` off first |
 | 12 | Drift tests fight two specs | SMS spec is the union until P8 |
+| 13 | (B) Lock-step releases across viva-api, vivarium-workbench, sms-ptools, sms-cdk, atlantis and two harness repositories | capability-gated clients (safe on old servers); a removal only after its caller is on both sites; `contract` on both prefixes; a per-surface removal table in the ledger naming caller versions |
+| 14 | (B) PTools: private, hand-built, four pinned tags, no client | the trio is the last facade, re-implemented over datasets; one `sms.js` change; rebuilt per site opportunistically (D18) |
+| 15 | (B) The safety net compares no artifacts — the contract stops being the oracle | `contract` (shapes) at F2; `artifact-golden` at H1, built before the cutover it judges |
+| 16 | (B) The two high-risk data moves come earlier with more dependents | record *shape* early, table *late* (D15); the environment table additive with `simulator` untouched (D11); every revision keeps the round-trip + fingerprint tests |
+| 17 | (UConn) The SMS database there is LEGACY at revision 3 with drift; the reconciler has never run this far back | own database for core (D19); for U5, rehearse on a restored dump and `--analyze` before every Job |
 
 ## 7. Open questions
 
@@ -559,14 +782,17 @@ though later text had started to assume some of them.
 |---|---|---|---|
 | 1 | Is `/viva/v1` the right public prefix for core? | P3 | yes, root prefix configurable |
 | 2 | May migrated compose rows get new job ids (old one kept in `legacy_compose_id`)? | P7 | yes; P7 and §7a already assume it |
-| 3 | `/api/v1/tasks`: a permanent SMS facade, or deprecated in favour of `/viva/v1/tasks`? | P4b | facade |
+| 3 | ~~`/api/v1/tasks`: a permanent SMS facade, or deprecated in favour of `/viva/v1/tasks`?~~ **Decided (D14, 2026-09-25): a dated facade, removed at M4** | P4b | — |
 | 4 | How urgent is #656 — take the fast lane to P4? | P4b | not urgent until someone says so |
 | 5 | Core's bus: Redis + the outbox (and delete the dead `compose_nats_*` settings), or NATS? | P5 | Redis + outbox |
-| 6 | Does the public hosted core get its own database? | P9 | — |
-| 7 | The core CLI's name (`viva`?), and whether `atlantis` delegates its generic verbs to it | P8 | — |
+| 6 | Does the public hosted core get its own database? **At UConn, yes (D19, 2026-09-25)**; for a hosted public core, the same answer is the leaning | P9 | own database |
+| 7 | The core CLI's name (`viva`?), and whether `atlantis` delegates its generic verbs to it | P8 | `viva`; the generic groups delegate (P8) |
 | 8 | **Does core depend on `pbest`** for the address parser and the recipe generator (`compose-api` already imports its types), or carry its own copy? | P5 | depend, if `pbest` stays domain-neutral: a third copy is how the three partial implementations happened |
 | 9 | **What does "compatible" mean** for selecting an environment, beyond an exact spec hash: covering `provides`? version ranges? a curated list only? | P5 | exact match first; `provides`-covers second |
-| 10 | **viva-api#742 (Eran, 2026-09-21): push the split to "one object, one run, one record" — and one surface?** Six ranked changes and five questions for Jim. Two strategies are drafted for the two of them to decide between: [`strategy-core-incremental.md`](strategy-core-incremental.md) (Eran's `viva_core` end state, the SMS contract unchanged for the scope of this refactor — to contain risk, not as a commitment to permanence) and [`strategy-core-direct.md`](strategy-core-direct.md) (no facades; the callers change during the refactor, with Eran's design time and the added risk accepted). #776 (the `JobStore` seam) is consistent with both | before P4a | **open — Jim and Eran** |
+| 10 | **viva-api#742 (Eran, 2026-09-21): push the split to "one object, one run, one record" — and one surface?** Six ranked changes and five questions for Jim. Two strategies are drafted for the two of them to decide between: [`strategy-core-incremental.md`](strategy-core-incremental.md) (Eran's `viva_core` end state, the SMS contract unchanged for the scope of this refactor — to contain risk, not as a commitment to permanence) and [`strategy-core-direct.md`](strategy-core-direct.md) (no facades; the callers change during the refactor, with Eran's design time and the added risk accepted). #776 (the `JobStore` seam) is consistent with both | before P4a | **decided 2026-09-25: B, with modifications — D14–D18 and the log entry.** #742's six changes assessed one by one: 1 adopted; 2 adopted with modifications (Nextflow is a protocol; SLURM stays a backend; the ensemble path is deleted only after its template replacement serves `sim-default` and the comparison); 3+4 adopted as one move with the record's shape before the table (D15); 5 adopted with P5 as the prerequisite (no `environment` table exists; `legacy_simulator_id`); 6 adopted — `/viva/v1/composites` is net-new, not a rename, and the residue in the SMS package is larger than "package content" for a while (hooks, allow-list, ParCa recipe, the analysis DAG, the PTools trio) |
+| 11 | **The workbench and the interim mounts (D17):** does W1 take `/viva/v1/{compose,env-worker}` now (14 operations move twice, in one file behind one resolver) or wait for the `composites` / `workers` families? | P3g | flip now — proves the switch on zero-risk operations; **Eran's call** |
+| 12 | **`-submit` on the environment record:** a row per variant sharing `spec_hash`, or a `variants` list on one row? | P5 | a row per variant: an image is an image |
+| 13 | **`list_analyses.result_uri` in the workbench:** keep a `uri` on dataset records, or id-only? | P5b | keep `uri` — provenance needs it; the figure gallery lists datasets instead of walking S3 |
 
 ## 7a. Migrations: proper, tested, and honest about reversibility
 
@@ -618,12 +844,24 @@ startup wiring / database / routing — so a regression on dev bisects to one ca
 | D ✅ 0.9.152, 2026-09-21 | P2.3 | one resolver replaces four image derivations; the core runtime image | workbench through the relay; `vwb smoke`; `atlantis worker`, `task`, `compose` on the new image |
 | D2 ✅ 0.9.153, 2026-09-21 | #761 (a build adopts an existing image), P3a–c, #759 | **the build script is the one that runs against write-once tags** (sms-cdk#55 made the repository `IMMUTABLE` before this); core's router is served under `/viva/v1` | Tier 0 + 1 + 2 **with `--build`**: the temporary-simulator build is the check that matters — it is the adopt script against the immutable repository |
 | E ✅ 0.9.154 → **0.9.155**, 2026-09-22/25 | P3d-1 … 3d-4d-1 (+ #779): compose and env-worker in `viva_core`; **the runner is core's with SMS's hooks staged beside it** — every mechanism's job contract changed | the staged-hooks contract, live, on all five simulations and compose | 0.9.154: Tier 2 20/2/2 — the 2 failures one bug (the Nextflow head staged the shim, #777); 0.9.155: `sim-nextflow` + `nextflow-cancel` 2/2, Tier 1 13/0, runtime 13/0. The originally planned E (settings split, lifespan, app factory) is now **checkpoint E2**, after 3e/3f |
-| E2 | P3e, P3f | settings split finished, new wiring and lifespan, app factory | alone; diff redacted effective settings and the OpenAPI spec old pod vs new |
-| F | P4a, then P4b | additive migration with dual-write | SQL check that both column sets agree; `atlantis dataset` |
-| G | P5 | durable compose dispatch | kill the pod mid-dispatch; the row must be reconciled, not stranded |
-| H | P6 | scheduler split | multi-generation chain campaign; gating latency vs baseline |
-| I | P7 a, b, c — each separately | the table move | rehearse on a restored copy of the prod DB; RDS snapshot; (b) only with no campaign RUNNING; soak between steps |
-| J | P9 a, b, c — each separately | second Deployment and ALB routing | dark, then the flag flip (rollback = flip back), then `cdk deploy` |
+| E2 ✅ 0.9.156, 2026-09-25 | P3d-4d-2a/b, P3e, P3f — the end of P3 | every service reaches its route through the container; both routers served from core; core's own OpenAPI document | Tier 0 8/8 (+`core`), Tier 1 5/5, **Tier 2 8/8** (21/0/3 with the three opt-ins skipped), runtime run 13/0/3. No migration; only the api pod rolled |
+| F | P4a-1 | the additive owner-ref migration with dual-write | a **database** deploy: the migration Job, then the app; SQL check that both column sets agree; `atlantis dataset` |
+| F2 ✅ 0.9.157, 2026-09-25 | P3g (+ U1) | code only — the interim `/viva/v1` mounts, core's capability route, the `contract` check | **passed, before F** (F waits on #790): Tier 0 9/9 with `contract` (22 unchanged, 2 additions: `core-health.version`, `core-capabilities` now served) and `core`; Tier 1 5/5 (`task` 370 s, `task-fail`, `task-repo`, `worker`, `compose` 507 s); the runtime image 14/0/3; both capability routes advertise `viva-v1-surface`; markers on `api-544b5f68db-ttvbp`. `vwb smoke` with a W1 workbench: W1 does not exist yet — the first thing the workbench does on the dated clock |
+| G | P4a-2, P4b | `/viva/v1/{datasets,tasks,jobs}`, the facades, `task_script` | `atlantis dataset` / `task` on both prefixes; `contract`; R |
+| P-jump | prod (Stanford) | prod 0.9.78 → F, in scope since 2026-09-25 | the big-jump runbook: RDS snapshot; `--analyze`; the migration Job across every revision; Tier 0/1/2 with the cancels, `--require-aws`; the prod `cdk deploy` for `/viva` |
+| H1 | P4c, flag off | the driver, the port, the protocol objects present; dispatch path unchanged | Tier 2 unchanged; `artifact-golden` recorded here as the baseline |
+| H2 | P4c, flag on | campaigns run through the template driver | the same 2×2 both ways; `artifact-golden` equal; `chain-cancel --phase parca` and `--phase seeds`, `active_batch_jobs == []` on Batch; Tier 2 in full; R. Rollback: flag |
+| I1 | P5 (database) | the `environment` table + the `simulator` copy | the migration Job alone; `simulator` count == legacy rows; registry tags intact |
+| I2 | P5 (code) | builds as core jobs; `/viva/v1/environments`; durable compose dispatch | Tier 1 `--build` on a temporary environment; Tier 2; `contract`; kill the pod mid-dispatch — the row is reconciled, not stranded |
+| J | P5b | the run surface and the `/api/v1/simulations` facade ship together | Tier 2 through `/viva/v1/composites` **and** through the facade; `contract`; `artifact-golden`; `vwb smoke` with W3 |
+| K | P6 | scheduler split | multi-generation campaign; gating latency vs baseline; R |
+| L a / b / c | P7 — each separately | the table move | rehearse on a restored copy of the prod DB; RDS snapshot; (b) only with no campaign RUNNING; soak between steps |
+| M1 … M7 | P8b — one surface per release | a surface removed | Tier 0 `routes` drops by exactly the removed set; `contract` for what remains; the caller's smoke against the removal image first; the ALB deletion through the front door |
+| N a / b / c | P9 — each separately | second Deployment and ALB routing (Stanford; UConn first, below) | dark, then the flag flip (rollback = flip back), then `cdk deploy` |
+| UA | §4b U1 | the local SLURM lane | green in CI; green against Mantis with `--slurm-backend cluster` |
+| UB | §4b U3 | core dark on `sms-dev.cam.uchc.edu` | `/viva/v1/health` JSON through nginx; `atlantis compose run` → an sbatch job on Mantis with results back; `atlantis worker`; Tier 0 `core` + `contract`; a marker on the pod |
+| UC | §4b U4 | core at `sms.cam.uchc.edu` | UB's proof on the prod host; `vwb smoke` against `/viva/v1` |
+| UD / UE | §4b U5 | SMS at UConn again (rke-dev, then prod) | the reconciler's `--analyze` before each Job; EUTE via `atlantis` on SLURM; Tier 0/1 + a SLURM `sim` preset |
 
 **The smoke suite (`atlantis smoke run`, `make smoke`).** Every checkpoint is proven with the
 same command rather than by hand. A check passes only on an observed **effect** — a nonce
@@ -639,11 +877,15 @@ is reported separately from PASS and says why; `--json-out` is the record a rele
 
 Required: **A** = 0 + `task`. **A2** = 0 + 1 + an outputs download. **B** = 0 + 1. **C1**, **B2** = 0 + 1. **C1**, **C2**, **C3**, **C** = 0 + 1 + 2 (P2.1 is the first change that
 can break dispatch — Tier 2 and R are built before it). **D** = 0 + 1 (`worker`, `task`
-especially). **E** = 0 + 1 + R. **F** = 0 + 1. **G** = 0 + 1 + R. **H** = 0 + 1 + 2. **I**, **J** = all.
+especially). **E** = 0 + 1 + R. **F** = 0 + 1. **F2** = 0 (with `contract`) + 1. **G** = 0 + 1 + R.
+**P-jump** = all. **H1** = 0 + 1 + 2. **H2** = all, both cancel phases. **I1** = 0 + 1. **I2** = 0 + 1
+(`--build`) + 2. **J** = all, through both surfaces. **K** = 0 + 1 + 2. **L**, **N** = all.
+**M1–M7** = 0 (`routes`, `contract`) + the caller's own smoke. **UA** = the SLURM lane.
+**UB**, **UC** = 0 (`core`, `contract`) + `compose` + `worker` on SLURM. **UD**, **UE** = 0 + 1 + a SLURM `sim`.
 
 **Prod cadence.** Dev takes every checkpoint. Prod may skip code-only ones but follows dev on
-every **database** checkpoint (B, F, I) after a soak — letting migrations pile up for prod is
-the big-jump risk (§6 #3).
+every **database** checkpoint (B, F, G, I1, L) after a soak — letting migrations pile up for
+prod is the big-jump risk (§6 #3). The first prod move under B is the **P-jump** right after F.
 
 **Before each deploy:** check for pod-local in-flight work (`hpcrun` rows on the `local`
 backend, relay workers, unsettled `env_worker_task`) — a restart drops those. Batch and K8s
@@ -751,7 +993,13 @@ split; each has an owner-less issue or a named moment.
 | ~~With `ECR_ACCOUNT_ID` unset, every image reference is the malformed `.dkr.ecr.<region>.amazonaws.com/<repo>:<key>`~~ **done** (2026-09-21, Jim's call): an explicit spec is **refused by name** (`EnvironmentResolverNotConfigured`: "ecr_account_id is unset (ECR_ACCOUNT_ID) …"; 501 through core's route), before a job definition is registered or a job submitted. What needs no registry — core's health route, the runtime image — is unaffected. The suite now runs as a configured site (`tests/conftest.py`) | `viva_api/common/site_environments.py` | — |
 | ~~`/viva/v1` is served by the pod and not routed by the ALB~~ **done on dev** (found at D2, 2026-09-21; sms-cdk#56 merged `c82d48c` and deployed the same day — one additive `ListenerRule`, 21 s; all three core requests then answered JSON through the tunnel). Smoke Tier 0 `core` now guards it | sms-cdk `internal-alb-stack.ts` | **prod**: deploy `smscdk-internal-alb` before prod serves `/viva/v1` |
 | The dispatch blocks `mbp_dispatch` and `multi_node_dispatch` are **declared** (`TypedDict`s, PR 12) but not **validated** at the API boundary beyond `task_env`; `nextflow_dispatch` is checked for two rules only. A wrongly-typed value reaches the container command line | `common/dispatch_validation.py`, `handlers/simulations.py` | a behaviour change (requests that work today could be refused), so its own PR; the `TypedDict`s are the spec to validate against |
-| `CLAUDE.md` still says backend selection is by `deployment_namespace` and that tests use SQLite | `CLAUDE.md` | any docs PR |
+| ~~`CLAUDE.md` still says backend selection is by `deployment_namespace`~~ **done** (2026-09-25, the strategy docs PR); ~~and that tests use SQLite~~ still says so | `CLAUDE.md` | any docs PR |
+| `sms-dev-postgres-cluster-2` (UConn rke-dev's database) has restarted 759 times; `sms-api-rke-temp` has had `api` and `ptools` in `ImagePullBackOff` for 97 days | UConn cluster | the Postgres instance before UB; the temp namespace deleted at U0 if nobody claims it |
+| `.github/workflows/ptools-verification.yml` POSTs `/api/v1/analyses` ×4 against **UConn prod** (`sms.cam.uchc.edu`) | viva-api | disabled at U0 (D21); retargeted at the datasets surface or retired with M7 |
+| ~~`app/gui.py` and `app/ui/dashboard.py` are byte-identical (1,587 lines each)~~ — they were one file: `app/ui/dashboard.py` was a **symlink** to `../gui.py` (found at P3g, 2026-09-25) | `app/` | **done at P3g**: the real file lives at `app/ui/dashboard.py` (what `/ws/Dashboard` serves and `atlantis gui` launches); `app/gui.py` and the symlink are gone; a test keeps it that way |
+| Duplicate `operationId` `run-ecoli-simulation-analysis` on two paths (`sms.py:584`, `:903`) — invalid OpenAPI; the generated client keeps one | `viva_api/api/routers/sms.py` | renamed on the legacy op at P3g |
+| The workbench calls `GET /analyses/{id}/status` without the `/api/v1` prefix (404, swallowed) and pins the wrong path in its test; `POST /core/v1/simulator/{id}/composite-resolve` and `GET /compose/v1/simulation/check` were never served | vivarium-workbench `sms_api_client.py` | W1 |
+| `sms.js:474` reads `n_tps` (the field is `n_tp`), so multi-simulation comparison always falls to the first analysis | `assets/ptools/overrides/htdocs/sms/sms.js` | with the datasets-shaped `sms.js` (P5b) |
 | `job_scheduler.py` (1,370 lines), `handlers/simulations.py` (2,463), `routers/env_worker.py` (1,170), `dependencies.py` (691) have no detailed plan yet | P3, P6 | before those phases start |
 
 ## Status ledger
@@ -768,23 +1016,274 @@ split; each has an owner-less issue or a named moment.
 | P2.1 | carve `simulation_service_ray.py` (5,019 → **628** lines; PR 11 took 960; PR 10 took 377; PR 9 took 648; PR 8 took 548; PR 7 took 252; PR 5 added 35 — the constructor and two delegates came over from the layer; PR 4 *added* 89: a 68-line composite-only helper came back from the mixin, plus the `parca` property and two facades). Cut 1 config interpretation — #705 · cut 2 Batch engine → `viva_core/backends/batch.py` — #706 · cut 3 tasks + `BatchLayer` — #707 · cut 4 build — #712 · cut 5 ParCa — #713 · build and tasks as composed services — #714 · the #709 cancel fix — #710 · smoke checks — #708. · analysis spec → `dispatch/analysis_spec.py` — PR 3 (#726) · ParCa split → `dispatch/parca_spec.py` + `ParcaService` — PR 4 (#727) · `BatchLayer` composed as `service.batch` — PR 5 (#728) · compose handed its Batch layer — PR 6 (#729) · typed boto3 — PR 6a (#731) · #730 fixed (#732) · the D12 ban — PR 6b (#733) · strategy: mbp-tracked — PR 7 (#734) · strategy: Nextflow — PR 8 (#735) · strategy: multi-node composite — PR 9 (#738) · strategy: ensemble — PR 10 (#740) · strategy: chain — PR 11 · the package `Any`-free — PR 12 · `simulation/ray/` renamed `simulation/dispatch/`. **All five mechanisms are strategies**, and the 2026-09-20 sequence is complete; #715 (analysis as a service) **closed, superseded by PR 3** | 0.9.151 carries the whole carve: every strategy (PRs 7–11), 6a/6b, and the #730 fix | **2026-09-21** (checkpoints C1, B2, C2, C3, C) | — | **done — the carve is deployed.** **Dev is 0.9.151 (checkpoint C, 2026-09-21, tag `v0.9.151`):** all five dispatch mechanisms run as strategy objects on a deployment. Merged after C and **not deployed** (no behaviour in them to deploy for; they ride checkpoint D): PR 12 (#744, annotations only) and the `dispatch/` rename (#745, names only). The service's nine scheduler delegates and its progress / cancel / staging methods stay until **P6**. **Next: P2.3**, the environment model and its *select* half |
 | P2.2 | — | | | | **absorbed into P2.1** (2026-09-20): the mechanisms go straight to strategy objects |
 | P2.3 | the environment model and its *select* half (D10): one resolver for four image derivations; then the core runtime image. 2.3a the model + `RegistryEnvironmentResolver` (`viva_core/environments/`, no caller changed) — #748 · 2.3b the four derivations ask it (`common/site_environments.py`) — #749 · 2.3c the core runtime image + core's container entrypoint (`Dockerfile-core-runtime`, `viva_core/runtime/`) — #750 · 2.3d-1 a task may name an environment (`TaskRunRequest.environment`) — #751 · 2.3d-2 Batch pulls the image; dev names it — #752 · 2.3d-3 a compose run may name an environment (one container) | | | | **done and deployed** — dev is 0.9.152 (checkpoint D, 2026-09-21, tag `v0.9.152`): the four image derivations ask one resolver, `CORE_RUNTIME_IMAGE` is live, a task and a compose run may name `environment="runtime"`. Measured on dev: `compose` 21.6 s in the runtime image against 495.9 s on the science image; a cold-fleet `task` starts in 106 s against 221 s. Prod: repeat the one-job trial pull from its VPC before it names the image |
-| P3 | settings, DI, app factory. 3a `create_core_app()` boots alone; SMS includes core's router under `/viva/v1` | | | | **in progress** — 3a, 3b, 3c deployed at D2 (0.9.153); **3d-1 … 3d-4d-1 deployed at E (0.9.154/0.9.155, tag `v0.9.155`)**; 3d-1 done (compose's ParCa staging is a hook); 3d-2 done (the 14 settings compose and env-worker read are `CoreSettings` fields); 3d-3 done (compose is handed its services; it imports nothing of `viva_api.dependencies`); 3d-4a done (the env-worker service and the site resolver are in `viva_core`); 3d-4b-1 done (five compose modules `Any`-free, the D12 ban on for them by name); 3d-4b-2 done (`models` and `container_def` are in `viva_core`; `ComputeBackend` too); 3d-4b-3 done (the five and the abstract service are in `viva_core`: 3,025 lines under `viva_core/compose/` + `env_worker/`); 3d-4c-1 done (the Batch compose service is in `viva_core`; the layout primitives too); 3d-4c-2 done (the runner and `render_nf` are core's; SMS's hooks are a staged sibling — every dispatch command changed, undeployed); 3d-4d-1 done (the compose handlers are core's); 3d-4d-2a done (the compose router is core's, served at `/viva/v1/compose` and, unchanged, at `/compose/v1`; BioModels in `contrib/sysbio`); 3d-4d-2b done (the env-worker router and identity are core's) — **3d-4 complete**; 3e done (containers replace the setters: the routers carry none, `current_container()` is the one seam); 3f done (settings split finished; two OpenAPI documents; the lifespan runs without the scheduler) — **P3 complete**; next **checkpoint E2** (deploy 3d-4d-2a/b, 3e, 3f), then P4. **SLURM compose stays in SMS** until a SLURM site can test it |
-| P4a | owner-ref expand | `a4b6c8d0e2f4`: `hpcrun.{owner_kind,owner_id,output_uri}`, `dataset.{owner_kind,owner_id,producer_job_id,trace_id}`, backfilled from the FKs, dual-written (`viva_api/simulation/owner_ref.py`) | the FKs stay authoritative | | **P4a-1 written** (the migration + dual-write); the dataset code move and `/viva/v1/datasets` are P4a-2; deploy = **checkpoint F** (a migration Job) |
-| P4b | | | | | not started (checkpoint F) |
-| P5 | | | | | not started (checkpoint G) |
-| P6 | | | | | not started (checkpoint H) |
-| P7a / b / c | | | | | not started (checkpoint I) |
-| P8 | | | | | not started (checkpoint —) |
-| P9a / b / c | | | | | not started (checkpoint J) |
-| P10 | | | | | not started (checkpoint —) |
+| P3 | settings, DI, app factory. 3a `create_core_app()` boots alone; SMS includes core's router under `/viva/v1` | | | | **done, deployed (E2, 0.9.156)** — 3a, 3b, 3c deployed at D2 (0.9.153); **3d-1 … 3d-4d-1 deployed at E (0.9.154/0.9.155, tag `v0.9.155`)**; 3d-1 done (compose's ParCa staging is a hook); 3d-2 done (the 14 settings compose and env-worker read are `CoreSettings` fields); 3d-3 done (compose is handed its services; it imports nothing of `viva_api.dependencies`); 3d-4a done (the env-worker service and the site resolver are in `viva_core`); 3d-4b-1 done (five compose modules `Any`-free, the D12 ban on for them by name); 3d-4b-2 done (`models` and `container_def` are in `viva_core`; `ComputeBackend` too); 3d-4b-3 done (the five and the abstract service are in `viva_core`: 3,025 lines under `viva_core/compose/` + `env_worker/`); 3d-4c-1 done (the Batch compose service is in `viva_core`; the layout primitives too); 3d-4c-2 done (the runner and `render_nf` are core's; SMS's hooks are a staged sibling — every dispatch command changed, undeployed); 3d-4d-1 done (the compose handlers are core's); 3d-4d-2a done (the compose router is core's, served at `/viva/v1/compose` and, unchanged, at `/compose/v1`; BioModels in `contrib/sysbio`); 3d-4d-2b done (the env-worker router and identity are core's) — **3d-4 complete**; 3e done (containers replace the setters: the routers carry none, `current_container()` is the one seam); 3f done — **P3 complete and deployed: checkpoint E2 passed (0.9.156, tag `v0.9.156`)**; next P4. ~~**SLURM compose stays in SMS** until a SLURM site can test it~~ — it moved at U2b-2 (2026-09-25), once the Docker cluster could test it |
+| Strategy B | the docs PR: D14–D21, the order under B, P3g / P4c / P5b / P8b, §4b, checkpoints F2 … UE | — | — | — | **written 2026-09-25**; the replies on #742 and workbench#1150 go with it |
+| P3g | dual-surface scaffolding — #792 the interim `/viva/v1/{compose,env-worker}` mounts in the SMS app (served, not documented twice), `viva_core/version.py`, `GET /viva/v1/capabilities` + `viva-v1-surface` on both capability routes, `version` in core's health · #793 the duplicate `operationId` (`run-slurm-analysis`) · #794 one GUI notebook (`app/ui/dashboard.py` was a symlink to `app/gui.py`) · #795 the smoke `contract` check (`app/contract.py`, baseline recorded from dev 0.9.156, 22 operations) | 0.9.157 | **2026-09-25** (checkpoint F2, tag `v0.9.157`) | — | **done and deployed** — all four merged 2026-09-25 (`166f0e9e`, `7de22dd1`, `e29d373e`, `72a388b9`); caller release W1 is the workbench's next move |
+| P4a | P4a-1 owner-ref expand — #790 (`a4b6c8d0e2f4`: `hpcrun.{owner_kind,owner_id,output_uri}`, `dataset.{owner_kind,owner_id,producer_job_id,trace_id}`, backfilled, dual-written; `viva_api/simulation/owner_ref.py`) · P4a-2 the dataset code move + `/viva/v1/datasets` | | | | **P4a-1 written, #790 open** (checkpoint F: the migration Job, then the app); P4a-2 not started (checkpoint G) |
+| P4b | #776 reshaped per D15 + the SMS adapters; `/viva/v1/{tasks,jobs}`; `task_script` | | | | not started (checkpoint G) |
+| P-jump | Stanford prod 0.9.78 → F | | | | not started; right after F (Jim, 2026-09-25) |
+| P4c | templates + the record | | | | not started (checkpoints H1, H2) |
+| P5 | environments, the build half, the `simulator` copy | | | | not started (checkpoints I1, I2); caller release W2 |
+| P5b | the run surface | | | | not started (checkpoint J); caller release W3 |
+| P6 | | | | | not started (checkpoint K) |
+| P7a / b / c | | | | | not started (checkpoint L) |
+| P8 | clients | | | | not started |
+| P8b | removals M1 … M7 | | | | not started; each after its caller is on both sites |
+| P9a / b / c | | | | | not started (checkpoint N); rehearsed at UConn first (U3–U4) |
+| P10 | | | | | not started |
+| U0 … U5 | the UConn track (§4b) | | | | U1 merged (#796, rides 0.9.157); **U2 in progress**: U2a the SLURM settings onto `CoreSettings` (#798), U2b-1 the SLURM compose service's run command as a hook (#800; the v2ecoli mode was inside it; `ContainerRun`, `viva_api/simulation/compose_run_command.py`), U2d the registry naming and the env-worker Job settings (#801), **U2b-2 the service into core — `viva_core/compose/simulation_service_hpc.py` + `hpc_paths.py`, verbatim, shims at the old names; proven on the Docker cluster: build → run → results in 40 s** (`tests/compose/test_slurm_compose_service_on_a_cluster.py`, `slurm`-marked, 7/7 in the lane); **U2c the file-service factory** (`viva_core/storage/factory.py`: `file_service_for(backend)` exhaustive over `StorageBackend`, `file_service_from_settings()`; the composition root's if/elif is gone — a standalone core makes the same choice); **U2f `Dockerfile-core` + `build-core.yml`** (core served by uvicorn from the app factory, no application package in the image, image `ghcr.io/vivarium-collective/viva-core:<core tag>` on core's line, write-once; the workflow's gate is `tests/core` + an in-image boot check); **U2g the `JobBackend` Protocol** (`viva_core/backends/base.py` + `batch_backend.py` + `slurm_backend.py`; the SLURM one proven on the Docker cluster: container job, bare job, cancel, unknown handle; the Batch one on the engine with a fake client); **U2e the lifespan** (`viva_core/lifespan.py` `start_core` / `RunningCore.stop`; `postgres_*` + `db_create_all` onto `CoreSettings`; `viva_core/infra/db.py`; `create_core_app()` with no container runs it; `/viva/v1/health` reports `compose` and `workers`; proven: the app boots with SLURM settings against the Docker cluster and a Postgres container, monitor polling, compose routes answering, clean shutdown) — **U2 complete**; **U3 APPLIED on `sms-api-rke-dev` 2026-09-26** (PR #808: `kustomize/overlays/viva-core-rke-dev/` — Deployment `core` from `viva-core:0.1.0` beside the `api` pod, its own database `viva_core` on `sms-dev-postgres-cluster` via a CNPG `Database` CR, a second Ingress for `/viva` + `/env-worker`; the image is public and pulled anonymously — the namespace's `ghcr-secret` PAT is dead). **Checkpoint UB, first half passed**: `https://sms-dev.cam.uchc.edu/viva/v1/health` → compose / environments / workers all true, capabilities `viva-v1-surface`, the relay probe a JSON 404, core's OpenAPI 46 paths, `atlantis smoke --only core --only relay` PASS, the SMS side untouched. **Second half in progress**: atlantis now addresses core's spelling by capability (`app/surface.py`, the `_path()` resolver of §5.3 — every call landed on `/viva/v1/compose/…` and `/viva/v1/env-worker/…` on the UConn core); the first composite reached Mantis as SLURM job 3238993 and found two things — the SLURM build row untagged (`job_backend` = `ray`, never polled; fixed in core) and no subuid entry for `svc_vivarium` on the `vcell` nodes (config: partition `vivarium` / `mantis-039`, what the live SMS dev pod uses, #809); then the SLURM build itself could not run on the `vcell` nodes (no subuid for `svc_vivarium`, SingularityCE 4.0.1) — **containers are now built in a privileged Kubernetes Job** (`viva_core/compose/build_k8s.py`, the `ContainerBuild` hook on the SLURM compose service, `compose_build_backend=k8s`; the monitor polls the Job; the dispatch waits on the row, not a SLURM id; core 0.1.2); the composite's results and the env worker are next; core's overlay is a new directory, the SMS overlays untouched until U5 |
+| U1 | the local SLURM cluster: `tests/fixtures/slurm_cluster/` (compose-api's harness, verbatim) + `tests/fixtures/slurm_fixtures_backend.py` (the `slurm_backend` fixture: the container in CI, `--slurm-backend cluster` for Mantis); `port` on `SSHSessionService` and `slurm_submit_port`; `tests/common/test_slurm_backend.py` (SSH, and the conformance of `sbatch --parsable`, `squeue`, `scontrol` with core's parsers); CI job `tests-slurm` | 0.9.157 | 2026-09-25 (tests only) | — | **merged — #796** (`06d41b6d`; 6 tests green against the container, locally in 58 s and in CI); checkpoint UA's second half — green against Mantis with `--slurm-backend cluster` — still to run from a VPN laptop with the key |
 
 ## Decision log
+
+> **Since 2026-09-26 a new entry is a FILE in `docs/plan-core/log/`** (one per entry, per lane) and
+> this list is folded from them by a docs PR — see `docs/plan-core/log/README.md`. Entries below
+> this line up to that date were written here directly.
 
 > **Names.** `viva_api/simulation/ray/` became `viva_api/simulation/dispatch/` on 2026-09-21, and
 > `RayBatchLayer` / `RayParcaService` / `RayTaskService` / `RayImageBuilder` lost the prefix. Entries
 > dated before that are history and keep the names they were written with; everything above this
 > heading uses the current ones.
 
+- **2026-09-26** — **A composite's container is built in a Kubernetes Job at UConn (Jim: "do the k8s job build").**
+  The SLURM build could not run on the `vcell` nodes: SingularityCE 4.0.1, `/usr/bin/fakeroot`
+  present, no `/etc/subuid` entry for `svc_vivarium`, `--ignore-subuid` not a CE-4.0 flag, and a
+  build without `--fakeroot` needs "root or some kind of fake root" (a static proot on PATH DOES build
+  there, unprivileged — measured — but couples core to a binary on NFS and to the HPC's Singularity).
+  Jim pointed at vcell-fluxcd's `vcell-sif-prepull-job` (an apptainer image as a Kubernetes Job,
+  the SIF written to NFS); sms-api itself never built in a Job — its PCS-era `build_singularity.sh`
+  pushed the api's own SIF to ORAS from CI, and simulator images were always an sbatch. **Probed on
+  `sms-api-rke-dev`, one Job each:** an unprivileged container's root fails a definition's `%post`
+  ("Failed to set mount propagation: Permission denied"); `CAP_SYS_ADMIN` alone the same; a
+  root-mapped user namespace cannot start; Apptainer 1.3.6 does not use proot for definition builds;
+  **`privileged: true` builds** — and the copy onto NFS as root is refused (root squash). Jim's
+  shape, adopted: the build is a **privileged init container** that mounts only an `emptyDir` (and
+  the shared filesystem read-only, for the definition); the copy is the **unprivileged main
+  container's**, running as the service user with the filesystem mounted — the writer IS that user,
+  root squash is respected, the privileged process never sees what the nodes read, and init-before-
+  main is the sequencing for free. That is the design: `viva_core/compose/build_k8s.py`
+  (`K8sContainerBuild`: a Job from `compose_build_image`, the shared filesystem's PVC mounted at the
+  path the SLURM nodes see, the definition read from where the service already uploads it over SSH,
+  the image copied as the service user, written beside the target and renamed); `ContainerBuild`, a hook on `ComposeSimulationServiceHpc` beside `ContainerRun`;
+  the row inserted tagged `k8s` with the Job's name in `job_id_ext`; `ComposeJobMonitor` gains a
+  Kubernetes poll (COMPLETED → `update_hpcrun_result`, FAILED → the pod's own last word); and
+  `_dispatch_compose_job` waits on the ROW id, not a SLURM id — a build with no SLURM id is waited on
+  the same way (the SLURM poll notifies by row id too). Settings `compose_build_*` on `CoreSettings`,
+  default `sbatch` (SMS unchanged); the UConn dev overlay sets `k8s` with the api pod's uid/groups.
+  **Security posture, stated:** a privileged init container in core's own namespace for the
+  duration of a build, with no mount but its scratch space, because nothing less runs `%post` on RKE2; acceptable on dev, to be revisited when core's
+  environments are built by a proper builder (P5). Twelve tests (the Job as a value, the hook, the
+  poll, the split); the sbatch path and the lifespan still pass on the Docker cluster. Core 0.1.2.
+- **2026-09-26** — **atlantis addresses core's surfaces by capability (§5.3 step 1's atlantis half), and
+  the first composite through the UConn core found two defects on the SLURM path.** `app/surface.py`:
+  the clients keep writing the application's spelling (`/compose/v1`, `/env-worker/v1` — the logical
+  name, readable at every call site) and ONE chokepoint rewrites it to what the server advertises:
+  `Surface` asks the capabilities once per client (`/viva/v1/capabilities` first, `/core/v1/…` second;
+  nothing or unreachable = the application's spelling), and `viva-v1-surface` means `/viva/v1/compose`
+  and `/viva/v1/env-worker` (D17's interim spelling; the final families arrive with their own names).
+  `E2EDataService._url()` wraps its 23 call sites; smoke's probes, list reads and capabilities check
+  go through the same object; TUI and GUI follow because they build no URLs. Six tests, and the live
+  proof: against `https://sms-dev.cam.uchc.edu` every call landed on `/viva/v1/…`, `simulation/run`
+  answered 200, and the build went to Mantis as SLURM job 3238993. **What it found:** (1) the build
+  row was inserted untagged, so `job_backend` = `ray` (the column's default) and the monitor never
+  polled it over SSH — a FAILED build stayed RUNNING forever, and the run waiting on it with it; the
+  run row itself is tagged at dispatch and was never affected. Pre-existing since the Ray path;
+  fixed in core (`insert_hpcrun(backend=)`, the build passes SLURM, the `-1` placeholder is never
+  asked of `squeue`), with tests on Postgres, on the monitor's split and on the Docker cluster.
+  (2) The build failed on the `vcell` nodes: `could not use fakeroot: no mapping entry found in
+  /etc/subuid for svc_vivarium` (SingularityCE 4.0.1, `/usr/bin/fakeroot` present, no subuid) —
+  git's `api.env` names `vcell`, the LIVE SMS dev pod uses partition `vivarium` / node `mantis-039`
+  / QoS `vivarium`; core's config now matches it (#809, applied). Also seen: the build script `mv`s
+  the `.def` into `/tmp` on the node and a failed build loses it — a separate small fix.
+- **2026-09-26** — **U3: core runs standalone at UConn dev, beside the SMS pod — checkpoint UB, first half.**
+  Applied on `sms-api-rke-dev` on Jim's go, in order: the CNPG `Database` CR (`viva_core` on
+  `sms-dev-postgres-cluster`, owned by the existing `sms-dev` role — applied=true in seconds), core's
+  HPC tree (`/projects/SMS/viva_core/dev/{htclogs,sbatch,compose/{images,sims}}`, made from the api pod:
+  `/projects/SMS` is setgid group-writable), then `kustomize/overlays/viva-core-rke-dev` (7 objects:
+  the `batch-submit` RBAC the live namespace lacked, ConfigMap, Service, Deployment, Ingress). One
+  surprise: the first pod sat in ImagePullBackOff — ghcr's token endpoint answered **403** to the
+  namespace's `ghcr-secret` (a dead PAT; the api pod last pulled 234 days ago). The image is public,
+  so the Deployment now pulls anonymously and presents no secret. **Proof through the public host:**
+  `/viva/v1/health` `{compose: true, environments: true, workers: true}` on `viva-core 0.1.0`;
+  `/viva/v1/capabilities` lists `viva-v1-surface`; `POST /env-worker/v1/relay/workers/nope/call`
+  → a JSON 404 (routed to core, not PTools); `/viva/v1/openapi.json` 46 paths; `atlantis smoke
+  --only core --only relay` PASS; `/version` still "0.4.9" and `/` still PTools — the SMS side
+  untouched (D20). Read-only facts from the same session are in the overlay's README. **What UB
+  still wants:** a composite run as an sbatch job on Mantis with its results downloaded, and an env
+  worker started from a laptop — both through `atlantis`, which today addresses only the SMS
+  spelling (`/compose/v1`, `/env-worker/v1`); the capability-keyed `_path()` resolver (§5.3, step 1's
+  atlantis half) is what unblocks them, and is next. Also seen: the standalone app emits no INFO log
+  lines of its own (uvicorn's only) — a small follow-up so a core pod's lifespan is readable.
+- **2026-09-25** — **U2e: a standalone core has a lifespan — U2 is complete.** `viva_core/lifespan.py`:
+  `start_core(settings)` builds what the settings are enough for, each configured-or-absent — the
+  environment resolver, the file service (U2c's factory), the SLURM SSH sessions and on them the
+  SLURM compose service (U2b-2), the database and on it the compose database, the env-worker task
+  tier (`TaskRunner`) and the compose job monitor (started), the env-worker service when a namespace
+  and a module image are named — into a `CoreContainer`; `RunningCore.stop()` ends the monitor, the
+  runner and the relay sockets BEFORE disposing the engine. `create_core_app()` with no container
+  serves the select-only container at once and swaps in `start_core`'s at startup (the routes read
+  the provider per request, so nothing else changes); a container handed in gets no lifespan — the
+  embedding application owns its services' lives, as before. `postgres_*` and `db_create_all` moved
+  onto `CoreSettings` (D19: core's own database; SMS inherits them, same variables), with
+  `viva_core/infra/db.py` for the engine and `postgres_configured` (the `<USER>` placeholder means
+  "none", not a user). `/viva/v1/health` now reports `compose` and `workers` beside `environments`.
+  Left out on purpose, as SMS's: the simulation-service registry, the scheduler, Redis, the Batch
+  compose service (its settings are the application's until the strategies land), the allow-list
+  seed. **Proof:** `tests/core/test_core_lifespan.py` — with nothing configured the container
+  carries the absences and stop() is a no-op; `slurm`-marked, the app boots with the Docker
+  cluster's SLURM settings and a Postgres testcontainer: health says `compose: true`, the SLURM
+  compose service is the registered backend, the monitor is polling, `create_all` made the compose
+  schema and the read routes answer from it, the task tier exists and the worker service does not,
+  and after the client closes the poller is stopped and the select-only container is back (32 s).
+  With U2f's image this is a deployable standalone core on SLURM — what U3's overlay runs.
+- **2026-09-25** — **U2g: core's `JobBackend` Protocol is declared, with two implementations at once.**
+  `viva_core/backends/base.py`: `JobSpec` (name, command, image — `""` = bare on the host —, env,
+  resources, labels, `depends_on` handles of the same backend), `JobHandle` (backend kind + the
+  scheduler's id + the name), `BackendStatus` (status, exit code, the scheduler's reason, times,
+  attempt), and the Protocol: `submit`, `status` (keyed by id; a job the scheduler forgot is ABSENT,
+  never a status), `cancel` (a finished job is not an error), `logs` (a list of lines, the last
+  `tail` on request — not the stream §2.3 first sketched; both schedulers give lines cheaply and
+  every caller wants lines). `batch_backend.py` runs container-type jobs over the engine: the job
+  definition derived per image, the command as `CONTAINER_JOB_CMD`, env / tags / `dependsOn`;
+  resources are the job definition's until the engine exposes an override (a differing spec is
+  logged); logs from CloudWatch through a handed-in `logs` client, the stream from `describe_jobs`,
+  the group from the definition. `slurm_backend.py` renders an sbatch script (partition, QoS,
+  nodelist, `afterok`, cpus / mem / time, the env exported, `singularity exec <image> sh -c` or the
+  bare command), submits over SSH, answers from `squeue` + `scontrol`, cancels with `scancel`, reads
+  `%x-%j.out`. **Proof:** `tests/core/test_job_backend_slurm.py` on the Docker cluster — a job in a
+  pulled busybox image with its env and output, a bare job's exit code, cancel → CANCELLED, an
+  unknown handle absent (4/4, 45 s) — and `test_job_backend_batch.py` on the engine with a fake
+  client (9, incl. a structural check that both classes satisfy the Protocol). **Why now and not
+  at P5:** the 2026-09-20 audit deferred the Protocol until a second backend implemented it, so it
+  would not quietly be Batch-shaped; SLURM is that backend (§4b). **Deliberately not here:**
+  staging (Batch's entrypoint env vs SLURM's bind mounts — the strategy absorbs that, §6 step 3),
+  the `OwnerRef`, `k8s` / `local` adapters (P5), and any consumer: the compose services keep their
+  ABC until the strategies land. Nothing deployed changes.
+- **2026-09-25** — **U2f: core has a deployable artifact.** `Dockerfile-core` builds viva_core as its
+  own service: the same Python base, uv and lockfile as `Dockerfile-api`, the dependencies installed
+  with `--no-install-project` (the project wheel would need the application packages this image
+  deliberately lacks — core is not its own distribution until P10), `viva_core` copied and nothing
+  else, and the venv's uvicorn run directly on `--factory viva_core.api.app:create_core_app` (not
+  `uv run`, which would try to install the project at container start).
+  `tests/test_deploy_config.py` holds the boundary: the only shipped package the Dockerfile copies is
+  `viva_core`. `build-core.yml` mirrors the runtime image's workflow — manual dispatch, a tag on
+  core's version line (D16), an existing tag refused (D11) — with `tests/core` and an in-image boot
+  check (`scripts/core_image_check.py`: `viva_api` must be absent, `/viva/v1/health` reports core's
+  version, `/viva/v1/capabilities` lists `viva-v1-surface`) as the gate. Built and checked locally
+  before the PR. Nothing deploys it yet: it is what the UConn core overlay (U3) runs beside the SMS
+  `api` pod, and later what P9 rolls out at Stanford. Without U2e's lifespan the image serves the
+  select-only core (environments, capabilities, health); compose and env-worker routes answer by
+  name until then.
+- **2026-09-25** — **U2c: the file service is chosen in core.** `viva_core/storage/factory.py` —
+  `file_service_for(backend)` is a `match` over `StorageBackend` closed with `assert_never`, so a
+  fourth store is a type error until it has a branch, and a stray runtime value raises rather than
+  falling through to some default store (the application's `else` used to *log* an error and leave
+  the service unset). `file_service_from_settings()` reads `storage_backend`. The application's
+  composition root now calls it in place of its own if/elif; the three implementations were already
+  core's and already read their own `storage_*` settings through `get_core_settings()`. This is the
+  piece a standalone core at UConn needs to stream datasets and results from Qumulo (§4b gap 5).
+- **2026-09-25** — **U2b-2: the SLURM compose service is core's, and the Docker cluster proves it.**
+  `viva_api/compose/simulation_service.py` → `viva_core/compose/simulation_service_hpc.py` and
+  `compose/hpc_utils.py` → `viva_core/compose/hpc_paths.py`, both verbatim, `sys.modules` shims at
+  the old names (the alias test discovers them). The last application imports were the settings
+  (`Settings` → `CoreSettings`, which already carries the SLURM fields since U2a) and five shims
+  resolved to their core modules; the v2ecoli run mode had left first as the `ContainerRun` hook
+  (U2b-1, #800), so nothing domain-shaped crossed and `compose-is-domain-free` stays ENFORCED.
+  **What ended here:** the 2026-09-21 decision that the service stays in SMS "until a SLURM site can
+  test it" — the site is UConn (§4b) and the test is the U1 harness. `tests/compose/
+  test_slurm_compose_service_on_a_cluster.py` runs the lifecycle the service exists for against the
+  Docker cluster: `build_container` (the `--fakeroot` sbatch on a busybox definition, polled to
+  COMPLETED through `scontrol` and then `singularity run` on the result), `submit_simulation_job`
+  with a test `ContainerRun` that places a script in the experiment directory the way
+  `v2ecoli_run_command` does, and `results_archive` (the job's zip, one download into the cache).
+  40 s end to end; the SLURM lane is 7/7. Two settings joined the fixture's overrides for it
+  (`compose_image_base_path`, `compose_sim_base_path` → the container's provisioned tree). The
+  `slurm`-marked test is also the one to run with `--slurm-backend cluster` at checkpoint UA's
+  second half. Remaining in U2: c (file-service factory), e (lifespan + `container_from_settings`
+  for SLURM), f (`Dockerfile-core`), g (the `JobBackend` Protocol with SLURM as its second
+  implementation).
+- **2026-09-25** — **Checkpoint F2 passed on dev (0.9.157, #797, tag `v0.9.157`): P3g is deployed, whole, and U1 with it.**
+  Jim: "merge #792, #793, #794, #795 and #796, then run checkpoint F2". Merged in that order with merge
+  commits (#792 and #796 needed `main` merged into them after #791 landed: both had edited this
+  ledger); merged `main` verified before the bump (`make check` ×2, 2,333 passed). Image from
+  `0a271f3b`; only the api pod rolled (workbench 0.3.85 and ptools 0.9.144 untouched); no migration.
+  **Markers on `api-544b5f68db-ttvbp`:** `viva_core/api/capabilities.py`, `viva_core/version.py`,
+  `app/contract_shapes.json` present; `app/gui.py` absent; `include_in_schema=False` ×2 in
+  `api/main.py`; `run-slurm-analysis` in `routers/sms.py`. **Through the ALB:** `/version` 0.9.157;
+  `/viva/v1/capabilities` (core 0.1.0) and `/core/v1/capabilities` (0.9.157) list the same four names,
+  `viva-v1-surface` among them. **Smoke, `--tier 1 --require-aws`: 14 passed, 0 failed, 3 skipped**
+  (the opt-ins). Tier 0 9/9: `routes` 103/103 (the new `core-capabilities`), `contract` **22
+  operations unchanged, 2 additions** — `core-health.version` and `core-capabilities` now served
+  (404 → 200), exactly the two this deploy made — and `core` through the gateway. Tier 1: `task`
+  370 s, `task-fail`, `task-repo`, `worker`, `compose` 507 s. **Runtime image: 14/0/3** (`task` 165 s,
+  `compose` 42 s). The first checkpoint the `contract` check judged, and the first where a caller
+  (the workbench, W1) has something to switch on. **F2 ran before F** because #790 (the migration)
+  is still Jim's to merge; F stays a database deploy on its own.
+- **2026-09-25** — **P3g, first PR: the dual-surface scaffolding.** The first code of Strategy B
+  (adopted the same day; the decisions and the order are in #791). Two lines in
+  `viva_api/api/main.py` include core's compose and env-worker routers a second time, under
+  `/viva/v1/compose` and `/viva/v1/env-worker` — the spelling a standalone core already serves — so
+  a caller can leave `/compose/v1` and `/env-worker/v1` before the resource families exist (D17). They
+  are served and **not** in the application's OpenAPI document (`include_in_schema=False`): the
+  routes carry explicit operation ids, and a second copy would duplicate every one; core's own
+  document describes that spelling, and `atlantis smoke`'s `routes` check, which compares
+  documents, is unaffected. **Capabilities move to core**: `viva_core/api/capabilities.py` restates
+  the application's contract (membership, never version; a raising probe is "not advertised") and
+  adds one kind of probe — a *served surface*, marked by whoever mounts the routers; `GET
+  /viva/v1/capabilities` (`core-capabilities`) advertises core's marks plus the application's probes,
+  handed over on `CoreContainer.capabilities`, so it and `/core/v1/capabilities` list the same
+  names; both now say `viva-v1-surface`. **Core has a version line** (`viva_core/version.py`,
+  `0.1.0`, D16), reported by `/viva/v1/health` and the capabilities route for humans. Proof: the
+  standalone boot test (health carries the version; the capabilities route; an application's
+  raising probe degrades), the two-documents test (the interim spelling answers by name on the SMS
+  app and appears once, in core's document), and the capabilities test (both routes agree).
+- **2026-09-25** — **Strategy B is adopted; #742 is answered proposal by proposal; core must run standalone at UConn.**
+  Jim: "eran likes the direct approach and so do I … look deeply at the implications", then "consider
+  eran's proposal in #742 as a proposal which will inform design after discussion rather than as a
+  decision", then "I would like core to work in the on premise RKE2 + SLURM environment, served at
+  sms.cam.uchc.edu … The end goal is for the core to run standalone, a follow on goal is for SMS
+  itself to run at UConn." The analysis behind this entry: three read-only inventories — the SMS
+  surface (102 operations classified ecoli / generic / mixed; the `simulator` table's 17
+  `environment_key` readers; the five strategies and the scheduler's nine ticks; atlantis's 69
+  commands and 93 hand-rolled URLs; the hooks core has), the workbench's 33 operations (14 pure
+  prefix flips, 17 resource reshapes, 3 already broken, `ping()` special; the capability probe
+  exists, is tested and has zero call sites), and every other caller (the PTools page's three calls
+  and where its prefix really lives; two shell harnesses in v2ecoli / sms-ecoli; sms-api's own CI
+  against UConn prod; the ALB's rules; compose-api and pbest call nothing) — plus the full #742
+  thread, a live probe of the dev PTools pod, and the live UConn cluster. **Decided:** D14 (every
+  SMS surface dated; the PTools trio last), D15 (templates as a typed core port; the record's shape
+  before the table), D16 (same repository until P10; a core version line now), D17 (family
+  spelling; the code's spelling mounted as a dated interim), D18 (the PTools trio over datasets; no
+  hidden dependency — `fetchMassFractionSummary` is an unwired stub), D19 (core's own database at
+  UConn), D20 (core beside the UConn SMS pod, additive ingress paths), D21 (UConn SMS overlays frozen
+  until U5). **The order** is the table at the top of §4; four small phases are new (P3g, P4c, P5b,
+  P8b) and one track (§4b). **Prod catch-up is in scope**, right after F. **Corrected in the
+  documents:** §1 no longer promises stable URLs (it promises dated ones); architecture §2.4 no
+  longer says "permanent aliases"; `CLAUDE.md` no longer says `deployment_namespace` selects the
+  backend, and its RKE block says what is live and that the cluster is reachable on VPN. **What
+  #742 got right that the plan had not said:** the layout-and-coordinate knowledge in
+  `/api/v1/simulations/*` is what resists the generic surface, and the dataset registry is the
+  fix; templates are the campaign primitive and the chain path already obeys the fill/trigger law.
+  **What the inventories corrected:** `/viva/v1/composites` is net-new; no `environment` table
+  exists, so P5 precedes proposal 5; `process-bigraph` is not a dependency of the API pod; the
+  generated client has no application consumer and a duplicate `operationId`; the ensemble path
+  cannot be wrapped; the PTools prefix is a ConfigMap, not JavaScript. **Open, for Eran:** whether
+  W1 takes the interim mounts (question 11). Nothing merged before this entry is undone.
+- **2026-09-25** — **Checkpoint E2 passed on dev (0.9.156, #788, tag `v0.9.156`): P3 is deployed, whole.**
+  Jim: "merge #787 and run checkpoint E2". Image from `bc2be335`; only the api pod rolled; no
+  migration; startup log clean (the scheduler exists on this site, so the new "serving without it"
+  branch did not fire). Markers on `api-57bbb8976c-qd8pw`: both routers under `viva_core/api/routers/`,
+  `ComposeServices` on the container, the core OpenAPI document in the image, and no
+  `set_compose_services` anywhere. **Smoke, `--tier 2 --require-aws`: 21 passed, 0 failed, 3 skipped**
+  (the opt-ins). Tier 0 8/8 with the `core` check. Tier 1: `task` 288 s, `task-fail`, `task-repo`,
+  `worker` (a worker started, called and stopped through the env-worker router served from core),
+  `compose` 507 s on the science image with the hooks staged. Tier 2: the three cancels on Batch
+  (45 s, 75 s, 203 s), `sim-mbp` 1,003 s, `sim-nextflow` 1,534 s, `sim-default` 1,800 s,
+  `sim-composite` 2,281 s, `sim-chain` 2,677 s (2/2 seeds × 2 generations). Runtime image: 13/0/3,
+  `compose 25` in 122 s. Every service reached its route through `current_container()`; the one
+  question this checkpoint asked. **What is deployed now** is everything P3 named, and what stays
+  in SMS by decision: the SLURM compose service, the science hooks, the allow-list default,
+  `/curated/ecoli`. Next is P4; P4a's owner-ref expand was written while this ran.
 - **2026-09-25** — **P4a-1: the owner-ref expand — one `(owner_kind, owner_id)` beside the foreign keys, backfilled, dual-written.**
   Jim: "can we start on the next step". The first brick of P4, and what #776's adapters need; it
   depends on neither #776 nor the #778 decision, both of which keep P4. **The columns:**

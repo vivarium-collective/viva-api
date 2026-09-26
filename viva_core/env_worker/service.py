@@ -31,6 +31,7 @@ from kubernetes import client as k8s_client
 
 from viva_core.backends.job_service import JobStatusInfo
 from viva_core.backends.k8s_job_service import K8sJobService
+from viva_core.environments import EnvironmentResolverNotConfigured
 from viva_core.environments.site import environment_image
 from viva_core.settings import get_core_settings as get_settings
 
@@ -108,10 +109,12 @@ class EnvWorkerService:
         here, naming the tag, rather than to fall back to something that would
         run the science under different dependencies.
         """
-        settings = get_settings()
-        if not settings.ecr_account_id:
-            raise EnvWorkerLaunchError("ecr_account_id is unset; cannot resolve a worker image")
-        return environment_image(settings, commit)
+        try:
+            return environment_image(get_settings(), commit)
+        except EnvironmentResolverNotConfigured as e:
+            # The site's resolver says which setting is missing (an ECR account, or a registry
+            # named in full); a worker image is never guessed.
+            raise EnvWorkerLaunchError(f"cannot resolve a worker image: {e}") from e
 
     # -- lifecycle -----------------------------------------------------------
     def start(
@@ -200,7 +203,10 @@ class EnvWorkerService:
         session_key: str | None,
     ) -> k8s_client.V1Job:
         settings = get_settings()
-        labels = {"app": "sms-api", "job-type": "env-worker", "commit": commit}
+        # Which deployment's Jobs these are, and what they run as: the site's (U2d), not this file's.
+        labels = {"job-type": "env-worker", "commit": commit}
+        if settings.env_worker_app_label:
+            labels["app"] = settings.env_worker_app_label
         if session_key:
             labels["session"] = _label_safe(session_key)
 
@@ -230,7 +236,7 @@ class EnvWorkerService:
                 template=k8s_client.V1PodTemplateSpec(
                     metadata=k8s_client.V1ObjectMeta(labels=labels),
                     spec=k8s_client.V1PodSpec(
-                        service_account_name="batch-submit",
+                        service_account_name=settings.env_worker_service_account or None,
                         restart_policy="Never",
                         containers=[
                             k8s_client.V1Container(
@@ -288,7 +294,11 @@ class EnvWorkerService:
                 "env_worker_module_image is unset; set it to the workbench image whose "
                 "worker module this deployment should run"
             )
-        srcs = " ".join(f"/app/vivarium-workbench/vivarium_workbench/{p}" for p in _MODULE_PARTS)
+        if not settings.env_worker_module_path:
+            raise EnvWorkerLaunchError(
+                "env_worker_module_path is unset; set it to where, inside that image, the worker module's package is"
+            )
+        srcs = " ".join(f"{settings.env_worker_module_path.rstrip('/')}/{p}" for p in _MODULE_PARTS)
         dest = f"{MODULE_MOUNT}/vivarium_workbench"
         return k8s_client.V1Container(
             name="stage-worker-module",

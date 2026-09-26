@@ -19,6 +19,7 @@ from viva_core.environments import EnvironmentResolver
 from viva_core.settings import CoreSettings
 
 if TYPE_CHECKING:
+    from viva_core.api.capabilities import Capability
     from viva_core.compose.database_service import ComposeDatabaseService, EnvWorkerTaskDatabaseService
     from viva_core.compose.job_monitor import ComposeJobMonitor
     from viva_core.compose.service import ComposeSimulationService
@@ -57,6 +58,9 @@ class CoreContainer:
     environments: EnvironmentResolver | None = None
     compose: ComposeServices | None = None
     env_worker: EnvWorkerServices | None = None
+    #: The application's own capability probes, advertised beside core's by ``GET /viva/v1/capabilities``
+    #: (``viva_core.api.capabilities``). A standalone core has none beyond what it marks itself.
+    capabilities: tuple["Capability", ...] = ()
 
 
 _provider: Callable[[], CoreContainer] | None = None

@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Core as its own Deployment BESIDE the SMS `api` pod at UConn dev (docs/plan-core.md §4b U3;
+# decisions D19 own database, D20 served beside, D21 the SMS overlays frozen). This overlay
+# declares ONLY what is core's: the Deployment, its Service, its config, and a second Ingress
+# for the same host carrying /viva and /env-worker. It REUSES, by name, what the live SMS
+# overlay already provides in the namespace and never redeclares it -- see README.md.
+namespace: sms-api-rke-dev
+
+images:
+  - name: ghcr.io/vivarium-collective/viva-core
+    newTag: 0.1.4 # core's own version line (D16); built by build-core.yml, write-once
+
+resources:
+  - core.yaml
+  - ingress.yaml
+  - ../../config/viva-core-rke-dev
+  # The `batch-submit` ServiceAccount + Role for Jobs / ConfigMaps / pod logs (env workers). It is
+  # in the SMS base, but the live dev namespace PREDATES it (checked 2026-09-26: only `default`
+  # exists), so core declares it -- the same object the SMS overlay would declare, no conflict.
+  - rbac-jobs.yaml

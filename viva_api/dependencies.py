@@ -11,14 +11,12 @@ from viva_api.common.messaging.messaging_service_redis import MessagingServiceRe
 from viva_api.common.models import SSHTarget
 from viva_api.common.ssh.ssh_service import SSHSessionService
 from viva_api.common.storage.file_service import FileService
-from viva_api.common.storage.file_service_gcs import FileServiceGCS
-from viva_api.common.storage.file_service_qumulo_s3 import FileServiceQumuloS3
-from viva_api.common.storage.file_service_s3 import FileServiceS3
 from viva_api.config import ComputeBackend, Settings, get_job_backend, get_settings
 from viva_api.log_config import setup_logging
 from viva_api.simulation.database_service import DatabaseService, DatabaseServiceSQL
 from viva_api.simulation.tables_orm import create_db
 from viva_core.container import ComposeServices, EnvWorkerServices
+from viva_core.storage.factory import file_service_from_settings
 
 if TYPE_CHECKING:
     from viva_api.common.hpc.local_task_service import LocalTaskService
@@ -335,6 +333,7 @@ def _init_ssh_service(job_backend: str, settings: Settings) -> None:
         set_ssh_session_service(
             SSHSessionService(
                 hostname=settings.slurm_submit_host,
+                port=settings.slurm_submit_port,
                 username=settings.slurm_submit_user,
                 key_path=ssh_key_path,
                 known_hosts=Path(settings.slurm_submit_known_hosts) if settings.slurm_submit_known_hosts else None,
@@ -367,16 +366,9 @@ async def init_standalone(enable_ssl: bool = True) -> None:
     job_backend = get_job_backend()
 
     try:
-        # Initialize file service based on configured backend
+        # The site's object store, chosen by core's factory (U2c) -- the same choice a standalone core makes
         logger.info(f"Initializing file service with backend: {_settings.storage_backend}")
-        if _settings.storage_backend == "s3":
-            set_file_service(FileServiceS3())
-        elif _settings.storage_backend == "qumulo":
-            set_file_service(FileServiceQumuloS3())
-        elif _settings.storage_backend == "gcs":
-            set_file_service(FileServiceGCS())
-        else:
-            logger.error(f"Unsupported storage backend: {_settings.storage_backend}")
+        set_file_service(file_service_from_settings())
 
         _init_simulation_service(job_backend, _settings)
 
@@ -495,10 +487,11 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
 
         from viva_api.compose.database_service import ComposeDatabaseService
         from viva_api.compose.job_monitor import ComposeJobMonitor
-        from viva_api.compose.simulation_service import ComposeSimulationService, ComposeSimulationServiceHpc
         from viva_api.compose.tables_orm import create_compose_db
         from viva_api.simulation.compose_allow_list import DEFAULT_COMPOSE_ALLOW_LIST
         from viva_api.simulation.db_startup import create_tables_if_enabled
+        from viva_core.compose.service import ComposeSimulationService
+        from viva_core.compose.simulation_service_hpc import ComposeSimulationServiceHpc
 
         await create_tables_if_enabled(engine, create_compose_db, enabled=get_settings().db_create_all, what="compose")
 
@@ -552,14 +545,23 @@ async def _init_compose_subsystem(engine: AsyncEngine | None) -> None:
                 runner_hooks=hooks_source,
             )
             logger.info("✓ Compose backend registered: ray (AWS Batch MNP)")
+        # The SLURM compose service is handed SMS's run command for its own image (the v2ecoli
+        # direct-invocation mode, U2b-1) and the site's results cache; it knows neither itself.
+        from viva_api.simulation.compose_run_command import v2ecoli_run_command
+
+        def _slurm_compose() -> ComposeSimulationServiceHpc:
+            return ComposeSimulationServiceHpc(
+                slurm_ssh=_slurm_ssh,
+                run_command=v2ecoli_run_command,
+                results_cache_dir=Path(settings.cache_dir) / "compose",
+            )
+
         if default_backend == ComputeBackend.SLURM:
-            compose_registry[ComputeBackend.SLURM] = ComposeSimulationServiceHpc(slurm_ssh=_slurm_ssh)
+            compose_registry[ComputeBackend.SLURM] = _slurm_compose()
             logger.info("✓ Compose backend registered: slurm (HPC)")
         # Default: the deployment's compute backend if built, else whatever's available
         # (Stanford runs COMPUTE_BACKEND=ray → Ray; UCONN → SLURM).
-        compose_sim = compose_registry.get(default_backend) or next(
-            iter(compose_registry.values()), ComposeSimulationServiceHpc(slurm_ssh=_slurm_ssh)
-        )
+        compose_sim = compose_registry.get(default_backend) or next(iter(compose_registry.values()), _slurm_compose())
         compose_monitor = ComposeJobMonitor(
             nats_client=None, database_service=compose_db, sim_registry=compose_registry, slurm_ssh=_slurm_ssh
         )

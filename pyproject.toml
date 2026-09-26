@@ -1,6 +1,6 @@
 [project]
 name = "viva_api"
-version = "0.9.156"
+version = "0.9.158"
 description = "This is the api server for Vivarium simulation services."
 authors = [{ name = "Alex Patrie", email = "alexanderpatrie@gmail.com" }, { name = "Jim Schaff", email = "jschaff@gmail.com" }]
 requires-python = ">=3.13,<3.14"
@@ -148,7 +148,7 @@ build-backend = "hatchling.build"
 [tool.mypy]
 files = ["viva_api", "viva_core", "tests", "app"]
 strict = true
-exclude = ['^notes/', '^viva_api/api/client/.*', '^app/ui/.*', '^app/gui\\.py$', '^app/tui\\.py$', '^sms_api/.*']
+exclude = ['^notes/', '^viva_api/api/client/.*', '^app/ui/.*', '^app/tui\\.py$', '^sms_api/.*']
 
 [[tool.mypy.overrides]]
 module = ["textual", "textual.*", "process_bigraph", "process_bigraph.*", "bigraph_schema", "bigraph_schema.*", "viva_emitters", "viva_emitters.*", "v2ecoli", "v2ecoli.*", "biosimulators_utils.*", "libsedml.*", "libsbml.*", "spython.*", "nats.*", "biomodels", "biomodels.*", "fsspec", "fsspec.*", "pyarrow", "pyarrow.*"]
@@ -171,7 +171,7 @@ disallow_any_explicit = true
 disallow_any_unimported = true
 
 [[tool.mypy.overrides]]
-module = ["app.tui", "app.gui"]
+module = ["app.tui"]
 ignore_errors = true
 
 [tool.pytest.ini_options]
@@ -403,7 +403,7 @@ ignore = [
 #    # UP035 `typing.Dict` is deprecated, use `dict` instead
 #    "UP035",
 ]
-exclude = [".venv/*", "app/ui/*", "viva_api/api/client/*", "documentation/*", "home/*", "scratchpads/*", "simulation_configs/*", "notes/*", "app/gui.py"]
+exclude = [".venv/*", "app/ui/*", "viva_api/api/client/*", "documentation/*", "home/*", "scratchpads/*", "simulation_configs/*", "notes/*"]
 
 [tool.ruff.format]
 preview = true
@@ -418,5 +418,4 @@ source = ["viva_api", "viva_core", "client"]
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]
 "viva_api/simulation/simulation_service.py" = ["E501"]
-"app/gui.py" = ["B018", "F841"]  # Marimo notebook: bare expressions are cell outputs, unused vars are cell returns
 "app/cli.py" = ["S603", "S607"]  # CLI subprocess calls are intentional

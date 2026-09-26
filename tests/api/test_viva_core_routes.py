@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from viva_api.api.main import app
 from viva_api.common.site_environments import environment_image
 from viva_core.api import CORE_PREFIX
+from viva_core.version import __version__ as core_version
 
 RUNTIME = "ghcr.io/vivarium-collective/viva-core-runtime:0.1.0"
 
@@ -30,7 +31,10 @@ def _settings(**overrides: str) -> SimpleNamespace:
 def test_core_answers_what_the_application_itself_would_say() -> None:
     client = TestClient(app)
     with patch("viva_api.core_wiring.get_settings", _settings):
-        assert client.get(f"{CORE_PREFIX}/health").json() == {"status": "ok", "services": {"environments": True}}
+        health = client.get(f"{CORE_PREFIX}/health").json()
+        # compose / workers are False here: the test app has no lifespan run, so SMS wired neither (U2e)
+        expected = {"environments": True, "compose": False, "workers": False}
+        assert health == {"status": "ok", "version": core_version, "services": expected}
         for key, variant in (("d67b0a7", ""), ("tmp-d67b0a7-0a1b2c", ""), ("d67b0a7", "submit")):
             request = {"kind": "explicit", "key": key, "variant": variant}
             found = client.post(f"{CORE_PREFIX}/environments/resolve", json=request).json()
@@ -48,7 +52,9 @@ def test_a_site_that_names_no_runtime_image_says_so_through_core_too() -> None:
 def test_cores_routes_are_in_the_applications_openapi_document_under_their_own_prefix() -> None:
     paths = TestClient(app).get("/openapi.json").json()["paths"]
     core = sorted(p for p in paths if p.startswith(CORE_PREFIX))
-    assert core == [f"{CORE_PREFIX}/environments/resolve", f"{CORE_PREFIX}/health"]
+    # Core's own three. The interim `/viva/v1/{compose,env-worker}` mounts (P3g) are served but
+    # documented only in core's own document -- see tests/core/test_two_openapi_documents.py.
+    assert core == [f"{CORE_PREFIX}/capabilities", f"{CORE_PREFIX}/environments/resolve", f"{CORE_PREFIX}/health"]
     assert "/core/v1/simulator/latest" in paths  # SMS's own, older `core` router: a different thing, untouched
 
 

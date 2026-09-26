@@ -26,7 +26,7 @@ import pytest
 
 _APP = Path(__file__).resolve().parents[3] / "app"
 _TUI = (_APP / "tui.py").read_text(encoding="utf-8")
-_GUI = (_APP / "gui.py").read_text(encoding="utf-8")
+_GUI = (_APP / "ui" / "dashboard.py").read_text(encoding="utf-8")
 
 #: The service methods that make up the tier. Named here rather than derived, so
 #: adding one to E2EDataService without surfacing it anywhere fails loudly.

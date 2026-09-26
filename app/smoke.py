@@ -60,6 +60,8 @@ from typing import Any, Protocol
 import httpx
 import yaml
 
+from app.surface import Surface
+
 HTTP_METHODS = ("get", "post", "put", "delete", "patch")
 
 #: The composite the compose check runs: a level that grows 10% per step, five steps.
@@ -115,6 +117,10 @@ class SmokeOptions:
     simulator_id: int | None = None
     restart_command: str | None = None
     restart_wait_seconds: float = 300.0
+    #: ``contract``: write what the deployment answers to this file instead of comparing -- the
+    #: recorded baseline lives in the package (``app/contract_shapes.json``). Recording is a
+    #: deliberate act after a contract decision, never a side effect of a run.
+    record_contract_to: Path | None = None
     #: A script that EXISTS IN THE IMAGE, for the repo-path task check, and text its output
     #: must contain. The default is the script the service's own ParCa step already depends
     #: on, asked for its usage -- cheap, and present in every simulator image.
@@ -241,7 +247,20 @@ class Check:
 # --------------------------------------------------------------------------- helpers
 
 
+_SURFACES: dict[int, Surface] = {}
+
+
+def _surface(svc: SmokeService) -> Surface:
+    """The server's spelling of core's surfaces, asked once per client (app/surface.py): the checks
+    write the application's spelling and are rewritten to what the deployment advertises."""
+    key = id(svc.client)
+    if key not in _SURFACES:
+        _SURFACES[key] = Surface(lambda: svc.client)
+    return _SURFACES[key]
+
+
 def _get_json(svc: SmokeService, path: str, **params: Any) -> Any:
+    path = _surface(svc).rewrite(path)
     resp = svc.client.get(path, params=params or None)
     if resp.status_code != 200:
         raise CheckFailed(f"GET {path} -> {resp.status_code}: {resp.text[:200]}")
@@ -484,18 +503,67 @@ def check_routes(svc: SmokeService, _: SmokeOptions) -> tuple[str, dict[str, Any
 
 
 def check_capabilities(svc: SmokeService, _: SmokeOptions) -> tuple[str, dict[str, Any]]:
-    body = _get_json(svc, "/core/v1/capabilities")
+    # core's route first (the application serves it since P3g; a standalone core serves only it)
+    resp = svc.client.get("/viva/v1/capabilities")
+    body = resp.json() if resp.status_code == 200 else _get_json(svc, "/core/v1/capabilities")
     capabilities = body.get("capabilities")
     if not isinstance(capabilities, list) or not capabilities:
         raise CheckFailed(f"no capabilities advertised: {body!r}")
     return ", ".join(map(str, capabilities)), {"capabilities": capabilities}
 
 
+def check_contract(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, Any]]:
+    """The read-only operations the workbench and the PTools page call answer with the SHAPES they
+    answered when the contract was recorded (``app/contract.py``). Strategy B (plan-core D14) keeps
+    every dated surface's shape constant until its removal; ``routes`` says an operation is served,
+    this says what it serves. A removed key, a changed type or a changed status FAILS; an added key
+    is reported. ``--record-contract`` writes a new baseline instead of comparing."""
+    from app import contract
+
+    def request(path: str, params: dict[str, str]) -> tuple[int, Any]:
+        resp = svc.client.get(path, params=params or None)
+        try:
+            body = resp.json()
+        except ValueError:
+            body = None
+        return resp.status_code, body
+
+    context = contract.resolve_context(lambda path, **params: _get_json(svc, path, **params))
+    try:
+        observed, skipped = contract.observe_all(contract.CONTRACT_OPERATIONS, context, request)
+    except contract.ContractError as e:
+        raise CheckFailed(str(e), {"context": context}) from e
+    evidence: dict[str, Any] = {"context": context, "observed": sorted(observed), "skipped": skipped}
+    if opts.record_contract_to is not None:
+        version = _get_json(svc, "/version")
+        document = contract.render_document(
+            observed, recorded_from=str(svc.client.base_url), server_version=str(version), now=opts.now()
+        )
+        contract.write_shapes(opts.record_contract_to, document)
+        return f"recorded {len(observed)} operations to {opts.record_contract_to} ({len(skipped)} skipped)", evidence
+    recorded = contract.recorded_observations(contract.load_shapes())
+    if not recorded:
+        raise SkipCheck(
+            "no recorded contract in this build; record one with --record-contract against a known deployment"
+        )
+    compared, diff = contract.compare_all(recorded, observed)
+    evidence.update(compared=compared, problems=diff.problems, additions=diff.additions)
+    if diff.problems:
+        raise CheckFailed(f"{len(diff.problems)} contract change(s): " + "; ".join(diff.problems[:5]), evidence)
+    if not compared:
+        raise SkipCheck(
+            f"nothing to compare: {len(skipped)} operations skipped for want of data ({', '.join(skipped)})"
+        )
+    note = f", {len(diff.additions)} added key(s)" if diff.additions else ""
+    return f"{compared} operations unchanged{note} ({len(skipped)} skipped)", evidence
+
+
 def check_relay(svc: SmokeService, _: SmokeOptions) -> tuple[str, dict[str, Any]]:
     """A call to a worker that does not exist: a JSON 404 means the relay is live and the
     path reaches this API; 503 means the relay is switched off; an HTML 404 means the
     gateway sent ``/env-worker`` somewhere else entirely."""
-    resp = svc.client.post("/env-worker/v1/relay/workers/smoke-no-such-worker/call", json={"method": "ping"})
+    probe_path = _surface(svc).rewrite("/env-worker/v1/relay/workers/smoke-no-such-worker/call")
+    resp = svc.client.post(probe_path, json={"method": "ping"})
     kind = resp.headers.get("content-type", "")
     evidence = {"status": resp.status_code, "content_type": kind}
     if resp.status_code == 503:
@@ -769,7 +837,8 @@ def check_worker(svc: SmokeService, opts: SmokeOptions) -> tuple[str, dict[str, 
     """Start a relayed env worker (a real K8s Job), read from it, run one task on its task
     tier, stop it. Covers the Job, the dial-back, the held socket, the named read route,
     the durable task record and the runner."""
-    probe = svc.client.post("/env-worker/v1/relay/workers/smoke-no-such-worker/call", json={"method": "ping"})
+    probe_path = _surface(svc).rewrite("/env-worker/v1/relay/workers/smoke-no-such-worker/call")
+    probe = svc.client.post(probe_path, json={"method": "ping"})
     if probe.status_code == 503:
         raise SkipCheck("relay is off on this deployment (503)")
     commit = _resolve_commit(svc, opts)
@@ -1459,6 +1528,7 @@ CHECKS: tuple[Check, ...] = (
     Check("database", 0, "the database is at the Alembic head this image expects", check_database),
     Check("routes", 0, "every spec operation is served", check_routes),
     Check("capabilities", 0, "the capability registry answers", check_capabilities),
+    Check("contract", 0, "the surfaces external callers depend on answer with their recorded shapes", check_contract),
     Check("relay", 0, "the env-worker relay is routed and live", check_relay),
     Check("core", 0, "viva-core's router (/viva/v1) answers through the gateway", check_core),
     Check("lists", 0, "database-backed list endpoints answer", check_lists),

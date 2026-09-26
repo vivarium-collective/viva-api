@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: sms-api
-  version: 0.9.155
+  version: 0.9.156
 paths:
   /api/v1/simulations/discovery:
     get:
@@ -1180,8 +1180,8 @@ paths:
     post:
       tags:
       - Analyses
-      summary: Run an analysis
-      operationId: run-ecoli-simulation-analysis
+      summary: Run an analysis (legacy, SLURM sites only)
+      operationId: run-slurm-analysis
       requestBody:
         content:
           application/json:
@@ -1204,7 +1204,7 @@ paths:
                   anyOf:
                   - $ref: '#/components/schemas/TsvOutputFile'
                   - $ref: '#/components/schemas/OutputFileMetadata'
-                title: Response Run-Ecoli-Simulation-Analysis
+                title: Response Run-Slurm-Analysis
         '422':
           description: Validation Error
           content:
@@ -2037,7 +2037,7 @@ paths:
                   git_branch: master
                   temporary: false
                   database_id: 25
-                  created_at: '2026-09-21T10:53:26.127398'
+                  created_at: '2026-09-25T11:09:51.832326'
                 parca_config:
                   outdir: .
                   operons: true
@@ -2656,6 +2656,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CoreHealth'
+  /viva/v1/capabilities:
+    get:
+      tags:
+      - Viva Core
+      summary: What this deployment can serve (for client feature detection)
+      description: 'Stable names a client tests for membership -- never a version
+        comparison. Core''s own
+
+        (the surfaces mounted in this process) plus the application''s probes, if
+        it embeds core.'
+      operationId: core-capabilities
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoreCapabilities'
   /viva/v1/environments/resolve:
     post:
       tags:
@@ -5025,6 +5043,28 @@ components:
       title: ContainerizationFileRepr
       description: A textual container-definition file (e.g. a Singularity/apptainer
         def).
+    CoreCapabilities:
+      properties:
+        version:
+          type: string
+          title: Version
+        capabilities:
+          items:
+            type: string
+          type: array
+          title: Capabilities
+          description: Stable capability names this deployment serves right now. Test
+            membership; absence means 'not available here'. Unknown names should be
+            ignored.
+      type: object
+      required:
+      - version
+      - capabilities
+      title: CoreCapabilities
+      description: 'What this running deployment can serve. Clients test ``capabilities``
+        for membership; ``version``
+
+        is core''s own, for humans (``viva_core.api.capabilities`` has the contract).'
     CoreHealth:
       properties:
         status:
@@ -5032,6 +5072,9 @@ components:
           const: ok
           title: Status
           default: ok
+        version:
+          type: string
+          title: Version
         services:
           additionalProperties:
             type: boolean
@@ -5039,6 +5082,7 @@ components:
           title: Services
       type: object
       required:
+      - version
       - services
       title: CoreHealth
     DatasetDTO:
@@ -6455,7 +6499,7 @@ components:
         last_updated:
           type: string
           title: Last Updated
-          default: '2026-09-21 10:53:26.042554'
+          default: '2026-09-25 11:09:50.082405'
         job_id:
           anyOf:
           - type: string

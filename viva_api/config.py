@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from pydantic_settings import SettingsConfigDict
 
 from viva_core.models import ComputeBackend as ComputeBackend  # re-exported: its home is core (P3d-4b-2)
-from viva_core.settings import CoreSettings, set_core_settings_provider
+from viva_core.settings import CoreSettings, StorageBackend, set_core_settings_provider
 from viva_core.settings import get_local_cache_dir as get_local_cache_dir  # re-exported: many importers
 from viva_core.storage.file_paths import HPCFilePath
 
@@ -50,7 +50,9 @@ def _parse_docker_config_json(path: str) -> tuple[str, str]:
 
 KV_DRIVER = Literal["file", "s3", "gcs"]
 TS_DRIVER = Literal["zarr", "n5", "zarr3"]
-STORAGE_BACKEND = Literal["gcs", "s3", "qumulo"]
+STORAGE_BACKEND = (
+    StorageBackend  # the type is core's (viva_core.settings.StorageBackend); this name is kept for importers
+)
 
 # -- load dev env -- #
 REPO_ROOT = os.path.dirname(os.path.dirname(__file__))
@@ -80,11 +82,10 @@ class APIFilePath(Path):
 class Settings(CoreSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
-    storage_backend: STORAGE_BACKEND = "s3"
-
-    # Storage backends (GCS / S3 / Qumulo), the local cache dir and the local<->remote path
-    # prefixes are INHERITED from viva_core.settings.CoreSettings -- one definition of each
-    # field, its default and its variable name (core split, docs/plan-core.md P1b).
+    # Storage backends (GCS / S3 / Qumulo), the backend selector (storage_backend, U2), the local
+    # cache dir and the local<->remote path prefixes are INHERITED from
+    # viva_core.settings.CoreSettings -- one definition of each field, its default and its
+    # variable name (core split, docs/plan-core.md P1b).
 
     mongodb_uri: str = "mongodb://localhost:27017"
     mongodb_database: str = "biosimulations"
@@ -92,19 +93,9 @@ class Settings(CoreSettings):
     mongodb_collection_sims: str = "BiosimSims"
     mongodb_collection_compare: str = "BiosimCompare"
 
-    postgres_user: str = "<USER>"
-    postgres_password: str = ""
-    postgres_database: str = "sms"
-    postgres_host: str = "localhost"
-    postgres_port: int = 5432
-    postgres_pool_size: int = 10  # number of connections in the pool
-    postgres_max_overflow: int = 5  # maximum number of connections that can be created beyond the pool size
-    postgres_pool_timeout: int = 30  # timeout for acquiring a connection from the pool in seconds
-    postgres_pool_recycle: int = 1800  # recycle connections every seconds
-    # Run Base/ComposeBase create_all at startup. True suits a laptop or a test; a DEPLOYED site
-    # sets it false, because there the schema belongs to the alembic-migrate Job alone -- see
-    # viva_api/simulation/db_startup.py for why create_all is corrosive in production.
-    db_create_all: bool = True
+    # postgres_* and db_create_all: inherited from CoreSettings (U2e) -- same names, same variables.
+    # DB_CREATE_ALL=true suits a laptop or a test; a DEPLOYED site sets it false, because there the
+    # schema belongs to the alembic-migrate Job alone -- see viva_api/simulation/db_startup.py.
 
     # This process's ROLE in the deployment: a stable name, NOT a pod name (pod names change on
     # every restart, and the env-worker boot sweep has to recognise the rows its predecessor
@@ -112,15 +103,9 @@ class Settings(CoreSettings):
     # value per Deployment that accepts env-worker tasks; "api" is the only one today.
     # owner_instance: inherited from CoreSettings (P3d-4d-2b)
 
-    slurm_submit_host: str = ""
-    slurm_submit_user: str = ""  # "svc_vivarium"
-    slurm_submit_key_path: str = ""  # "/Users/jimschaff/.ssh/id_rsa"
-    slurm_submit_known_hosts: str | None = None
-    slurm_partition: str = ""
-    slurm_node_list: str = ""  # comma-separated list of nodes, e.g., "node1,node2"
-    slurm_qos: str = ""
-    # slurm_log_base_path: inherited from CoreSettings (P3f; the file_paths <-> settings cycle is broken)
-    slurm_base_path: HPCFilePath = HPCFilePath(remote_path=Path(""))
+    # The SLURM backend's settings -- slurm_submit_{host,port,user,key_path,known_hosts},
+    # slurm_{partition,node_list,qos}, slurm_base_path (U2) and slurm_log_base_path (P3f) -- are
+    # INHERITED from viva_core.settings.CoreSettings: one definition, the same variable names.
 
     # Apptainer/Singularity temp directory for container builds
     # Use local SSD/NVMe (/tmp) for builds with many small files (faster metadata ops)
@@ -308,6 +293,11 @@ class Settings(CoreSettings):
     env_worker_workspace_path: str = (
         "/app/v2ecoli"  # overrides CoreSettings: the default names this application's image
     )
+    # What this application's env-worker Jobs are labelled, run as, and where the workbench image
+    # keeps the worker module (U2d): the values core carried as literals until 2026-09-25.
+    env_worker_app_label: str = "sms-api"  # overrides CoreSettings: names this deployment
+    env_worker_service_account: str = "batch-submit"  # overrides CoreSettings: kustomize/base/rbac-jobs.yaml
+    env_worker_module_path: str = "/app/vivarium-workbench/vivarium_workbench"  # overrides CoreSettings
     # Memory the worker pod may use. Settings rather than constants because the
     # right ceiling is a property of the SITE's nodes, not of this code: dev runs
     # t3.xlarge (~14.4Gi allocatable, 11% requested), and a site on smaller nodes
@@ -395,7 +385,7 @@ class Settings(CoreSettings):
     # --- Compose (process-bigraph) subsystem settings ---
     # compose_image_base_path: inherited from CoreSettings (P3d-2)
     # compose_sim_base_path: inherited from CoreSettings (P3d-2)
-    compose_cache_base_path: str = ""  # HPC path for compose ParCa cache (bind-mounted into containers)
+    # compose_cache_base_path: inherited from CoreSettings (U2); SMS puts its ParCa cache there
     # compose_containers_output_dir: inherited from CoreSettings (P3d-4d-2)
     # Ray/Batch compose runner image (prebuilt, carries process-bigraph + pbg-emitters).
     # `<ray_ecr_repository>:<compose_ray_image_tag>` — the deploy points this at the served
