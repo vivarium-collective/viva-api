@@ -1284,6 +1284,29 @@ split; each has an owner-less issue or a named moment.
   question this checkpoint asked. **What is deployed now** is everything P3 named, and what stays
   in SMS by decision: the SLURM compose service, the science hooks, the allow-list default,
   `/curated/ecoli`. Next is P4; P4a's owner-ref expand was written while this ran.
+- **2026-09-25** — **P4a-1: the owner-ref expand — one `(owner_kind, owner_id)` beside the foreign keys, backfilled, dual-written.**
+  Jim: "can we start on the next step". The first brick of P4, and what #776's adapters need; it
+  depends on neither #776 nor the #778 decision, both of which keep P4. **The columns:**
+  `hpcrun.owner_kind`, `owner_id`, `output_uri`; `dataset.owner_kind`, `owner_id`, `producer_job_id`,
+  `trace_id` — all nullable, all additive, migration `a4b6c8d0e2f4` (`IF NOT EXISTS`, reversible).
+  **The rule**, in one module (`viva_api/simulation/owner_ref.py`) and in the migration's backfill so
+  the two agree for every row: `owner_kind` is the owning table's name — `simulation`,
+  `parca_dataset`, `simulator`, `analysis` — and `owner_id` its id as text; a dataset takes the first
+  producer named, in the order the table has always preferred them. **A VARCHAR, not an enum**, as the
+  P4b row of section 7 requires: a new kind (core's `task`, `env_worker`) is a row, not a migration,
+  which is what keeps this reversible. The backfill touches only rows with no owner, so the
+  reconciler's re-run never overwrites what the dual-write recorded — proven by a test that upgrades,
+  hand-writes an owner, downgrades, upgrades again and finds the derived one. **Dual-write** in
+  `insert_hpcrun` and `upsert_dataset`; the foreign keys stay authoritative until P7. `output_uri`,
+  `producer_job_id` and `trace_id` are added now and stay NULL until their writers (P4b's adapters,
+  the ingest hook). **The fingerprint contract:** a marker (`hpcrun.owner_kind column exists`) and
+  its predicate, the pinned heads in three test files, and the "previous release" rehearsal that
+  must drop the new columns too. Chain-vs-`create_all` parity holds. **Proof:** `make check` clean
+  twice; suite 2303 passed (5 new). **Deploys as checkpoint F** — a migration Job, then the app; the
+  first DB deploy since B2.
+  One thing this surfaced for #776: its `JobOwnerKind` enum names `user`/`task`/`campaign`/
+  `env_worker`, but the owners SMS's rows actually have are its tables. Core's `Job.owner_kind`
+  should be a `str` with core naming only its own kinds — noted for the review.
 - **2026-09-25** — **P3f: the settings split is finished, core has its own OpenAPI document, and P3 is complete.**
   Jim: "merge #786 and continue with 3f". Three things. **Settings.** 3d-2 left one field behind:
   `slurm_log_base_path`, typed `HPCFilePath`, whose module imported `viva_core.settings` — a cycle.

@@ -258,6 +258,12 @@ async def _marker_simulator_temporary(conn: AsyncConnection) -> bool:
     return await _column_exists(conn, "simulator", "temporary")
 
 
+async def _marker_hpcrun_owner_kind(conn: AsyncConnection) -> bool:
+    """True once ``hpcrun.owner_kind`` exists (a4b6c8d0e2f4, the owner-ref expand of plan P4a).
+    Monotone on a create_all database, like the others."""
+    return await _column_exists(conn, "hpcrun", "owner_kind")
+
+
 # (revision, human-readable marker description) -- predicates are positional, in
 # _LEGACY_PREDICATES
 # One marker per revision reachable by a legacy create_all database. New entries
@@ -301,6 +307,7 @@ LEGACY_FINGERPRINTS: list[tuple[str, str]] = [
     ("c9a1e3f5b7d2", "table 'dataset' exists"),
     ("e7b3c9a1d5f2", "env_worker_task.owner_instance column exists"),
     ("f4c8a2e6d0b3", "simulator.temporary column exists"),
+    ("a4b6c8d0e2f4", "hpcrun.owner_kind column exists"),
 ]
 _LEGACY_PREDICATES = [
     _marker_baseline,
@@ -323,6 +330,7 @@ _LEGACY_PREDICATES = [
     _marker_dataset_table,
     _marker_env_worker_task_owner_instance,
     _marker_simulator_temporary,
+    _marker_hpcrun_owner_kind,
 ]
 
 

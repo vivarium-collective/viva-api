@@ -168,6 +168,15 @@ class ORMHpcRun(Base):
     # analysis run, whose events are ingested against this row and whose files are
     # attributed to the analysis via the ``analysis_id`` in its trace baggage.
     jobref_analysis_id: Mapped[int | None] = mapped_column(ForeignKey("analysis.id"), nullable=True, index=True)
+    # The owner-ref (plan P4a): WHO this run belongs to, as one (kind, id) pair instead of a foreign key
+    # per table -- the shape core's ``Job`` record has, so the P7 collapse to ``core.job`` copies these
+    # two columns rather than deriving them. Dual-written beside the ``jobref_*`` columns, which stay
+    # authoritative until P7; backfilled from them by the migration. ``owner_kind`` is a plain string
+    # (the owning table's name for SMS's rows), NOT an enum, so a new kind is a row and not a migration.
+    # ``output_uri``: where this run's outputs went, once a writer records it (P4b's adapters).
+    owner_kind: Mapped[str | None] = mapped_column(nullable=True, index=True)
+    owner_id: Mapped[str | None] = mapped_column(nullable=True, index=True)
+    output_uri: Mapped[str | None] = mapped_column(nullable=True)
     # Chain-dispatch campaign fields (backlog item 33: per-generation task
     # decomposition via individual per-seed AWS Batch job chains, each generation
     # its own job chained natively via dependsOn). NULL for every non-campaign
@@ -524,6 +533,12 @@ class ORMDataset(Base):
     tags: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default="[]")
     source: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     available: Mapped[bool] = mapped_column(nullable=False, server_default=text("true"))
+    # The owner-ref (plan P4a), beside the three producer foreign keys that stay authoritative until P7:
+    # who this dataset belongs to, the run that produced it, and the trace it was recorded under.
+    owner_kind: Mapped[str | None] = mapped_column(nullable=True, index=True)
+    owner_id: Mapped[str | None] = mapped_column(nullable=True, index=True)
+    producer_job_id: Mapped[int | None] = mapped_column(ForeignKey("hpcrun.id"), nullable=True, index=True)
+    trace_id: Mapped[str | None] = mapped_column(nullable=True, index=True)
     created_at: Mapped[datetime.datetime | None] = mapped_column(nullable=True, server_default=func.now())
     updated_at: Mapped[datetime.datetime | None] = mapped_column(
         nullable=True, server_default=func.now(), onupdate=func.now()
