@@ -441,10 +441,20 @@ class HPCORMExecutor(HPCDatabaseService):
 
     @override
     async def get_hpcrun_id_by_simulator_id(self, simulator_id: int) -> int | None:
+        """The build that made (or is making) this simulator's container -- never a FAILED one: a
+        failed build used to suppress every rebuild (#717; seen again at UConn, 2026-09-26, where the
+        first build failed on the nodes and every later run skipped the build and died for lack of
+        an image). A failed build is simply built again by the next run."""
         async with self.async_session_maker() as session:
             return (
                 await session.execute(
-                    select(ORMComposeHpcRun.id).where(ORMComposeHpcRun.simulator_id == simulator_id).limit(1)
+                    select(ORMComposeHpcRun.id)
+                    .where(
+                        ORMComposeHpcRun.simulator_id == simulator_id,
+                        ORMComposeHpcRun.status != ComposeJobStatusDB.FAILED,
+                    )
+                    .order_by(ORMComposeHpcRun.id.desc())
+                    .limit(1)
                 )
             ).scalar_one_or_none()
 
