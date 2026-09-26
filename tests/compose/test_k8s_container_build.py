@@ -108,10 +108,16 @@ async def test_submitting_creates_the_job_and_hands_back_its_name() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_slurm_service_uses_the_build_hook_and_tags_the_row_k8s(tmp_path: Path) -> None:
+async def test_the_slurm_service_uses_the_build_hook_and_tags_the_row_k8s(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The definition still goes onto the shared filesystem over SSH; the build itself is the hook's,
     and the row says k8s with the Job's name, no SLURM id."""
+    import random
+
     from viva_core.compose.container_def import ContainerizationFileRepr
+
+    monkeypatch.setattr(random, "choices", lambda *a, **k: list("Bf6f0"))  # the suffix UConn's API refused
     from viva_core.compose.models import ComposeSimulatorVersion
     from viva_core.settings import get_core_settings
 
@@ -157,7 +163,7 @@ async def test_the_slurm_service_uses_the_build_hook_and_tags_the_row_k8s(tmp_pa
         ssh.scp_upload.assert_awaited_once()
         hook.assert_awaited_once()
         job_name, definition, container = _must(hook.await_args).args
-        assert job_name.startswith("singularity-build-abc12-") and "_" not in job_name  # a Kubernetes name
+        assert job_name == "singularity-build-abc12-bf6f0"  # a DNS-1123 label: no underscore, no uppercase
         assert definition == Path(settings.compose_image_base_path) / "abc123def456.def"
         assert container == Path(settings.compose_image_base_path) / "abc123def456.sif"
         assert inserted["backend"] is JobBackend.K8S and inserted["job_id_ext"] == "compose-build-abc"

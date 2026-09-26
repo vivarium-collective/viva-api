@@ -275,8 +275,10 @@ class ComposeSimulationServiceHpc(ComposeSimulationService):
                 await ssh.scp_upload(local_file=local_singularity_file, remote_path=remote_def)
                 if self._container_build is not None:
                     backend = self._container_build.backend
+                    # a Kubernetes name: a DNS-1123 label, lowercase (the random suffix is hex digits
+                    # of either case) -- the API refused "singularity-build-acc62-Bf6f0" at UConn
                     job_id_ext: str | None = await self._container_build(
-                        slurm_job_name.replace("_", "-"), singularity_def_file, singularity_container
+                        slurm_job_name.replace("_", "-").lower(), singularity_def_file, singularity_container
                     )
                     slurm_jobid = -1
                 else:
