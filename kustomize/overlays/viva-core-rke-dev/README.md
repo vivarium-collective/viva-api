@@ -22,7 +22,6 @@ namespace and this overlay must never redeclare (and so overwrite) them:
 | `ghcr-secret` | SealedSecret | image pulls |
 | `vivarium-home-pvc` | PVC (NFS) | the HPC filesystem at `/projects/SMS` |
 | `haproxy-ssh` | Service | the SSH round-robin to `mantis-sub-*` |
-| `batch-submit` | ServiceAccount + Role | env-worker Jobs |
 
 ## Before the first apply
 
@@ -30,13 +29,31 @@ namespace and this overlay must never redeclare (and so overwrite) them:
    kustomize/cluster/postgres-cluster/vxrails-dev/viva-core-database.yaml` — a CNPG
    `Database` CR: database `viva_core` on `sms-dev-postgres-cluster`, owned by the existing
    `sms-dev` role. The cluster had one instance crash-looping (2026-09-25); fix that first.
-2. **The HPC tree**: as `svc_vivarium`, `mkdir -p /projects/SMS/viva_core/dev/{htclogs,sbatch,compose/images,compose/sims}`.
+2. **The HPC tree**: `/projects/SMS` is group-writable (setgid `smsgroup`, 10274) and the pods
+   run as `appuser` in that group, so the api pod can make core's sibling of `sms_api/`:
+   `kubectl -n sms-api-rke-dev exec deploy/api -- mkdir -p /projects/SMS/viva_core/dev/htclogs /projects/SMS/viva_core/dev/sbatch /projects/SMS/viva_core/dev/compose/images /projects/SMS/viva_core/dev/compose/sims`
+   (checked read-only 2026-09-26: `viva_core/` did not exist yet).
 3. **Qumulo credentials** (optional; without them the pod runs and datasets / results
    streaming are off): seal a Secret `core-qumulo-secrets` with keys `access-key-id` and
    `secret-access-key` (`kustomize/scripts/sealed_secret_*.sh` pattern, controller
    `sealed-secrets-controller` in `kube-system`) and add it to `resources:`.
 4. **The image**: `ghcr.io/vivarium-collective/viva-core:0.1.0` must exist (built by
    `build-core.yml`, write-once) and be pullable with `ghcr-secret`.
+
+## Read-only pass, 2026-09-26 (VPN)
+
+RKE2 `v1.31.13+rke2r1`; ingress class `nginx`; cert-manager and the sealed-secrets controller
+present; `letsencrypt-prod-sms-api-tls` exists in the namespace. The live `api-ingress` routes
+`/openapi.json /documentation /docs /ws /api /home /core /health /version` to `api` and `/` to
+`ptools` -- nothing claims `/viva` or `/env-worker`, so the second Ingress is purely additive.
+`shared-secrets` points at `sms-dev-postgres-cluster-rw`, database `sms-dev`, user `sms-dev` --
+the owner the `Database` CR names. The live api pod (`sms-api:0.4.9-dev`) runs as
+17163/10000 + groups 10274/10281/10269 with the same three mounts this overlay uses, and with
+**no ServiceAccount** (`batch-submit` is absent from the namespace -- hence `rbac-jobs.yaml`
+above). CNPG operator up; `sms-dev-postgres-cluster` is 2/3 ready with a healthy primary
+(instance 1), instance 2 restarting every ~15 min since 32 days (its manager exits 0 after
+"unable to decode an event from the watch stream" on the CNPG CRDs) -- usable for dev, to be
+fixed by whoever owns the cluster; no `Database` CRs exist yet.
 
 ## Apply and check (checkpoint UB)
 

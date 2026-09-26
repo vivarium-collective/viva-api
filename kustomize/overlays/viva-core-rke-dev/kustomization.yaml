@@ -16,3 +16,7 @@ resources:
   - core.yaml
   - ingress.yaml
   - ../../config/viva-core-rke-dev
+  # The `batch-submit` ServiceAccount + Role for Jobs / ConfigMaps / pod logs (env workers). It is
+  # in the SMS base, but the live dev namespace PREDATES it (checked 2026-09-26: only `default`
+  # exists), so core declares it -- the same object the SMS overlay would declare, no conflict.
+  - rbac-jobs.yaml
